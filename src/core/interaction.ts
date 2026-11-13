@@ -64,8 +64,12 @@ export interface InteractionError {
 }
 export const interactionLimits = Object.freeze({ maxChoices: 1000, maxDelegations: 1000 });
 
+const internalCodes = new WeakMap<object, InteractionError['code']>();
 class InvalidInteraction extends Error {
-  constructor(readonly code: InteractionError['code'] = 'invalid-input') { super(code); }
+  constructor(code: InteractionError['code'] = 'invalid-input') {
+    super(code);
+    internalCodes.set(this, code);
+  }
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -245,7 +249,8 @@ export function parseInteractionContinuation(options: {
     } else throw new InvalidInteraction('target-mismatch');
     return Object.freeze({ kind: 'ok', value: checked });
   } catch (error) {
-    const code = error instanceof InvalidInteraction ? error.code : 'invalid-input';
+    const code = typeof error === 'object' && error !== null
+      ? internalCodes.get(error) ?? 'invalid-input' : 'invalid-input';
     return Object.freeze({ kind: 'error', error: Object.freeze({ code }) });
   }
 }

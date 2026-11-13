@@ -144,6 +144,30 @@ test('known envelopes are copied and frozen, unknown fields discarded, opaque pa
 });
 
 
+test('thrown proxies are redacted without inspecting their prototype or properties', () => {
+  const thrown = new Proxy({}, {
+    getPrototypeOf() { throw new Error('credential-canary-never-return'); },
+    get() { throw new Error('credential-canary-never-return'); },
+  });
+  const input = { get kind() { throw thrown; } };
+  for (const parsed of [parse(input), parse(approvalReply, input)]) {
+    assert.deepEqual(parsed, { kind: 'error', error: { code: 'invalid-input' } });
+    assert(Object.isFrozen(parsed));
+    assert(Object.isFrozen(parsed.error));
+  }
+});
+
+test('thrown revoked proxies return a frozen invalid-input outcome', () => {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  const input = { get kind() { throw proxy; } };
+  for (const parsed of [parse(input), parse(approvalReply, input)]) {
+    assert.deepEqual(parsed, { kind: 'error', error: { code: 'invalid-input' } });
+    assert(Object.isFrozen(parsed));
+    assert(Object.isFrozen(parsed.error));
+  }
+});
+
 test('input-access exceptions are redacted and known fields are read once', () => {
   const canary = 'credential-canary-never-return';
   const throwing = (object, key) => Object.defineProperty(object, key, { get() { throw new Error(canary); } });
