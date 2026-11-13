@@ -1,0 +1,71 @@
+{
+  "protocol": "1.0",
+  "sourceCommit": "0fc064bb2647fc0bce4fc795af33b5551ac03f88",
+  "sourceBase": "https://raw.githubusercontent.com/ag-ui-protocol/ag-ui/0fc064bb2647fc0bce4fc795af33b5551ac03f88/",
+  "upstreamFiles": {
+    "spec/1.0/schema.json": "4b5c93226838a0e72d88e6c5df20633c686c49fcb75d9be2815c6cbf9e48e71a",
+    "spec/1.0/fixtures/MANIFEST.txt": "767725fab48e98b105d0427322b271fffb2166cc15718f8761a227591d999540",
+    "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241"
+  },
+  "artifacts": [
+    {
+      "file": "core-1.0.4.tgz",
+      "package": "@ag-ui/core",
+      "version": "1.0.4",
+      "url": "https://registry.npmjs.org/@ag-ui/core/-/core-1.0.4.tgz",
+      "sha256": "2cd54a879083e0c351e8c38861b1d2e2b7355a5712b7128da690257c687dad19",
+      "integrity": "sha512-Z/G3UXYRyZ/1LcOtCCf6RJiFPTjRqaNublW/kQ7wsfiP4Qw5oIVmvO6NkUQYoqCoMXuXggyD3MMH2Td5OVKECQ=="
+    },
+    {
+      "file": "ag_ui_protocol-1.0.0-py3-none-any.whl",
+      "package": "ag-ui-protocol",
+      "version": "1.0.0",
+      "url": "https://files.pythonhosted.org/packages/82/b0/850be4576e6443dc575daa54188d8136ae2b2eca3f19e098e7a088fc9ebc/ag_ui_protocol-1.0.0-py3-none-any.whl",
+      "sha256": "0058eaf0522201089d444e430fc35180bc8ad0222cae39e8568b313e8105d9e6"
+    }
+  ],
+  "verifierTools": {
+    "zod": "4.0.17",
+    "ajv": "8.17.1",
+    "python": "3.13.12",
+    "pydantic": "2.11.7",
+    "uv": "0.11.3"
+  },
+  "classification": {
+    "protocol": "represented-by-canonical-schema",
+    "switchboardMapping": "planned",
+    "nativeAdapters": {
+      "claude-direct": "unqualified",
+      "claude-litellm": "unqualified",
+      "codex-direct": "unqualified",
+      "codex-litellm": "unqualified",
+      "pi-direct": "unqualified",
+      "pi-litellm": "unqualified"
+    }
+  },
+  "ownership": {
+    "schemaFixtures": "tests/agui/fixtures/upstream.tsv",
+    "schemaTest": "scripts/verify-agui-matrix.mjs",
+    "pythonTest": "tests/agui/compare-python.py",
+    "nativeFixtures": "Each adapter qualification task owns native-to-AG-UI fixtures for both routes.",
+    "hostFixtures": "Consumer contract tasks own durable projection, authorization, snapshots, cursors, and replay."
+  },
+  "categories": {
+    "envelope": "wire-envelope",
+    "text": "native-observation",
+    "tools": "native-interaction",
+    "state": "native-observation-and-host-projection",
+    "messages": "native-observation-and-host-projection",
+    "activity": "native-observation-and-host-projection",
+    "extensions": "explicit-extension",
+    "lifecycle": "native-observation",
+    "reasoning": "native-observation-only",
+    "subagents": "native-observation",
+    "outcomes": "native-confirmed-outcome",
+    "interrupts": "native-interaction",
+    "usage": "native-reported-accounting",
+    "multimodal": "native-content",
+    "request": "host-input-with-native-validation",
+    "capabilities": "declared-configured-availability"
+  }
+}

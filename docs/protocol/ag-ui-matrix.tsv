@@ -1,0 +1,99 @@
+definition	category	event	fields	required	pythonDefaulted	pythonPublic
+Event	envelope					true
+EventType	envelope					true
+BaseEvent	envelope		metadata,rawEvent,timestamp,type	type		true
+Attributable	envelope		subagentRunId			false
+SubagentRunId	envelope					false
+Metadata	envelope					true
+State	state					true
+TextMessageRole	text					false
+Role	messages					true
+TextMessageStartEvent	text	TEXT_MESSAGE_START	messageId,metadata,name,rawEvent,role,subagentRunId,timestamp,type	messageId,type	type	true
+TextMessageContentEvent	text	TEXT_MESSAGE_CONTENT	delta,messageId,metadata,rawEvent,subagentRunId,timestamp,type	delta,messageId,type	type	true
+TextMessageEndEvent	text	TEXT_MESSAGE_END	messageId,metadata,rawEvent,subagentRunId,timestamp,type	messageId,type	type	true
+TextMessageChunkEvent	text	TEXT_MESSAGE_CHUNK	delta,messageId,metadata,name,rawEvent,role,subagentRunId,timestamp,type	type	type	true
+ToolCallStartEvent	tools	TOOL_CALL_START	metadata,parentMessageId,rawEvent,subagentRunId,timestamp,toolCallId,toolCallName,type	toolCallId,toolCallName,type	type	true
+ToolCallArgsEvent	tools	TOOL_CALL_ARGS	delta,metadata,rawEvent,subagentRunId,timestamp,toolCallId,type	delta,toolCallId,type	type	true
+ToolCallEndEvent	tools	TOOL_CALL_END	metadata,rawEvent,subagentRunId,timestamp,toolCallId,type	toolCallId,type	type	true
+ToolCallChunkEvent	tools	TOOL_CALL_CHUNK	delta,metadata,parentMessageId,rawEvent,subagentRunId,timestamp,toolCallId,toolCallName,type	type	type	true
+ToolCallResultEvent	tools	TOOL_CALL_RESULT	content,messageId,metadata,rawEvent,role,subagentRunId,timestamp,toolCallId,type	content,messageId,toolCallId,type	type	true
+StateSnapshotEvent	state	STATE_SNAPSHOT	metadata,rawEvent,snapshot,subagentRunId,timestamp,type	snapshot,type	type	true
+StateDeltaEvent	state	STATE_DELTA	delta,metadata,rawEvent,subagentRunId,timestamp,type	delta,type	type	true
+MessagesSnapshotEvent	messages	MESSAGES_SNAPSHOT	messages,metadata,rawEvent,timestamp,type	messages,type	type	true
+ActivitySnapshotEvent	activity	ACTIVITY_SNAPSHOT	activityType,content,messageId,metadata,rawEvent,replace,subagentRunId,timestamp,type	activityType,content,messageId,type	type	true
+ActivityDeltaEvent	activity	ACTIVITY_DELTA	activityType,messageId,metadata,patch,rawEvent,subagentRunId,timestamp,type	activityType,messageId,patch,type	type	true
+RawEvent	extensions	RAW	event,metadata,rawEvent,source,subagentRunId,timestamp,type	event,type	type	true
+CustomEvent	extensions	CUSTOM	metadata,name,rawEvent,subagentRunId,timestamp,type,value	name,type,value	type	true
+RunStartedEvent	lifecycle	RUN_STARTED	input,metadata,parentRunId,protocolVersion,rawEvent,runId,threadId,timestamp,type	runId,threadId,type	type	true
+RunFinishedEvent	lifecycle	RUN_FINISHED	metadata,outcome,rawEvent,result,runId,threadId,timestamp,type,usage	runId,threadId,type	type	true
+RunErrorEvent	lifecycle	RUN_ERROR	code,message,metadata,rawEvent,timestamp,type,usage	message,type	type	true
+StepStartedEvent	lifecycle	STEP_STARTED	metadata,rawEvent,stepName,subagentRunId,timestamp,type	stepName,type	type	true
+StepFinishedEvent	lifecycle	STEP_FINISHED	metadata,rawEvent,stepName,subagentRunId,timestamp,type	stepName,type	type	true
+ReasoningStartEvent	reasoning	REASONING_START	messageId,metadata,rawEvent,subagentRunId,timestamp,type	messageId,type	type	true
+ReasoningMessageStartEvent	reasoning	REASONING_MESSAGE_START	messageId,metadata,rawEvent,role,subagentRunId,timestamp,type	messageId,role,type	role,type	true
+ReasoningMessageContentEvent	reasoning	REASONING_MESSAGE_CONTENT	delta,messageId,metadata,rawEvent,subagentRunId,timestamp,type	delta,messageId,type	type	true
+ReasoningMessageEndEvent	reasoning	REASONING_MESSAGE_END	messageId,metadata,rawEvent,subagentRunId,timestamp,type	messageId,type	type	true
+ReasoningMessageChunkEvent	reasoning	REASONING_MESSAGE_CHUNK	delta,messageId,metadata,rawEvent,subagentRunId,timestamp,type	type	type	true
+ReasoningEndEvent	reasoning	REASONING_END	messageId,metadata,rawEvent,subagentRunId,timestamp,type	messageId,type	type	true
+ReasoningEncryptedValueEvent	reasoning	REASONING_ENCRYPTED_VALUE	encryptedValue,entityId,metadata,rawEvent,subagentRunId,subtype,timestamp,type	encryptedValue,entityId,subtype,type	type	true
+ReasoningEncryptedValueSubtype	reasoning					true
+SubagentStartedEvent	subagents	SUBAGENT_STARTED	description,metadata,name,parentMessageId,parentSubagentRunId,parentToolCallId,rawEvent,subagentRunId,timestamp,type	name,subagentRunId,type	type	true
+SubagentFinishedEvent	subagents	SUBAGENT_FINISHED	metadata,outcome,rawEvent,result,subagentRunId,timestamp,type	subagentRunId,type	type	true
+SubagentErrorEvent	subagents	SUBAGENT_ERROR	code,message,metadata,rawEvent,subagentRunId,timestamp,type	message,subagentRunId,type	type	true
+RunFinishedOutcome	outcomes					true
+RunFinishedSuccessOutcome	outcomes		pendingToolCallIds,type	type	type	true
+RunFinishedInterruptOutcome	outcomes		interrupts,type	interrupts,type	type	true
+RunFinishedCancelledOutcome	outcomes		type	type	type	true
+SubagentFinishedOutcome	subagents					true
+SubagentFinishedSuccessOutcome	subagents		type	type	type	true
+SubagentFinishedSuspendedOutcome	subagents		interruptIds,type	type	type	true
+Interrupt	interrupts		expiresAt,id,message,metadata,reason,responseSchema,subagentRunId,toolCallId	id,reason		true
+ResumeEntry	interrupts		interruptId,metadata,payload,status	interruptId,status		true
+TokenUsage	usage		cacheWriteInputTokens,cachedInputTokens,inputTokens,model,outputTokens,provider,reasoningTokens,totalTokens			true
+Message	messages					true
+BaseMessage	messages		encryptedValue,id,metadata,name,role,subagentRunId	id,role		true
+DeveloperMessage	messages		content,encryptedValue,id,metadata,name,role,subagentRunId	content,id,role	role	true
+SystemMessage	messages		content,encryptedValue,id,metadata,name,role,subagentRunId	content,id,role	role	true
+AssistantMessage	messages		content,encryptedValue,id,metadata,name,role,subagentRunId,toolCalls	id,role	role	true
+UserMessage	messages		content,encryptedValue,id,metadata,name,role,subagentRunId	content,id,role	role	true
+ToolMessage	messages		content,encryptedValue,error,id,metadata,role,subagentRunId,toolCallId	content,id,role,toolCallId	role	true
+ActivityMessage	activity		activityType,content,id,metadata,role,subagentRunId	activityType,content,id,role	role	true
+ReasoningMessage	reasoning		content,encryptedValue,id,metadata,role,subagentRunId	content,id,role	role	true
+ToolCall	tools		encryptedValue,function,id,metadata,type	function,id,type	type	true
+FunctionCall	tools		arguments,name	arguments,name		true
+ContentPart	multimodal					true
+TextPart	multimodal		id,metadata,text,type	text,type	type	true
+ImagePart	multimodal		id,metadata,source,type	source,type	type	true
+AudioPart	multimodal		id,metadata,source,type	source,type	type	true
+VideoPart	multimodal		id,metadata,source,type	source,type	type	true
+DocumentPart	multimodal		id,metadata,source,type	source,type	type	true
+PartSource	multimodal					true
+DataSource	multimodal		mimeType,type,value	mimeType,type,value	type	true
+UrlSource	multimodal		mimeType,type,value	type,value	type	true
+FileSource	multimodal		mimeType,provider,type,value	type,value	type	true
+Context	request		description,value	description,value		true
+Tool	tools		description,metadata,name,parameters	description,name		true
+RunAgentInput	request		context,forwardedProps,messages,parentRunId,protocolVersion,resume,runId,state,threadId,tools	messages,runId,threadId		true
+SubagentInfo	subagents		description,name	name		true
+IdentityCapabilities	capabilities		description,documentationUrl,metadata,name,provider,type,version			true
+TransportCapabilities	capabilities		httpBinary,pushNotifications,resumable,streaming,websocket			true
+ToolsCapabilities	capabilities		clientProvided,items,parallelCalls,supported			true
+OutputCapabilities	capabilities		structuredOutput,supportedMimeTypes			true
+StateCapabilities	capabilities		deltas,memory,persistentState,snapshots			true
+MultiAgentCapabilities	capabilities		delegation,handoffs,subagents,supported			true
+ReasoningCapabilities	capabilities		encrypted,streaming,supported			true
+MultimodalInputCapabilities	capabilities		audio,file,image,pdf,video			true
+MultimodalOutputCapabilities	capabilities		audio,image			true
+MultimodalCapabilities	capabilities		input,output			true
+ExecutionCapabilities	capabilities		codeExecution,maxExecutionTime,maxIterations,sandboxed			true
+HumanInTheLoopCapabilities	capabilities		approvals,approveWithEdits,feedback,interrupts,interventions,supported			true
+AgentCapabilities	capabilities		custom,execution,humanInTheLoop,identity,multiAgent,multimodal,output,reasoning,state,tools,transport			true
+JsonPatch	state					false
+JsonPatchOperation	state					false
+AddOperation	state		op,path,value	op,path,value	op	false
+RemoveOperation	state		op,path	op,path	op	false
+ReplaceOperation	state		op,path,value	op,path,value	op	false
+MoveOperation	state		from,op,path	from,op,path	op	false
+CopyOperation	state		from,op,path	from,op,path	op	false
+TestOperation	state		op,path,value	op,path,value	op	false
+JsonPointer	state					false
