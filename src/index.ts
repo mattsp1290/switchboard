@@ -79,3 +79,9 @@ export type {
 
 export { createSafeError, normalizeError, summarizeDiagnostic, serializeDiagnostic } from './core/diagnostics.js';
 export type { DiagnosticCode, DiagnosticCategory, SafeError, SafeDiagnostic } from './core/diagnostics.js';
+export { createDispatchOperation } from './core/dispatch.js';
+export type {
+  DispatchTarget, DispatchIdentity, NativeOperationReference, DispatchEvidence,
+  NativeDispatchObservation, DispatchObservation, DispatchSnapshot, DispatchLifecycle,
+  DispatchHandle, FreshDispatchOptions,
+} from './core/dispatch.js';

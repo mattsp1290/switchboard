@@ -211,6 +211,28 @@ Invalid runtime categories become a native-data redaction. Returned records and 
 Every supported projection is at most 512 UTF-8 bytes with fixed depth and vocabulary.
 These helpers do not sanitize arbitrary host events or establish whether an adapter's asserted condition is true.
 Adapters must qualify native error mappings separately. No existing module's error is automatically trusted by structural similarity.
+## Single-attempt dispatch
+
+`createDispatchOperation` captures an immutable host operation identity and either an existing session reference or a new-session binding.
+The host supplies `recordIntent` and a native dispatch closure. Before intent resolves, the host must durably record the exact command and acquire admission.
+The helper does not store that command, persist receipts, or enforce uniqueness across handles or processes.
+`run()` reserves and returns the same promise before any callback or lifecycle publication. One handle enters native dispatch at most once.
+The original result and promise remain stable for the lifetime of the handle.
+
+An abort before native entry or an intent failure returns `not-dispatched`. The signal is checked after lifecycle publication immediately before entry.
+After entry, throws, rejections, malformed observations, and mismatched evidence become `outcome-unknown`, including cancellation errors.
+Cancellation cannot establish rollback or nonacceptance. No retry, timeout, polling, or recovery executor is provided in this slice.
+Callbacks are cooperative; awaiting this handle's own `run()` inside a callback creates a dependency cycle.
+
+Native observations distinguish unknown, accepted, and conclusive results. Conclusive results retain the adapter's exact result, including rejection or pending interaction.
+Evidence carries the exact host identity, a native acknowledgement source, a separately named native operation reference or null, and a native extension.
+Known envelopes are copied and frozen; opaque native data and generic results retain their original identity.
+Validation establishes correspondence with the requested identity, not the native authority of an adapter's assertion.
+Malformed construction exposes a fixed `TypeError` without raw error data and executes no callbacks.
+
+Borrowed lifecycle publication contains only a phase. Publisher failures, closed streams, overflow, and observer failures cannot change native execution or its result.
+The host remains responsible for durable outcome storage and exclusion among duplicate identities.
+Reconciliation and recovery are separately tracked by `switchboard-zc9l`; this handle currently exposes only `run()`.
 
 ## Native prerequisites and checked evidence
 
