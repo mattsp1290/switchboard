@@ -10,8 +10,8 @@ const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const npm = process.env.npm_execpath;
 assert(npm, 'Run this check with npm run verify:package.');
 
-function run(command, args, cwd = root) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+function run(command, args, cwd = root, env = process.env) {
+  return execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 }
 
 function runNpm(args, cwd = root) {
@@ -48,6 +48,7 @@ try {
   writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   process.stdout.write(runNpm([
     'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@types/node@${manifest.devDependencies['@types/node']}`,
   ], consumer));
 
   const installed = join(consumer, 'node_modules', ...manifest.name.split('/'));
@@ -63,17 +64,30 @@ try {
 import assert from 'node:assert/strict';
 import * as switchboard from '${manifest.name}';
 assert.equal(typeof switchboard, 'object');
-assert.deepEqual(Object.keys(switchboard), []);
 await assert.rejects(import('${manifest.name}/dist/index.js'), {
   code: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
 });
 `);
   run(process.execPath, ['runtime.mjs'], consumer);
 
-  copyFileSync(join(root, 'tests/core/contracts.test.ts'), join(consumer, 'contracts.test.ts'));
+  const fixtures = readdirSync(join(root, 'tests/core')).sort();
+  const typeFixtures = fixtures.filter((file) => file.endsWith('.test.ts'));
+  const runtimeFixtures = fixtures.filter((file) => file.endsWith('.consumer.mjs'));
+  assert(typeFixtures.length > 0, 'Public type fixtures exist.');
+  assert(runtimeFixtures.length > 0, 'Installed runtime helper fixtures exist.');
+  for (const file of [...typeFixtures, ...runtimeFixtures]) {
+    copyFileSync(join(root, 'tests/core', file), join(consumer, file));
+  }
+  const runtimeEnvironment = { ...process.env };
+  delete runtimeEnvironment.NODE_TEST_CONTEXT;
+  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
+  assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
+  process.stdout.write(runtimeOutput);
   const consumerConfig = {
     compilerOptions: {
       target: 'ES2022',
+      lib: ['ES2022'],
+      types: ['node'],
       module: 'NodeNext',
       moduleResolution: 'NodeNext',
       strict: true,
@@ -83,7 +97,7 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
       skipLibCheck: false,
       noEmit: true,
     },
-    files: ['contracts.test.ts'],
+    files: typeFixtures,
   };
   writeFileSync(join(consumer, 'tsconfig.json'), JSON.stringify(consumerConfig));
   const compilerManifest = JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8'));
@@ -108,6 +122,9 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ['typed-native-data', 'const invalid: number = nativeData.data.modelAlias;', 2322],
     ['unnarrowed-outcome', 'opened.value;', 2339],
     ['unsupported-error', "const invalid: AdapterError = { code: 'unsupported', message: 'Absent.' };", 2322],
+    ['session-kind', `import type { SessionReference } from '${manifest.name}'; import { sessionBinding } from './sessions.test.js'; const invalid: SessionReference = { kind: 'checkpoint', formatVersion: 1, binding: sessionBinding, opaque: 'x' };`, 2322],
+    ['session-checkpoint', `import type { CheckpointReference } from '${manifest.name}'; import { sessionReference } from './sessions.test.js'; const invalid: CheckpointReference = sessionReference;`, 2741],
+    ['session-readonly', "import { sessionReference } from './sessions.test.js'; sessionReference.binding.account = 'other';", 2540],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [
