@@ -76,3 +76,6 @@ export type {
   FileDiscoveryPage,
   FileDiscoveryScope,
 } from './core/discovery.js';
+
+export { createSafeError, normalizeError, summarizeDiagnostic, serializeDiagnostic } from './core/diagnostics.js';
+export type { DiagnosticCode, DiagnosticCategory, SafeError, SafeDiagnostic } from './core/diagnostics.js';

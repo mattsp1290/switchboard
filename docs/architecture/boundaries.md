@@ -197,6 +197,21 @@ The helper does not write, lock, migrate, or dispatch native history. Reads can 
 Real temporary filesystem fixtures verify traversal, symlinks, permissions, budgets, replacement, cancellation, and cleanup.
 These tests do not qualify native formats or prove confinement when the host's namespace-stability precondition is false.
 
+## Safe diagnostics
+
+`createSafeError` lets trusted adapters assert one of the qualified adapter or authentication error codes.
+Each code has a fixed message. It accepts no raw message or metadata, and malformed runtime codes become `native-failure`.
+`normalizeError` preserves only exact error objects created by this module instance, using private identity tracking.
+Clones, structural lookalikes, proxies, foreign package instances, and arbitrary native errors become the fixed native failure.
+It never reads properties, prototypes, getters, keys, or coercion hooks on raw values.
+
+`summarizeDiagnostic` wraps an owned error or suppresses an endpoint, headers, credentials, checkpoint, or native payload in full.
+Invalid runtime categories become a native-data redaction. Returned records and nested errors are frozen.
+`serializeDiagnostic` emits precomputed JSON only for owned records; all other inputs produce the fixed native-data redaction.
+Every supported projection is at most 512 UTF-8 bytes with fixed depth and vocabulary.
+These helpers do not sanitize arbitrary host events or establish whether an adapter's asserted condition is true.
+Adapters must qualify native error mappings separately. No existing module's error is automatically trusted by structural similarity.
+
 ## Native prerequisites and checked evidence
 
 Node 24.22.3 with npm 11.19.1 is the selected foundation toolchain.

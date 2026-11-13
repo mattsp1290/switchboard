@@ -156,6 +156,14 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ['discovery-terminal', "import { filePage } from './discovery.test.js'; filePage.reason;", 2339],
     ['discovery-skip', `import type { FileDecode } from '${manifest.name}'; const invalid: FileDecode<string> = { kind: 'skip', value: 'x' };`, 2353],
     ['discovery-async', `import { discoverFiles } from '${manifest.name}'; import { fileOptions } from './discovery.test.js'; discoverFiles({ ...fileOptions, decode: async () => ({ kind: 'skip' }) });`, 2322],
+    ["diagnostics-code", "import { createSafeError } from '@mattsp1290/switchboard'; createSafeError('ECONNRESET');", 2345],
+    ["diagnostics-category", "import { summarizeDiagnostic } from '@mattsp1290/switchboard'; summarizeDiagnostic('native', {});", 2345],
+    ["diagnostics-error-readonly", "import { error } from './diagnostics.test.js'; error.message = 'changed';", 2540],
+    ["diagnostics-unnarrowed", "import { diagnostic } from './diagnostics.test.js'; diagnostic.error;", 2339],
+    ["diagnostics-category-readonly", "import { diagnostic } from './diagnostics.test.js'; if (diagnostic.kind === 'redacted') diagnostic.category = 'headers';", 2540],
+    ["diagnostics-nested-readonly", "import { diagnostic } from './diagnostics.test.js'; if (diagnostic.kind === 'error') diagnostic.error.code = 'closed';", 2540],
+    ["diagnostics-adapter-error", "import { createSafeError } from '@mattsp1290/switchboard'; const invalid: AdapterError = createSafeError('unsupported');", 2322],
+    ["diagnostics-metadata", "import { createSafeError } from '@mattsp1290/switchboard'; createSafeError('busy', { message: 'raw' });", 2554],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [
