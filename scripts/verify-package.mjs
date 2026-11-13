@@ -164,6 +164,13 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ["diagnostics-nested-readonly", "import { diagnostic } from './diagnostics.test.js'; if (diagnostic.kind === 'error') diagnostic.error.code = 'closed';", 2540],
     ["diagnostics-adapter-error", "import { createSafeError } from '@mattsp1290/switchboard'; const invalid: AdapterError = createSafeError('unsupported');", 2322],
     ["diagnostics-metadata", "import { createSafeError } from '@mattsp1290/switchboard'; createSafeError('busy', { message: 'raw' });", 2554],
+    ["dispatch-missing-evidence", "import type { NativeDispatchObservation } from '@mattsp1290/switchboard'; const invalid: NativeDispatchObservation<string> = { kind: 'accepted' };", 2322],
+    ["dispatch-host-native-reference", "import type { NativeOperationReference } from '@mattsp1290/switchboard'; import { dispatchIdentity } from './dispatch.test.js'; const invalid: NativeOperationReference = dispatchIdentity;", 2739],
+    ["dispatch-readonly-envelope", "import { dispatchEvidence } from './dispatch.test.js'; dispatchEvidence.identity.hostOperationId = 'changed';", 2540],
+    ["dispatch-unnarrowed-result", "import { unknownObservation } from './dispatch.test.js'; unknownObservation.result;", 2339],
+    ["dispatch-unknown-result", "import { unknownObservation } from './dispatch.test.js'; if (unknownObservation.kind === 'conclusive') unknownObservation.result.state;", 18046],
+    ["dispatch-new-session-native-token", "import type { DispatchTarget } from '@mattsp1290/switchboard'; import { sessionBinding } from './sessions.test.js'; const invalid: DispatchTarget = { kind: 'new-session', binding: sessionBinding, opaque: 'invented' };", 2353],
+    ["dispatch-reconcile-not-yet", "import { dispatchHandle } from './dispatch.test.js'; dispatchHandle.reconcile(new AbortController().signal);", 2339],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [
