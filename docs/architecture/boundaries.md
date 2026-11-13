@@ -135,6 +135,23 @@ Listener throws and rejections end only that subscription with `listener-error`.
 `publish` returns `closed` after closure. Delivery cancellation never cancels native work, and the helper accepts no native cancellation callback.
 Installed-consumer tests verify these delivery guarantees. Native event mapping and native-operation cancellation require separate adapter qualification.
 
+## Scoped authentication
+
+`createAuthContext` snapshots a host-authorized engine, account, adapter instance, session, and route.
+Direct and LiteLLM configurations remain distinct. Proxy configuration requires its endpoint, protocol, and proxy credential purpose.
+The host authorizes endpoints, including private HTTP proxies. URL checks establish syntax only.
+Adapters validate protocol, native options, direct credential material, and any conflicting authentication headers against their native family.
+Opaque native options and direct material retain their identity and are not deep-frozen.
+Known scope, route, headers, boundary, and proxy credential fields are copied and frozen.
+
+Adapters call `resolve` at each supported invocation or request boundary, including resumed work.
+Each call supplies a fresh frozen context and the caller's abort signal to the host resolver.
+The helper does not cache, coalesce, retry, choose fallback routes, or dispatch native requests.
+Cancellation is cooperative during resolution and checked before and after it.
+Safe failure messages exclude raw resolver errors and credentials. A proxy purpose label is a host assertion, not issuer verification.
+Installed fixtures verify scope isolation, credential rotation, cancellation, route preservation, and redacted failures.
+Native boundary wiring and direct/LiteLLM qualification remain adapter obligations.
+
 ## Native prerequisites and checked evidence
 
 Node 24.22.3 with npm 11.19.1 is the selected foundation toolchain.
