@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import type { NativeExtension } from './contracts.js';
 import type { EventStream } from './events.js';
 import { parseSessionReference, sessionLimits } from './sessions.js';
@@ -110,13 +111,18 @@ function copyObservation<T>(value: NativeDispatchObservation<T>, identity: Dispa
   return Object.freeze({ kind, evidence, result: value.result });
 }
 function aborted(signal: AbortSignal): boolean {
-  return Reflect.get(AbortSignal.prototype, 'aborted', signal) === true;
+  try {
+    return Reflect.get(AbortSignal.prototype, 'aborted', signal) === true;
+  } catch {
+    throw new TypeError('Invalid dispatch signal.');
+  }
 }
 function copyOptions<T>(options: FreshDispatchOptions<T>) {
   try {
     record(options);
     const { mode, identity: rawIdentity, signal, recordIntent, dispatchNative, events } = options;
     if (mode !== 'fresh' || typeof recordIntent !== 'function' || typeof dispatchNative !== 'function') throw new TypeError();
+    if (types.isProxy(signal)) throw new TypeError();
     aborted(signal);
     const identity = copyIdentity(rawIdentity);
     if (events !== undefined) record(events);

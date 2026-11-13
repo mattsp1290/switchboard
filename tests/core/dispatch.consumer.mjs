@@ -197,6 +197,79 @@ test('construction failures expose only a fixed TypeError and execute no callbac
   assert.equal(calls, 0);
 });
 
+test('proxy signals fail construction without invoking any traps or callbacks', () => {
+  let traps = 0;
+  let calls = 0;
+  const handlers = Object.fromEntries(['get', 'getPrototypeOf', 'ownKeys', 'getOwnPropertyDescriptor', 'has']
+    .map((key) => [key, () => { traps++; throw new Error(canary); }]));
+  const actual = new AbortController().signal;
+  const pair = Proxy.revocable(actual, handlers);
+  const alreadyRevoked = Proxy.revocable(actual, handlers);
+  alreadyRevoked.revoke();
+  let target = actual;
+  const retargetable = new Proxy({}, { get(_target, key) { traps++; return Reflect.get(target, key, target); } });
+  for (const signal of [new Proxy(actual, {}), pair.proxy, alreadyRevoked.proxy,
+    new Proxy(actual, handlers), retargetable]) {
+    fixedFailure(() => createDispatchOperation(options({ signal,
+      recordIntent() { calls++; }, dispatchNative() { calls++; },
+    })));
+  }
+  target = AbortSignal.abort();
+  pair.revoke();
+  assert.equal(traps, 0);
+  assert.equal(calls, 0);
+});
+
+test('signal invalidation rejects the cached promise with a fixed TypeError before native entry', async () => {
+  for (const shape of ['actual', 'lookalike']) for (const when of ['before', 'recording-intent', 'intent', 'dispatching']) {
+    const actual = new AbortController().signal;
+    const signal = shape === 'actual' ? actual
+      : Object.create(Object.getPrototypeOf(actual), Object.getOwnPropertyDescriptors(actual));
+    const phases = [];
+    const reentries = [];
+    const barrier = Promise.withResolvers();
+    const entered = Promise.withResolvers();
+    let intents = 0;
+    let calls = 0;
+    let thrownReads = 0;
+    const thrown = new Proxy({}, { get() { thrownReads++; throw new Error(canary); } });
+    const invalidate = () => {
+      for (const key of Object.getOwnPropertySymbols(signal)) {
+        Object.defineProperty(signal, key, { get() { reentries.push(handle.run()); throw thrown; } });
+      }
+    };
+    const handle = createDispatchOperation(options({ signal,
+      events: { publish({ phase }) { phases.push(phase); if (phase === when) invalidate(); } },
+      recordIntent(_id, received) {
+        intents++;
+        assert.equal(received, signal);
+        entered.resolve();
+        return when === 'intent' ? barrier.promise : undefined;
+      },
+      dispatchNative() { calls++; return { kind: 'outcome-unknown' }; },
+    }));
+    if (when === 'before') invalidate();
+    const first = handle.run();
+    if (when === 'intent') { await entered.promise; invalidate(); barrier.resolve(); }
+    let failure;
+    await assert.rejects(first, (error) => {
+      failure = error;
+      assert.equal(error.constructor, TypeError);
+      assert.equal(error.message, 'Invalid dispatch signal.');
+      assert(!String(error).includes(canary));
+      return true;
+    });
+    assert.equal(handle.run(), first);
+    await assert.rejects(handle.run(), (error) => error === failure);
+    assert(reentries.length > 0 && reentries.every((promise) => promise === first));
+    assert.equal(intents, ['before', 'recording-intent'].includes(when) ? 0 : 1);
+    assert.equal(calls, 0);
+    assert.equal(thrownReads, 0);
+    assert.deepEqual(phases, when === 'before' ? []
+      : when === 'dispatching' ? ['recording-intent', 'dispatching'] : ['recording-intent']);
+  }
+});
+
 test('known fields are read once, options are captured, and opaque proxies are never inspected', async () => {
   const counts = [];
   function watch(object) {

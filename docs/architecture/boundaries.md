@@ -228,7 +228,9 @@ Native observations distinguish unknown, accepted, and conclusive results. Concl
 Evidence carries the exact host identity, a native acknowledgement source, a separately named native operation reference or null, and a native extension.
 Known envelopes are copied and frozen; opaque native data and generic results retain their original identity.
 Validation establishes correspondence with the requested identity, not the native authority of an adapter's assertion.
-Malformed construction exposes a fixed `TypeError` without raw error data and executes no callbacks.
+Malformed construction, including proxy signals, exposes a fixed `TypeError` without raw error data and executes no callbacks.
+If a retained signal later becomes unreadable, the cached `run()` promise rejects with `TypeError('Invalid dispatch signal.')` before native entry.
+It emits no fabricated terminal observation. The supported Node getter does not prove an unforgeable signal brand; the helper inspects no private signal state.
 
 Borrowed lifecycle publication contains only a phase. Publisher failures, closed streams, overflow, and observer failures cannot change native execution or its result.
 The host remains responsible for durable outcome storage and exclusion among duplicate identities.
