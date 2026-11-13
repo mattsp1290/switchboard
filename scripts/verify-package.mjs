@@ -232,8 +232,11 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], integration);
   const collected = join(temporary, 'emitted-events.jsonl');
   writeFileSync(collected, '');
+  writeFileSync(join(integration, 'compiled/empty-test.js'), '');
+  const emptyOutput = run(process.execPath, ['--test-reporter=tap', 'compiled/empty-test.js'], integration, runtimeEnvironment);
+  assert.doesNotMatch(emptyOutput, /^# tests [1-9]\d*$/m, 'An empty module cannot satisfy the registered-test gate.');
   for (const file of aguiTests) {
-    const output = run(process.execPath, ['--test', '--test-reporter=tap', `compiled/${file.replace(/\.ts$/, '.js')}`],
+    const output = run(process.execPath, ['--test-reporter=tap', `compiled/${file.replace(/\.ts$/, '.js')}`],
       integration, { ...runtimeEnvironment, AGUI_COLLECTOR_PATH: collected });
     assert.match(output, /^# tests [1-9]\d*$/m, `${file} executes nonzero installed tests.`);
     process.stdout.write(output);
