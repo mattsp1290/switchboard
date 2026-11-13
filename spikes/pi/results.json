@@ -1,0 +1,18 @@
+{
+  "node": "v24.22.3",
+  "npm": "11.19.1",
+  "typescript": "7.0.2",
+  "nodeTypes": "24.19.2",
+  "lockSha256": "2178743b29aa42d975fb7c9341fdbd6818746fb6efc73a1c1773baeb2026068e",
+  "fixturesExit": 0,
+  "declarationsExit": 1,
+  "modelsDeclarationsExit": 1,
+  "isolationExit": 0,
+  "isolation": "Node filesystem permissions and macOS sandbox-exec",
+  "fixtureTestsPassed": 6,
+  "rootDeclarationDiagnostics": 48,
+  "modelsDeclarationDiagnostics": 5,
+  "nativeTurns": 0,
+  "providerRequests": 0,
+  "liveQualified": false
+}
