@@ -1,0 +1,19 @@
+{
+  "native": "0.169.0",
+  "node": "24.22.3",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "artifacts": {
+    "arm64": {
+      "platform": "linux/arm64",
+      "target": "aarch64-unknown-linux-musl",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-arm64.tgz",
+      "sha512": "NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg=="
+    },
+    "x64": {
+      "platform": "linux/amd64",
+      "target": "x86_64-unknown-linux-musl",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-x64.tgz",
+      "sha512": "o05NyAOCDygSPRo1yinzxvkRSdmsZyBD9E7mbpmjRanSfM8lypqWtQgEo4XfNkwhuCR2aFu8mlGOsQGFXVbVww=="
+    }
+  }
+}
