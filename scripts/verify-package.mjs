@@ -170,7 +170,11 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ["dispatch-unnarrowed-result", "import { unknownObservation } from './dispatch.test.js'; unknownObservation.result;", 2339],
     ["dispatch-unknown-result", "import { unknownObservation } from './dispatch.test.js'; if (unknownObservation.kind === 'conclusive') unknownObservation.result.state;", 18046],
     ["dispatch-new-session-native-token", "import type { DispatchTarget } from '@mattsp1290/switchboard'; import { sessionBinding } from './sessions.test.js'; const invalid: DispatchTarget = { kind: 'new-session', binding: sessionBinding, opaque: 'invented' };", 2353],
-    ["dispatch-reconcile-not-yet", "import { dispatchHandle } from './dispatch.test.js'; dispatchHandle.reconcile(new AbortController().signal);", 2339],
+    ["recovery-no-run", "import { recovery } from './dispatch-recovery.test.js'; recovery.run();", 2339],
+    ["recovery-no-dispatch", "import type { RecoveryDispatchOptions } from '@mattsp1290/switchboard'; import { dispatchIdentity } from './dispatch.test.js'; const invalid: RecoveryDispatchOptions<string> = { mode: 'recovery', identity: dispatchIdentity, dispatchNative() { return { kind: 'outcome-unknown' }; } };", 2353],
+    ["recovery-unnarrowed-result", "import type { ReconcileResult } from '@mattsp1290/switchboard'; declare const result: ReconcileResult<string>; result.value;", 2339],
+    ["recovery-invalid-previous", "import type { RecoveryDispatchOptions } from '@mattsp1290/switchboard'; import { dispatchIdentity } from './dispatch.test.js'; const invalid: RecoveryDispatchOptions<string> = { mode: 'recovery', identity: dispatchIdentity, previous: { kind: 'not-dispatched', reason: 'aborted' } };", 2322],
+    ["recovery-readonly-receipt", "import { dispatchEvidence } from './dispatch.test.js'; if (dispatchEvidence.nativeOperation !== null) dispatchEvidence.nativeOperation.id = 'changed';", 2540],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [
