@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,18 +56,24 @@ try {
   const installedManifest = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'));
   assert.deepEqual(installedManifest.exports, {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
+    './agui': { types: './dist/agui/index.d.ts', import: './dist/agui/index.js' },
   });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true } });
+  assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
   assert.equal(installedManifest.private, true);
   assert.equal(Object.keys(installedManifest.dependencies ?? {}).length, 0);
 
   writeFileSync(join(consumer, 'runtime.mjs'), `
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import * as switchboard from '${manifest.name}';
+assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
-await assert.rejects(import('${manifest.name}/dist/index.js'), {
-  code: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
-});
+for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]))}) {
+  await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+}
 `);
   run(process.execPath, ['runtime.mjs'], consumer);
 
@@ -103,7 +109,10 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
   writeFileSync(join(consumer, 'tsconfig.json'), JSON.stringify(consumerConfig));
   const compilerManifest = JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8'));
   const compiler = join(root, 'node_modules/typescript', compilerManifest.bin.tsc);
-  run(process.execPath, [compiler, '-p', join(consumer, 'tsconfig.json')], consumer);
+  const coreTypes = run(process.execPath, [compiler, '-p', 'tsconfig.json', '--listFilesOnly'], consumer);
+  assert(!coreTypes.includes('/agui/'), 'Root declarations do not reference the integration.');
+  assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
+  run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
 
   const invalidCases = [
     ['unnarrowed-capability', 'catalog.api;', 2339],
@@ -202,6 +211,34 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
   const expected = invalidCases.map(([name, , code]) => ({ file: `${name}.mts`, line: 4, code }));
   const byFile = (left, right) => left.file.localeCompare(right.file);
   assert.deepEqual(diagnostics.sort(byFile), expected.sort(byFile), rejected.stdout);
+  const integration = join(temporary, 'integration');
+  mkdirSync(integration);
+  writeFileSync(join(integration, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@ag-ui/core@${manifest.peerDependencies['@ag-ui/core']}`,
+    `@types/node@${manifest.devDependencies['@types/node']}`,
+  ], integration));
+  assert(!existsSync(join(integration, 'node_modules/zod')), 'Integration consumer has no optional Zod installed.');
+  const aguiFixtures = readdirSync(join(root, 'tests/agui')).filter((file) => file.endsWith('.ts')).sort();
+  const aguiTests = aguiFixtures.filter((file) => file.endsWith('.test.ts'));
+  assert(aguiTests.length > 0, 'Installed AG-UI tests exist.');
+  for (const file of aguiFixtures) copyFileSync(join(root, 'tests/agui', file), join(integration, file));
+  copyFileSync(join(root, 'docs/protocol/ag-ui-pin.json'), join(integration, 'ag-ui-pin.json'));
+  writeFileSync(join(integration, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { ...consumerConfig.compilerOptions, noEmit: false, noEmitOnError: true, outDir: 'compiled' },
+    files: aguiFixtures,
+  }));
+  run(process.execPath, [compiler, '-p', 'tsconfig.json'], integration);
+  const collected = join(temporary, 'emitted-events.jsonl');
+  writeFileSync(collected, '');
+  for (const file of aguiTests) {
+    const output = run(process.execPath, ['--test', '--test-reporter=tap', `compiled/${file.replace(/\.ts$/, '.js')}`],
+      integration, { ...runtimeEnvironment, AGUI_COLLECTOR_PATH: collected });
+    assert.match(output, /^# tests [1-9]\d*$/m, `${file} executes nonzero installed tests.`);
+    process.stdout.write(output);
+  }
+  process.stdout.write(run(process.execPath, [join(root, 'scripts/verify-agui-matrix.mjs'), '--emitted-events', collected]));
   console.log(`Verified ${manifest.name}@${manifest.version} with ${process.version} on ${process.platform}.`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agui": {
+      "types": "./dist/agui/index.d.ts",
+      "import": "./dist/agui/index.js"
     }
   },
   "files": [
@@ -31,8 +35,17 @@
     "verify:agui": "node scripts/verify-agui-matrix.mjs"
   },
   "devDependencies": {
+    "@ag-ui/core": "1.0.4",
     "@types/node": "24.19.2",
     "oxlint": "1.93.0",
     "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@ag-ui/core": "1.0.4"
+  },
+  "peerDependenciesMeta": {
+    "@ag-ui/core": {
+      "optional": true
+    }
   }
 }
