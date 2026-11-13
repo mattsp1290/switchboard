@@ -1,8 +1,8 @@
 # Switchboard boundaries
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
-The foundation currently supplies an empty root module and a package verification command.
-It does not yet supply contracts, adapters, session discovery, or AG-UI mappings.
+The foundation supplies public adapter contract types and a package verification command.
+Native adapters, session discovery, and AG-UI mappings remain future work.
 The package is private and has no runtime dependencies.
 
 ## Host ownership
@@ -24,11 +24,11 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 ## Source ownership and exports
 
-`src/index.ts` is the only implemented entry point and contains `export {};`.
+`src/index.ts` is the only public entry point and re-exports core contract types.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
-The following directories describe future ownership. They do not imply implemented modules or exported entry points.
+The following directories describe source ownership. Only `src/core/` currently contains contract definitions.
 
 | Source area | Responsibility | Allowed direction |
 | --- | --- | --- |
@@ -38,10 +38,50 @@ The following directories describe future ownership. They do not imply implement
 | `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
 | `src/ag-ui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
 
-The root is intended to re-export core contracts once implemented.
 Native adapters and AG-UI need explicit entry points when implemented so importing core does not load native integrations.
 Third-party adapters must use public contracts without importing internal source files.
 Native dependency and package-splitting decisions belong to the adapter tasks.
+
+## Adapter contracts
+
+`AdapterIdentity<Engine>` identifies an engine, adapter package, adapter version, and contract generation.
+Engine names form an open string domain. A concrete engine literal connects a registration to its returned instance.
+`AdapterRegistration<Options, Instance>` preserves the adapter's configuration and concrete instance type through `open`.
+Registration and instance identity metadata must agree. Types do not prove object-reference equality or runtime identity.
+`contractVersion: 1` describes this contract generation. Identity metadata does not validate persisted native data.
+
+`AdapterInstance` requires identity and `close`. Concrete instances define their own named capability groups.
+No native capability is mandatory. Later domain contracts own session, stream, authentication, and dispatch APIs.
+`Capability<Api>` keeps a typed API in its `supported` branch.
+`unsupported` means the adapter or native version does not implement the feature.
+`unavailable` means this configured instance cannot offer the feature, such as when the host disables it.
+Both branches carry a reason and omit the API. Callers narrow `kind` before accessing operations.
+TypeScript rejects excess API fields on fresh unsupported literals. Structural typing does not enforce exact objects after aliasing.
+Capabilities describe configured availability. Operation results still handle changed native conditions and busy resources.
+Capability support does not grant authorization or prove native qualification.
+
+`Outcome<T, E = AdapterError>` distinguishes `ok` with a value from `error` with a typed error.
+`AdapterError` describes unsupported requests, busy or closed instances, invalid input, and native failures.
+An unsupported error names its feature. Public messages must exclude credentials and raw native responses.
+Domain contracts can supply their own error type. Ordinary errors confer no permission to retry native effects.
+Side-effecting domain contracts must model uncertain outcomes with operation identity and reconciliation evidence.
+
+`NativeExtension<T = unknown>` labels adapter-specific data with a namespace and schema version.
+The adapter owns those labels and the payload type. Consumers without that type receive `unknown`.
+An extension promises neither serialization nor compatibility validation. Core does not log its payload.
+
+The adapter owns clients, listeners, transports, and processes that it creates.
+Adapters that accept borrowed native clients must state ownership in their options.
+A failed `open` releases resources acquired before returning its error.
+`close` is idempotent cleanup. Repeated and concurrent callers share one cleanup attempt and its settled outcome.
+The adapter rejects new operations once closing starts and releases its owned resources.
+A cleanup failure returns a redacted error and does not establish that every resource terminated.
+Closing does not confirm native cancellation, roll back tool effects, delete session history, or establish safe retry.
+The later domain contracts own active-work cancellation and reconciliation.
+
+The installed consumer checks prove public typing and package boundaries.
+They do not verify cleanup idempotence, resource release, native identity validation, or native integration behavior.
+Concrete adapters require runtime tests for those promises.
 
 ## Native prerequisites and checked evidence
 
