@@ -68,3 +68,11 @@ export type {
   ToolOutcome,
   ToolTarget,
 } from './core/interaction.js';
+export { discoverFiles, fileDiscoveryLimits } from './core/discovery.js';
+export type {
+  FileDecode,
+  FileDiscoveryBounds,
+  FileDiscoveryError,
+  FileDiscoveryPage,
+  FileDiscoveryScope,
+} from './core/discovery.js';

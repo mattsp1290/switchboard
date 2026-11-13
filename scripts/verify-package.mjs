@@ -149,6 +149,13 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ["interaction-cancelled-result", "import type { DelegatedOutcome } from '@mattsp1290/switchboard'; declare const child: DelegatedOutcome; if (child.kind === 'cancelled') child.result;", 2339],
     ["interaction-readonly", "import { approval } from './interaction.test.js'; approval.choices[0]!.label = 'changed';", 2540],
     ["interaction-unknown-data", "import { native } from './interaction.test.js'; native.data.opaque;", 18046],
+
+    ['discovery-namespace', `import type { FileDiscoveryScope } from '${manifest.name}'; import { sessionBinding } from './sessions.test.js'; const invalid: FileDiscoveryScope = { binding: sessionBinding, root: '/fixture' };`, 2741],
+    ['discovery-readonly', "import { fileBounds } from './discovery.test.js'; fileBounds.maxFileBytes = 2;", 2540],
+    ['discovery-values', "import { filePage } from './discovery.test.js'; filePage.values.push('x');", 2339],
+    ['discovery-terminal', "import { filePage } from './discovery.test.js'; filePage.reason;", 2339],
+    ['discovery-skip', `import type { FileDecode } from '${manifest.name}'; const invalid: FileDecode<string> = { kind: 'skip', value: 'x' };`, 2353],
+    ['discovery-async', `import { discoverFiles } from '${manifest.name}'; import { fileOptions } from './discovery.test.js'; discoverFiles({ ...fileOptions, decode: async () => ({ kind: 'skip' }) });`, 2322],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [
