@@ -7,6 +7,17 @@ export type {
   NativeExtension,
   Outcome,
 } from './core/contracts.js';
+export { createEventStream } from './core/events.js';
+export type {
+  EventListener,
+  EventObserver,
+  EventStream,
+  EventStreamBounds,
+  PublishResult,
+  SubscribeError,
+  Subscription,
+  SubscriptionEnd,
+} from './core/events.js';
 export {
   parseCheckpointReference,
   parseSessionReference,

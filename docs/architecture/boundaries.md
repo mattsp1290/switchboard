@@ -1,7 +1,7 @@
 # Switchboard boundaries
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
-The foundation supplies public adapter contract types and a package verification command.
+The foundation supplies public adapter contracts, session envelope validation, bounded event streams, and package verification.
 Native adapters, filesystem session discovery, and AG-UI mappings remain future work.
 The package is private and has no runtime dependencies.
 
@@ -24,7 +24,7 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 ## Source ownership and exports
 
-`src/index.ts` is the only public entry point and re-exports core contract types.
+`src/index.ts` is the only public entry point and re-exports core contracts and helpers.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
@@ -32,7 +32,7 @@ The following directories describe source ownership. Only `src/core/` currently 
 
 | Source area | Responsibility | Allowed direction |
 | --- | --- | --- |
-| `src/core/` | Public runtime contracts and native session references | No native SDK or AG-UI dependency |
+| `src/core/` | Public runtime contracts, native session references, and bounded event delivery | No native SDK or AG-UI dependency |
 | `src/adapters/claude/` | Claude native integration | May import core and Claude dependencies |
 | `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
 | `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
@@ -109,6 +109,31 @@ Pages distinguish complete, truncated by a named budget, and cancelled results. 
 Inspection reports available, absent, busy, or incompatible. Inspection cancellation or exhausted budgets return `cancelled` or `bounds-exceeded` errors.
 Neither discovery nor inspection acquires a lease. A later resume operation rechecks native availability before use.
 The installed tests verify envelope validation, budget validation, and typed outcomes. Filesystem traversal and native resume remain adapter qualification obligations.
+
+## Event delivery
+
+`createEventStream<T>` returns an `EventStream<T>` with `publish`, `subscribe`, and `close`.
+`EventObserver<T>` exposes only `subscribe`. This type is a compile-time API restriction, not an authorization boundary.
+Adapters define event payloads and preserve native features and reported usage. Core supplies no universal event vocabulary or manufactured reasoning.
+Payloads are borrowed references. Core neither clones nor freezes them, and the host owns payload immutability and byte limits.
+
+`EventStreamBounds` requires positive safe integers for `maxObservers`, `capacity`, and their product. Invalid bounds throw `RangeError`.
+Each observer receives events in FIFO order through an asynchronous drain, with at most one active callback.
+`publish` never awaits a listener. Its result reports how many observers accepted the event and how many disconnected on overflow.
+`capacity` counts queued events plus the active callback. Overflow disconnects that observer, clears its queue, and ends its subscription with `overflow`.
+Other observers continue independently. The helper stores no replay history. The host owns durable replay.
+
+`maxObservers` counts observer leases, including retired observers whose scheduled drain or active callback has not settled.
+Disposal cannot repeatedly free admission while callbacks remain hung. Admission recovers when those callbacks settle.
+`subscribe` returns a `capacity` error when all leases are occupied, or a `closed` error after stream closure.
+An already-aborted signal returns an immediately ended `aborted` subscription without consuming a lease, unless the stream is closed.
+
+Disposal, input abort, overflow, listener failure, and close settle `Subscription.ended` once with the corresponding terminal reason.
+They detach the input abort handler, clear queued references, abort the callback's delivery signal, and prevent later delivery.
+`ended` means detached. An arbitrary consumer callback may still run, and a late rejection is consumed.
+Listener throws and rejections end only that subscription with `listener-error`. Repeated disposal and close have no further effect.
+`publish` returns `closed` after closure. Delivery cancellation never cancels native work, and the helper accepts no native cancellation callback.
+Installed-consumer tests verify these delivery guarantees. Native event mapping and native-operation cancellation require separate adapter qualification.
 
 ## Native prerequisites and checked evidence
 

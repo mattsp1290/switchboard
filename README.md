@@ -2,7 +2,7 @@
 
 Switchboard is a Node-hosted TypeScript library for native agent interfaces and adapters.
 This foundation contains one private ESM package, `@mattsp1290/switchboard@0.0.0`.
-Its root module exports adapter contracts, native session envelopes, and validation helpers.
+Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
 Claude, Codex, Pi, and AG-UI integrations are future work.
 
 Use Node 24.22.3 and npm 11.19.1. The package supports Node `>=24.22.3 <25`.
@@ -45,3 +45,11 @@ The installed consumer verifies `@types/node` 24.19.2 with `lib: ["ES2022"]` and
 Both return copied, frozen envelopes. These checks do not authenticate native tokens or authorize access.
 `validateSessionDiscoveryBounds` validates result, examined-entry, and time budgets.
 Native discovery, inspection, and resume require later adapter implementations and qualification.
+
+`createEventStream<T>({ maxObservers, capacity })` provides asynchronous FIFO delivery with one active callback per observer.
+`capacity` counts queued events and the active callback. `maxObservers` includes retired subscriptions until their callbacks settle.
+Publication returns immediately and reports overflowing observers as disconnected. Other observers continue independently.
+`Subscription.ended` reports detachment. Consumer code may still run after disposal, abort, or close.
+Payloads are borrowed references. The host owns payload immutability, payload size limits, and durable replay.
+`EventObserver<T>` exposes subscription through a compile-time API restriction. It is not an authorization boundary.
+Disposal and close never cancel native work. See [event delivery boundaries](docs/architecture/boundaries.md#event-delivery) for terminal outcomes and admission rules.

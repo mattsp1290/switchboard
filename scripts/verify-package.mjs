@@ -64,6 +64,7 @@ try {
 import assert from 'node:assert/strict';
 import * as switchboard from '${manifest.name}';
 assert.equal(typeof switchboard, 'object');
+assert.equal(typeof switchboard.createEventStream, 'function');
 await assert.rejects(import('${manifest.name}/dist/index.js'), {
   code: 'ERR_PACKAGE_PATH_NOT_EXPORTED',
 });
@@ -125,6 +126,10 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ['session-kind', `import type { SessionReference } from '${manifest.name}'; import { sessionBinding } from './sessions.test.js'; const invalid: SessionReference = { kind: 'checkpoint', formatVersion: 1, binding: sessionBinding, opaque: 'x' };`, 2322],
     ['session-checkpoint', `import type { CheckpointReference } from '${manifest.name}'; import { sessionReference } from './sessions.test.js'; const invalid: CheckpointReference = sessionReference;`, 2741],
     ['session-readonly', "import { sessionReference } from './sessions.test.js'; sessionReference.binding.account = 'other';", 2540],
+    ['observer-publication', "import { observer } from './events.test.js'; observer.publish(1);", 2339],
+    ['event-payload', "import { events } from './events.test.js'; events.publish({ vendorKind: 'usage', usage: { tokens: 'three' } });", 2322],
+    ['event-listener', "import { observer } from './events.test.js'; observer.subscribe((event: number) => {});", 2345],
+    ['event-native-cancel', `import { createEventStream } from '${manifest.name}'; createEventStream({ maxObservers: 1, capacity: 1, cancelNative() {} });`, 2353],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [
