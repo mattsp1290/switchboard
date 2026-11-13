@@ -2,7 +2,7 @@
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
 The foundation supplies public adapter contracts, session envelope validation, bounded event streams, and package verification.
-Native adapters, filesystem session discovery, and AG-UI mappings remain future work.
+Native adapters, native session discovery, and AG-UI mappings remain future work.
 The package is private and has no runtime dependencies.
 
 ## Host ownership
@@ -99,7 +99,7 @@ Core does not interpret opaque token syntax, prove authenticity, inspect private
 Adapters validate native references before use. No parser imports, rewrites, or migrates history.
 
 `SessionDiscovery<Scope>` and `SessionInspection<Scope>` require an explicit host-authorized adapter-specific scope, binding, bounds, and `AbortSignal`.
-Adapters define scope handles and authorized roots. Core never interprets a root or traverses a filesystem.
+Adapters define scope handles and authorize discovery sources. The optional filesystem helper below requires an explicit root.
 `validateSessionDiscoveryBounds` requires positive safe integers, at most 1000 returned results, 100000 examined entries, and 60000 milliseconds.
 The result limit cannot exceed the examined-entry limit. Validation returns a frozen budget copy.
 Adapters enforce all budgets and stop cooperatively on abort. They count each examined candidate, including filtered, corrupt, or inaccessible entries.
@@ -108,7 +108,7 @@ Discovery skips corrupt and inaccessible entries and reports both counts. A scop
 Pages distinguish complete, truncated by a named budget, and cancelled results. A complete empty page differs from an interrupted empty page.
 Inspection reports available, absent, busy, or incompatible. Inspection cancellation or exhausted budgets return `cancelled` or `bounds-exceeded` errors.
 Neither discovery nor inspection acquires a lease. A later resume operation rechecks native availability before use.
-The installed tests verify envelope validation, budget validation, and typed outcomes. Filesystem traversal and native resume remain adapter qualification obligations.
+The installed session tests verify envelope validation, budget validation, and typed outcomes. Native discovery and resume remain adapter qualification obligations.
 
 ## Event delivery
 
@@ -172,6 +172,30 @@ Opaque `data` remains unknown and retains its identity; this promises neither de
 Input-access exceptions return a safe `invalid-input` error without the raw exception.
 Successful parsing proves correspondence to the supplied expected record. Native pending state, consumption, dispatch, persistence, and reconciliation remain later work.
 Installed fixtures verify correspondence, fact combinations, mutation isolation, malformed inputs, and public type discrimination.
+
+## Scoped filesystem discovery
+
+`discoverFiles<T>` enumerates one explicit host-authorized root per call and validates its exact account/scope binding before I/O.
+`namespace: 'host-stable'` asserts that the host controls stable path resolution throughout the call, including ancestors and mount topology.
+Portable Node path APIs cannot prove confinement against hostile concurrent ancestor swaps. Rechecks do not establish that security property.
+The root is canonicalized once, allowing aliases such as macOS `/tmp`. Descendant symlinks and nonregular leaves are rejected.
+Files use no-follow, nonblocking opens, bigint device/inode checks, and reads from the same verified handle.
+Relative names describe entries; they are not reopenable path leases. Hardlink provenance is not established.
+
+`FileDiscoveryBounds` adds depth, per-file bytes, and total bytes to the session discovery budgets.
+`fileDiscoveryLimits` exposes ceilings of depth 64, 16 MiB per file, and 64 MiB total bytes, alongside session limits.
+Enumeration is iterative depth-first with bounded directory buffering. Every returned entry counts before filtering.
+Root depth is zero. Skipped descent marks depth truncation. Exact budget exhaustion reports truncation without unbudgeted EOF probes.
+Actual read bytes include an oversize sentinel. Incomplete or oversized contents are not decoded.
+Pages distinguish completion, cancellation, and named truncation, with examined/read counts and corrupt, inaccessible, absent, rejected, and oversized skips.
+Errors expose fixed codes without OS text, absolute candidate paths, or contents. Configuration access is captured once before validation.
+
+The adapter supplies trusted synchronous bounded selection and decoding callbacks. Their allocation and returned values are outside the byte-read budget.
+Adapters validate decoded native session references against the authorized binding before publishing them.
+Cancellation and deadlines are cooperative; outstanding I/O settles before handle cleanup. Content can change during reads.
+The helper does not write, lock, migrate, or dispatch native history. Reads can update access metadata.
+Real temporary filesystem fixtures verify traversal, symlinks, permissions, budgets, replacement, cancellation, and cleanup.
+These tests do not qualify native formats or prove confinement when the host's namespace-stability precondition is false.
 
 ## Native prerequisites and checked evidence
 
