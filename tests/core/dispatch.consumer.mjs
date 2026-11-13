@@ -187,7 +187,7 @@ test('construction failures expose only a fixed TypeError and execute no callbac
   let calls = 0;
   const base = options({ recordIntent() { calls++; }, dispatchNative() { calls++; } });
   for (const value of [null, revoked(), { get mode() { throw revoked(); } },
-    new Proxy({}, { get() { throw new Error(canary); } }), { ...base, mode: 'recovery' },
+    new Proxy({}, { get() { throw new Error(canary); } }), { ...base, mode: 'invalid-mode' },
     { ...base, signal: {} }, { ...base, signal: revoked() }, { ...base, recordIntent: null },
     { ...base, dispatchNative: 42 }, { ...base, events: null }, { ...base, events: { publish: 1 } },
     { ...base, identity: { ...identity(), hostOperationId: '' } },

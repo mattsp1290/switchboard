@@ -221,7 +221,7 @@ The original result and promise remain stable for the lifetime of the handle.
 
 An abort before native entry or an intent failure returns `not-dispatched`. The signal is checked after lifecycle publication immediately before entry.
 After entry, throws, rejections, malformed observations, and mismatched evidence become `outcome-unknown`, including cancellation errors.
-Cancellation cannot establish rollback or nonacceptance. No retry, timeout, polling, or recovery executor is provided in this slice.
+Cancellation cannot establish rollback or nonacceptance. No retry, timeout, or polling is provided.
 Callbacks are cooperative; awaiting this handle's own `run()` inside a callback creates a dependency cycle.
 
 Native observations distinguish unknown, accepted, and conclusive results. Conclusive results retain the adapter's exact result, including rejection or pending interaction.
@@ -234,7 +234,18 @@ It emits no fabricated terminal observation. The supported Node getter does not 
 
 Borrowed lifecycle publication contains only a phase. Publisher failures, closed streams, overflow, and observer failures cannot change native execution or its result.
 The host remains responsible for durable outcome storage and exclusion among duplicate identities.
-Reconciliation and recovery are separately tracked by `switchboard-zc9l`; this handle currently exposes only `run()`.
+Both fresh and recovery handles expose explicit `reconcile(signal)`. Recovery mode has no `run()`, native dispatch callback, or intent callback.
+It can restore a prior native observation or start with identity-only uncertainty. The host supplies authorized durable context and any trusted prior receipt.
+Fresh reconciliation returns `not-ready` until the run snapshot exists and never starts execution. If run rejects from signal invalidation, no snapshot exists and reconciliation remains not-ready.
+
+One outstanding lookup promise coalesces concurrent and reentrant calls. The first signal owns that lookup; later signals are ignored.
+Lookups require the exact operation identity and an `authoritative-native-lookup` source for positive observations.
+Unknown, failed, malformed, aborted, or conflicting lookups preserve prior knowledge. An absent record cannot establish nonacceptance or safe retry.
+A known native operation reference survives a null lookup reference, and a conflicting nonnull reference is rejected.
+Conclusive observations latch permanently; restored conclusive and fresh not-dispatched observations require no lookup.
+The original fresh run promise and snapshot never change as reconciliation refines the separate current snapshot.
+An invalid lookup signal rejects with a fixed `TypeError`; cancellation cannot invalidate already returned positive native evidence.
+The helper checks correspondence, not native authority. It never dispatches during recovery, retries a command, or persists an outcome.
 
 ## Native prerequisites and checked evidence
 
