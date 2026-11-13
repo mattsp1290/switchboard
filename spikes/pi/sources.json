@@ -1,0 +1,47 @@
+{
+  "observedDate": "2026-11-13",
+  "crewPr": {
+    "url": "https://github.com/mattsp1290/crew/pull/61",
+    "state": "OPEN",
+    "head": "7bedb00bc2a631b16c25d86d1a4ff5dff199714b",
+    "base": "217724ba59e2a3c4a8a235e9c675bb30a0f4b13a"
+  },
+  "piSourceTagCommit": "b4afdddf44e059c67ccf5097e5317d913521b470",
+  "artifacts": [
+    {
+      "name": "@earendil-works/pi-coding-agent",
+      "version": "1.5.2",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/earendil-works/pi.git",
+        "type": "git",
+        "directory": "packages/coding-agent"
+      },
+      "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.5.2.tgz",
+      "integrity": "sha512-mUWI04rqF1Vd/m1q+Ps1XeWsTXEVvRUnsmRa83I3Dzua0Tx5bYS93imeqtIfrXf7PkkaR6ERz+AuQhIJlom5yA=="
+    },
+    {
+      "name": "@ai-sdk/harness-pi",
+      "version": "1.0.186",
+      "license": "Apache-2.0",
+      "repository": {
+        "url": "https://github.com/vercel/ai",
+        "type": "git",
+        "directory": "packages/harness-pi"
+      },
+      "tarball": "https://registry.npmjs.org/@ai-sdk/harness-pi/-/harness-pi-1.0.186.tgz",
+      "integrity": "sha512-2Syx3H4uNjCq8Nmy64ZhNPxXNqVK4zZem63NFVfXDHZhVd/pSf91Gv3go/CEL3PVHV9Rqx3oh9/obpGPCjYPfw=="
+    },
+    {
+      "name": "pi-acp",
+      "version": "0.0.34",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/svkozak/pi-acp.git",
+        "type": "git"
+      },
+      "tarball": "https://registry.npmjs.org/pi-acp/-/pi-acp-0.0.34.tgz",
+      "integrity": "sha512-MrCp37UbpUzkTkzTIMJQf1RYrT+kr4fgGDGFoLmBN26UupuCZp0XxVIY+7XYsMo3yDnzDeZUJ0jPyM3Si6Bkkg=="
+    }
+  ]
+}
