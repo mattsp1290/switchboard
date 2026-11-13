@@ -152,6 +152,27 @@ Safe failure messages exclude raw resolver errors and credentials. A proxy purpo
 Installed fixtures verify scope isolation, credential rotation, cancellation, route preservation, and redacted failures.
 Native boundary wiring and direct/LiteLLM qualification remain adapter obligations.
 
+## Native interactions and continuations
+
+Approval, tool, and delegation targets carry exact native identifiers and a bound `SessionReference`.
+Host correlation IDs do not replace native identifiers. Approvals can exist without a tool call.
+`PendingApproval` advertises bounded native choice IDs with their labels, native policy, and request payloads.
+The host policy selects an advertised choice or withholds locally. There is no default policy or universal permit/deny translation.
+A thrown policy leaves the request pending. Withholding is not a dispatch continuation.
+Finite advertised choices form this capability's boundary. Adapters must preserve parameterized native permissions through an evidence-backed extension when needed.
+
+Tool result, native delivery confirmation, and tool effects are separate facts. Failure or cancellation does not prove that no effect occurred.
+Unknown delivery or effects never authorize retries. Delegated work distinguishes completed, cancelled, and unknown outcomes.
+`parseInteractionContinuation` validates both the supplied expected interaction and the continuation envelope.
+It matches every binding field, session token, target kind, applicable native ID, tool presence, and advertised choice.
+Delegations require the exact child target set regardless of order, without duplicates or missing or extra children.
+Choice and delegation lists must be nonempty and at most 1000 entries, exposed by `interactionLimits`.
+Known envelopes are copied and frozen. Native extension labels require bounded namespaces and positive safe integer schema versions.
+Opaque `data` remains unknown and retains its identity; this promises neither deep immutability, serialization, nor native semantic validation.
+Input-access exceptions return a safe `invalid-input` error without the raw exception.
+Successful parsing proves correspondence to the supplied expected record. Native pending state, consumption, dispatch, persistence, and reconciliation remain later work.
+Installed fixtures verify correspondence, fact combinations, mutation isolation, malformed inputs, and public type discrimination.
+
 ## Native prerequisites and checked evidence
 
 Node 24.22.3 with npm 11.19.1 is the selected foundation toolchain.
