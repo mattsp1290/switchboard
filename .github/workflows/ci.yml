@@ -36,3 +36,27 @@ jobs:
         run: >-
           npx --yes --package=node@24.22.3 --package=npm@11.19.1
           -c 'npm ci && npm run lint && npm run check && npm test && npm run verify:agui'
+
+  codex-native:
+    name: Linux native Codex fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.22.3
+          cache: npm
+      - name: Install compiler dependencies
+        run: npx --yes --package=node@24.22.3 --package=npm@11.19.1 -c 'npm ci --ignore-scripts'
+      - name: Download pinned native artifact
+        run: |
+          mkdir -p spikes/codex-native/.work
+          curl --fail --location --max-time 120 --output spikes/codex-native/.work/codex-linux-x64.tgz https://registry.npmjs.org/@openai/codex/-/codex-0.169.0-linux-x64.tgz
+          docker pull --platform linux/amd64 node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+      - name: Verify isolated native protocol
+        run: node spikes/codex-native/qualify.mjs spikes/codex-native/.work/codex-linux-x64.tgz x64
