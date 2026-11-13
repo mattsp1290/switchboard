@@ -1,0 +1,33 @@
+{
+  "name": "@mattsp1290/switchboard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript interfaces and adapters for native agent runtimes",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs/architecture/boundaries.md"
+  ],
+  "engines": {
+    "node": ">=24.22.3 <25"
+  },
+  "packageManager": "npm@11.19.1",
+  "scripts": {
+    "clean": "node --input-type=module -e 'import { rmSync } from \"node:fs\"; rmSync(\"dist\", { recursive: true, force: true });'",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "verify:package": "node scripts/verify-package.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
