@@ -29,6 +29,10 @@ Run `npm run build` to compile separately. The build removes `dist` before compi
 
 GitHub Actions runs the same checks on Ubuntu 24.04 with Node 24.22.3 and npm 11.19.1.
 The workflow uses `npm ci`, immutable action commits, and read-only repository access.
+It also runs `npm run verify:agui` against checksum-pinned canonical schema fixtures and published Python and TypeScript SDKs.
+That repository development check requires uv 0.11.3, Python 3.13.12, and initial registry/GitHub access.
+Its SDK environments are temporary. It adds no package dependencies or native qualification claims.
+The protocol matrix and validation differences are recorded under `docs/protocol/`.
 
 The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
 Only the root entry exists. Native tools and credentials are unnecessary for this foundation check.
