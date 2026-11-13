@@ -139,6 +139,16 @@ await assert.rejects(import('${manifest.name}/dist/index.js'), {
     ["auth-readonly-context", "import type { AuthConfiguration, AuthResolutionContext, ResolvedAuthentication } from '@mattsp1290/switchboard'; import { directConfig, proxyConfig, directResolver, proxyResolver, scoped, signal } from './auth.test.js'; declare const context: AuthResolutionContext; context.scope.account = 'other';", 2540],
     ["auth-request-id", "import type { AuthConfiguration, AuthResolutionContext, ResolvedAuthentication } from '@mattsp1290/switchboard'; import { directConfig, proxyConfig, directResolver, proxyResolver, scoped, signal } from './auth.test.js'; scoped.resolve({ boundary: 'request', invocationId: 'run' }, signal);", 2345],
     ["auth-unnarrowed-material", "import type { AuthConfiguration, AuthResolutionContext, ResolvedAuthentication } from '@mattsp1290/switchboard'; import { directConfig, proxyConfig, directResolver, proxyResolver, scoped, signal } from './auth.test.js'; declare const resolved: ResolvedAuthentication<unknown>; resolved.material.token;", 18046],
+
+    ["interaction-kind", "import type { InteractionContinuation } from '@mattsp1290/switchboard'; import { toolOutcome } from './interaction.test.js'; const invalid: InteractionContinuation = { formatVersion: 1, kind: 'approval', outcome: toolOutcome };", 2353],
+    ["interaction-tool-target", "import type { ToolOutcome } from '@mattsp1290/switchboard'; import { toolOutcome, approvalTarget } from './interaction.test.js'; const invalid: ToolOutcome = { ...toolOutcome, target: approvalTarget };", 2741],
+    ["interaction-delegation-target", "import type { DelegatedOutcome } from '@mattsp1290/switchboard'; import { toolTarget } from './interaction.test.js'; const invalid: DelegatedOutcome = { kind: 'cancelled', target: toolTarget, delivery: { kind: 'unknown' } };", 2741],
+    ["interaction-withhold", "import type { InteractionContinuation } from '@mattsp1290/switchboard'; const invalid: InteractionContinuation = { formatVersion: 1, kind: 'withhold' };", 2322],
+    ["interaction-unknown-effect", "import type { ToolEffect } from '@mattsp1290/switchboard'; declare const effect: ToolEffect; effect.effect;", 2339],
+    ["interaction-unknown-delivery", "import type { NativeDelivery } from '@mattsp1290/switchboard'; declare const delivery: NativeDelivery; delivery.evidence;", 2339],
+    ["interaction-cancelled-result", "import type { DelegatedOutcome } from '@mattsp1290/switchboard'; declare const child: DelegatedOutcome; if (child.kind === 'cancelled') child.result;", 2339],
+    ["interaction-readonly", "import { approval } from './interaction.test.js'; approval.choices[0]!.label = 'changed';", 2540],
+    ["interaction-unknown-data", "import { native } from './interaction.test.js'; native.data.opaque;", 18046],
     ['private-import', `import '${manifest.name}/dist/core/contracts.js';`, 2882],
   ];
   const prelude = [

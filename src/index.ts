@@ -51,3 +51,20 @@ export type {
   ResolvedAuthentication,
   ScopedAuth,
 } from './core/auth.js';
+export { interactionLimits, parseInteractionContinuation } from './core/interaction.js';
+export type {
+  ApprovalTarget,
+  DelegatedOutcome,
+  DelegationTarget,
+  HostApprovalIntent,
+  HostApprovalPolicy,
+  InteractionContinuation,
+  InteractionError,
+  InteractionTarget,
+  NativeDelivery,
+  PendingApproval,
+  PendingInteraction,
+  ToolEffect,
+  ToolOutcome,
+  ToolTarget,
+} from './core/interaction.js';
