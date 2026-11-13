@@ -33,7 +33,7 @@
   },
   "classification": {
     "protocol": "represented-by-canonical-schema",
-    "switchboardMapping": "planned",
+    "switchboardMapping": "lifecycle",
     "nativeAdapters": {
       "claude-direct": "unqualified",
       "claude-litellm": "unqualified",

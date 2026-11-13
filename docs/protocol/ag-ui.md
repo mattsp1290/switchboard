@@ -1,12 +1,32 @@
 # AG-UI protocol qualification
 
 Switchboard selects protocol `1.0`, TypeScript `@ag-ui/core@1.0.4`, and Python `ag-ui-protocol==1.0.0` at the explicit `@mattsp1290/switchboard/agui` entry.
-The frozen `aguiProtocol` descriptor exposes these pins and the planned mapping status.
-This qualifies the protocol inventory and SDK comparison. Native mappings and consumer replay behavior remain unimplemented and unqualified.
+The frozen `aguiProtocol` descriptor exposes these pins and the implemented lifecycle stage.
+`createAguiProjection` implements the per-run fact projection design through synchronous `accept(fact)` and idempotent `close()`.
+It maps observed run start, success, clean cancellation, and fixed public native or transport failures, including failures before start and after finish.
+Host thread, run, and parent IDs are preserved verbatim. `sourceKey` is an authorized public namespace supplied by the host, never a session credential.
+Scoped native identity encoding will land with entity facts, where emitted entity IDs can exercise it.
+Entities, steps, and advanced mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
+
+Each actor starts idle. A local input, ordering, or budget failure emits nothing and permanently faults that actor.
+Only an observed native failure emits `RUN_ERROR`; nothing follows that event on the same actor.
+The host owns ordered publication and persistence of successful returned batches. `close()` emits no terminal event.
+Success may contain explicitly selected public JSON; cancellation has no result. Caller-selected JSON is not automatically redacted.
+A top-level null result is omitted as required by the canonical wire schema; nested nulls are preserved.
+Unknown fact fields, accessors, custom prototypes, sparse arrays, cycles, and non-JSON values are rejected.
+Captured options and returned event batches are detached and recursively frozen.
+Proxy access failures produce fixed local errors, and reentrant calls abort the outer mapping.
+Arbitrary hostile JavaScript can execute inside proxy traps, so these limits do not promise hard execution-time bounds.
+
+All four bounds are positive safe integers. `maxJsonDepth` is additionally limited to 128, with the root at depth zero.
+`maxJsonNodes` charges each JSON value and object member name. `maxPayloadBytes` caps UTF-8 JSON for captured options,
+each fact, and the complete emitted batch separately, including host IDs, escaping, and event overhead.
+The lifecycle stage emits at most three events per actor, so per-call limits also bound its total output.
+`maxEntities` reserves the entity ledger ceiling for the entity stage; this lifecycle stage allocates no entity ledger.
 
 [The release manifest](ag-ui-pin.json) pins download URLs, artifact hashes, verification tools, source hashes, category classifications, and fixture owners.
 [The matrix](ag-ui-matrix.tsv) classifies every canonical definition and lists its event discriminator, inherited wire fields, required fields, Python defaults, and Python public export status.
-All rows inherit the manifest's protocol representation, planned mapping, native qualification, and fixture ownership classifications.
+Rows retain the manifest's protocol representation, native qualification, and fixture ownership classifications; the lifecycle stage above narrows implemented mappings.
 The comparison covers 31 events and 98 definitions. All six Claude, Codex, and Pi direct and LiteLLM combinations remain `unqualified`.
 
 The immutable sources are the [canonical schema](https://github.com/ag-ui-protocol/ag-ui/blob/0fc064bb2647fc0bce4fc795af33b5551ac03f88/spec/1.0/schema.json), [TypeScript declarations](https://github.com/ag-ui-protocol/ag-ui/blob/0fc064bb2647fc0bce4fc795af33b5551ac03f88/sdks/typescript/packages/core/src/generated/types.ts), and [Python models](https://github.com/ag-ui-protocol/ag-ui/blob/0fc064bb2647fc0bce4fc795af33b5551ac03f88/sdks/python/ag_ui/_generated/models.py).
@@ -95,4 +115,5 @@ The verifier receives the JSONL artifact through `--emitted-events` before consu
 alongside the unchanged 98-definition and 219-fixture corpus, preserving the known SDK-permissiveness expectations.
 The initial `sdk-sentinel` comes from SDK constants/types and `omitOptionalNulls`.
 It checks the collection path and is not Switchboard mapping or native qualification evidence.
-Future mapper tests use the same collector with its default `switchboard-projection` provenance.
+Lifecycle mapper tests use the same collector with its default `switchboard-projection` provenance.
+Their installed output exercises lifecycle ordering, failure isolation, mutation safety, hostile inputs, and resource bounds.
