@@ -38,3 +38,16 @@ export type {
   SessionReference,
   SessionReferenceError,
 } from './core/sessions.js';
+export { createAuthContext } from './core/auth.js';
+export type {
+  AuthBoundary,
+  AuthConfiguration,
+  AuthError,
+  AuthResolutionContext,
+  AuthRoute,
+  AuthScope,
+  CredentialResolver,
+  ProxyCredential,
+  ResolvedAuthentication,
+  ScopedAuth,
+} from './core/auth.js';
