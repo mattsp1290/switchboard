@@ -3,7 +3,8 @@
 Switchboard supplies reusable interfaces and native adapters for a Node host.
 The foundation supplies public adapter contracts, session envelope validation, bounded event streams, and package verification.
 Native adapters, native session discovery, and AG-UI mappings remain future work.
-The package is private and has no runtime dependencies.
+The private core package has no mandatory runtime dependencies.
+The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
 
 ## Host ownership
 
@@ -24,11 +25,13 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 ## Source ownership and exports
 
-`src/index.ts` is the only public entry point and re-exports core contracts and helpers.
+`src/index.ts` exports core contracts and helpers without importing AG-UI.
+`src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
+Its frozen `aguiProtocol` descriptor marks mappings as planned; no mapper is exposed yet.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
-The following directories describe source ownership. Only `src/core/` currently contains contract definitions.
+The following directories describe source ownership. Core contracts live in `src/core/`; protocol metadata lives in `src/agui/`.
 
 | Source area | Responsibility | Allowed direction |
 | --- | --- | --- |
@@ -36,9 +39,10 @@ The following directories describe source ownership. Only `src/core/` currently 
 | `src/adapters/claude/` | Claude native integration | May import core and Claude dependencies |
 | `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
 | `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
-| `src/ag-ui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
+| `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
 
-Native adapters and AG-UI need explicit entry points when implemented so importing core does not load native integrations.
+Native adapters need their own explicit entry points when implemented.
+AG-UI imports only the SDK main entry. Optional Zod and SDK schemas are not integration runtime dependencies.
 Third-party adapters must use public contracts without importing internal source files.
 Native dependency and package-splitting decisions belong to the adapter tasks.
 

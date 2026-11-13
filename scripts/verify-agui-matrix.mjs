@@ -12,6 +12,8 @@ const pin = JSON.parse(await readFile(join(root, 'docs/protocol/ag-ui-pin.json')
 const readRows = async (file) => (await readFile(join(root, file), 'utf8')).split('\n').filter(Boolean).slice(1).map((line) => line.split('\t'));
 const rows = await readRows('docs/protocol/ag-ui-matrix.tsv');
 const fixtures = await readRows('tests/agui/fixtures/upstream.tsv');
+assert.equal(rows.length, 98, 'Pinned definition count');
+assert.equal(fixtures.length, 219, 'Pinned upstream fixture count');
 const cache = process.env.AGUI_ARTIFACT_CACHE ?? join(tmpdir(), 'switchboard-agui-pins');
 const sha = (bytes, algorithm = 'sha256', encoding = 'hex') => createHash(algorithm).update(bytes).digest(encoding);
 const sorted = (values) => [...values].sort();
@@ -89,6 +91,22 @@ for (let offset = 0; offset < fixtures.length; offset += 12) {
   })));
   cases.push(...batch);
 }
+const arguments_ = process.argv.slice(2);
+assert(arguments_.length === 0 || (arguments_.length === 2 && arguments_[0] === '--emitted-events'),
+  'Usage: verify-agui-matrix.mjs [--emitted-events /absolute/path/to/events.jsonl]');
+const emitted = arguments_.length === 0 ? [] : (await readFile(resolve(arguments_[1]), 'utf8'))
+  .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+if (arguments_.length > 0) assert(emitted.length > 0, 'Installed tests collected actual output.');
+assert.equal(new Set(emitted.map((item) => item.path)).size, emitted.length, 'Collected case names are unique.');
+for (const item of emitted) {
+  assert.equal(item.definition, 'Event');
+  assert.equal(item.expected, true);
+  assert.equal(item.ts, true);
+  assert.equal(item.py, true);
+  assert.equal(typeof item.path, 'string');
+  assert(['sdk-sentinel', 'switchboard-projection'].includes(item.origin), 'Output evidence has explicit provenance.');
+}
+cases.push(...emitted);
 const scratch = await mkdtemp(join(tmpdir(), 'switchboard-agui-sdk-'));
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, { cwd: scratch, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, ...options });
@@ -152,6 +170,7 @@ try {
     assert.deepEqual(actual.required, list(required).filter((key) => !list(defaults).includes(key)), `${name} Python defaults`);
   }
   assert.deepEqual(python.accepted, cases.map((item) => item.py ?? true), 'Python fixture acceptance');
+  console.log(`Installed output verified: ${emitted.filter((item) => item.origin === 'switchboard-projection').length} Switchboard events; ${emitted.filter((item) => item.origin === 'sdk-sentinel').length} SDK sentinels (not mapping evidence).`);
   console.log(`AG-UI ${pin.protocol}: ${events.length} events, ${rows.length} definitions, ${fixtures.length} pinned fixtures verified against canonical schema and both published SDKs.`);
 } finally {
   await rm(scratch, { recursive: true, force: true });

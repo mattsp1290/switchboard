@@ -1,6 +1,7 @@
 # AG-UI protocol qualification
 
-Switchboard selects protocol `1.0`, TypeScript `@ag-ui/core@1.0.4`, and Python `ag-ui-protocol==1.0.0` for its planned AG-UI boundary.
+Switchboard selects protocol `1.0`, TypeScript `@ag-ui/core@1.0.4`, and Python `ag-ui-protocol==1.0.0` at the explicit `@mattsp1290/switchboard/agui` entry.
+The frozen `aguiProtocol` descriptor exposes these pins and the planned mapping status.
 This qualifies the protocol inventory and SDK comparison. Native mappings and consumer replay behavior remain unimplemented and unqualified.
 
 [The release manifest](ag-ui-pin.json) pins download URLs, artifact hashes, verification tools, source hashes, category classifications, and fixture owners.
@@ -73,12 +74,25 @@ These differences are pinned observations, not permission for a Switchboard prod
 
 Run `node scripts/verify-agui-matrix.mjs` from the repository. It downloads checksum-verified inputs and installs SDKs only in a temporary directory.
 It compares published TypeScript declarations and both SDKs' field membership, requiredness, enum inventory, and fixture acceptance against the matrix and canonical schema.
-It removes the temporary SDK directory after the check. It adds no runtime or development dependencies to Switchboard.
+It removes the temporary SDK directory after the check. Validator dependencies stay isolated from the installed consumers.
+Switchboard declares the exact TypeScript SDK as an optional peer and development dependency.
 
 Use an Ubuntu 24.04 runner with the foundation's Node `24.22.3` and npm `11.19.1`, `uv 0.11.3`, and Python `3.13.12`.
 The script selects Python `3.13.12` and installs `pydantic==2.11.7`, `zod@4.0.17`, and `ajv@8.17.1` in isolated verification environments.
 Install Python `3.13.12` with uv before the gate. Registry and raw GitHub access are required on the first run.
-Add `"verify:agui": "node scripts/verify-agui-matrix.mjs"` to package scripts and run `npm run verify:agui` in the Linux quality workflow.
+Run `npm run verify:agui` and `npm run verify:package` in the Linux quality workflow.
 Keep this gate separate from claims of live native qualification or macOS support.
 `AGUI_ARTIFACT_CACHE` selects a persistent download cache. `AGUI_SOURCE_ROOT` selects an optional read-only upstream checkout. Both paths still receive digest checks.
 The standalone verifier passed on macOS with Node `24.22.3`, npm `11.19.1`, uv `0.11.3`, and Python `3.13.12`. Ubuntu execution remains a CI obligation.
+
+`npm run verify:package` packs once and installs separate core-only and AG-UI consumers.
+The core consumer proves runtime and strict declaration isolation with the SDK absent.
+The AG-UI consumer installs the exact SDK peer without Zod, compiles every `tests/agui/*.ts` fixture,
+and executes each emitted `.test.js` file with a nonzero test count. Core `.test.ts` fixtures remain compile-only.
+Tests call `collectEvents(name, events)` from `tests/agui/collector.ts` with actual returned batches.
+The collector records Event cases with canonical, TypeScript, and Python acceptance all required.
+The verifier receives the JSONL artifact through `--emitted-events` before consumer cleanup and validates it
+alongside the unchanged 98-definition and 219-fixture corpus, preserving the known SDK-permissiveness expectations.
+The initial `sdk-sentinel` comes from SDK constants/types and `omitOptionalNulls`.
+It checks the collection path and is not Switchboard mapping or native qualification evidence.
+Future mapper tests use the same collector with its default `switchboard-projection` provenance.
