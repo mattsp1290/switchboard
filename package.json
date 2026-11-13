@@ -27,7 +27,8 @@
     "lint": "oxlint --deny-warnings .",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test \"tests/**/*.test.mjs\"",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify:agui": "node scripts/verify-agui-matrix.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

@@ -24,7 +24,15 @@ jobs:
         with:
           node-version: 24.22.3
           cache: npm
+      - name: Set up protocol verification tools
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: 0.11.3
+          python-version: 3.13.12
+          enable-cache: false
+      - name: Install protocol verification Python
+        run: uv python install 3.13.12
       - name: Install and verify
         run: >-
           npx --yes --package=node@24.22.3 --package=npm@11.19.1
-          -c 'npm ci && npm run lint && npm run check && npm test'
+          -c 'npm ci && npm run lint && npm run check && npm test && npm run verify:agui'
