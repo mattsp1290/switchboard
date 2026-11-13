@@ -251,6 +251,49 @@ test('already-aborted subscriptions take no lease, even when admission is full',
   assert.deepEqual(stream.subscribe(() => {}, { signal: input.signal }), { kind: 'error', error: { code: 'closed' } });
 });
 
+for (const phase of ['idle', 'scheduled', 'active']) {
+  test(`input abort survives stopped propagation during ${phase} delivery`, async () => {
+    const stream = createEventStream({ maxObservers: 1, capacity: 2 });
+    const input = new AbortController();
+    input.signal.addEventListener('abort', (event) => event.stopImmediatePropagation(), { once: true });
+    const started = deferred();
+    const callback = deferred();
+    let calls = 0;
+    let signal;
+    let reason;
+    const subscription = subscribe(stream, (_, deliverySignal) => {
+      calls++;
+      signal = deliverySignal;
+      started.resolve();
+      return callback.promise;
+    }, { signal: input.signal });
+    subscription.ended.then((value) => { reason = value; });
+    assert.equal(getEventListeners(input.signal, 'abort').length, 2);
+    if (phase !== 'idle') stream.publish('first');
+    if (phase === 'active') {
+      await started.promise;
+      stream.publish('queued');
+    }
+    input.abort();
+    assert.deepEqual(stream.publish('after abort'), published(0));
+    if (phase === 'idle') subscribe(stream, () => {}).dispose();
+    else assertFull(stream);
+    assert.equal(getEventListeners(input.signal, 'abort').length, 0);
+    await setImmediate();
+    assert.equal(reason, 'aborted');
+    assert.equal(calls, phase === 'active' ? 1 : 0);
+    if (phase === 'active') {
+      assert.equal(signal.aborted, true);
+      assertFull(stream);
+      callback.reject(new Error('late rejection after protected input abort'));
+      await setImmediate();
+    }
+    subscribe(stream, () => {}).dispose();
+    stream.close();
+    assert.equal(await subscription.ended, 'aborted');
+  });
+}
+
 for (const reason of ['disposed', 'aborted', 'closed']) {
   test(`${reason} detaches immediately, preserves native work, and consumes late rejection`, async () => {
     const stream = createEventStream({ maxObservers: 1, capacity: 2 });

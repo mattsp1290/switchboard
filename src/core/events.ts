@@ -1,3 +1,4 @@
+import { addAbortListener } from 'node:events';
 import type { Outcome } from './contracts.js';
 
 export type SubscriptionEnd = 'disposed' | 'aborted' | 'overflow' | 'listener-error' | 'closed';
@@ -109,6 +110,7 @@ export function createEventStream<T>(bounds: EventStreamBounds): EventStream<T> 
       return { kind: 'ok', value: { dispose() {}, ended: Promise.resolve('aborted') } };
     }
     if (leases.size >= maxObservers) return { kind: 'error', error: { code: 'capacity' } };
+    let abortRegistration: ReturnType<typeof addAbortListener> | undefined;
     let observer: Observer<T>;
     const abort = () => end(observer, 'aborted');
     const ended = new Promise<SubscriptionEnd>((settle) => {
@@ -116,12 +118,12 @@ export function createEventStream<T>(bounds: EventStreamBounds): EventStream<T> 
         state: { kind: 'open', queue: [], listener },
         draining: false,
         delivery: new AbortController(),
-        detachAbort: () => signal?.removeEventListener('abort', abort),
+        detachAbort: () => abortRegistration?.[Symbol.dispose](),
         settle,
       };
       leases.add(observer);
     });
-    signal?.addEventListener('abort', abort, { once: true });
+    if (signal) abortRegistration = addAbortListener(signal, abort);
     return { kind: 'ok', value: { dispose: () => end(observer, 'disposed'), ended } };
   }
 
