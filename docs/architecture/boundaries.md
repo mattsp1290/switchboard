@@ -2,7 +2,7 @@
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
 The foundation supplies public adapter contract types and a package verification command.
-Native adapters, session discovery, and AG-UI mappings remain future work.
+Native adapters, filesystem session discovery, and AG-UI mappings remain future work.
 The package is private and has no runtime dependencies.
 
 ## Host ownership
@@ -51,7 +51,7 @@ Registration and instance identity metadata must agree. Types do not prove objec
 `contractVersion: 1` describes this contract generation. Identity metadata does not validate persisted native data.
 
 `AdapterInstance` requires identity and `close`. Concrete instances define their own named capability groups.
-No native capability is mandatory. Later domain contracts own session, stream, authentication, and dispatch APIs.
+No native capability is mandatory. Domain contracts describe optional operations. Native dispatch remains future work.
 `Capability<Api>` keeps a typed API in its `supported` branch.
 `unsupported` means the adapter or native version does not implement the feature.
 `unavailable` means this configured instance cannot offer the feature, such as when the host disables it.
@@ -83,10 +83,39 @@ The installed consumer checks prove public typing and package boundaries.
 They do not verify cleanup idempotence, resource release, native identity validation, or native integration behavior.
 Concrete adapters require runtime tests for those promises.
 
+## Native sessions and checkpoints
+
+`SessionReference` and `CheckpointReference` carry Switchboard envelope `formatVersion: 1`.
+Their binding identifies the engine, native version, account, adapter-specific authorized scope, and native format.
+Exact native version and format equality is the conservative initial rule. Adapter package semver is not part of this binding.
+Later native qualification may justify a broader compatibility rule.
+Checkpoints also bind the exact session's opaque token. `SessionCorrelation` carries separate host thread, run, and request IDs.
+The host owns the correlation map, persistence, and authorization. An identifier does not grant access.
+
+The parsers accept `unknown`, check bounded nonblank strings without control characters, and reject unknown envelope versions without migration.
+They copy known fields into frozen envelopes and frozen bindings. Extra input fields are discarded.
+`sessionLimits` exposes the string and work ceilings. Identifiers have at most 1024 UTF-16 code units and opaque tokens at most 8192.
+Core does not interpret opaque token syntax, prove authenticity, inspect private native formats, or check native existence.
+Adapters validate native references before use. No parser imports, rewrites, or migrates history.
+
+`SessionDiscovery<Scope>` and `SessionInspection<Scope>` require an explicit host-authorized adapter-specific scope, binding, bounds, and `AbortSignal`.
+Adapters define scope handles and authorized roots. Core never interprets a root or traverses a filesystem.
+`validateSessionDiscoveryBounds` requires positive safe integers, at most 1000 returned results, 100000 examined entries, and 60000 milliseconds.
+The result limit cannot exceed the examined-entry limit. Validation returns a frozen budget copy.
+Adapters enforce all budgets and stop cooperatively on abort. They count each examined candidate, including filtered, corrupt, or inaccessible entries.
+They remain within authorized resolved roots and symlink boundaries and read only supported native discovery sources.
+Discovery skips corrupt and inaccessible entries and reports both counts. A scope-wide access failure is an `inaccessible` error.
+Pages distinguish complete, truncated by a named budget, and cancelled results. A complete empty page differs from an interrupted empty page.
+Inspection reports available, absent, busy, or incompatible. Inspection cancellation or exhausted budgets return `cancelled` or `bounds-exceeded` errors.
+Neither discovery nor inspection acquires a lease. A later resume operation rechecks native availability before use.
+The installed tests verify envelope validation, budget validation, and typed outcomes. Filesystem traversal and native resume remain adapter qualification obligations.
+
 ## Native prerequisites and checked evidence
 
 Node 24.22.3 with npm 11.19.1 is the selected foundation toolchain.
-TypeScript 7.0.2 compiles the package with strict NodeNext settings.
+TypeScript 7.0.2 compiles the package with strict NodeNext settings, ES2022 libraries, and Node declarations.
+TypeScript consumers need `@types/node` as a development dependency for public `AbortSignal` contracts.
+The package and installed consumer checks use pinned `@types/node` 24.19.2 without DOM libraries.
 The supported Node range stays within this selected major until other versions receive validation.
 [Node's release index](https://nodejs.org/dist/index.json) supplied the selected runtime and bundled npm evidence checked on 2026-11-13.
 
