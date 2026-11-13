@@ -1,0 +1,167 @@
+{
+  "observedAt": "2026-11-13",
+  "baseline": "757aed0",
+  "artifacts": [
+    {
+      "package": "@anthropic-ai/claude-agent-sdk",
+      "version": "0.3.323",
+      "url": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.323.tgz",
+      "integrity": "sha512-GXIczMzzceNWB+bIImK59hWOQoBWZtSw+AESPc/qbAWmmHM8Wrqb5KvTwWZ07CmjyC/KcPC47nOLxxyHlWqKPA==",
+      "inspected": [
+        "package.json",
+        "README.md",
+        "LICENSE.md",
+        "sdk.d.ts",
+        "sdk.mjs",
+        "core.d.ts"
+      ],
+      "sha256": {
+        "sdk.mjs": "9350483cd0434c18c13745d7ca2630acd4ef29c6c2f0038b5a061f7e8c0fdb78",
+        "sdk.d.ts": "65199eafa1a4f93bb9cff5316b19144ebb9986211497aded56fccd821bcd33c9",
+        "package.json": "fd57289a4f4dd71e062bd9596b4d62ef1671eb982be642b7d367db78b7b62dbd",
+        "README.md": "90c4634dc148fb626d8ee474f7a3efece70f14c4b3e9636d9066ff1d1db964d1",
+        "LICENSE.md": "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a"
+      }
+    },
+    {
+      "package": "@zed-industries/claude-code-acp",
+      "version": "0.16.2",
+      "url": "https://registry.npmjs.org/@zed-industries/claude-code-acp/-/claude-code-acp-0.16.2.tgz",
+      "integrity": "sha512-D8BJe6CCD49RtNFbZYPsfZOpQI8Z/EzhyYC9zAGMwN/HVunEtVY2sXqYl1iDSkkayzhqABfaDkDZfeqDM1T/aA==",
+      "gitCommit": "e5b836820bcc1350699d53c488bd1a1a7223d86c",
+      "inspected": [
+        "package.json",
+        "LICENSE",
+        "dist/acp-agent.d.ts",
+        "dist/acp-agent.js"
+      ]
+    },
+    {
+      "package": "@ai-sdk/harness-claude-code",
+      "version": "1.0.187",
+      "url": "https://registry.npmjs.org/@ai-sdk/harness-claude-code/-/harness-claude-code-1.0.187.tgz",
+      "integrity": "sha512-8sTtu+qzoLMw6DeoxkYJxMKvv5JjiKnXhjpVcbWlrwPHpDjTGDdPf0NeoLl+P2u61RyJoz6lVyZ0e9lTeXMpQA==",
+      "inspected": [
+        "package.json",
+        "LICENSE",
+        "dist/index.d.ts",
+        "dist/index.js",
+        "dist/bridge/package.json",
+        "dist/bridge/index.mjs"
+      ]
+    }
+  ],
+  "documentationSnapshots": [
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway-connect",
+      "responseSha256": "87e56f676c5e9c6c51d277240b69d8e24eb2277c547afdc174d80c40d153d3fd",
+      "excerpt": "Claude Code caches the helper\u2019s output for five minutes by default and re-runs the helper after the cache lifetime elapses.",
+      "observedFacts": [
+        "TTL is configured by CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+        "The helper value is sent in Authorization and x-api-key",
+        "Nonessential-traffic suppression does not disable WebFetch domain preflight"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway-protocol",
+      "responseSha256": "9b18791700ef603a1b81e78b0c815be336b3d4e52bef2b5926fa20b34ee73cf2",
+      "excerpt": "Inference requests post to `/v1/messages?beta=true`",
+      "observedFacts": [
+        "Anthropic Messages is selected through ANTHROPIC_BASE_URL",
+        "Token counting is optional",
+        "Preserve version/beta headers and the complete ordered SSE sequence"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/settings-reference#apikeyhelper",
+      "responseSha256": "1d41f2ef442532a5a61b6c5ef88c432c117b27d09b73cb628ebec38f01a1e2e1",
+      "excerpt": "Claude Code caches the value and reruns the command in these cases:",
+      "observedFacts": [
+        "TTL expiry refresh",
+        "Direct Anthropic or gateway 401/403 refresh",
+        "Expired cached JWT refresh before a request since CLI2.1.246",
+        "These error/JWT paths require the helper to supply the active credential without ANTHROPIC_AUTH_TOKEN"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/legal-and-compliance",
+      "responseSha256": "43a69f5ab01a129623e99b10f9363a6eaee298289d8d8785ff6be2d9e4efac6c",
+      "excerpt": "The Claude Code binary must not be modified.",
+      "observedFacts": [
+        "Hosted binary conditions preserve native authentication methods",
+        "End-user usage intermediation restrictions",
+        "Agent SDK product guidance specifies API keys or supported cloud providers",
+        "Third-party Claude.ai credential collection or intermediation is prohibited"
+      ]
+    },
+    {
+      "url": "https://docs.litellm.ai/docs/tutorials/claude_responses_api",
+      "responseSha256": "7840ff36a62a84c8092c2a4f71b85ba519cf511806e343f8c1765c2286f10ff9",
+      "excerpt": "The `apiKeyHelper` has lower precedence than `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`.",
+      "observedFacts": [
+        "Unified proxy root is used as ANTHROPIC_BASE_URL",
+        "POST /v1/messages is the verification route",
+        "Static token and helper configurations are documented"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway",
+      "responseSha256": "21e4dc0d7e981c88e91fbbe7e5e5733f0b58a792d8e1b7aaeb5f3f956dc59c29",
+      "excerpt": "Anthropic doesn\u2019t endorse, maintain, or audit third-party gateway products",
+      "observedFacts": [
+        "Routing Claude Code to non-Claude models is unsupported",
+        "Gateway credential issuance and upstream billing remain deployment concerns"
+      ]
+    }
+  ],
+  "snapshotNote": "Website URLs are mutable. These bounded excerpt/fact snapshots freeze the evidence used on the observation date; response hashes identify the fetched HTML, not a promise that future HTML is identical. Runtime claims are grounded in the exact SDK artifact. Live route and legal applicability claims are not certified.",
+  "mcpDeclarationEvidence": {
+    "package": "@modelcontextprotocol/sdk",
+    "path": "dist/esm/shared/transport.d.ts",
+    "finding": "Each artifact references the undeclared global HeadersInit. Full strict compiler reproduction uses 1.32.2; the other pins were inspected statically.",
+    "versions": [
+      {
+        "version": "1.29.0",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.29.0.tgz",
+        "integrity": "sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==",
+        "declarationSha256": "c69e129aad89bafd97ecda53ce74c0148982dba42f11c9d517db5352809ce899"
+      },
+      {
+        "version": "1.30.0",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz",
+        "integrity": "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==",
+        "declarationSha256": "c69e129aad89bafd97ecda53ce74c0148982dba42f11c9d517db5352809ce899"
+      },
+      {
+        "version": "1.30.1",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.1.tgz",
+        "integrity": "sha512-H2HxLvC3HDNybePJaLdSrU1hhUK5iQw+WvV1b01myFyI7sdVGe1u/IPTE5D9fGCiJDVtgMV/lmFkQXLmQyIFYA==",
+        "declarationSha256": "c69e129aad89bafd97ecda53ce74c0148982dba42f11c9d517db5352809ce899"
+      },
+      {
+        "version": "1.31.0",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.31.0.tgz",
+        "integrity": "sha512-UvTMgnNlnIBO/22ob2RcVGDlcvOslQs8T59+FTGdA0L27a39fdGF/EDETNtDVK4DZGpwomlsYpRdA8UXcVL/pw==",
+        "declarationSha256": "c69e129aad89bafd97ecda53ce74c0148982dba42f11c9d517db5352809ce899"
+      },
+      {
+        "version": "1.32.0",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.0.tgz",
+        "integrity": "sha512-8BviX/hK4Gd2eL1KdTwm0gfl4d3wdoErW0Jd00h6nomUAtk6IJk5vwQJc6kfWtJTzN5OEV/lgIiJKI8fiDGAlA==",
+        "declarationSha256": "7142760b78460b082a820582ef5c2259667cf2474801d1c538e6d9b30e7e3eab"
+      },
+      {
+        "version": "1.32.1",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.1.tgz",
+        "integrity": "sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==",
+        "declarationSha256": "7142760b78460b082a820582ef5c2259667cf2474801d1c538e6d9b30e7e3eab"
+      },
+      {
+        "version": "1.32.2",
+        "url": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.2.tgz",
+        "integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==",
+        "declarationSha256": "a2ecd6be7a3e5de925d478baef5c4a6160fe8c4eee94abe4e39d388a9d559fe0"
+      }
+    ]
+  }
+}
