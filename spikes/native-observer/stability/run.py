@@ -19,7 +19,7 @@ ENV = {'PATH': '/opt/homebrew/bin:/usr/bin:/bin',
        'ZIG_LOCAL_CACHE_DIR': str(OUT / 'zig-local'),
        'ZIG_GLOBAL_CACHE_DIR': str(OUT / 'zig-global')}
 commands = []
-containers = set()
+containers = {}
 tag = None
 stage = 'identities'
 
@@ -33,7 +33,20 @@ def save(name, data):
 
 
 def run(args, timeout=15, check=True, binary=False):
-    result = subprocess.run(args, env=ENV, capture_output=True, text=not binary, timeout=timeout)
+    try:
+        result = subprocess.run(args, env=ENV, capture_output=True, text=not binary, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr = error.output or b'', error.stderr or b''
+        partial = {stream: f'command-{len(commands)}.{stream}.partial' for stream in ['stdout', 'stderr']}
+        (OUT / partial['stdout']).write_bytes(stdout)
+        (OUT / partial['stderr']).write_bytes(stderr)
+        commands.append(dict(args=args, code=None, timedOut=True, timeout=timeout,
+                             partialFiles=partial,
+                             stdout={'sha256': hashlib.sha256(stdout).hexdigest(), 'bytes': len(stdout)}
+                             if binary else stdout.decode(errors='replace'),
+                             stderr=stderr.decode(errors='replace')))
+        save('commands.json', commands)
+        raise
     output = {'sha256': hashlib.sha256(result.stdout).hexdigest(), 'bytes': len(result.stdout)} if binary else result.stdout
     commands.append(dict(args=args, code=result.returncode, stdout=output,
                          stderr=result.stderr.decode() if binary else result.stderr))
@@ -48,12 +61,14 @@ def docker(*args, **kwargs):
 
 
 def create(mode):
-    cid = docker('create', '--init', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    cid = f'stability-prerequisite-{OUT.name}-{mode}'
+    containers[cid] = 'uncertain'
+    docker('create', '--name', cid, '--init', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
                  '--cap-add', 'SYS_CHROOT', '--cap-add', 'SETUID', '--cap-add', 'SETGID',
                  '--security-opt', 'no-new-privileges', '--security-opt', f'seccomp={HERE}/seccomp.json',
                  '--pids-limit', '32', '--memory', '256m', '--cpus', '1', '--ulimit', 'nofile=128:128',
-                 '--workdir', '/', '--entrypoint', '/probe', tag, mode).stdout.strip()
-    containers.add(cid)
+                 '--workdir', '/', '--entrypoint', '/probe', tag, mode)
+    containers[cid] = 'confirmed'
     started = docker('start', cid, check=False)
     if started.returncode:
         save(f'{mode}-failed-launch.json', json.loads(docker('inspect', cid).stdout))
@@ -62,9 +77,50 @@ def create(mode):
 
 
 def remove(cid):
-    docker('rm', '-f', cid)
-    containers.remove(cid)
-    assert docker('inspect', cid, check=False).returncode != 0, 'container still exists'
+    for attempt in range(4):
+        try:
+            state = docker('inspect', cid, check=False)
+            if state.returncode == 0:
+                containers[cid] = 'confirmed'
+            elif (state.returncode == 1 and state.stdout.strip() == '[]'
+                  and state.stderr.strip() == f'error: no such object: {cid}'
+                  and containers[cid] == 'confirmed'):
+                del containers[cid]
+                return
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        if attempt == 3:
+            break
+        try:
+            if docker('rm', '-f', cid, check=False).returncode == 0:
+                containers[cid] = 'confirmed'
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        time.sleep(0.1)
+    raise RuntimeError(f'Unresolved container ownership: {cid}')
+
+
+def cleanup():
+    errors = []
+    for cid in list(containers):
+        try:
+            remove(cid)
+        except Exception as error:
+            errors.append(str(error))
+    image = tag
+    if tag:
+        try:
+            docker('image', 'rm', tag, check=False)
+        except (subprocess.TimeoutExpired, OSError) as error:
+            errors.append(str(error))
+        try:
+            state = docker('image', 'inspect', tag, check=False)
+            if (state.returncode == 1 and state.stdout.strip() == '[]'
+                    and state.stderr.strip() == f'Error response from daemon: No such image: {tag}'):
+                image = None
+        except (subprocess.TimeoutExpired, OSError) as error:
+            errors.append(str(error))
+    save('cleanup.json', {'containers': sorted(containers), 'image': image, 'errors': errors})
 
 
 def main():
@@ -161,9 +217,7 @@ except Exception as error:
     save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'unavailable',
                          'stage': stage, 'error': str(error)})
 finally:
-    for cid in list(containers):
-        remove(cid)
-    if tag:
-        docker('image', 'rm', tag, check=False)
+    cleanup()
     print(OUT)
     print((OUT / 'result.json').read_text())
+    print((OUT / 'cleanup.json').read_text())

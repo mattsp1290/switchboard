@@ -8,9 +8,10 @@
   ],
   "cleanup": "targets absent before removal; containers and image removed",
   "initReaping": "inferred from orphan absence with live pinned init and nonsubreaper supervisor",
-  "evidence": "local/1794624350833550000",
-  "commandsSha256": "2899b783e5a1f8435c6c7ef225f97c3ac76327cb3ce9b2ecff61b329fcf95005",
-  "binarySha256": "870465ae9d9ea5ac698e19cc122c1a5c6522db9d22429aeedced7d8a131ec715",
+  "evidence": "local/1794626298270702000",
+  "commandsSha256": "73799703b95a9cb6e477b38ba7fca94a08add0186d704a2d286f199d5f2daac3",
+  "binarySha256": "258988b826636c406788c4d62f7ff88279d74176d5c1b0a8a08a9688c63f6eff",
   "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
-  "scope": "Prerequisite only. Full stability mechanism remains unimplemented."
+  "scope": "Prerequisite only. Full stability mechanism remains unimplemented.",
+  "cleanupSha256": "35378ab045c42033478c9e26f6467c90c5b15018f61cd8aa7bbc0f5a90e83298"
 }
