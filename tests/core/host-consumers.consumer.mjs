@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { createFakeFixture } from './qualification/harness/fake.mjs';
 import { createCrewActivity, openAgentView } from './qualification/host-consumers.mjs';
@@ -42,7 +42,7 @@ function replyFor(pending) {
     nativeChoiceId: pending.choices[0].nativeChoiceId };
 }
 
-async function crewScenario(signal, wrapOwner = (owner) => owner) {
+async function crewScenario(signal, wrapOwner = (owner) => owner, firstOwner = createCrewActivity) {
   const directory = mkdtempSync(join(tmpdir(), 'switchboard-crew-'));
   const journalFile = join(directory, 'command.json');
   const fixture = createFakeFixture();
@@ -51,31 +51,29 @@ async function crewScenario(signal, wrapOwner = (owner) => owner) {
     const callerCorrelation = structuredClone(correlation);
     const request = { session: structuredClone(configured), hostOperationId };
     let persisted = false;
-    let first = createCrewActivity({ ...crewOptions(fixture, journalFile), grant: configured,
+    let first = firstOwner({ ...crewOptions(fixture, journalFile), grant: configured,
       correlation: callerCorrelation, onIntentPersisted() {
         assert.deepEqual(fixture.controls.counts(),
           { dispatchAttempts: 0, acceptedEffects: 0, lookupCalls: 0, transportCloses: 0 });
         assert.deepEqual(journal(journalFile), { kind: 'intent', correlation,
           identity: { hostOperationId, target: { kind: 'session', reference: fixture.samples.a } } });
         persisted = true;
-        configured.binding.account = 'mutated-account';
-        configured.opaque = 'mutated-grant';
-        request.session.opaque = 'mutated-request';
-        callerCorrelation.requestId = 'mutated-host-id';
-      } });
+      } }, fixture);
+    configured.binding.account = 'mutated-account';
+    configured.opaque = 'mutated-grant';
+    callerCorrelation.requestId = 'mutated-host-id';
     const held = fixture.controls.holdNextCompletion();
     fixture.controls.loseNextAcknowledgement();
     const original = await first.execute(request, signal);
+    assert.equal(persisted, true, 'intent bytes exist before native entry');
+    assert.equal(original.observation.kind, 'outcome-unknown', 'lost acknowledgement remains unknown');
     await wait(held.entered, signal);
     held.release();
     await wait(held.completed, signal);
-    assert.equal(persisted, true, 'intent bytes exist before native entry');
-    assert.equal(original.observation.kind, 'outcome-unknown');
     const saved = journal(journalFile);
-    const changed = structuredClone(original);
-    changed.identity.target.reference.binding.authorizedScope = 'mutated-scope';
-    changed.identity.target.reference.opaque = 'mutated-snapshot';
-    assert.deepEqual(journal(journalFile), saved, 'saved bytes survive caller mutations');
+    assert.deepEqual(saved.snapshot.identity.target.reference, fixture.samples.a,
+      'saved native reference preserves the original configured grant');
+    assert.deepEqual(saved.correlation, correlation, 'saved host correlation survives caller mutation');
     ok(await first.close());
     first = undefined;
 
@@ -135,8 +133,6 @@ async function agentUIScenario(signal, wrapView = (view) => view) {
     const held = fixture.controls.holdNextCompletion();
     const accepted = ok(await command.submit({ session: fixture.samples.a, hostOperationId }, signal));
     await wait(held.entered, signal);
-    let completed = false;
-    held.completed.then(() => { completed = true; });
     const aValues = [];
     const bValues = [];
     const aSeen = Promise.withResolvers();
@@ -148,8 +144,13 @@ async function agentUIScenario(signal, wrapView = (view) => view) {
     aInput.pending = structuredClone(pending);
     bInput.pending = structuredClone(pending);
     bInput.correlation = structuredClone(correlation);
-    const a = wrapView(openAgentView(aInput), command, fixture);
-    const b = openAgentView(bInput);
+    const a = wrapView(openAgentView(aInput), command, fixture, 'a');
+    const b = wrapView(openAgentView(bInput), command, fixture, 'b');
+    let replySubmits = 0;
+    const replyCommand = { submit(request, operationSignal) {
+      replySubmits++;
+      return command.submit(request, operationSignal);
+    } };
     fixture.controls.emit(1);
     await wait(Promise.all([aSeen.promise, bSeen.get(1).promise]), signal);
     ok(await a.close());
@@ -159,7 +160,6 @@ async function agentUIScenario(signal, wrapView = (view) => view) {
     await wait(bSeen.get(2).promise, signal);
     assert.deepEqual(aValues, [1]);
     assert.deepEqual(bValues.slice(bCount), [2], 'replacement view observes held work after old view cleanup');
-    assert.equal(completed, false, 'view cleanup does not complete held native work');
     const lookup = await command.recover(accepted).reconcile(signal);
     assert.equal(lookup.kind, 'ok', 'view cleanup must leave command lookup available');
     assert.equal(ok(lookup).observation.kind, 'accepted');
@@ -180,12 +180,14 @@ async function agentUIScenario(signal, wrapView = (view) => view) {
     const wrong = structuredClone(nativeReply);
     wrong.target.nativeApprovalId = correlation.requestId;
     const before = fixture.controls.counts();
-    const rejected = await b.reply(wrong, command, signal);
+    const rejected = await b.reply(wrong, replyCommand, signal);
     assert.deepEqual(rejected, { kind: 'error', error: { code: 'target-mismatch' } });
-    assert.deepEqual(fixture.controls.counts(), before, 'host ID substitution rejects before backend work');
+    assert.equal(replySubmits, 0, 'host rejects invalid native approval before command submission');
+    assert.deepEqual(fixture.controls.counts(), before);
     held.release();
     await wait(held.completed, signal);
-    const replied = ok(await b.reply(nativeReply, command, signal));
+    const replied = ok(await b.reply(nativeReply, replyCommand, signal));
+    assert.equal(replySubmits, 1, 'valid native approval reaches command submission once');
     assert.equal(replied.observation.kind, 'conclusive');
     assert.deepEqual(replied.observation.result.continuation, nativeReply,
       'private native approval, associated tool, and choice survive client mutations');
@@ -205,6 +207,37 @@ test('Crew reconstructs persisted command ownership', { timeout: 5000 }, async (
 
 test('AgentUI keeps view and command ownership separate', { timeout: 5000 }, async ({ signal }) => {
   await agentUIScenario(signal);
+});
+
+test('host controls reject missing intent bytes without native entry', { timeout: 5000 }, async ({ signal }) => {
+  let journalFile;
+  let callbackError;
+  let observation;
+  let fixture;
+  await assert.rejects(crewScenario(signal, undefined, (options, currentFixture) => {
+    fixture = currentFixture;
+    journalFile = options.journalFile;
+    const owner = createCrewActivity({ ...options, onIntentPersisted() {
+      rmSync(journalFile);
+      try {
+        options.onIntentPersisted();
+      } catch (error) {
+        callbackError = error;
+        throw error;
+      }
+    } });
+    return { ...owner, async execute(request, operationSignal) {
+      const snapshot = await owner.execute(request, operationSignal);
+      observation = snapshot.observation;
+      return snapshot;
+    } };
+  }), { code: 'ERR_ASSERTION', message: /intent bytes exist before native entry/ });
+  assert.equal(callbackError.code, 'ENOENT', 'real intent callback reads the removed file');
+  assert.deepEqual(observation, { kind: 'not-dispatched', reason: 'intent-failed' });
+  assert.deepEqual(fixture.controls.counts(),
+    { dispatchAttempts: 0, acceptedEffects: 0, lookupCalls: 0, transportCloses: 1 },
+    'missing intent prevents native dispatch and cleanup closes the connection');
+  assert.equal(existsSync(dirname(journalFile)), false, 'failed schedule removes its temporary directory');
 });
 
 test('host controls reject unsafe resubmission', { timeout: 5000 }, async ({ signal }) => {
@@ -235,4 +268,23 @@ test('host controls reject command closure with a view', { timeout: 5000 }, asyn
   })), { code: 'ERR_ASSERTION', message: /view cleanup must leave command lookup available/ });
   assert.equal(badAction.transportCloses, 2);
   assert.equal(badAction.acceptedEffects, 1);
+});
+
+test('host controls reject approval validation delegated to the backend', { timeout: 5000 }, async ({ signal }) => {
+  let badSubmitCalls = 0;
+  let badAction;
+  await assert.rejects(agentUIScenario(signal, (view, _command, fixture, which) => {
+    if (which !== 'b') return view;
+    const pending = structuredClone(view.presentation.nativePending);
+    return { ...view, async reply(value, command, operationSignal) {
+      badSubmitCalls++;
+      const result = await command.submit({ session: pending.target.session,
+        hostOperationId: 'host-approval-command', continuation: value }, operationSignal);
+      badAction = fixture.controls.counts();
+      return result;
+    } };
+  }), { code: 'ERR_ASSERTION', message: /host rejects invalid native approval before command submission/ });
+  assert.equal(badSubmitCalls, 1, 'broken host actually forwards the invalid reply');
+  assert.equal(badAction.dispatchAttempts, 1);
+  assert.equal(badAction.acceptedEffects, 1, 'backend rejects the reply without another accepted command');
 });

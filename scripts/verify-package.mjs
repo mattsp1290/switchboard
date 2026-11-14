@@ -107,8 +107,10 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   for (const name of [
     'Crew reconstructs persisted command ownership',
     'AgentUI keeps view and command ownership separate',
+    'host controls reject missing intent bytes without native entry',
     'host controls reject unsafe resubmission',
     'host controls reject command closure with a view',
+    'host controls reject approval validation delegated to the backend',
   ]) {
     assert.match(runtimeOutput, new RegExp(`^ok \\d+ - ${RegExp.escape(name)}$`, 'm'));
   }

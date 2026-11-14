@@ -111,7 +111,7 @@ export function openAgentView(options) {
   const subscription = requireOk(connection.events.subscribe((event) => onProgress(event.sequence)));
   return {
     presentation: { correlation, nativePending: structuredClone(pending), capabilities },
-    /** @param {unknown} value @param {Command} command @param {AbortSignal} signal */
+    /** @param {unknown} value @param {Pick<Command, 'submit'>} command @param {AbortSignal} signal */
     async reply(value, command, signal) {
       const continuation = parseInteractionContinuation({ value, expected: pending });
       if (continuation.kind === 'error') return continuation;

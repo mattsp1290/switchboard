@@ -31,7 +31,9 @@ These tests qualify the fixture and reusable assertions, not native engines, aut
 
 `host-consumers.mjs` adds private host owners checked against the installed public types.
 The installed `host-consumers.consumer.mjs` schedules reconstruct a Crew-like owner from a temporary JSON file.
+Its qualification imports resolve in the installed consumer layout created by the verifier.
 The host writes complete native session references and separate host correlation before native entry.
+Configured grants and host correlation are copied before caller mutation and execution.
 Saved unknown outcomes select lookup-only recovery. Intent-only records block fresh admission.
 Malformed records, wrong bindings, and different command identities reject before backend work.
 The file proves sequential reconstruction from bytes, not atomic writes, concurrent admission, or process-crash durability.
@@ -39,7 +41,9 @@ The file proves sequential reconstruction from bytes, not atomic writes, concurr
 The AgentUI-like schedule overlaps two views on separate connections while an independent command owner holds work.
 Closing the old view leaves the replacement observing and the command owner available for reconciliation and replies.
 Private pending approval targets, associated tool IDs, and native choices survive client mutations.
-Host request IDs cannot substitute for native approval IDs.
+Host request IDs cannot substitute for native approval IDs, and invalid replies never call command submission.
 Capability distinctions and reasons are declared presentation inputs, not reports from the fake backend.
-Two broken-host controls demonstrate the assertions fail after an actual duplicate send or mistaken command close.
+Broken-host controls fail the shared named assertions for missing intent bytes, duplicate sends, mistaken command closes,
+and invalid approval replies forwarded to command submission even when the backend rejects them.
+The missing-intent control checks the intent-failed result, zero native dispatch, and temporary-directory cleanup without waiting for native entry.
 These schedules do not import Crew, AgentUI, native SDKs, or providers and do not complete integrated qualification.
