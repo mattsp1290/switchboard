@@ -1,0 +1,108 @@
+{
+  "repository": "https://github.com/mattsp1290/ag-ui",
+  "pullRequest": 49,
+  "sourceCommit": "ed2c1d5b63299d3f08676a1418cc2640bbe55fd1",
+  "sourceTree": "4dd1b37d5fd8486b022827c102f2b53ea2bfdfc8",
+  "qualification": "source-only",
+  "artifactAcquisitionIssue": "agentui-wtdo",
+  "sourceBranches": [
+    {
+      "pullRequest": 3360,
+      "branch": "codex/codex-sdk-integration",
+      "includedCommit": "cdeb18106f7061b351460248a1f67c746ef9ce27",
+      "observedCommit": "cdeb18106f7061b351460248a1f67c746ef9ce27",
+      "observedCommitIncluded": true
+    },
+    {
+      "pullRequest": 3357,
+      "branch": "codex/pi-typescript-integration",
+      "includedCommit": "ddc3279ad40b16b1e124c23738caf2eb1bc419b8",
+      "observedCommit": "dd5587a571dabb268430c66920bcee9bd2745212",
+      "observedCommitIncluded": false
+    }
+  ],
+  "packages": [
+    {
+      "name": "@ag-ui/core",
+      "version": "1.0.4",
+      "path": "sdks/typescript/packages/core",
+      "publicExports": [
+        "PROTOCOL_VERSION",
+        "omitOptionalNulls"
+      ]
+    },
+    {
+      "name": "@ag-ui/proto",
+      "version": "1.0.4",
+      "path": "sdks/typescript/packages/proto",
+      "publicExports": []
+    },
+    {
+      "name": "@ag-ui/encoder",
+      "version": "1.0.4",
+      "path": "sdks/typescript/packages/encoder",
+      "publicExports": []
+    },
+    {
+      "name": "@ag-ui/client",
+      "version": "1.0.4",
+      "path": "sdks/typescript/packages/client",
+      "publicExports": []
+    },
+    {
+      "name": "@ag-ui/codex-sdk",
+      "version": "0.0.1",
+      "path": "integrations/community/codex-sdk/typescript",
+      "publicExports": [
+        "CodexAgentAdapter",
+        "MemoryCodexSessionStore"
+      ]
+    },
+    {
+      "name": "@ag-ui/pi",
+      "version": "0.0.1",
+      "path": "integrations/community/pi/typescript",
+      "publicExports": [
+        "createTranslator",
+        "toAguiMessages"
+      ]
+    }
+  ],
+  "files": {
+    "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+    "pnpm-lock.yaml": "b704db03f7b5db13d9627babadcf620be6a871e60fe07bab3df5194fac3c6a9d",
+    "spec/1.0/schema.json": "4b5c93226838a0e72d88e6c5df20633c686c49fcb75d9be2815c6cbf9e48e71a",
+    "spec/1.0/fixtures/MANIFEST.txt": "767725fab48e98b105d0427322b271fffb2166cc15718f8761a227591d999540",
+    "sdks/typescript/packages/core/package.json": "a32dc8cf0fccf46c309d113b01e320791b4a0c44c0d27d82f527575c1d4a7012",
+    "sdks/typescript/packages/core/src/index.ts": "5398a3c7c1268cddd986a4ec19d778fa1090e8d95ed97b557082b725aa84e51f",
+    "sdks/typescript/packages/proto/package.json": "9f1bab30ca7bacf93e0f101aa209eacf2dfe530c340d405ace0cb8b5b43b0d8f",
+    "sdks/typescript/packages/proto/src/index.ts": "0f577f769d6ece994f8cf057a17634197bb6336de70211cb426591d7d9978f41",
+    "sdks/typescript/packages/encoder/package.json": "75baf348ab134dd25248c209e1d155cebc64767198dd57875439e100c084a54a",
+    "sdks/typescript/packages/encoder/src/index.ts": "2a4667cf5a485e6c4bdabd8d5f4511fc08de0e904d397156c7d90658f6f20d56",
+    "sdks/typescript/packages/client/package.json": "1939f47bde2bcaccdba57cbb119642fee7f89536f99a2243c4f7d6d91eabb0b1",
+    "sdks/typescript/packages/client/src/index.ts": "99715a33382209153626692db7dfdf207f373f3bf977e0a56989fbfbe73f1131",
+    "integrations/community/codex-sdk/typescript/package.json": "872ad51e44614013c43e0cee15d4b21abdcff110ebefe70c53cbc29b22fa5a5e",
+    "integrations/community/codex-sdk/typescript/src/index.ts": "4e7d1f69cb66fbc611a30ca6edc1f9673d3ac088743a58d587b76c4495349acf",
+    "integrations/community/pi/typescript/package.json": "244d4c37cfbe049b054900f888b94aeafe7caeb7f09a2628d3b601d03ff52518",
+    "integrations/community/pi/typescript/src/index.ts": "aa7bb9c48db8c1e6d0cda75278e23e9f706bf5c5d333a1fec61b752b76947644",
+    "integrations/community/codex-sdk/typescript/src/events.ts": "9048e09ae58e5b83f285907f636502f2539dab9178bbeb4928fccf8b74dcdb1b",
+    "integrations/community/codex-sdk/typescript/src/adapter.ts": "8bae0f7d3155ca0f2b3264b1ba8b6934e9a25431f7bc9768222395872fb9cffa",
+    "integrations/community/codex-sdk/typescript/src/inputs.ts": "e5143785e8ee8d906b698c376bbc338ef6590ada8c9044b78a8f6f91c80774c7",
+    "integrations/community/codex-sdk/typescript/README.md": "7750b4ddf9c0a1d6bc3a15a6cb44fda33206f2b1b733aeaa5592b37155f39028",
+    "integrations/community/pi/typescript/src/translate.ts": "17574b2c4f0f61ac4f9732d8b93d779f7a39da554bbf9352599cf6a87235c856",
+    "integrations/community/pi/typescript/src/messages.ts": "08590eb1014f5e1692df9e8fc2f2d9abc1bb406dcfe4d892925f034623c713fa",
+    "integrations/community/pi/typescript/README.md": "325f9295c256a818a2d2342abb35bff9cf08d13731ace7b9867cb8dcf1ec56aa",
+    "integrations/community/pi/typescript/LICENSE": "107a3586a1f2f3adccd334f54c9db5971f7ace330f399fa83b18c59fae0c86a8",
+    "integrations/community/pi/typescript/PROVENANCE.md": "52a403d87c8b525f98658c0db09df0e7265d65be439fb5091ca8beb095fa8376"
+  },
+  "coreArtifact": {
+    "package": "@ag-ui/core",
+    "version": "1.0.4",
+    "deliveryRepository": "https://github.com/mattsp1290/agentui",
+    "deliveryCommit": "661216eab627be33067951ffad7a1691127a80fe",
+    "url": "https://raw.githubusercontent.com/mattsp1290/agentui/661216eab627be33067951ffad7a1691127a80fe/vendor/ag-ui/ed2c1d5b63299d3f08676a1418cc2640bbe55fd1/ag-ui-core-1.0.4.tgz",
+    "bytes": 193883,
+    "sha256": "2cd54a879083e0c351e8c38861b1d2e2b7355a5712b7128da690257c687dad19",
+    "integrity": "sha512-Z/G3UXYRyZ/1LcOtCCf6RJiFPTjRqaNublW/kQ7wsfiP4Qw5oIVmvO6NkUQYoqCoMXuXggyD3MMH2Td5OVKECQ=="
+  }
+}
