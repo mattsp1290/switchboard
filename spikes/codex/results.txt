@@ -1,0 +1,18 @@
+node_modules/@openai/codex-sdk/dist/index.d.ts(1,30): error TS2307: Cannot find module '@modelcontextprotocol/sdk/types.js' or its corresponding type declarations.
+{
+  "status": "fixture-probes-passed-selection-provisional",
+  "checks": [
+    "exact artifacts and toolchain; no install scripts or native Codex binary",
+    "SDK declarations fail TS2307 on undeclared MCP dependency with skipLibCheck:false",
+    "Node-only ES2022 strict control compiles without DOM",
+    "pinned native schema exposes Responses, command refresh, retry and discovery controls",
+    "AI harness rejects native approval requests and pins older CLI; ACP embeds older Rust",
+    "SDK stream preserves unknown payload, native identity, resume and provider config",
+    "SDK parse failure and child exit reject once; no wrapper retry",
+    "SDK buffered run accepts EOF or fatal event without terminal success; host must detect uncertainty",
+    "AbortSignal stops fixture process and reports interruption"
+  ],
+  "liveNative": false,
+  "liveLiteLLM": false,
+  "sdkDeclarations": "blocked-TS2307"
+}
