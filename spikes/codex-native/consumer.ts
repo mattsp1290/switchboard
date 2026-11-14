@@ -9,6 +9,7 @@ export const requests = [
   { id: 3, method: 'thread/resume', params: { threadId: 'native-owned-id' } },
   { id: 4, method: 'turn/start', params: { threadId: 'native-owned-id', input: [{ type: 'text', text: 'fixture', text_elements: [] }] } },
   { id: 5, method: 'turn/interrupt', params: { threadId: 'native-owned-id', turnId: 'native-turn-id' } },
+  { id: 7, method: 'getConversationSummary', params: { rolloutPath: '/authorized/sessions/inventoried-file' } },
   { id: 6, method: 'thread/read', params: { threadId: 'native-owned-id', includeTurns: true } },
 ] satisfies ClientRequest[];
 export const decline = { decision: 'decline' } satisfies CommandExecutionRequestApprovalResponse;
