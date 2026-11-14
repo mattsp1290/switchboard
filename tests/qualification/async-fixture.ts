@@ -12,4 +12,3 @@ export const createFixture: QualificationFactory = async () => {
     dispose: fixture.dispose,
   };
 };
-
