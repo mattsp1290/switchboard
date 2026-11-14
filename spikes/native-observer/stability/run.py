@@ -20,6 +20,7 @@ ENV = {'PATH': '/opt/homebrew/bin:/usr/bin:/bin',
        'ZIG_GLOBAL_CACHE_DIR': str(OUT / 'zig-global')}
 commands = []
 containers = {}
+images = {}
 tag = None
 stage = 'identities'
 
@@ -76,51 +77,42 @@ def create(mode):
     return cid
 
 
-def remove(cid):
+def remove(cid, image=False):
+    owned = images if image else containers
+    inspect = ('image', 'inspect') if image else ('inspect',)
+    removal = ('image', 'rm') if image else ('rm', '-f')
+    missing = f'Error response from daemon: No such image: {cid}' if image else f'error: no such object: {cid}'
     for attempt in range(4):
         try:
-            state = docker('inspect', cid, check=False)
+            state = docker(*inspect, cid, check=False)
             if state.returncode == 0:
-                containers[cid] = 'confirmed'
+                owned[cid] = 'confirmed'
             elif (state.returncode == 1 and state.stdout.strip() == '[]'
-                  and state.stderr.strip() == f'error: no such object: {cid}'
-                  and containers[cid] == 'confirmed'):
-                del containers[cid]
+                  and state.stderr.strip() == missing and owned[cid] == 'confirmed'):
+                del owned[cid]
                 return
         except (subprocess.TimeoutExpired, OSError):
             pass
         if attempt == 3:
             break
         try:
-            if docker('rm', '-f', cid, check=False).returncode == 0:
-                containers[cid] = 'confirmed'
+            if docker(*removal, cid, check=False).returncode == 0:
+                owned[cid] = 'confirmed'
         except (subprocess.TimeoutExpired, OSError):
             pass
         time.sleep(0.1)
-    raise RuntimeError(f'Unresolved container ownership: {cid}')
+    raise RuntimeError(f'Unresolved {"image" if image else "container"} ownership: {cid}')
 
 
 def cleanup():
     errors = []
-    for cid in list(containers):
-        try:
-            remove(cid)
-        except Exception as error:
-            errors.append(str(error))
-    image = tag
-    if tag:
-        try:
-            docker('image', 'rm', tag, check=False)
-        except (subprocess.TimeoutExpired, OSError) as error:
-            errors.append(str(error))
-        try:
-            state = docker('image', 'inspect', tag, check=False)
-            if (state.returncode == 1 and state.stdout.strip() == '[]'
-                    and state.stderr.strip() == f'Error response from daemon: No such image: {tag}'):
-                image = None
-        except (subprocess.TimeoutExpired, OSError) as error:
-            errors.append(str(error))
-    save('cleanup.json', {'containers': sorted(containers), 'image': image, 'errors': errors})
+    for owned, image in [(containers, False), (images, True)]:
+        for name in list(owned):
+            try:
+                remove(name, image=image)
+            except Exception as error:
+                errors.append(str(error))
+    save('cleanup.json', {'containers': sorted(containers), 'image': tag if tag in images else None, 'errors': errors})
 
 
 def main():
@@ -169,7 +161,9 @@ def main():
     save('inventory.json', inventory)
     (OUT / 'build' / 'Dockerfile').write_text('FROM scratch\nCOPY root/ /\n')
     tag = 'stability-prerequisite:' + OUT.name
+    images[tag] = 'uncertain'
     docker('build', '--network', 'none', '--pull=false', '-t', tag, str(OUT / 'build'), timeout=30)
+    images[tag] = 'confirmed'
     save('image.json', json.loads(docker('image', 'inspect', tag).stdout))
     stage = 'init-launch'
     cid = create('hold')

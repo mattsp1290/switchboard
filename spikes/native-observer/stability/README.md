@@ -21,8 +21,8 @@ The inspector exports bounded actual `/proc/1/exe` bytes for host hashing. Docke
 Every case compares the executed init against its pinned hash, waits for container exit, removes it, and verifies absence.
 The runner registers a unique run/mode name before create and records timed-out argv and partial output.
 Cleanup makes up to three removal attempts and requires the pinned CLI's exact absent-object response.
-An uncertain create never observed or removed remains owned in `cleanup.json`, alongside any unresolved image.
-Run `python3 spikes/native-observer/stability/test_cleanup.py` for inert create/remove timeout and daemon-failure regressions.
+An uncertain create or build never acknowledged, observed or removed remains owned in `cleanup.json` after bounded reconciliation.
+Run `python3 spikes/native-observer/stability/test_cleanup.py` for nine inert container/image timeout and daemon-failure cases.
 
 The profile remains default-deny with the existing capabilities, network-none, read-only root, and resource limits.
 Its added `fstatfs`, `statx`, and `futex` calls are runtime launch prerequisites, demonstrated by recorded failures and a trusted `/bin/true` control.
