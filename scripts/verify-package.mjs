@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
+import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -18,7 +20,7 @@ function runNpm(args, cwd = root) {
   return run(process.execPath, [npm, ...args], cwd);
 }
 
-const temporary = mkdtempSync(join(tmpdir(), 'switchboard-package-'));
+const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
   process.stdout.write(runNpm(['run', 'build']));
   const artifacts = join(temporary, 'artifacts');
@@ -121,6 +123,10 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   const coreTypes = run(process.execPath, [compiler, '-p', 'tsconfig.json', '--listFilesOnly'], consumer);
   assert(!coreTypes.includes('/agui/'), 'Root declarations do not reference the integration.');
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
+  assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
+    allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
+    allowedFiles: typeFixtures.map(file => join(consumer, file)),
+  });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
 
   const invalidCases = [
