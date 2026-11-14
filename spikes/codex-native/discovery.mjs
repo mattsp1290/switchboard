@@ -4,11 +4,14 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { admittedPath, resultPath, requestBudget } from './inventory.mjs';
+import { accountReads, accountLogin, accountProfile, accountRouting } from './account-reads.mjs';
 import { nativeClient } from './client.mjs';
+import { historyCopies } from './history-copy.mjs';
 
 const mode = process.argv[2];
-assert(['prepare', 'indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink'].includes(mode));
+assert(['prepare', 'indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink', 'prepare-accounts', 'account-reads'].includes(mode));
 const root = '/root/.codex';
+const accountMode = ['prepare-accounts', 'account-reads'].includes(mode);
 for (const cwd of ['/tmp/project', '/tmp/other']) mkdirSync(cwd);
 let inference = 0;
 let requests = 0;
@@ -17,7 +20,7 @@ const server = createServer(async (request, response) => {
   let body = '';
   for await (const chunk of request) { body += chunk; assert(body.length < 1024 * 1024); }
   if (request.method === 'GET' && request.url.startsWith('/v1/models?')) { response.writeHead(404).end(); return; }
-  if (mode !== 'prepare') { inference++; response.writeHead(403).end('Inspection inference refused'); return; }
+  if (!mode.startsWith('prepare')) { inference++; response.writeHead(403).end('Inspection inference refused'); return; }
   assert.equal(request.url, '/v1/responses');
   assert.equal(request.method, 'POST');
   assert.equal(JSON.parse(body).stream, true);
@@ -32,6 +35,11 @@ const server = createServer(async (request, response) => {
   response.end();
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const routingServer = accountMode ? createServer((request, response) => {
+  assert(++requests <= 30, 'Bounded fixture request count');
+  accountRouting(request, response);
+}) : null;
+if (routingServer) await new Promise((resolve) => routingServer.listen(0, '127.0.0.1', resolve));
 const config = { model_provider: 'fixture', model: 'fixture-model', check_for_update_on_startup: false, 'analytics.enabled': false, 'features.apps': false };
 for (const provider of ['fixture', 'other']) Object.assign(config, {
   [`model_providers.${provider}.name`]: provider,
@@ -41,8 +49,10 @@ for (const provider of ['fixture', 'other']) Object.assign(config, {
   [`model_providers.${provider}.request_max_retries`]: 0,
   [`model_providers.${provider}.stream_max_retries`]: 0,
 });
+if (routingServer) Object.assign(config, accountProfile(`http://127.0.0.1:${routingServer.address().port}`, `http://127.0.0.1:${server.address().port}`));
 const clients = [];
 const evidence = { mode };
+if (mode === 'account-reads') evidence.accounts = { hypothesis: 'H1', status: 'inconclusive', requesters: [] };
 let progressBytes = 0;
 function retainProgress(observation) {
   const line = `${JSON.stringify(observation)}\n`;
@@ -52,17 +62,14 @@ function retainProgress(observation) {
   process.stderr.write(line);
 }
 let verifySources;
-const accountLogin = (account) => ({ type: 'chatgptAuthTokens', chatgptAccountId: account,
-  accessToken: [Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url'),
-    Buffer.from(JSON.stringify({ exp: 4102444800, email: `${account}@fixture.invalid`,
-      'https://api.openai.com/auth': { chatgpt_account_id: account, chatgpt_user_id: `user-${account}`, chatgpt_plan_type: 'plus' } })).toString('base64url'), 'synthetic'].join('.'),
-});
+let copyHistory;
 async function until(predicate, label) {
   const end = Date.now() + 6000;
   while (Date.now() < end) { const value = predicate(); if (value) return value; await delay(10); }
   throw new Error(`Timed out: ${label}`);
 }
 async function connect(overrides = {}) {
+  if (mode === 'account-reads') copyHistory(overrides);
   const client = nativeClient({ ...config, ...overrides }, retainProgress);
   clients.push(client);
   evidence.transcript = client.transcript;
@@ -82,7 +89,7 @@ function filesUnder(directory) {
   return files.sort();
 }
 function sourceFiles() {
-  return readdirSync(root).filter((file) => (file === 'sessions' && lstatSync(`${root}/${file}`).isFile()) || /\.sqlite(?:-(?:wal|shm))?$/.test(file))
+  return readdirSync(root).filter((file) => (file === 'sessions' && lstatSync(`${root}/${file}`).isFile()) || (accountMode ? file.includes('.sqlite') || file.startsWith('thread_history') : /\.sqlite(?:-(?:wal|shm))?$/.test(file)))
     .concat(['sessions', 'archived_sessions'].flatMap((dir) => filesUnder(`${root}/${dir}`).map((file) => `${dir}/${file}`))).sort();
 }
 function snapshot(files) {
@@ -188,21 +195,33 @@ async function pathObservations(client, records) {
   return report;
 }
 const listing = [];
+let output = evidence;
 try {
-  if (mode === 'prepare') {
+  if (mode.startsWith('prepare')) {
     const client = await connect();
     const records = [];
-    for (const [name, cwd, modelProvider, account] of [
+    const fixtures = mode === 'prepare-accounts' ? [
+      ['accountA', '/tmp/project', 'fixture', 'accountA'],
+      ['accountB', '/tmp/project', 'fixture', 'accountB'],
+      ['apiKey', '/tmp/project', 'fixture', 'apiKey'],
+      ['corrupt', '/tmp/project', 'fixture', 'accountA'],
+    ] : [
       ['first', '/tmp/project', 'fixture'], ['second', '/tmp/project', 'fixture'],
       ['otherCwd', '/tmp/other', 'fixture'], ['otherProvider', '/tmp/project', 'other'],
       ['archived', '/tmp/project', 'fixture'], ['unauthorized', '/tmp/project', 'fixture'],
       ['accountA', '/tmp/project', 'fixture', 'accountA'], ['accountB', '/tmp/project', 'fixture', 'accountB'],
-    ]) {
-      if (account) await client.call('account/login/start', accountLogin(account));
+    ];
+    for (const [name, cwd, modelProvider, account] of fixtures) {
+      if (account) {
+        if (accountMode) await client.call('account/logout', {});
+        await client.call('account/login/start', account === 'apiKey'
+          ? { type: 'apiKey', apiKey: 'synthetic-discovery-key' } : accountLogin(account));
+      }
       const { thread } = await client.call('thread/start', { cwd, modelProvider, approvalPolicy: 'never', sandbox: 'read-only' });
       const { turn } = await client.call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: name, text_elements: [] }] });
       const completed = await until(() => client.events.find((event) => event.method === 'turn/completed' && event.params.turn.id === turn.id), name);
       assert.equal(completed.params.turn.status, 'completed');
+      if (accountMode) assert.equal(completed.params.threadId, thread.id);
       let path = thread.path;
       if (name === 'archived') {
         await client.call('thread/archive', { threadId: thread.id });
@@ -210,14 +229,17 @@ try {
         path = archived.data.find((item) => item.id === thread.id)?.path;
       }
       assert(path?.startsWith(`${root}/`), 'Native-returned path is inside the synthetic home');
-      records.push({ name, id: thread.id, cwd, modelProvider, path: path.slice(root.length + 1) });
+      records.push({ name, id: thread.id, cwd, modelProvider, path: path.slice(root.length + 1), ...(accountMode ? {
+        witness: { startedTurnId: turn.id, completedTurnId: completed.params.turn.id, status: completed.params.turn.status,
+          userText: name, agentText: 'synthetic discovery fixture' },
+      } : {}) });
     }
     await client.stop();
     const files = sourceFiles();
     for (const record of records) assert(files.includes(record.path), 'Native persisted its returned fixture path');
     assert(files.some((file) => file.startsWith('state_')));
     assert(files.some((file) => file.startsWith('thread_history_')));
-    console.log(JSON.stringify({ records, files: Object.fromEntries(files.map((file) => [file, readFileSync(`${root}/${file}`).toString('base64')])) }));
+    output = { records, files: Object.fromEntries(files.map((file) => [file, readFileSync(`${root}/${file}`).toString('base64')])) };
   } else {
     const records = JSON.parse(readFileSync('/opt/records.json', 'utf8'));
     const authorized = records.filter((record) => record.name !== 'unauthorized');
@@ -232,16 +254,21 @@ try {
       retainProgress({ sourcePreservation: stage, hashes: before });
     };
     verifySources('before startup');
+    if (mode === 'account-reads') copyHistory = historyCopies(root, JSON.parse(readFileSync('/opt/inventory.json', 'utf8')), verifySources, evidence);
     assert.throws(() => writeFileSync(`${root}/sessions/write-probe`, 'fixture'), (error) => ['EROFS', 'ENOTDIR'].includes(error.code));
-    const client = await connect({ sqlite_home: '/tmp/private-index', log_dir: '/tmp/private-logs' });
+    const suffix = mode === 'account-reads' ? '-accountA' : '';
+    const client = await connect({ sqlite_home: `/tmp/private-index${suffix}`, log_dir: `/tmp/private-logs${suffix}` });
     verifySources('after initialization');
     const resolved = await client.call('config/read', { includeLayers: false });
-    assert.equal(resolved.config.sqlite_home, '/tmp/private-index');
+    assert.equal(resolved.config.sqlite_home, `/tmp/private-index${suffix}`);
     const expected = (names) => records.filter((record) => names.includes(record.name)).map((record) => record.id).sort();
     const ids = (items) => items.map((item) => item.id).sort();
     const report = Object.assign(evidence, { sourceFiles: protectedFiles.length, sqliteHome: resolved.config.sqlite_home });
     if (['indexed', 'unindexed', 'malformed'].includes(mode)) report.pathInspection = await pathObservations(client, records);
-    if (mode === 'inaccessible') {
+    if (mode === 'account-reads') {
+      await accountReads({ connect, initialClient: client, accountLogin, records, root, params, verifySources, report: evidence.accounts,
+        inventory: JSON.parse(readFileSync('/opt/inventory.json', 'utf8')) });
+    } else if (mode === 'inaccessible') {
       const reply = await client.rpc('thread/list', params);
       assert.equal(reply.error?.code, -32603);
       assert.match(reply.error.message, /Not a directory/);
@@ -314,21 +341,32 @@ try {
     }
     verifySources('after drained shutdown');
     assert.equal(inference, 0);
-    report.preservationSummary = 'read-only history and every original SQLite file unchanged at startup, listing, shutdown';
-    report.inferenceRequests = inference;
-    console.log(JSON.stringify(report));
+    evidence.preservationSummary = 'read-only history and every original SQLite file unchanged at startup, listing, shutdown';
+    evidence.inferenceRequests = inference;
   }
 } catch (error) {
   if (evidence.pathInspection?.enumeration === 'in-progress') evidence.pathInspection.enumeration = 'failed';
   evidence.failure = { message: error.message, stack: error.stack };
-  for (const client of clients) {
-    try { await client.stop(); } catch (shutdown) { evidence.shutdownFailure = shutdown.message; }
-  }
-  try { verifySources?.('after failed drained shutdown'); } catch (preservation) { evidence.preservationFailure = preservation.message; }
-  evidence.inferenceRequests = inference;
-  console.log(JSON.stringify(evidence));
   process.exitCode = 1;
 } finally {
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
+  const failures = [];
+  for (const client of clients) {
+    try { await client.stop(); } catch (error) { failures.push(error.message); }
+  }
+  if (failures.length) { evidence.shutdownFailures = failures; process.exitCode = 1; output = evidence; }
+  try { verifySources?.('after final shutdown attempts'); }
+  catch (error) { evidence.preservationFailure = error.message; process.exitCode = 1; output = evidence; }
+  evidence.inferenceRequests = inference;
+  output.fixtureRequests = requests;
+  if (evidence.progressTruncated) { evidence.failure = { message: 'Required bounded progress was truncated' }; process.exitCode = 1; }
+  if (!mode.startsWith('prepare') && inference !== 0) {
+    evidence.failure = { message: 'Inference observed during inspection or shutdown' };
+    process.exitCode = 1;
+  }
+  for (const owned of [server, routingServer].filter(Boolean)) {
+    owned.closeAllConnections();
+    await new Promise((resolve) => owned.close(resolve));
+  }
 }
+if (mode === 'account-reads' && !process.exitCode) evidence.accounts.status = 'negative-public-read-result';
+console.log(JSON.stringify(output));

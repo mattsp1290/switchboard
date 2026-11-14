@@ -162,16 +162,16 @@ test('actual discovery retains a final-drain failure and exits nonzero through i
       assert.equal(report.transcript.at(-1).reply.error.code, -32603);
       assert.deepEqual(report.transcript.map((entry) => entry.request.method), ['initialize', 'config/read', 'thread/list']);
       assert.deepEqual(report.preservation, ['before startup', 'after initialization', 'after requests',
-        fault ? 'after failed drained shutdown' : 'after drained shutdown']);
+        ...(!fault ? ['after drained shutdown'] : []), 'after final shutdown attempts']);
       assert(progress.some((entry) => entry.sourcePreservation === report.preservation.at(-1)));
       if (fault) {
         assert.match(report.failure.message, /Malformed native JSON/);
-        assert.match(report.shutdownFailure, /Malformed native JSON/);
+        assert(report.shutdownFailures.every((failure) => /Malformed native JSON/.test(failure)));
         assert.equal(report.preservationSummary, undefined);
         assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
       } else {
         assert.equal(report.failure.code, -32603);
-        assert.equal(report.shutdownFailure, undefined);
+        assert.equal(report.shutdownFailures, undefined);
         assert.match(report.preservationSummary, /unchanged/);
         assert.deepEqual(child.signals, ['SIGTERM']);
       }
@@ -270,6 +270,9 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
         if (args.some((arg) => arg.includes('/probe.mjs,'))) return JSON.stringify({ node: process.versions.node, architecture: 'arm64' });
         if (args.at(-1) === 'prepare') return JSON.stringify({ records: ['first', 'second', 'unauthorized'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),
           files: Object.fromEntries(['first', 'second', 'unauthorized'].map((name) => [`sessions/${name}.jsonl`, Buffer.from('synthetic opaque bytes').toString('base64')])) });
+        if (args.at(-1) === 'prepare-accounts') return JSON.stringify({ records: ['accountA', 'accountB', 'apiKey', 'corrupt'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),
+          files: { 'thread_history_1.sqlite': Buffer.from('opaque cold history').toString('base64'),
+            ...Object.fromEntries(['accountA', 'accountB', 'apiKey', 'corrupt'].map((name) => [`sessions/${name}.jsonl`, Buffer.from('synthetic opaque bytes').toString('base64')])) } });
         if (fault === 'success') return JSON.stringify({ mode: args.at(-1) });
         assert.equal(args.at(-1), 'indexed');
         assert(args.some((arg) => arg.includes('/client.mjs,')));

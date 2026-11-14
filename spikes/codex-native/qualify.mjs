@@ -37,7 +37,7 @@ try {
     const mounts = ['--mount', `type=bind,source=${binary},target=/opt/codex,readonly`];
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
     if (script === 'discovery.mjs') {
-      for (const helper of ['inventory.mjs', 'client.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
+      for (const helper of ['inventory.mjs', 'client.mjs', 'account-reads.mjs', 'history-copy.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
     }
     try {
       return ownedContainer(run, ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
@@ -171,9 +171,36 @@ try {
       assert.deepEqual(hashes(), before, 'Host source fixture preserved across entire native lifecycle');
     }
   }
+  const accountPrepared = JSON.parse(docker(['node', '/opt/fixture.mjs', 'prepare-accounts'], 'discovery.mjs'));
+  const accountSource = join(work, 'account-reads');
+  mkdirSync(accountSource);
+  const corrupt = accountPrepared.records.find((record) => record.name === 'corrupt');
+  assert(corrupt);
+  for (const [file, encoded] of Object.entries(accountPrepared.files)) {
+    assert(/^(?:(?:sessions|archived_sessions)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.jsonl|[a-z_]+[0-9]+\.sqlite(?:-(?:wal|shm))?)$/.test(file));
+    const target = join(accountSource, file);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, file === corrupt.path ? '{invalid-json\n' : Buffer.from(encoded, 'base64'));
+  }
+  for (const directory of ['sessions', 'archived_sessions']) mkdirSync(join(accountSource, directory), { recursive: true });
+  const accountInventory = admit(accountSource);
+  const accountHashes = fingerprint(accountSource, accountInventory);
+  const accountRecordsFile = join(work, 'account-records.json');
+  const accountInventoryFile = join(work, 'account-inventory.json');
+  writeFileSync(accountRecordsFile, JSON.stringify(accountPrepared.records));
+  writeFileSync(accountInventoryFile, JSON.stringify({ ...accountInventory, hashes: accountHashes }));
+  const accountMounts = ['--mount', `type=bind,source=${accountRecordsFile},target=/opt/records.json,readonly`,
+    '--mount', `type=bind,source=${accountInventoryFile},target=/opt/inventory.json,readonly`];
+  for (const entry of readdirSync(accountSource)) accountMounts.push('--mount', `type=bind,source=${join(accountSource, entry)},target=/root/.codex/${entry},readonly`);
+  let accounts;
+  try { accounts = JSON.parse(docker(['node', '/opt/fixture.mjs', 'account-reads'], 'discovery.mjs', accountMounts)); }
+  finally {
+    assert.deepEqual(admit(accountSource), accountInventory, 'Complete frozen source metadata preserved');
+    assert.deepEqual(fingerprint(accountSource, accountInventory), accountHashes, 'All originals preserved over container lifetime');
+  }
   result = { native: pins.native, image: pins.image, platform: pin.platform,
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports,
-    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery };
+    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery, accounts, accountPreparationRequests: accountPrepared.fixtureRequests };
 } finally {
   if (cleanupUncertain) console.error(JSON.stringify({ cleanupUncertain, container: name, retainedWork: work }));
   else { rmSync(work, { recursive: true, force: true }); assert(!existsSync(work), 'Owned work removed'); }
