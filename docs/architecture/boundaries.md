@@ -86,6 +86,20 @@ A cleanup failure returns a redacted error and does not establish that every res
 Closing does not confirm native cancellation, roll back tool effects, delete session history, or establish safe retry.
 The later domain contracts own active-work cancellation and reconciliation.
 
+Future adapters that start a native process, directly or through a native SDK, must accept a host-supplied executable path or spawn function.
+When the host supplies either, the adapter starts the native process only through it. A host launcher or remote transport can then wrap that process.
+When the host supplies the environment, the adapter copies nothing from its own environment.
+When the host supplies native configuration, the adapter passes it through and adds none from ambient locations.
+When the host supplies the environment or native configuration, any credential the adapter adds comes only from scoped authentication.
+Such adapters must state in their options whether the adapter or the host owns the native process, as for borrowed clients.
+That statement names who stops the native process and its descendants on `close`, and on any cancellation that stops it.
+Future adapters must work when the host confines the native process, or the process that loads a native SDK, to granted network endpoints and filesystem paths.
+When host configuration shows that confinement prevents a feature, the adapter reports it as `unavailable` with a reason.
+A denial first seen during an operation is an operation error.
+The adapter must not fall back to an unconfined launch, or to network or filesystem access the host did not grant.
+An input the host omits keeps the adapter's documented default.
+These are requirements on future adapters. Core defines no launcher, environment, configuration, or process ownership option.
+
 The installed consumer checks prove public typing and package boundaries.
 They do not verify cleanup idempotence, resource release, native identity validation, or native integration behavior.
 Concrete adapters require runtime tests for those promises.
