@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, copyFileSync, createReadStream, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, copyFileSync, createReadStream, lstatSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { admit, admittedPath, fingerprint, requestBudget } from './inventory.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pins = JSON.parse(readFileSync(join(here, 'pins.json'), 'utf8'));
@@ -32,11 +33,15 @@ try {
   const docker = (command, script, extraMounts = []) => {
     const mounts = ['--mount', `type=bind,source=${binary},target=/opt/codex,readonly`];
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
+    if (script === 'discovery.mjs') mounts.push('--mount', `type=bind,source=${join(here, 'inventory.mjs')},target=/opt/inventory.mjs,readonly`);
     try {
       return run('docker', ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
         '--read-only', '--pids-limit', '128', '--cpus', '2', '--memory', '768m',
         '--tmpfs', '/tmp:rw,size=128m', '--tmpfs', '/root:rw,size=64m', ...mounts, ...extraMounts,
         pins.image, 'timeout', '40', ...command]);
+    } catch (error) {
+      console.error(JSON.stringify({ containerFailure: name, stdout: error.stdout, stderr: error.stderr }));
+      throw error;
     } finally {
       try { run('docker', ['rm', '-f', name], { stdio: 'ignore', timeout: 5000 }); } catch {}
     }
@@ -85,17 +90,7 @@ try {
     }
     return entries;
   };
-  const preflight = (directory) => {
-    const entries = entriesUnder(directory);
-    let bytes = 0;
-    for (const entry of entries) {
-      const metadata = lstatSync(join(directory, entry));
-      assert(!metadata.isSymbolicLink(), 'Host rejects symlinks before native discovery');
-      assert(metadata.isFile() || metadata.isDirectory(), 'Host rejects special files');
-      bytes += metadata.isFile() ? metadata.size : 0;
-    }
-    assert(bytes < 8 * 1024 * 1024, 'Bounded authorized synthetic history');
-  };
+  const boundary = [];
   for (const mode of ['indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink']) {
     const source = join(work, mode);
     mkdirSync(join(source, 'sessions'), { recursive: true });
@@ -110,27 +105,69 @@ try {
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, mode === 'malformed' && file === malformed.path ? '{invalid-json\n' : Buffer.from(encoded, 'base64'));
     }
-    preflight(source);
+    const pathMode = ['indexed', 'unindexed', 'malformed'].includes(mode);
+    if (pathMode) {
+      writeFileSync(join(source, 'sessions', 'fixture-notes.txt'), 'Harmless synthetic auxiliary file.\n');
+      linkSync(join(source, prepared.records.find((record) => record.name === 'second').path), join(source, 'sessions', 'hardlink-alias.opaque'));
+    }
+    let inventory = admit(source);
+    const admittedHashes = fingerprint(source, inventory);
+    const inventoryFile = join(work, `${mode}-inventory.json`);
+    writeFileSync(inventoryFile, JSON.stringify(inventory));
     const extra = ['--mount', `type=bind,source=${recordsFile},target=/opt/records.json,readonly`,
-      '--mount', `type=bind,source=${outside},target=/unauthorized,readonly`];
+      '--mount', `type=bind,source=${inventoryFile},target=/opt/inventory.json,readonly`];
     if (mode === 'symlink') {
       symlinkSync(`/unauthorized/${posix.basename(unauthorized.path)}`, join(source, unauthorized.path));
       symlinkSync('/unauthorized', join(source, 'sessions', '2099'));
-      assert.throws(() => preflight(source), /Host rejects symlinks/);
+      assert.throws(() => admit(source), /Host rejects symlinks/);
+      extra.push('--mount', `type=bind,source=${outside},target=/unauthorized,readonly`);
     }
     if (mode === 'inaccessible') {
       rmSync(join(source, 'sessions'), { recursive: true });
       writeFileSync(join(source, 'sessions'), 'synthetic invalid directory');
     }
+    if (pathMode) {
+      let dispatched = 0;
+      const dispatch = () => { dispatched++; };
+      for (const token of ['../outside', outsidePath, 'sessions/../escape']) {
+        assert.throws(() => dispatch(admittedPath(source, token, inventory.entries)), /rejected|relative/);
+      }
+      const link = join(source, 'sessions', 'rejected-link');
+      symlinkSync(outsidePath, link);
+      assert.throws(() => dispatch(admittedPath(source, 'sessions/rejected-link', inventory.entries, true)), /Symlink/);
+      assert.throws(() => admit(source), /Host rejects symlinks/);
+      rmSync(link);
+      assert.throws(() => admit(source, { entries: 0 }), /entry budget/);
+      const oneRequest = requestBudget(1);
+      let admittedRequests = 0;
+      oneRequest(() => { admittedRequests++; }, {});
+      assert.throws(() => oneRequest(dispatch, {}), /request budget/);
+      assert.equal(admittedRequests, 1, 'Host mock consumes the sole request before refusal');
+      assert.equal(dispatched, 0, 'Rejected targets never reach native');
+      const alias = inventory.entries.find((entry) => entry.token === 'sessions/hardlink-alias.opaque');
+      assert.equal(inventory.entries.filter((entry) => entry.inode === alias.inode && entry.device === alias.device).length, 2);
+      boundary.push({ mode, rejectedDispatches: dispatched, hardlinkPaths: 2, admittedMockRequests: admittedRequests, admissionBudget: 'refused', requestBudget: 'refused', kind: 'host-only' });
+      assert.deepEqual(fingerprint(source, inventory), admittedHashes);
+    }
     const hashes = () => Object.fromEntries(entriesUnder(source)
       .filter((file) => lstatSync(join(source, file)).isFile())
       .map((file) => [file, createHash('sha256').update(readFileSync(join(source, file))).digest('hex')]));
+    if (pathMode) {
+      inventory = admit(source);
+      writeFileSync(inventoryFile, JSON.stringify(inventory));
+    }
     const before = hashes();
     for (const entry of readdirSync(source)) extra.push('--mount', `type=bind,source=${join(source, entry)},target=/root/.codex/${entry},readonly`);
-    discovery.push(JSON.parse(docker(['node', '/opt/fixture.mjs', mode], 'discovery.mjs', extra)));
-    assert.deepEqual(hashes(), before, 'Host source fixture preserved across entire native lifecycle');
+    try { discovery.push(JSON.parse(docker(['node', '/opt/fixture.mjs', mode], 'discovery.mjs', extra))); }
+    finally {
+      if (pathMode) {
+        assert.deepEqual(admit(source).entries.map((entry) => entry.token), inventory.entries.map((entry) => entry.token));
+        assert.deepEqual(fingerprint(source, inventory), admittedHashes, 'Admitted source hashes preserved over container lifecycle');
+      }
+      assert.deepEqual(hashes(), before, 'Host source fixture preserved across entire native lifecycle');
+    }
   }
   console.log(JSON.stringify({ native: pins.native, image: pins.image, platform: pin.platform,
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports,
-    strictNodeNextNoDOM: 'passed', behavior, discovery }, null, 2));
+    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery }, null, 2));
 } finally { rmSync(work, { recursive: true, force: true }); }
