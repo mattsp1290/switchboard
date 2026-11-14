@@ -5,6 +5,8 @@ import { capture, errorResult, failure, identity, readBounds, record, reject, st
 import { content } from './payloads.js';
 import type { NativeContent } from './payloads.js';
 import type { DeepReadonly, Json, NativeRef, ProjectionBounds, ProjectionError } from './internal.js';
+import type { TerminalFact } from './terminals.js';
+export type { PublicFailure } from './terminals.js';
 
 export interface ProjectionOptions {
   readonly threadId: string;
@@ -14,11 +16,6 @@ export interface ProjectionOptions {
   readonly bounds: ProjectionBounds;
 }
 
-const publicFailures = Object.freeze({
-  'native-failure': 'The native run failed.',
-  'transport-failure': 'The native run transport failed.',
-});
-export type PublicFailure = keyof typeof publicFailures;
 export type BasicEntityFact = { readonly owner?: NativeRef } & (
   | { readonly kind: 'text-started'; readonly message: NativeRef; readonly role: TextMessageRole; readonly name?: string }
   | { readonly kind: 'text-content'; readonly message: NativeRef; readonly delta: string }
@@ -34,10 +31,7 @@ export type BasicEntityFact = { readonly owner?: NativeRef } & (
 );
 export type BasicFact = { readonly timestamp?: number } & (
   | { readonly kind: 'run-started' }
-  | { readonly kind: 'run-finished'; readonly outcome: 'success';
-      readonly result?: Json; readonly pendingTools?: readonly NativeRef[] }
-  | { readonly kind: 'run-finished'; readonly outcome: 'cancelled' }
-  | { readonly kind: 'run-failed'; readonly failure: PublicFailure }
+  | TerminalFact
   | BasicEntityFact
 );
 export type ProjectionEvent = DeepReadonly<Event>;
@@ -75,7 +69,8 @@ type Transition =
       readonly mode: 'replace' | 'preserve' | 'delta' }
   | { readonly kind: 'start' }
   | { readonly kind: 'fail' }
-  | { readonly kind: 'finish'; readonly pending?: readonly string[] }
+  | { readonly kind: 'finish'; readonly pending?: readonly string[]; readonly interrupts?: readonly {
+      readonly id: string; readonly tool?: string; readonly owner?: string }[] }
   | { readonly kind: 'open'; readonly id: string; readonly stream: Stream }
   | { readonly kind: 'content' | 'end'; readonly id: string; readonly entityKind: StreamKind; readonly owner: string | undefined }
   | { readonly kind: 'result'; readonly id: string; readonly messageId: string; readonly owner: string | undefined };
@@ -99,40 +94,19 @@ function readOptions(value: unknown): ProjectionOptions {
 }
 
 export function encodeBasic(value: Json, options: ProjectionOptions): Encoding {
-  const fact = record(value, ['kind', 'timestamp', 'outcome', 'result', 'failure', 'pendingTools',
+  const fact = record(value, ['kind', 'timestamp',
     'owner', 'message', 'role', 'name', 'text', 'delta', 'tool', 'parentMessage', 'resultMessage', 'content', 'step']);
   const timestamp = fact.timestamp;
   if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp))) reject();
   const observed = timestamp === undefined ? {} : { timestamp };
-  const { threadId, runId } = options;
   switch (fact.kind) {
     case 'run-started':
       record(value, ['kind', 'timestamp']);
       return { transition: { kind: 'start' }, events: [{
-        type: EventType.RUN_STARTED, ...observed, threadId, runId,
+        type: EventType.RUN_STARTED, ...observed, threadId: options.threadId, runId: options.runId,
         protocolVersion: PROTOCOL_VERSION,
         ...(options.parentRunId === undefined ? {} : { parentRunId: options.parentRunId }),
       }] };
-    case 'run-finished': {
-      record(value, fact.outcome === 'success' ? ['kind', 'timestamp', 'outcome', 'result', 'pendingTools'] : ['kind', 'timestamp', 'outcome']);
-      if (fact.outcome !== 'success' && fact.outcome !== 'cancelled') reject();
-      const pending = fact.pendingTools;
-      if (pending !== undefined && !Array.isArray(pending)) reject();
-      const ids = pending === undefined ? undefined : pending.map((ref: unknown) => identity(options.sourceKey, 'tool', ref));
-      return { transition: { kind: 'finish', ...(ids === undefined ? {} : { pending: ids }) }, events: [{
-        type: EventType.RUN_FINISHED, ...observed, threadId, runId,
-        outcome: { type: fact.outcome, ...(ids === undefined ? {} : { pendingToolCallIds: ids }) },
-        ...('result' in fact && fact.result !== null ? { result: fact.result } : {}),
-      }] };
-    }
-    case 'run-failed': {
-      record(value, ['kind', 'timestamp', 'failure']);
-      const code = fact.failure;
-      if (code !== 'native-failure' && code !== 'transport-failure') reject();
-      return { transition: { kind: 'fail' }, events: [{
-        type: EventType.RUN_ERROR, ...observed, code, message: publicFailures[code],
-      }] };
-    }
     default:
       return encodeEntity(fact, options, observed);
   }
@@ -231,7 +205,18 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, k
     if ([...ledger.values()].some(entity => entity.open)) reject('invalid-order');
     const pending = [...ledger].filter(([, entity]) => entity.kind === 'tool' && entity.result === undefined).map(([id]) => id);
     if (transition.pending !== undefined && JSON.stringify(transition.pending) !== JSON.stringify(pending)) reject('identity-conflict');
-    return [];
+    const updates: [string, Entity][] = [];
+    const seen = new Set<string>();
+    for (const interrupt of transition.interrupts ?? []) {
+      if (seen.has(interrupt.id)) reject('identity-conflict');
+      seen.add(interrupt.id);
+      const tool = interrupt.tool === undefined ? undefined : ledger.get(interrupt.tool);
+      if (tool?.kind === 'tool' && tool.owner !== interrupt.owner) reject('identity-conflict');
+      for (const id of [interrupt.id, interrupt.tool, interrupt.owner]) {
+        if (id !== undefined && !ledger.has(id)) updates.push([id, { kind: 'observation', open: false }]);
+      }
+    }
+    return updates;
   }
   if (transition.kind === 'observe') return transition.owner !== undefined && !ledger.has(transition.owner)
     ? [[transition.owner, { kind: 'owner', open: false }]] : [];

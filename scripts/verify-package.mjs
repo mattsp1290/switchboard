@@ -250,6 +250,13 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   }));
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], integration);
   const aguiInvalidCases = [
+    ['interrupt-empty', "const invalid: import('@mattsp1290/switchboard/agui').TerminalFact = { kind: 'run-finished', outcome: 'interrupt', interrupts: [] };", 2322],
+    ['interrupt-wire-id', "const invalid: import('@mattsp1290/switchboard/agui').NativeInterrupt = { interrupt: 'wire', reason: '' };", 2322],
+    ['interrupt-array-schema', "const invalid: import('@mattsp1290/switchboard/agui').NativeInterrupt = { interrupt: { scope: [], id: '' }, reason: '', responseSchema: [] };", 2322],
+    ['interrupt-readonly', "declare const value: import('@mattsp1290/switchboard/agui').NativeInterrupt; value.reason = 'changed';", 2540],
+    ['usage-readonly', "declare const value: import('@mattsp1290/switchboard/agui').NativeTokenUsage; value.inputTokens = 1;", 2540],
+    ['usage-unknown', "const invalid: import('@mattsp1290/switchboard/agui').NativeTokenUsage = { privateCounter: 1 };", 2353],
+    ['usage-string', "const invalid: import('@mattsp1290/switchboard/agui').NativeTokenUsage = { inputTokens: '1' };", 2322],
     ['part-null-metadata', "const invalid: import('@mattsp1290/switchboard/agui').NativeContent = [{ type: 'text', text: 'x', metadata: null }];", 2322],
     ['event-readonly', "declare const event: Extract<ProjectionEvent, { type: 'RUN_STARTED' }>; event.threadId = 'changed';", 2540],
     ['content-readonly', "declare const event: Extract<ProjectionEvent, { type: 'TOOL_CALL_RESULT' }>; if (typeof event.content !== 'string') event.content.push({ type: 'text', text: 'changed' });", 2339],
@@ -312,6 +319,13 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     assert.match(output, /^# tests [1-9]\d*$/m, `${file} executes nonzero installed tests.`);
     process.stdout.write(output);
   }
+  const terminalCases = readFileSync(collected, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    .filter(item => item.path.startsWith('terminals/') && item.origin === 'switchboard-projection');
+  assert(terminalCases.some(item => item.value.type === 'RUN_FINISHED' && item.value.outcome?.type === 'interrupt'));
+  for (const type of ['RUN_FINISHED', 'RUN_ERROR']) {
+    assert(terminalCases.some(item => item.value.type === type && Array.isArray(item.value.usage)));
+  }
+  console.log(`Collected ${terminalCases.length} actual installed terminal-test events.`);
   process.stdout.write(run(process.execPath, [join(root, 'scripts/verify-agui-matrix.mjs'), '--emitted-events', collected]));
   console.log(`Verified ${manifest.name}@${manifest.version} with ${process.version} on ${process.platform}.`);
 } finally {
