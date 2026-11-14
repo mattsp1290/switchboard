@@ -48,12 +48,14 @@ async function scenario(factory, signal, body) {
       registerCallbackExit: (promise) => exits.push(Promise.allSettled([promise])),
     });
   } catch (error) {
-    primary = error;
+    primary = { reason: error };
   } finally {
     abort();
     signal.removeEventListener('abort', abort);
     const [acquired] = await Promise.allSettled([acquisition]);
-    if (acquired.status === 'rejected' && acquired.reason !== primary) cleanupErrors.push(acquired.reason);
+    if (acquired.status === 'rejected' && (!primary || !Object.is(acquired.reason, primary.reason))) {
+      cleanupErrors.push(acquired.reason);
+    }
     const cleanup = await Promise.allSettled([
       ...exits.map(async (settlement) => {
         const [result] = await settlement;
@@ -64,11 +66,9 @@ async function scenario(factory, signal, body) {
     cleanupErrors.push(...cleanup.filter((result) => result.status === 'rejected').map((result) => result.reason));
   }
   if (cleanupErrors.length) {
-    const failure = new AggregateError(cleanupErrors, 'Scenario cleanup failed.');
-    if (!primary) throw failure;
-    primary.cause = failure;
+    throw new AggregateError(primary ? [primary.reason, ...cleanupErrors] : cleanupErrors, 'Scenario cleanup failed.');
   }
-  if (primary) throw primary;
+  if (primary) throw primary.reason;
 }
 
 function simulatedHost(grants) {

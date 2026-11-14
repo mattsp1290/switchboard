@@ -5,6 +5,53 @@ import { createFakeFixture } from './harness/fake.mjs';
 
 for (const [name, contract] of Object.entries(contracts)) {
   test(`fake qualification: ${name}`, { timeout: 10_000 }, (t) => contract(createFakeFixture, t.signal));
+
+  test(`qualification preserves failed acquisition: ${name}`, async (t) => {
+    for (const reason of [undefined, null, false, 0, '']) {
+      let attempts = 0;
+      await assert.rejects(contract(async () => { attempts++; throw reason; }, t.signal), (error) => {
+        assert.equal(error, reason);
+        return true;
+      });
+      assert.equal(attempts, 1);
+    }
+  });
+
+  test(`qualification preserves falsy abort: ${name}`, async () => {
+    for (const reason of [null, false, 0, '']) {
+      let disposed = 0;
+      await assert.rejects(contract(async () => {
+        const real = createFakeFixture();
+        return { ...real, async dispose() { disposed++; await real.dispose(); } };
+      }, AbortSignal.abort(reason)), (error) => {
+        assert.equal(error, reason);
+        return true;
+      });
+      assert.equal(disposed, 1);
+    }
+  });
+
+  test(`qualification retains primary and cleanup failures: ${name}`, async (t) => {
+    const cleanup = new Error('Dispose failed.');
+    for (const reason of [undefined, null, false, 0, '', 'primary', Object.freeze(new Error('Primary failure.'))]) {
+      let disposed = 0;
+      await assert.rejects(contract(() => {
+        const real = createFakeFixture();
+        return {
+          ...real,
+          connect() { throw reason; },
+          async dispose() { disposed++; await real.dispose(); throw cleanup; },
+        };
+      }, t.signal), (error) => {
+        assert.ok(error instanceof AggregateError);
+        assert.equal(error.errors.length, 2);
+        assert.equal(error.errors[0], reason);
+        assert.equal(error.errors[1], cleanup);
+        return true;
+      });
+      assert.equal(disposed, 1);
+    }
+  });
 }
 
 function extraSendFactory(tracker) {
