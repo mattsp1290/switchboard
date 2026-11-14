@@ -24,6 +24,7 @@ It checks public contract types, installed runtime helpers, blocked private impo
 The `tests/core/*.test.ts` fixtures compile against the installed tarball and are never executed.
 The `tests/core/*.consumer.mjs` fixtures run with `node --test` inside that installed consumer.
 Source compilation targets ES2022 with ES2024 library declarations for the Node 24 fixture helpers.
+ES2024 runtime APIs are also available to core source under the supported Node 24 runtime.
 Installed consumer compilation uses ES2022 and Node declarations without DOM libraries.
 The script removes its temporary files on success or failure.
 Run `npm run build` to compile separately. The build removes `dist` before compilation. `npm run clean` removes the local build.
@@ -54,6 +55,9 @@ for (const [name, contract] of Object.entries(contracts)) {
 
 `QualificationFactory` accepts synchronous or asynchronous fixture acquisition.
 Each fixture supplies immutable samples, a connection factory, controlled faults, and idempotent asynchronous disposal.
+Each connection's event stream admits exactly two observers and two queued or active events per observer.
+Retiring callbacks retain their observer slots. Fixtures must not consume observer slots themselves.
+These bounds match `createEventStream({ maxObservers: 2, capacity: 2 })`.
 The groups cover uncertainty, sessions, interaction, and events. They retain separate result, effect, and delivery assertions.
 These controlled checks do not qualify native engines, credentials, or durable host admission.
 

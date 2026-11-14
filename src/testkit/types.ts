@@ -1,6 +1,7 @@
 import type {
-  AdapterIdentity, DispatchIdentity, DispatchSnapshot, EventObserver, InteractionContinuation,
-  Outcome, PendingApproval, PendingInteraction, ReconciliationHandle, SessionReference, ToolTarget,
+  AdapterIdentity, DispatchSnapshot, EventObserver, FreshDispatchOptions, InteractionContinuation,
+  InteractionError, NativeDispatchObservation, Outcome, PendingApproval, PendingInteraction,
+  ReconciliationHandle, SessionReference, SessionReferenceError, ToolTarget,
 } from '@mattsp1290/switchboard';
 
 export interface QualificationResult {
@@ -13,15 +14,34 @@ export interface QualificationRequest {
   readonly continuation?: unknown;
 }
 
-export type RecordIntent = (identity: DispatchIdentity, signal: AbortSignal) => void | PromiseLike<void>;
+export type RecordIntent = FreshDispatchOptions<QualificationResult>['recordIntent'];
+
+export interface QualificationEvent {
+  readonly kind: 'progress';
+  readonly sequence: number;
+}
+
+export interface QualificationSubmitError {
+  readonly code: SessionReferenceError['code'] | InteractionError['code']
+    | 'missing-session' | 'stale-interaction' | 'busy' | 'closed';
+}
+
+export type RecoverableSnapshot = DispatchSnapshot<QualificationResult> & {
+  readonly observation: NativeDispatchObservation<QualificationResult>;
+};
 
 export interface QualificationConnection {
   readonly identity: AdapterIdentity;
-  readonly events: EventObserver<{ readonly kind: 'progress'; readonly sequence: number }>;
+  /**
+   * A fresh stream equivalent to createEventStream({ maxObservers: 2, capacity: 2 }).
+   * Retiring callbacks retain observer slots. Capacity includes the active callback.
+   * Fixtures must not consume observer slots themselves.
+   */
+  readonly events: EventObserver<QualificationEvent>;
   readonly submit: (request: QualificationRequest, signal: AbortSignal) => Promise<Outcome<
-    DispatchSnapshot<QualificationResult>, { readonly code: string }
+    DispatchSnapshot<QualificationResult>, QualificationSubmitError
   >>;
-  readonly recover: (saved: DispatchSnapshot<QualificationResult>) => ReconciliationHandle<QualificationResult>;
+  readonly recover: (saved: RecoverableSnapshot) => ReconciliationHandle<QualificationResult>;
   readonly close: () => Promise<Outcome<void, { readonly code: string }>>;
 }
 

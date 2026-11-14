@@ -106,6 +106,7 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
   for (const name of ['uncertainty', 'sessions', 'interaction', 'events']) {
     assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
+    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - async fake qualification: ${RegExp.escape(name)}$`, 'm'));
   }
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
@@ -160,12 +161,14 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
   if (context.parentURL?.includes('/dist/testkit/')) {
-    assert(specifier === '${manifest.name}' || specifier.startsWith('./') || specifier.startsWith('node:'), 'Testkit must use the public core entry.');
-    assert(!specifier.includes('/agui'), 'Testkit cannot import AG-UI.');
-    assert.notEqual(specifier, 'node:test', 'Testkit cannot import a test runner.');
+    assert(resolved.url.startsWith('node:') || resolved.url.startsWith(new URL('./', context.parentURL).href)
+      || resolved.url === new URL('../index.js', context.parentURL).href, 'Testkit must use the public core entry.');
+    assert(!resolved.url.includes('/agui/'), 'Testkit cannot import AG-UI.');
+    assert.notEqual(resolved.url, 'node:test', 'Testkit cannot import a test runner.');
   }
-  return nextResolve(specifier, context);
+  return resolved;
 } });
 const { contracts, createFakeFixture } = await import('${manifest.name}/testkit');
 assert.deepEqual(Object.keys(contracts), ['uncertainty', 'sessions', 'interaction', 'events']);
@@ -247,6 +250,8 @@ for (const [name, contract] of Object.entries(contracts)) {
     ['fixture-missing-dispose', `${testkitImports} const { dispose, ...fixture } = createFakeFixture(); const invalid: QualificationFixture = fixture;`, 2741],
     ['fixture-publish-only', `${testkitImports} const fixture = createFakeFixture(); const connection = fixture.connect(() => {}); const invalid: QualificationConnection = { ...connection, events: { publish() {} } };`, 2353],
     ['fixture-recovery-run', `${testkitImports} declare const saved: Parameters<QualificationConnection['recover']>[0]; createFakeFixture().connect(() => {}).recover(saved).run();`, 2339],
+    ['fixture-submit-unknown-code', `${testkitImports} const fixture = createFakeFixture(); const connection = fixture.connect(() => {}); const invalid: QualificationConnection = { ...connection, async submit() { return { kind: 'error', error: { code: 'conflict' } }; } };`, 2322],
+    ['fixture-recovery-undispatched', `${testkitImports} const connection = createFakeFixture().connect(() => {}); declare const saved: Parameters<QualificationConnection['recover']>[0]; connection.recover({ ...saved, observation: { kind: 'not-dispatched', reason: 'aborted' } });`, 2322],
   ];
   const invalidCases = [
     ...testkitInvalidCases,

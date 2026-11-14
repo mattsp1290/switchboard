@@ -204,7 +204,8 @@ export function createFakeFixture() {
 
     /** @type {QualificationConnection['recover']} */
     function recover(saved) {
-      if (saved.observation.kind === 'not-dispatched') throw new TypeError('Cannot recover undispatched work.');
+      const snapshot = /** @type {import('@mattsp1290/switchboard').DispatchSnapshot<QualificationResult>} */ (saved);
+      if (snapshot.observation.kind === 'not-dispatched') throw new TypeError('Cannot recover undispatched work.');
       return createDispatchOperation({
         mode: 'recovery', identity: saved.identity, previous: saved.observation, reconcileNative: lookup,
       });

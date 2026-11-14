@@ -9,14 +9,7 @@ export const createFixture: QualificationFactory = async () => {
     samples: fixture.samples,
     controls: fixture.controls,
     connect(recordIntent): QualificationConnection {
-      const connection = fixture.connect(recordIntent);
-      connection.events.subscribe((event, signal) => {
-        const sequence: number = event.sequence;
-        const aborted: boolean = signal.aborted;
-        void sequence;
-        void aborted;
-      });
-      return connection;
+      return fixture.connect(recordIntent);
     },
     dispose: fixture.dispose,
   };

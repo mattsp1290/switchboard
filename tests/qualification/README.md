@@ -9,10 +9,20 @@ To qualify another controlled driver, supply an immediate or asynchronous `Quali
 The entry exports `QualificationFixture` and its connection, request, result, controls, and counter types.
 The compiler checks the fake implementation against those declarations.
 The installed consumer checks valid fixture authors and rejects missing cleanup, publish-only events, and recovery dispatch.
+It runs all four groups with both immediate and asynchronous fixture acquisition.
 
 The factory returns immutable `samples`, `connect(recordIntent)`, `controls`, and idempotent `dispose()`.
 Each connection exposes `identity`, subscribe-only `events`, `submit(request, signal)`, `recover(saved)`, and `close()`.
 Requests contain `session`, `hostOperationId`, and an optional `continuation`. Recovery exposes only `reconcile(signal)`.
+Recovery accepts only snapshots with a native observation, excluding `not-dispatched`.
+Each connection's event stream must match `createEventStream({ maxObservers: 2, capacity: 2 })`.
+It admits exactly two observers, including retiring callbacks, and two queued or active events per observer.
+Fixtures must not consume observer slots themselves.
+`counts()` returns a plain object with exactly the four declared counter keys.
+Authoritative lookup evidence has a non-null `nativeOperation` receipt.
+Its observation namespace matches the receipt namespace, and its observation `schemaVersion` is `1`.
+The caller's signal bounds scenario waits. Acquisition itself receives no signal and must settle independently.
+Cleanup waits for acquisition before disposing the fixture, so a factory that never settles also prevents cleanup from settling.
 The retained backend owns accepted records, pending interactions, and session reservations until native completion.
 The simulated host owns fixed grants and in-memory command admission across reconnects.
 Completion gates expose `entered`, `release()`, and `completed`; connection close does not release native work.
