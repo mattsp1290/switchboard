@@ -6,7 +6,7 @@ import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export function command(executable, args, cwd, env, evidence, timeout = 120_000) {
-  const result = spawnSync(executable, args, { cwd, env, encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync(executable, args, { cwd, env, encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 });
   writeFileSync(evidence, JSON.stringify({ executable, args, cwd, ...result, error: result.error?.message }, null, 2));
   return result;
 }
