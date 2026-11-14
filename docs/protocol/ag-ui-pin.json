@@ -33,7 +33,7 @@
   },
   "classification": {
     "protocol": "represented-by-canonical-schema",
-    "switchboardMapping": "basic-values-and-messages",
+    "switchboardMapping": "basic-values-messages-and-terminals",
     "nativeAdapters": {
       "claude-direct": "unqualified",
       "claude-litellm": "unqualified",

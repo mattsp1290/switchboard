@@ -5,8 +5,8 @@ The frozen `aguiProtocol` descriptor exposes these pins and the implemented life
 `createAguiProjection` implements the per-run fact projection design through synchronous `accept(fact)` and idempotent `close()`.
 It maps observed run start, success, clean cancellation, and fixed public native or transport failures, including failures before start and after finish.
 Host thread, run, and parent IDs are preserved verbatim. `sourceKey` is an authorized public namespace supplied by the host, never a session credential.
-Scoped native identity encoding covers text, tools, results, steps, activities and snapshots.
-State, activity, raw and custom values are implemented. Terminals, reasoning and subagent lifecycle mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
+Scoped native identity encoding covers text, tools, results, steps, activities, snapshots and interrupts.
+State, activity, raw, custom, interrupt terminal and usage values are implemented. Reasoning and subagent lifecycle mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
 
 Message snapshots preserve all seven canonical roles, nested tool calls, encryption, metadata, tool errors and ordered content parts.
 `NativeMessage` derives from the pinned SDK union and replaces only scoped message, owner, call and part references.
@@ -21,6 +21,31 @@ Current activity can still coexist with immutable text or result evidence retain
 Snapshot calls and tool messages never create pending calls or answer actual calls. Actual duplicate results remain rejected.
 `maxEntities` charges unique message, tool, step and owner identities once per run, including inferred parents and omitted snapshots.
 Nested snapshot call IDs consume payload/work bounds but do not enter the actual call ledger. All state updates and output capture commit together.
+
+`NativeInterrupt` derives semantic fields from SDK `Interrupt`, replacing its ID, tool link and owner with `NativeRef` values.
+An interrupt finish requires a nonempty readonly tuple with unique interrupt IDs. All finish outcomes require closed actual streams.
+A linked actual tool must have the same owner. Unknown tools, attribution-only owners and tool-less interrupts are valid.
+Only explicit reference positions are rewritten. Metadata and response schemas remain opaque bounded JSON objects; expiry strings are not interpreted.
+Unique new interrupt, tool and owner references consume `maxEntities`. The full expanded output consumes the output budget.
+Cross-event announced and suspended subagent consistency belongs to the planned subagent lifecycle stage.
+
+`NativeTokenUsage` is the readonly SDK `TokenUsage` shape. Adapters supply already-normalized canonical counts for the run.
+Input includes disjoint cache-read and cache-write subsets. Output includes reasoning. Total equals input plus output when both are supplied.
+Partial supplied counts establish lower bounds. Counts and feasible combined totals must fit nonnegative safe integers.
+The mapper preserves omission, zero, empty arrays, empty objects, labels and row order without aggregation or inferred counts.
+Fully identified provider/model pairs must be unique, including empty-string labels.
+Rows with either label omitted remain independent observations under local mapper policy because their pair identity is unknown.
+Usage is optional on every finish and safe failure, including idle and late failures. No usage accumulator is retained.
+
+A provisional mid-run observation uses the existing custom envelope, for example:
+
+```ts
+projection.accept({ kind: 'custom', namespace: 'example.usage', schemaVersion: '1', name: 'usage-observed',
+  publicPayload: { provisional: true, interpretation: 'delta', usage: [{ inputTokens: 3 }] } });
+```
+
+The example contract defines `delta` as counts since the preceding observation and `cumulative` as counts observed so far.
+Both remain provisional observations. Neither changes terminal accounting; the terminal fact supplies its own normalized usage.
 
 Each actor starts idle. A local input, ordering, or budget failure emits nothing and permanently faults that actor.
 Only an observed native failure emits `RUN_ERROR`; nothing follows that event on the same actor.
