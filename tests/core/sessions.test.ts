@@ -61,6 +61,7 @@ export function pageState(page: SessionDiscoveryPage): string {
     case 'complete': return 'complete';
     case 'truncated': return page.reason;
     case 'cancelled': return 'cancelled';
+    case 'failed': return page.code;
     default: { const exhaustive: never = page; return exhaustive; }
   }
 }
@@ -91,6 +92,8 @@ export const observedPages: readonly SessionDiscoveryPage[] = [
   { ...observedPage, kind: 'truncated', reason: 'examined' },
   { ...observedPage, kind: 'truncated', reason: 'duration' },
   { ...observedPage, kind: 'cancelled' },
+  { ...observedPage, kind: 'failed', code: 'inaccessible' },
+  { ...observedPage, kind: 'failed', code: 'native-failure' },
 ];
 for (const page of observedPages) {
   const diagnostics: readonly SessionDiscoveryDiagnostic[] = page.diagnostics;

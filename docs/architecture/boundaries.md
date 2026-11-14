@@ -112,7 +112,7 @@ The result limit cannot exceed the examined-entry limit. Validation returns a fr
 Adapters enforce all budgets and stop cooperatively on abort. They count each examined candidate, including filtered, corrupt, or inaccessible entries.
 They remain within authorized resolved roots and symlink boundaries and read only supported native discovery sources.
 Discovery reports skipped corrupt and inaccessible counts only for independently established classifications.
-Pages distinguish complete, truncated by a named budget, and cancelled results. A complete empty page differs from an interrupted empty page.
+Pages distinguish complete, truncated by a named budget, cancelled, and failed results. A complete empty page differs from an interrupted empty page.
 Every page requires `diagnostics`, with `[]` when none was observed. All diagnostic and termination combinations are valid.
 `complete` means the adapter exhausted its authorized enumeration, including its qualified filters and candidate observations.
 It does not mean every candidate succeeded. Neither empty diagnostics nor native list exhaustion proves full native coverage, compatibility, history validity, or resume safety.
@@ -133,16 +133,26 @@ Core types cannot prove token provenance, sanitize strings, reject aliased extra
 `serializeDiagnostic` retains its existing provenance rules and redacts these unowned records.
 Each examined candidate contributes at most one diagnostic, so `diagnostics.length <= examined <= bounds.maxExamined`.
 The adapter enforces nonblank control-free tokens within `sessionLimits.identifierLength`, result limits, time limits, and abort together.
-It retains all accumulated sessions and diagnostics through completion, every named truncation, and cancellation. It never prunes earlier diagnostics to fit a later stop.
+It retains all settled sessions, examined and skipped counts, and diagnostics through completion, every named truncation, cancellation, and fatal failure. It never prunes earlier diagnostics to fit a later stop.
 A settled failed inspection is recorded before a later abort or budget check. Cancellation alone creates no failed-file diagnostic.
 These partial pages remain successful outer outcomes. Outer `native-failure`, `cancelled`, or `bounds-exceeded` errors cannot discard their observations.
 Admission failures before useful discovery retain the existing outer errors, including scope-wide `inaccessible` failures.
-Fatal scope-wide failures after observations need separate design before adapter support. Additional byte or depth termination reasons also require separate scope.
+A fatal discovery failure returns a retained `failed` page with required `sessions`, `examined`, `skipped`, and `diagnostics` fields.
+Its fixed `code` is `inaccessible` only for an established access failure. Generic native, process, or transport failure uses `native-failure`.
+Neither code carries native error objects, prose, paths, native IDs, or account data. A fatal failure alone establishes no corrupt or inaccessible file count.
+An empty failed page is valid when no observation settled. It requires no fabricated session, diagnostic, or positive count.
+The adapter records a settled fatal condition before considering a later abort. That later abort cannot replace the failed ending.
+If abort settles while a native operation remains unresolved, cancellation can settle first. Its later failure creates no failed-file diagnostic by itself.
+Adapters own event arbitration, outstanding operations, and cleanup. Cleanup failure after useful work also retains observations in a failed page, never an outer error.
+A cleanup failure does not establish that every owned resource terminated. Additional byte or depth termination reasons require separate scope.
 
 Inspection reports available, absent, busy, or incompatible. Inspection cancellation or exhausted budgets return `cancelled` or `bounds-exceeded` errors.
 Neither discovery nor inspection acquires a lease. A later resume operation rechecks native availability before use.
 The installed session tests verify envelope validation, budget validation, typed outcomes, retained observations, and diagnostic separation from session handles.
-Controlled consumers prove representation and handling, not native discovery or adapter budget enforcement. Native discovery and resume remain adapter qualification obligations.
+The installed controlled consumer accumulates observations, handles a rejected operation, and checks both fatal-before-abort and abort-before-failure settlement orders.
+These checks prove that consumer's representation and handling. Core supplies no production discovery accumulator or native event arbitration.
+Native fatal process and transport faults, cleanup failure, access-denied classification, resource release, and adapter budget enforcement still need adapter runtime qualification.
+Native discovery and resume remain adapter qualification obligations.
 
 ## Event delivery
 

@@ -171,6 +171,7 @@ export type SessionDiscoveryPage = {
   | { readonly kind: 'complete' }
   | { readonly kind: 'truncated'; readonly reason: 'results' | 'examined' | 'duration' }
   | { readonly kind: 'cancelled' }
+  | { readonly kind: 'failed'; readonly code: 'inaccessible' | 'native-failure' }
 );
 
 export interface SessionOperationError {
