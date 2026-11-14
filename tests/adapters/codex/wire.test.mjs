@@ -96,17 +96,18 @@ test('wire rejects invalid UTF-8, empty records, invalid JSON and truncated EOF 
     assert.deepEqual(envelopes, []);
   }
 });
-test('wire resets before reentrant delivery and stops on callback close or end', () => {
-  for (const terminal of ['close', 'end']) {
+test('wire refuses reentrant input and permits callback close or end', () => {
+  for (const terminal of ['push', 'close', 'end']) {
     const seen = [];
     const { reader, faults } = capture({ onEnvelope: (entry) => {
       seen.push(entry.notification.method);
-      if (seen.length === 1) reader.push(jsonLine({ method: 'reentrant' }));
-      else reader[terminal]();
+      reader[terminal](jsonLine({ method: 'reentrant' }));
     } });
-    reader.push(Buffer.concat([jsonLine({ method: 'first' }), jsonLine({ method: 'late' })]));
+    const push = () => reader.push(Buffer.concat([jsonLine({ method: 'first' }), jsonLine({ method: 'late' })]));
+    if (terminal === 'push') assert.throws(push, /Reentrant wire push/);
+    else push();
     reader.push(jsonLine({ method: 'later' }));
-    assert.deepEqual(seen, ['first', 'reentrant']);
+    assert.deepEqual(seen, ['first']);
     assert.deepEqual(faults, []);
   }
   const { reader, faults } = capture();
@@ -117,8 +118,13 @@ test('wire resets before reentrant delivery and stops on callback close or end',
 });
 test('wire leaves consumer exceptions unchanged and never labels them decoding faults', () => {
   const failure = new Error('consumer failure');
-  const callback = capture({ onEnvelope: () => { throw failure; } });
-  assert.throws(() => callback.reader.push(jsonLine({ method: 'x' })), (error) => error === failure);
+  let delivered = 0;
+  const callback = capture({ onEnvelope: () => { delivered++; throw failure; } });
+  assert.throws(() => callback.reader.push(Buffer.concat([jsonLine({ method: 'x' }), jsonLine({ method: 'y' })])),
+    (error) => error === failure);
+  callback.reader.push(jsonLine({ method: 'z' }));
+  callback.reader.end();
+  assert.equal(delivered, 1, 'consumer exception closes the reader');
   assert.deepEqual(callback.faults, []);
   const fault = capture({ onFault: () => { throw failure; } });
   assert.throws(() => fault.reader.push(Buffer.from('\n')), (error) => error === failure);

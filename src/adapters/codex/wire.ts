@@ -97,6 +97,7 @@ export function createWireReader(options: {
   validateBytes(maxChunkBytes);
   let frame: Uint8Array | undefined = Buffer.allocUnsafe(maxFrameBytes);
   let length = 0;
+  let delivering = false;
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   const close = () => { frame = undefined; length = 0; };
   const fault = (reason: WireFault) => {
@@ -112,6 +113,7 @@ export function createWireReader(options: {
     },
     push: (bytes) => {
       if (!frame) return;
+      if (delivering) { close(); throw new Error('Reentrant wire push'); }
       if (bytes.length > maxChunkBytes) { fault('input-overflow'); return; }
       let offset = 0;
       while (offset < bytes.length && frame) {
@@ -128,7 +130,10 @@ export function createWireReader(options: {
         catch { fault('malformed-frame'); return; }
         length = 0;
         if (!envelope) { fault('invalid-envelope'); return; }
-        onEnvelope(envelope);
+        delivering = true;
+        try { onEnvelope(envelope); }
+        catch (error) { close(); throw error; }
+        finally { delivering = false; }
       }
     },
   };

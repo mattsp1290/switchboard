@@ -28,7 +28,7 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   };
   const fail = (error) => { failure ??= error; reader.close(); child.kill('SIGKILL'); };
   const reader = createWireReader({ maxFrameBytes, maxChunkBytes: 2097151,
-    onFault: (fault) => fail(new Error(faultMessages[fault])),
+    onFault: (fault) => fail(new Error(faultMessages[fault] ?? `Native wire fault: ${fault}`)),
     onEnvelope: (envelope) => {
       if (envelope.kind === 'reply') replies.set(envelope.envelope.id, envelope.envelope.raw);
       else if (envelope.kind === 'request') fail(new Error('Unexpected native request'));
@@ -50,11 +50,13 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
     else if (!failure) reader.push(chunk);
   });
   child.stdout.once('end', () => reader.end());
-  const send = (value) => {
+  child.stdout.once('error', fail);
+  const encode = (value) => {
     const frame = encodeEnvelope(value, maxFrameBytes);
     if (!frame) { fail(new Error('Invalid native outgoing envelope')); throw failure; }
-    child.stdin.write(frame);
+    return frame;
   };
+  const send = (value) => child.stdin.write(encode(value));
   const ready = () => {
     if (failure) throw failure;
     assert(!stopping && !closed && child.exitCode === null && child.signalCode === null, stderr || 'Native process closed');
@@ -62,11 +64,13 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   const rpc = async (method, params) => {
     ready();
     assert(sequence < 128, 'Bounded protocol request count');
-    const id = ++sequence;
+    const id = sequence + 1;
     const observation = { request: { id, method, params } };
+    const frame = encode(observation.request);
+    sequence = id;
     transcript.push(observation);
     retainProgress({ request: observation.request });
-    send(observation.request);
+    child.stdin.write(frame);
     observation.reply = await until(() => { ready(); return replies.get(id); }, method);
     retainProgress({ reply: observation.reply });
     return observation.reply;

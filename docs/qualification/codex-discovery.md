@@ -107,7 +107,7 @@ The observed arm64 run inspected nine admitted files in each path mode. Indexed 
 
 ## Qualification lifecycle
 
-The current discovery variants share `client.mjs`. It rejects malformed and nonobject output, stdout overflow, asynchronous process and stdin errors, and requests beyond 128 before dispatch. Shutdown waits for the process `close` event and drained stdio, closes the reader, then rejects any latched protocol or transport failure, including final-drain faults. After six seconds it sends SIGKILL and waits at most six more seconds for close. Helper imports perform no native or daemon operation.
+The current discovery variants share `client.mjs`. It rejects malformed, non-UTF-8, invalid-envelope, oversized-frame and truncated-EOF output, stdout overflow, invalid outgoing envelopes, asynchronous process, stdin and stdout errors, and requests beyond 128 before dispatch. Shutdown waits for the process `close` event and drained stdio, closes the reader, then rejects any latched protocol or transport failure, including final-drain faults. After six seconds it sends SIGKILL and waits at most six more seconds for close. Helper imports perform no native or daemon operation.
 
 The qualifier uses `lifecycle.mjs` for every named container. Successful run or removal supplies operation evidence. An independent bounded inventory must also omit the exact name. Failed creation plus failed removal plus empty inventory remains uncertain because daemon-side creation may arrive late. No uncertain creation is retried. Failed execution still fails after confirmed cleanup. Bounded partial stdout and stderr survive failure.
 

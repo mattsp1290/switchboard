@@ -7,12 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
+import { clientWireSource } from './codex-wire-source.mjs';
 
 const hook = registerHooks({ resolve(specifier, context, next) {
-  if (specifier === '../../dist/adapters/codex/wire.js'
-    && context.parentURL === new URL('../../spikes/codex-native/client.mjs', import.meta.url).href) {
-    return { url: new URL('../../src/adapters/codex/wire.ts', import.meta.url).href, shortCircuit: true };
-  }
+  const wire = clientWireSource(specifier, context);
+  if (wire) return wire;
   if (['node:fs', 'node:http', 'node:child_process'].includes(specifier) && /codex-native\/(discovery|history-copy|inventory|client)\.mjs/.test(context.parentURL)) {
     return { url: new URL('./codex-history-boundary.mjs', import.meta.url).href, shortCircuit: true };
   }
@@ -87,7 +86,12 @@ async function discovery({ mode = 'account-reads', sidecars = ['-wal', '-shm'], 
       if (method === 'turn/start') child.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { threadId: active.id, turn: { id: active.witness.completedTurnId, status: 'completed' } } })}\n`);
       done();
     } });
-    child.kill = (signal) => { child.signalCode = signal; setImmediate(() => { child.stdout.end(); child.stderr.end(); child.emit('close'); }); return true; };
+    child.stdout.once('end', () => { child.stderr.end(); setImmediate(() => child.emit('close')); });
+    child.kill = (signal) => {
+      child.signalCode = signal;
+      setImmediate(() => { if (!child.stdout.writableEnded) child.stdout.end(); });
+      return true;
+    };
     return child;
   } };
   const saved = { argv: process.argv, exitCode: process.exitCode, log: console.log, write: process.stderr.write };
