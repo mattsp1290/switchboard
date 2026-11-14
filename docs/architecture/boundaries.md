@@ -5,6 +5,7 @@ The foundation supplies public adapter contracts, session envelope validation, b
 Native adapters and native session discovery remain future work.
 The private core package has no mandatory runtime dependencies.
 The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
+The optional `./testkit` entry supplies controlled qualification scenarios without an AG-UI peer.
 
 ## Host ownership
 
@@ -27,6 +28,8 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 `src/index.ts` exports core contracts and helpers without importing AG-UI.
 `src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
+`src/testkit/index.ts` supplies the optional `./testkit` entry with controlled qualification groups and a reference fake.
+The root entry never loads the testkit. These checks do not qualify native engines, credentials, or durable host admission.
 `createAguiProjection` maps observed lifecycle, text, tool, content, step and reasoning facts through one bounded per-run actor.
 Its frozen `aguiProtocol` descriptor identifies basic, value, message snapshot, terminal payload, reasoning and subagent lifecycle support with no planned output categories.
 The exact 98-definition disposition audit requires actual installed output for every implemented event and all five child terminal variants.
@@ -43,6 +46,13 @@ The following directories describe source ownership. Core contracts live in `src
 | `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
 | `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
+| `src/testkit/` | Controlled qualification scenarios and reference fake for tests | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
+
+AgentUI keeps its separately qualified production core while adopting a newer testkit as a development dependency under an npm alias.
+The aliased testkit must use its own artifact's public core at runtime and in declarations, even when an older canonical core is installed.
+Production pruning must remove the development alias while retaining the qualified core.
+The package gate checks the standalone alias; AgentUI's consumer qualification checks coexistence and pruning against its pinned production artifact.
+Relative public-barrel imports keep this identity within the aliased artifact.
 
 Native adapters need their own explicit entry points when implemented.
 AG-UI imports only the SDK main entry. Optional Zod and SDK schemas are not integration runtime dependencies.

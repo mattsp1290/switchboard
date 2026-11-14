@@ -1,24 +1,16 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
+import { run, runNpm, testEnvironment } from './support/exec.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const npm = process.env.npm_execpath;
-assert(npm, 'Run this check with npm run verify:package.');
-
-function run(command, args, cwd = root, env = process.env) {
-  return execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-}
-
-function runNpm(args, cwd = root) {
-  return run(process.execPath, [npm, ...args], cwd);
-}
 
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
@@ -59,6 +51,7 @@ try {
   assert.deepEqual(installedManifest.exports, {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
     './agui': { types: './dist/agui/index.d.ts', import: './dist/agui/index.js' },
+    './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
   });
   assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4' });
   assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true } });
@@ -68,12 +61,18 @@ try {
 
   writeFileSync(join(consumer, 'runtime.mjs'), `
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import * as switchboard from '${manifest.name}';
+import { createRequire, registerHooks } from 'node:module';
+const testkitPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/testkit/')).href)};
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  assert(!resolved.url.startsWith(testkitPrefix), 'Core cannot import the testkit.');
+  return resolved;
+} });
+const switchboard = await import('${manifest.name}');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
-for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]))}) {
+for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
 `);
@@ -87,23 +86,11 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
-  cpSync(join(root, 'tests/qualification'), join(consumer, 'qualification'), { recursive: true });
-  const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
-    .sort().map((file) => `qualification/${file}`);
-  assert(qualificationFixtures.length > 0, 'Installed qualification consumers exist.');
-  const runtimeEnvironment = { ...process.env };
-  delete runtimeEnvironment.NODE_TEST_CONTEXT;
-  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures, ...qualificationFixtures], consumer, runtimeEnvironment);
+  mkdirSync(join(consumer, 'qualification'));
+  copyFileSync(join(root, 'tests/qualification/host-consumers.mjs'), join(consumer, 'qualification/host-consumers.mjs'));
+  const runtimeEnvironment = testEnvironment();
+  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
-  const { contracts } = await import(new URL('../tests/qualification/harness/contracts.mjs', import.meta.url));
-  for (const name of Object.keys(contracts)) {
-    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
-  }
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects effect-derived delivery$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
   for (const name of [
     'Crew reconstructs persisted command ownership',
     'AgentUI keeps view and command ownership separate',
@@ -139,6 +126,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   const compilerManifest = JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8'));
   const compiler = join(root, 'node_modules/typescript', compilerManifest.bin.tsc);
   const coreTypes = run(process.execPath, [compiler, '-p', 'tsconfig.json', '--listFilesOnly'], consumer);
+  assert(!coreTypes.includes('/testkit/'), 'Root declarations do not reference the testkit.');
   assert(!coreTypes.includes('/agui/'), 'Root declarations do not reference the integration.');
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
@@ -146,6 +134,9 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     allowedFiles: checkedFixtures.map(file => join(consumer, file)),
   });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
+
+  verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
+    compilerOptions: consumerConfig.compilerOptions });
 
   const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;
   const discoveryInvalidCases = [
@@ -183,6 +174,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     ['page-diagnostics-push', "observedPage.diagnostics.push(fileDiagnostic);", 2339],
   ].map(([name, source, code]) => [`session-discovery-${name}`, `${discoveryImports} ${source}`, code]);
   const invalidCases = [
+    ...testkitInvalidCases(manifest.name),
     ...discoveryInvalidCases,
     ['unnarrowed-capability', 'catalog.api;', 2339],
     ['unsupported-api', "if (catalog.kind === 'unsupported') catalog.api;", 2339],

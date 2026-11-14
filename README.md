@@ -38,6 +38,25 @@ Three canonical chunk kinds normalize to explicit stream events. Input and capab
 
 The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
 The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
+The optional `@mattsp1290/switchboard/testkit` entry exports reusable controlled qualification groups and a reference fake.
+It requires no AG-UI peer and registers no tests on import. The root module does not load it.
+Register its groups in your test runner and provide the runner's bounded cancellation signal.
+
+```js
+import test from 'node:test';
+import { contracts, createFakeFixture } from '@mattsp1290/switchboard/testkit';
+
+for (const [name, contract] of Object.entries(contracts)) {
+	test(name, { timeout: 10_000 }, (t) => contract(createFakeFixture, t.signal));
+}
+```
+
+Fixture obligations are documented on `QualificationFixture`, `QualificationConnection`, and `QualificationFactory`
+in the shipped [testkit declarations](dist/testkit/types.d.ts).
+The source is `src/testkit/types.ts`.
+The groups cover uncertainty, sessions, interaction, and events with separate result, effect, and delivery assertions.
+These controlled checks do not qualify native engines, credentials, or durable host admission.
+
 Native tools and credentials are unnecessary for this foundation check.
 No native integration or direct or LiteLLM route is qualified by this package check.
 
