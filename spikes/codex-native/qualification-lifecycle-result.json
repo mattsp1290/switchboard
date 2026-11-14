@@ -1,0 +1,54 @@
+{
+  "task": "switchboard-uhre",
+  "status": "observed-qualification-lifecycle-with-shutdown-failure-propagation",
+  "inert": "eleven-actual-source-fault-discovery-and-qualifier-integration-tests-passed",
+  "native": {
+    "arm64": {
+      "native": "passed",
+      "bindings": 784,
+      "behaviorCases": 12,
+      "discoveryModes": 5,
+      "inferenceDuringInspection": 0,
+      "reportSha256": "34115d36113d3db372a88e0ee2d1fc8d29c31fbefdeda41414fe56ccc947196a",
+      "absenceSha256": "1e46a2f6f98f69c4e53eda38af831ed0c93e81a444723ee4ca4ea6cbd104814b",
+      "container": "switchboard-codex-16a128f0-ce58-4fda-9aff-95ece3beac95"
+    },
+    "x64": {
+      "native": "passed",
+      "bindings": 784,
+      "behaviorCases": 12,
+      "discoveryModes": 5,
+      "inferenceDuringInspection": 0,
+      "reportSha256": "7c4e705416b680c86efded45ee4bbc80d13e04c0bd6e03294765960b8cc02ac6",
+      "absenceSha256": "a509434278141db40f3a6f65849c439bd4dae9dd3a3a6a49e352a5294d60d15c",
+      "container": "switchboard-codex-74c81dd9-563c-4608-a572-d0a6cc87331e"
+    }
+  },
+  "historicalRevision": "d467665e4faa582ceef07f16172a37077a0ddb66",
+  "historicalNative": {
+    "arm64": {
+      "native": "passed",
+      "bindings": 784,
+      "behaviorCases": 12,
+      "discoveryModes": 5,
+      "inferenceDuringInspection": 0,
+      "reportSha256": "9be9c3c3f2eac628a8f0d70a211d1d30f312888fa54db5e6eadc5d91367fee98",
+      "absenceSha256": "16d5ac2ccc38b9a488a6ee3411178970811721127fdbcd7994808c74cefd9781",
+      "container": "switchboard-codex-4da99715-6893-453b-8bbf-5c5d76703b78"
+    },
+    "x64": {
+      "native": "passed",
+      "bindings": 784,
+      "behaviorCases": 12,
+      "discoveryModes": 5,
+      "inferenceDuringInspection": 0,
+      "reportSha256": "62b8eafb0745b010a895ed473751a72a5aaacb49e61b98984f6b653d49586f5e",
+      "absenceSha256": "a41b095e7088050e381d5c4bb7739f0dc65eac57ed1bce0a872ccb3dc83da6d0",
+      "container": "switchboard-codex-112e67a8-cecf-4703-9f74-009678653ec4"
+    }
+  },
+  "generatedBindingCompilation": "784-public-files-strict-NodeNext-noDOM-passed-both-architectures-after-shutdown-fix",
+  "packageTests": "26-passed-after-shutdown-fix",
+  "h1": "inconclusive-unchanged",
+  "productionAcceptance": "unchanged"
+}

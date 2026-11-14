@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { admittedPath, resultPath, requestBudget } from './inventory.mjs';
+import { nativeClient } from './client.mjs';
 
 const mode = process.argv[2];
 assert(['prepare', 'indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink'].includes(mode));
@@ -42,7 +41,6 @@ for (const provider of ['fixture', 'other']) Object.assign(config, {
   [`model_providers.${provider}.request_max_retries`]: 0,
   [`model_providers.${provider}.stream_max_retries`]: 0,
 });
-const children = [];
 const clients = [];
 const evidence = { mode };
 let progressBytes = 0;
@@ -65,62 +63,12 @@ async function until(predicate, label) {
   throw new Error(`Timed out: ${label}`);
 }
 async function connect(overrides = {}) {
-  const args = Object.entries({ ...config, ...overrides }).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]);
-  const child = spawn('/opt/codex', ['app-server', ...args], { cwd: '/tmp/project', env: { PATH: '/usr/local/bin:/usr/bin:/bin' } });
-  children.push(child);
-  let closed = false;
-  child.once('close', () => { closed = true; });
-  const events = [];
-  const replies = new Map();
-  let sequence = 0;
-  let bytes = 0;
-  let stderr = '';
-  let protocolFailure;
-  const transcript = [];
-  child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8192); });
-  child.stdout.on('data', (chunk) => {
-    bytes += chunk.length;
-    if (bytes >= 2 * 1024 * 1024) { protocolFailure = 'Native stdout budget exceeded'; child.kill('SIGKILL'); }
-  });
-  const lines = createInterface({ input: child.stdout });
-  const send = (value) => child.stdin.write(`${JSON.stringify(value)}\n`);
-  lines.on('line', (line) => {
-    let value;
-    try { value = JSON.parse(line); }
-    catch { protocolFailure = 'Malformed native JSON'; child.kill('SIGKILL'); return; }
-    if (Object.hasOwn(value, 'id') && !value.method) replies.set(value.id, value);
-    else {
-      if (Object.hasOwn(value, 'id')) { protocolFailure = 'Unexpected native request'; child.kill('SIGKILL'); }
-      events.push(value);
-      retainProgress({ notification: value });
-    }
-  });
-  const rpc = async (method, params) => {
-    assert(++sequence <= 128, 'Bounded protocol request count');
-    const id = sequence;
-    const observation = { request: { id, method, params } };
-    transcript.push(observation);
-    retainProgress({ request: observation.request });
-    send(observation.request);
-    observation.reply = await until(() => {
-      assert(!protocolFailure, protocolFailure);
-      assert(child.exitCode === null && child.signalCode === null, stderr);
-      return replies.get(id);
-    }, method);
-    retainProgress({ reply: observation.reply });
-    return observation.reply;
-  };
-  const call = async (method, params) => { const reply = await rpc(method, params); assert(!reply.error, JSON.stringify(reply)); return reply.result; };
-  const client = { events, transcript, call, rpc, stop: async () => {
-    if (!closed) child.kill('SIGTERM');
-    await until(() => closed, 'Native shutdown and output drain');
-    lines.close();
-  } };
+  const client = nativeClient({ ...config, ...overrides }, retainProgress);
   clients.push(client);
-  evidence.transcript = transcript;
-  evidence.notifications = events;
-  await call('initialize', { clientInfo: { name: 'switchboard_discovery_fixture', version: '0' }, capabilities: { experimentalApi: true } });
-  send({ method: 'initialized' });
+  evidence.transcript = client.transcript;
+  evidence.notifications = client.events;
+  await client.call('initialize', { clientInfo: { name: 'switchboard_discovery_fixture', version: '0' }, capabilities: { experimentalApi: true } });
+  client.initialized();
   return client;
 }
 function filesUnder(directory) {
@@ -381,7 +329,6 @@ try {
   console.log(JSON.stringify(evidence));
   process.exitCode = 1;
 } finally {
-  for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 }
