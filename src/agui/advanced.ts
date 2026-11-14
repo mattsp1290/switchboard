@@ -11,7 +11,7 @@ type NativeOperation<P = JsonPatchOperation> = P extends JsonPatchOperation
   : never;
 export type NativeJsonPatch = readonly NativeOperation[];
 type ActivityContent = DeepReadonly<ActivitySnapshotEvent['content']>;
-export type ProjectionFamily = 'state' | 'activity' | 'raw' | 'custom' | 'messages' | 'interrupts' | 'usage';
+export type ProjectionFamily = 'state' | 'activity' | 'raw' | 'custom' | 'messages' | 'interrupts' | 'usage' | 'reasoning';
 export type NativeAvailability = 'supported' | 'unavailable' | 'unsupported' | 'undeclared';
 export type NativeQualification = 'qualified' | 'unqualified' | 'undeclared';
 export interface ProjectionEvidence {
@@ -36,7 +36,7 @@ export type AdvancedFact = { readonly timestamp?: number; readonly owner?: Nativ
 );
 
 function family(value: unknown): ProjectionFamily {
-  if (value !== 'state' && value !== 'activity' && value !== 'raw' && value !== 'custom' && value !== 'messages' && value !== 'interrupts' && value !== 'usage') reject();
+  if (value !== 'state' && value !== 'activity' && value !== 'raw' && value !== 'custom' && value !== 'messages' && value !== 'interrupts' && value !== 'usage' && value !== 'reasoning') reject();
   return value;
 }
 

@@ -171,7 +171,7 @@ test('availability and qualification preserve only explicit caller assertions', 
   for (const evidence of [{ availability: null }, { qualification: 'available' }, { availability: true }, { source: 'native' }]) {
     assert.deepEqual(Reflect.apply(describeProjection, undefined, ['state', evidence]), { kind: 'error', error: { code: 'invalid-input' } });
   }
-  assert.deepEqual(Reflect.apply(describeProjection, undefined, ['reasoning']), { kind: 'error', error: { code: 'invalid-input' } });
+  assert.deepEqual(Reflect.apply(describeProjection, undefined, ['subagents']), { kind: 'error', error: { code: 'invalid-input' } });
 });
 
 test('captured values and patches are detached and recursively frozen', () => {
@@ -207,7 +207,7 @@ test('malformed pointers, required fields and non-JSON values fault without part
     { ...snapshot, replace: null }, { ...delta, patch: [{ op: 'test', path: 2, value: null }] },
     { kind: 'raw', namespace: 'n', schemaVersion: '1' }, { kind: 'custom', namespace: 'n', schemaVersion: '1', publicPayload: null },
     { kind: 'raw', namespace: 'n', schemaVersion: 1, publicPayload: null }, { ...snapshot, timestamp: 0.5 },
-    { kind: 'not-observable', family: 'reasoning' }, { ...snapshot, rawEvent: { private: true } },
+    { kind: 'not-observable', family: 'subagents' }, { ...snapshot, rawEvent: { private: true } },
     { kind: 'raw', namespace: '', schemaVersion: '1', publicPayload: null },
     { kind: 'custom', namespace: 'n', schemaVersion: '', name: '', publicPayload: null }]) rejects(actor(), fact);
   for (const value of [null, false, 0, '', []]) {
