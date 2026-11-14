@@ -295,6 +295,8 @@ Ended tool arguments can remain unanswered; an optional success `pendingTools` l
 `NativeRef` IDs use the public JSON tuple `[1, sourceKey, kind, scope, id]`. Message references share one identity domain across text and tool results.
 The tuple preserves lone UTF-16 surrogates and omits host run IDs so stable native references survive resume.
 These identifiers are reversible public values. The host must supply authorized public namespaces and IDs.
+Adapters supply resolved ownership on every entity fact. Omission means root ownership, including text and tool continuations.
+When native continuations omit attribution, the adapter carries forward the opener owner before calling `accept`.
 Identical closed text/tool streams may reopen. Owner or opener disagreement faults the actor.
 Step identity becomes `stepName`; an observed display label is retained in `metadata.switchboard.name`.
 Returned events and nested JSON are detached and recursively readonly. No native availability or qualification follows from representation fixtures.

@@ -3,7 +3,7 @@ import { identity, record, reject, string } from './internal.js';
 import type { DeepReadonly, Json, NativeRef } from './internal.js';
 
 type NativePart<P = ContentPart> = P extends ContentPart
-  ? DeepReadonly<Omit<P, 'id' | 'metadata'>> & { readonly id?: NativeRef; readonly metadata?: Json }
+  ? DeepReadonly<Omit<P, 'id' | 'metadata'>> & { readonly id?: NativeRef; readonly metadata?: Exclude<Json, null> }
   : never;
 export type NativeContent = Exclude<ToolCallResultEvent['content'], ContentPart[]> | readonly NativePart[];
 

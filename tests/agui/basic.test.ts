@@ -263,3 +263,32 @@ test('entity and content boundaries reject invalid shapes rather than leaking or
   }
   rejects(running([toolStart, toolEnd]), { kind: 'tool-result', tool, resultMessage: ref('r'), content: '', error: 'private' }, 'invalid-input');
 });
+
+test('unseen assistant parents constrain all tool owners', () => {
+  for (const earlier of [toolStart, { ...toolStart, owner }]) {
+    const later = { ...toolStart, tool: ref('later'), ...(earlier.owner === undefined ? { owner } : {}) };
+    for (const ended of [false, true]) {
+      const prefix = ended ? [earlier, { ...toolEnd, ...(earlier.owner === undefined ? {} : { owner }) }] : [earlier];
+      rejects(running(prefix), later, 'identity-conflict');
+    }
+  }
+});
+
+test('unseen assistant parent identities cannot become tool result messages', () => {
+  for (const resultTool of [tool, ref('other')]) {
+    const prefix: BasicFact[] = [toolStart, toolEnd];
+    if (resultTool !== tool) prefix.push({ kind: 'tool-started', tool: resultTool, name: 'other' },
+      { kind: 'tool-arguments-ended', tool: resultTool });
+    rejects(running(prefix), { kind: 'tool-result', tool: resultTool, resultMessage: message, content: '' }, 'identity-conflict');
+  }
+  const projection = running([{ ...toolStart, owner }, { ...toolEnd, owner },
+    { ...toolStart, tool: ref('other'), owner }, { kind: 'tool-arguments-ended', tool: ref('other'), owner }]);
+  mapped(projection, { ...text, owner });
+  mapped(projection, { kind: 'text-ended', message, owner });
+  mapped(projection, finish);
+});
+
+test('entity facts carry resolved ownership and omitted owner means root', () => {
+  rejects(running([{ ...text, owner }]), { kind: 'text-content', message, delta: '' }, 'identity-conflict');
+  rejects(running([{ ...toolStart, owner }]), toolEnd, 'identity-conflict');
+});

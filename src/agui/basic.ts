@@ -216,6 +216,8 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
     if (incoming.kind === 'tool' && incoming.parentMessageId !== undefined) {
       const parent = ledger.get(incoming.parentMessageId);
       if (parent && (parent.kind !== 'text' || parent.role !== 'assistant' || parent.owner !== owner)) reject('identity-conflict');
+      if ([...ledger.values()].some(entity => entity.kind === 'tool'
+        && entity.parentMessageId === incoming.parentMessageId && entity.owner !== owner)) reject('identity-conflict');
     }
     if (incoming.kind === 'text' && [...ledger.values()].some(entity => entity.kind === 'tool'
       && entity.parentMessageId === transition.id && (incoming.role !== 'assistant' || entity.owner !== owner))) reject('identity-conflict');
@@ -237,6 +239,8 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
     if (transition.kind === 'result') {
       if (current.kind !== 'tool' || current.open || current.result !== undefined) reject('invalid-order');
       if (ledger.has(transition.messageId)) reject('identity-conflict');
+      if ([...ledger.values()].some(entity => entity.kind === 'tool'
+        && entity.parentMessageId === transition.messageId)) reject('identity-conflict');
       updates.push([transition.messageId, { kind: 'result', owner, tool: transition.id, open: false }],
         [transition.id, { ...current, result: transition.messageId }]);
     } else {
