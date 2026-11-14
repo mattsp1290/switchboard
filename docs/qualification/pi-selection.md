@@ -82,6 +82,7 @@ The [host dispatch block](https://github.com/mattsp1290/crew/blob/3aba53fd3388b5
 Crew's [controlled native provider](https://github.com/mattsp1290/crew/blob/3aba53fd3388b58b5672bb3501c5b7955a922b95/src/service/proxy-profiles.ts#L67-L92) supplies its own fetch and credentials and sets zero retries. The fetch accepts only POST to the relay's exact `/chat/completions` URL and uses `redirect: "error"`. This file is byte-identical at the historical and merged heads. The source establishes that controlled configuration, but does not qualify enforcement after unrestricted provider replacement or inside arbitrary custom streams.
 
 Crew's worker does not receive the profile closures. Its host owns provider streaming, tools, request bounds, and confined process execution. The source also disables ordinary resource discovery, restricts tool catalogs, reconstructs in-memory checkpoints, and uses application-specific result checks. Copying that confinement or checkpoint policy would discard required native behavior in a reusable library. Preserve configurable host preparation and enforcement seams while retaining Pi's native extension model for hosts that permit it. Crew's tests are not evidence for live Pi, LiteLLM, or other host platforms.
+The Pi adapter must also meet the [confinement requirements](../architecture/boundaries.md#adapter-contracts) for the process that loads the Pi SDK.
 
 ## Reuse comparison
 
