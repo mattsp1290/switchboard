@@ -12,7 +12,7 @@ const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 export function verifyTestkit({ consumer, tarball, compiler, compilerOptions }) {
   const runtimeEnvironment = testEnvironment();
-  mkdirSync(join(consumer, 'qualification'));
+  mkdirSync(join(consumer, 'qualification'), { recursive: true });
   const qualificationConsumers = readdirSync(join(root, 'tests/qualification')).filter((name) => name.endsWith('.consumer.mjs'));
   for (const file of [...qualificationConsumers, ...qualificationTypeFixtures, ...qualificationSupportFiles]) {
     copyFileSync(join(root, 'tests/qualification', file), join(consumer, 'qualification', file));

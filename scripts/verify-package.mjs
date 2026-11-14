@@ -86,11 +86,24 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
+  mkdirSync(join(consumer, 'qualification'));
+  copyFileSync(join(root, 'tests/qualification/host-consumers.mjs'), join(consumer, 'qualification/host-consumers.mjs'));
   const runtimeEnvironment = testEnvironment();
   const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
+  for (const name of [
+    'Crew reconstructs persisted command ownership',
+    'AgentUI keeps view and command ownership separate',
+    'host admission rechecks the journal before native entry',
+    'host controls reject missing intent bytes without native entry',
+    'host controls reject unsafe resubmission',
+    'host controls reject command closure with a view',
+    'host controls reject approval validation delegated to the backend',
+  ]) {
+    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - ${RegExp.escape(name)}$`, 'm'));
+  }
   process.stdout.write(runtimeOutput);
-  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs'];
+  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs', 'qualification/host-consumers.mjs'];
   const consumerConfig = {
     compilerOptions: {
       target: 'ES2022',

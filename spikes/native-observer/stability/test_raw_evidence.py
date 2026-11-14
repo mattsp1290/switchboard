@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import run
 import run_admission as admission
+from test_cleanup import capture_transport
 
 PLANS = {'normal': 'EXEXEXET', 'inherited': '', 'bad-root': '', 'info-short': 'S',
          'query-bad': 'EX', 'query-short': 'EX', 'registration': 'EXEXE', 'deadline': 'EXEXE', 'death': 'EXE'}
@@ -303,7 +304,7 @@ class RawEvidenceTests(unittest.TestCase):
                     return subprocess.CompletedProcess(args, code, stdout, stderr)
 
                 with patch.multiple(run, OUT=Path(directory), commands=[], containers={'synthetic': 'confirmed'}, images={}, tag=None), \
-                        patch.object(subprocess, 'run', transport), patch.object(run.time, 'sleep'):
+                        patch.object(run, '_capture', capture_transport(transport)), patch.object(run.time, 'sleep'):
                     if fault in (None, 'late'):
                         self.assertEqual(admission.collect('synthetic', mode, hashlib.sha256(b'init').hexdigest())['mode'], mode)
                     else:

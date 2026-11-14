@@ -32,6 +32,8 @@ jobs:
           enable-cache: false
       - name: Install protocol verification Python
         run: uv python install 3.13.12
+      - name: Verify observer host capture and evidence
+        run: uv run --python 3.13.12 --no-project python -B -m unittest discover -s spikes/native-observer/stability -p 'test_*.py'
       - name: Install and verify
         run: >-
           npx --yes --package=node@24.22.3 --package=npm@11.19.1

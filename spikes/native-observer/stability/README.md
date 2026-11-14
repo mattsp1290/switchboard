@@ -24,6 +24,20 @@ Cleanup makes up to three removal attempts and requires the pinned CLI's exact a
 An uncertain create or build never acknowledged, observed or removed remains owned in `cleanup.json` after bounded reconciliation.
 Run `python3 spikes/native-observer/stability/test_cleanup.py` for nine inert container/image timeout and daemon-failure cases.
 
+Host command capture retains at most 16 MiB per stream and reads at most one further byte to prove overflow.
+An exact-limit stream requires EOF. Overflow or a capture error raises `OSError(EOVERFLOW)`, including with `check=False`.
+One original timeout covers both pipe EOF and direct-child exit. A descendant holding a writer can cause timeout.
+Failure kills and waits for the direct child, closes both readers, and retains bounded named partial files when storage permits.
+This does not promise a finite spawn or kill-to-reap duration or establish descendant death.
+Receipts separate actual `overflow` from general `captureRefused` and mark incomplete capture.
+Per-stream retained-prefix hashes and observed-byte counts describe only bytes retained or read, never unknown total output.
+Timeout retains raw partial bytes and the original exception even if evidence storage fails, with an attached error note.
+Normal text decoding, binary bytes, and checked nonzero logging retain their existing behavior.
+The bound applies per stream and invocation. The accumulated command ledger and temporary conversion copies add memory use.
+Run `python3 -B -m unittest discover -s spikes/native-observer/stability -p 'test_*.py'` for inert host verification.
+CI runs these standard-library tests. They do not qualify Docker, native probes, Node, or SDK behavior.
+`CAPTURE_RESULT.json` records the inert host checks and the original excessive-output regression.
+
 The profile remains default-deny with the existing capabilities, network-none, read-only root, and resource limits.
 Its added `fstatfs`, `statx`, and `futex` calls are runtime launch prerequisites, demonstrated by recorded failures and a trusted `/bin/true` control.
 The pinned runc applies seccomp before its procfs FIFO reopen, which uses [filesystem and mount identity checks](https://github.com/cyphar/filepath-securejoin/tree/v0.5.2/pathrs-lite/internal).

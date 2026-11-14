@@ -72,7 +72,7 @@ class NoticeTests(unittest.TestCase):
                 (out / 'prerequisite').write_bytes(b'unexecuted binary')
 
             with patch.multiple(run, OUT=out, commands=[], containers={}, images={}, tag=None), \
-                    patch.object(run, 'main', main), patch.object(subprocess, 'run', side_effect=
+                    patch.object(run, 'main', main), patch.object(subprocess, 'Popen', side_effect=
                         AssertionError('unexpected transport')), redirect_stdout(io.StringIO()):
                 run.execute(raw=True)
             result = json.loads((out / 'result.json').read_text())

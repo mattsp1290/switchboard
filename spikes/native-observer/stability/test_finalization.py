@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import run
 import run_admission as admission
-from test_cleanup import BUILD, FakeDocker
+from test_cleanup import BUILD, FakeDocker, capture_transport
 from test_raw_evidence import fixture
 
 
@@ -117,7 +117,7 @@ class FinalizationTests(unittest.TestCase):
                     return subprocess.CompletedProcess(args, code, stdout, stderr)
 
                 with patch.multiple(run, OUT=out, commands=[], containers={}, images={}, tag=None, stage='identities'), \
-                        patch.object(run, 'digest', digest), patch.object(run.subprocess, 'run', transport), \
+                        patch.object(run, 'digest', digest), patch.object(run, '_capture', capture_transport(transport)), \
                         patch.object(run.time, 'sleep'), patch.object(admission, 'inspect_binary') as inspect, \
                         redirect_stdout(io.StringIO()):
                     run.execute(raw=raw)
@@ -191,7 +191,7 @@ class FinalizationTests(unittest.TestCase):
 
                     with patch.multiple(run, OUT=out, commands=[], containers={}, images={} if fault.startswith('image-')
                                         else {'owned-image': 'confirmed'}, tag='owned-image', stage='fault'), \
-                            patch.object(run, 'main', main), patch.object(run.subprocess, 'run', fake.run), \
+                            patch.object(run, 'main', main), patch.object(run, '_capture', capture_transport(fake.run)), \
                             patch.object(run.time, 'sleep'), redirect_stdout(io.StringIO()):
                         run.execute(raw=raw)
                     result, report = self.read_final(out)
@@ -223,7 +223,7 @@ class FinalizationTests(unittest.TestCase):
 
             with patch.multiple(run, OUT=out, commands=[], containers={'synthetic': 'confirmed'}, images={}, tag=None), \
                     patch.object(run, 'main', main), patch.object(run, 'remove', remove), \
-                    patch.object(run.subprocess, 'run', side_effect=AssertionError('unexpected transport')), redirect_stdout(io.StringIO()):
+                    patch.object(run.subprocess, 'Popen', side_effect=AssertionError('unexpected transport')), redirect_stdout(io.StringIO()):
                 run.execute(raw=True)
             result, report = self.read_final(out)
             self.assertEqual(result['status'], 'INCONCLUSIVE')
@@ -237,7 +237,7 @@ class FinalizationTests(unittest.TestCase):
             out = Path(directory) / 'evidence'
             with patch.multiple(run, OUT=out, commands=[], containers={}, images={}, tag=None, stage='identities'), \
                     patch.object(run, 'main', side_effect=RuntimeError('inert identity failure')), \
-                    patch.object(run.subprocess, 'run', side_effect=AssertionError('unexpected transport')), redirect_stdout(io.StringIO()):
+                    patch.object(run.subprocess, 'Popen', side_effect=AssertionError('unexpected transport')), redirect_stdout(io.StringIO()):
                 run.execute()
             result, report = self.read_final(out)
             self.assertEqual(result['status'], 'INCONCLUSIVE')
@@ -250,7 +250,7 @@ class FinalizationTests(unittest.TestCase):
         for source in (Path(run.__file__), Path(admission.__file__)):
             specification = importlib.util.spec_from_file_location('inert_import', source)
             with self.subTest(source=source.name), \
-                    patch.object(subprocess, 'run', side_effect=AssertionError('transport during import')), \
+                    patch.object(subprocess, 'Popen', side_effect=AssertionError('transport during import')), \
                     patch.object(Path, 'mkdir', side_effect=AssertionError('mkdir during import')):
                 specification.loader.exec_module(importlib.util.module_from_spec(specification))
 

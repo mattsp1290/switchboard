@@ -9,13 +9,13 @@ from unittest.mock import patch
 
 import run
 import run_admission as admission
-from test_cleanup import CleanupTests
+from test_cleanup import CleanupTests, capture_transport
 
 
 class AdmissionTests(unittest.TestCase):
     def test_import_has_no_transport_or_filesystem_side_effect(self):
         specification = importlib.util.spec_from_file_location('inert_import', run.__file__)
-        with patch.object(subprocess, 'run', side_effect=AssertionError('transport during import')), \
+        with patch.object(subprocess, 'Popen', side_effect=AssertionError('transport during import')), \
                 patch.object(Path, 'mkdir', side_effect=AssertionError('mkdir during import')):
             specification.loader.exec_module(importlib.util.module_from_spec(specification))
 
@@ -84,7 +84,7 @@ class AdmissionTests(unittest.TestCase):
                         self.fail(f'unexpected transport {command}')
                     return subprocess.CompletedProcess(args, code, stdout, stderr)
                 with patch.multiple(run, OUT=Path(directory), commands=[], containers={'synthetic': 'confirmed'}, images={}), \
-                        patch.object(subprocess, 'run', transport), patch.object(run.time, 'sleep'):
+                        patch.object(run, '_capture', capture_transport(transport)), patch.object(run.time, 'sleep'):
                     if witness:
                         admission.collect('synthetic', 'death', hashlib.sha256(b'init').hexdigest())
                     else:
