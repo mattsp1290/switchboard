@@ -1,0 +1,16 @@
+{
+  "status": "INCONCLUSIVE",
+  "prerequisites": "observed",
+  "nativeControlsExecuted": [
+    "normal",
+    "inherited",
+    "death"
+  ],
+  "cleanup": "targets absent before removal; containers and image removed",
+  "initReaping": "inferred from orphan absence with live pinned init and nonsubreaper supervisor",
+  "evidence": "local/1794624350833550000",
+  "commandsSha256": "2899b783e5a1f8435c6c7ef225f97c3ac76327cb3ce9b2ecff61b329fcf95005",
+  "binarySha256": "870465ae9d9ea5ac698e19cc122c1a5c6522db9d22429aeedced7d8a131ec715",
+  "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
+  "scope": "Prerequisite only. Full stability mechanism remains unimplemented."
+}
