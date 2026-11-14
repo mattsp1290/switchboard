@@ -40,13 +40,12 @@ export type BasicFact = { readonly timestamp?: number } & (
   | { readonly kind: 'run-failed'; readonly failure: PublicFailure }
   | BasicEntityFact
 );
-export type ProjectionFact = BasicFact;
 export type ProjectionEvent = DeepReadonly<Event>;
 export type ProjectionResult =
   | { readonly kind: 'mapped'; readonly events: readonly ProjectionEvent[] }
   | { readonly kind: 'error'; readonly error: ProjectionError };
-export interface AguiProjection {
-  accept(fact: ProjectionFact): ProjectionResult;
+export interface Projection<F> {
+  accept(fact: F): ProjectionResult;
   close(): void;
 }
 
@@ -62,18 +61,24 @@ type Stream = Opener & {
 } & ({ readonly kind: 'tool'; readonly result?: string } | { readonly kind: 'text' | 'step' });
 type Entity = Stream
   | { readonly kind: 'result'; readonly owner: string | undefined; readonly tool: string; readonly open: false }
-  | { readonly kind: 'owner'; readonly open: false };
+  | { readonly kind: 'owner'; readonly open: false }
+  | { readonly kind: 'activity'; readonly owner: string | undefined; readonly activityType: string; readonly open: false };
 type Transition =
+  | { readonly kind: 'observe'; readonly owner: string | undefined }
+  | { readonly kind: 'activity'; readonly id: string; readonly owner: string | undefined;
+      readonly activityType: string; readonly mode: 'replace' | 'preserve' | 'delta' }
   | { readonly kind: 'start' }
   | { readonly kind: 'fail' }
   | { readonly kind: 'finish'; readonly pending?: readonly string[] }
   | { readonly kind: 'open'; readonly id: string; readonly stream: Stream }
   | { readonly kind: 'content' | 'end'; readonly id: string; readonly entityKind: StreamKind; readonly owner: string | undefined }
   | { readonly kind: 'result'; readonly id: string; readonly messageId: string; readonly owner: string | undefined };
-interface Encoding {
+export interface Encoding {
   readonly events: readonly Event[];
   readonly transition: Transition;
 }
+
+export type Encode = (fact: Json, options: ProjectionOptions) => Encoding;
 
 function readOptions(value: unknown): ProjectionOptions {
   const fields = record(value, ['threadId', 'runId', 'parentRunId', 'sourceKey', 'bounds']);
@@ -87,7 +92,7 @@ function readOptions(value: unknown): ProjectionOptions {
   });
 }
 
-function encodeBasic(value: Json, options: ProjectionOptions): Encoding {
+export function encodeBasic(value: Json, options: ProjectionOptions): Encoding {
   const fact = record(value, ['kind', 'timestamp', 'outcome', 'result', 'failure', 'pendingTools',
     'owner', 'message', 'role', 'name', 'text', 'delta', 'tool', 'parentMessage', 'resultMessage', 'content', 'step']);
   const timestamp = fact.timestamp;
@@ -207,6 +212,23 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
     if (transition.pending !== undefined && JSON.stringify(transition.pending) !== JSON.stringify(pending)) reject('identity-conflict');
     return [];
   }
+  if (transition.kind === 'observe') return transition.owner !== undefined && !ledger.has(transition.owner)
+    ? [[transition.owner, { kind: 'owner', open: false }]] : [];
+  if (transition.kind === 'activity') {
+    const current = ledger.get(transition.id);
+    if (current && current.kind !== 'activity') reject('identity-conflict');
+    if (!current && transition.mode === 'delta') reject('invalid-order');
+    if (current && transition.mode !== 'replace' && current.owner !== transition.owner) reject('identity-conflict');
+    if ([...ledger.values()].some(entity => entity.kind === 'tool'
+      && entity.parentMessageId === transition.id)) reject('identity-conflict');
+    const updates: [string, Entity][] = [];
+    if (transition.owner !== undefined && !ledger.has(transition.owner)) {
+      updates.push([transition.owner, { kind: 'owner', open: false }]);
+    }
+    updates.push([transition.id, { kind: 'activity', owner: transition.owner, open: false,
+      activityType: current && transition.mode === 'preserve' ? current.activityType : transition.activityType }]);
+    return updates;
+  }
   const current = ledger.get(transition.id);
   const owner = transition.kind === 'open' ? transition.stream.owner : transition.owner;
   const updates: [string, Entity][] = [];
@@ -234,7 +256,7 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
       ...(current?.kind === 'tool' && current.result !== undefined ? { result: current.result } : {}),
     }]);
   } else {
-    if (!current || current.kind === 'result' || current.kind === 'owner') reject('invalid-order');
+    if (!current || current.kind === 'result' || current.kind === 'owner' || current.kind === 'activity') reject('invalid-order');
     if (current.owner !== owner) reject('identity-conflict');
     if (transition.kind === 'result') {
       if (current.kind !== 'tool' || current.open || current.result !== undefined) reject('invalid-order');
@@ -252,7 +274,7 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
   return updates;
 }
 
-export function createAguiProjection(options: ProjectionOptions): Outcome<AguiProjection, ProjectionError> {
+export function createProjection<F>(options: ProjectionOptions, encode: Encode): Outcome<Projection<F>, ProjectionError> {
   try {
     let context: ProjectionOptions | undefined = readOptions(options);
     let phase: Phase = 'idle';
@@ -263,8 +285,8 @@ export function createAguiProjection(options: ProjectionOptions): Outcome<AguiPr
       context = undefined;
       ledger.clear();
     };
-    const projection: AguiProjection = Object.freeze({
-      accept(fact: ProjectionFact): ProjectionResult {
+    const projection: Projection<F> = Object.freeze({
+      accept(fact: F): ProjectionResult {
         if (accepting) {
           stop('faulted');
           return failure(undefined);
@@ -273,7 +295,7 @@ export function createAguiProjection(options: ProjectionOptions): Outcome<AguiPr
         accepting = true;
         try {
           const scope = context;
-          const plan = encodeBasic(capture(fact, scope.bounds), scope);
+          const plan = encode(capture(fact, scope.bounds), scope);
           if (!context) reject(phase === 'closed' ? 'closed' : 'invalid-input');
           const action = plan.transition.kind;
           const permitted = action === 'start' ? phase === 'idle'
