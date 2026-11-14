@@ -1,0 +1,31 @@
+{
+  "task": "switchboard-uhre",
+  "status": "observed-qualification-lifecycle",
+  "inert": "nine-actual-source-fault-and-qualifier-integration-tests-passed",
+  "native": {
+    "arm64": {
+      "native": "passed",
+      "bindings": 784,
+      "behaviorCases": 12,
+      "discoveryModes": 5,
+      "inferenceDuringInspection": 0,
+      "reportSha256": "9be9c3c3f2eac628a8f0d70a211d1d30f312888fa54db5e6eadc5d91367fee98",
+      "absenceSha256": "16d5ac2ccc38b9a488a6ee3411178970811721127fdbcd7994808c74cefd9781",
+      "container": "switchboard-codex-4da99715-6893-453b-8bbf-5c5d76703b78"
+    },
+    "x64": {
+      "native": "passed",
+      "bindings": 784,
+      "behaviorCases": 12,
+      "discoveryModes": 5,
+      "inferenceDuringInspection": 0,
+      "reportSha256": "62b8eafb0745b010a895ed473751a72a5aaacb49e61b98984f6b653d49586f5e",
+      "absenceSha256": "a41b095e7088050e381d5c4bb7739f0dc65eac57ed1bce0a872ccb3dc83da6d0",
+      "container": "switchboard-codex-112e67a8-cecf-4703-9f74-009678653ec4"
+    }
+  },
+  "generatedBindingCompilation": "784-public-files-strict-NodeNext-noDOM-passed-both-architectures",
+  "packageTests": "24-passed",
+  "h1": "inconclusive-unchanged",
+  "productionAcceptance": "unchanged"
+}

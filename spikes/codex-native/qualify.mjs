@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, copyFileSync, createReadStream, lstatSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, copyFileSync, createReadStream, existsSync, lstatSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, admittedPath, fingerprint, requestBudget } from './inventory.mjs';
+import { ownedContainer } from './lifecycle.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pins = JSON.parse(readFileSync(join(here, 'pins.json'), 'utf8'));
@@ -23,6 +24,8 @@ assert.equal(digest.digest('base64'), pin.sha512, 'Native archive integrity');
 mkdirSync(join(here, '.work'), { recursive: true });
 const work = mkdtempSync(join(here, '.work/run-'));
 const name = `switchboard-codex-${randomUUID()}`;
+let cleanupUncertain = false;
+let result;
 const run = (command, args, options = {}) => execFileSync(command, args, { timeout: 45000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', ...options });
 try {
   const binary = join(work, 'codex');
@@ -33,17 +36,18 @@ try {
   const docker = (command, script, extraMounts = []) => {
     const mounts = ['--mount', `type=bind,source=${binary},target=/opt/codex,readonly`];
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
-    if (script === 'discovery.mjs') mounts.push('--mount', `type=bind,source=${join(here, 'inventory.mjs')},target=/opt/inventory.mjs,readonly`);
+    if (script === 'discovery.mjs') {
+      for (const helper of ['inventory.mjs', 'client.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
+    }
     try {
-      return run('docker', ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
+      return ownedContainer(run, ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
         '--read-only', '--pids-limit', '128', '--cpus', '2', '--memory', '768m',
         '--tmpfs', '/tmp:rw,size=128m', '--tmpfs', '/root:rw,size=64m', ...mounts, ...extraMounts,
-        pins.image, 'timeout', '40', ...command]);
+        pins.image, 'timeout', '40', ...command], name);
     } catch (error) {
+      cleanupUncertain ||= error.cleanupUncertain;
       console.error(JSON.stringify({ containerFailure: name, stdout: error.stdout, stderr: error.stderr }));
       throw error;
-    } finally {
-      try { run('docker', ['rm', '-f', name], { stdio: 'ignore', timeout: 5000 }); } catch {}
     }
   };
   assert.equal(docker(['/opt/codex', '--version']).trim(), `codex-cli ${pins.native}`);
@@ -167,7 +171,11 @@ try {
       assert.deepEqual(hashes(), before, 'Host source fixture preserved across entire native lifecycle');
     }
   }
-  console.log(JSON.stringify({ native: pins.native, image: pins.image, platform: pin.platform,
+  result = { native: pins.native, image: pins.image, platform: pin.platform,
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports,
-    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery }, null, 2));
-} finally { rmSync(work, { recursive: true, force: true }); }
+    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery };
+} finally {
+  if (cleanupUncertain) console.error(JSON.stringify({ cleanupUncertain, container: name, retainedWork: work }));
+  else { rmSync(work, { recursive: true, force: true }); assert(!existsSync(work), 'Owned work removed'); }
+}
+console.log(JSON.stringify(result, null, 2));
