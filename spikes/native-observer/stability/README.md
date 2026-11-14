@@ -72,3 +72,31 @@ The full ftwo result requires the current complete family and epoch suites. j3r0
 Separate enforced OS/Node preflights, readable/existence sentinels, caught-attempt rejection, outside writes, every network form, native execution, second Node, fork, execve/execveat, exact loader negatives, and cleanup remain required.
 The accepted strict core/native compiler policies, full public SDK types/options/handles, installed consumers, SDK-free host declaration closure, exact negative diagnostics, dependency provenance, and restored positives remain required.
 All three engines, direct/LiteLLM modes, selection/history/external-writer admission, discovery/resume, no-blind-retry, host durability/authorization, route enforcement, credential renewal, cancellation, and live adapter journeys keep their gates.
+
+## Final command and cleanup evidence
+
+Both current callers finalize `result.json` in `run.execute` after all cleanup transport and ownership decisions.
+`commandsSha256` binds the final bytes of `commands.json`. `cleanupSha256` binds the final bytes of `cleanup.json`.
+The finalizer writes both fields for success and failure, including failure before the first command.
+It preserves each caller's existing result fields and cases. It replaces any earlier digest values.
+Any unresolved container, image, or cleanup error forces `INCONCLUSIVE` before the final result is saved.
+Never-observed uncertain ownership remains unresolved after the existing bounded reconciliation.
+No command runs after these hashes are computed. `result.json` does not hash itself.
+
+Run `python3 -B -m unittest test_cleanup.CleanupTests test_admission.AdmissionTests test_finalization.FinalizationTests` from this directory.
+The focused tests drive actual source with intercepted subprocess transport. They do not establish native outcomes.
+Success tests run both actual callers through `main` and `execute`, with native binary inspection and raw collection mocked separately.
+Existing actual collector and delayed-init-flush controls remain. Resource faults exercise actual create, build, removal, and finalization.
+`FINAL_EVIDENCE_RESULT.json` records the fresh three-prerequisite and nine-raw verification.
+The historical `RESULT.json` and `ADMISSION_RESULT.json` retain their original observations.
+For each future caller, retain the runtime result, final command log, cleanup report, source hash inventory, binary, and init identity.
+Fill the fixed representation with their exact hashes and an independently retained exact-resource absence record and hash.
+The runtime result keeps its full case list. The fixed representation links that list through `resultSha256`.
+Only successful native verification and independent absence can change `nativeObserved` and the top-level status.
+This shared finalization change does not qualify any newborn, full-lifetime, pathname, Node, SDK, adapter, or live behavior.
+
+The parent independently reproduced all three prerequisite and nine raw cases on this source.
+Both final command and cleanup digests match the completed retained files.
+Separate exact inspections confirmed all fourteen owned containers and both scratch images absent.
+The prerequisite result remains `INCONCLUSIVE` for full stability while its three prerequisite cases are observed.
+Only the shared final evidence binding and existing single-target admission are qualified by these runs.

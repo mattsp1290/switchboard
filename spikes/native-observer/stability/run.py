@@ -219,6 +219,7 @@ def main(raw=False):
 def execute(raw=False):
     OUT.mkdir(parents=True)
     (OUT / 'docker-config').mkdir()
+    save('commands.json', commands)
     try:
         main(raw)
     except Exception as error:
@@ -228,10 +229,12 @@ def execute(raw=False):
     finally:
         cleanup()
         report = json.loads((OUT / 'cleanup.json').read_text())
+        result = json.loads((OUT / 'result.json').read_text())
         if report['errors'] or report['containers'] or report['image']:
-            result = json.loads((OUT / 'result.json').read_text())
             result.update(status='INCONCLUSIVE', cleanup='unresolved ownership')
-            save('result.json', result)
+        result.update(commandsSha256=digest(OUT / 'commands.json'),
+                      cleanupSha256=digest(OUT / 'cleanup.json'))
+        save('result.json', result)
         print(OUT)
         print((OUT / 'result.json').read_text())
         print((OUT / 'cleanup.json').read_text())
