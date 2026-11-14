@@ -17,7 +17,7 @@ test('installed metadata matches the canonical pin without optional Zod', () => 
     typescriptSdk: pin.artifacts[0].version,
     pythonSdk: pin.artifacts[1].version,
     mapping: pin.classification.switchboardMapping,
-    planned: 'subagents',
+    planned: pin.classification.planned,
   });
   assert.equal(integration.aguiProtocol.version, PROTOCOL_VERSION);
   assert(Object.isFrozen(integration.aguiProtocol));

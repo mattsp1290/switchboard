@@ -54,6 +54,7 @@ type Stream = Opener & {
   readonly open: boolean;
 } & ({ readonly kind: 'tool'; readonly result?: string } | { readonly kind: 'text' | 'step' | 'reasoning-message' | 'reasoning-span' });
 type Entity = Stream
+  | { readonly kind: 'subagent'; readonly open: boolean; readonly interrupts: readonly string[] }
   | { readonly kind: 'result'; readonly owner: string | undefined; readonly tool: string; readonly open: false }
   | { readonly kind: 'owner'; readonly open: false }
   | { readonly kind: 'observation'; readonly open: false }
@@ -63,6 +64,8 @@ export type MessageKnowledge =
   | { readonly role: 'activity'; readonly owner: string | undefined }
   | { readonly role: 'reasoning' | 'other' };
 type Transition =
+  | { readonly kind: 'subagent-start'; readonly id: string; readonly parent: string | undefined; readonly correlations: readonly string[] }
+  | { readonly kind: 'subagent-end'; readonly id: string; readonly interrupts: readonly string[] }
   | { readonly kind: 'messages'; readonly knowledge: readonly (readonly [string, MessageKnowledge])[]; readonly owners: readonly string[] }
   | { readonly kind: 'encrypted'; readonly id: string; readonly owner: string | undefined }
   | { readonly kind: 'observe'; readonly owner: string | undefined }
@@ -202,6 +205,20 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, k
       ...transition.owners.map((id): readonly [string, Entity] => [id, ledger.get(id) ?? { kind: 'owner', open: false }])];
   }
   if (transition.kind === 'start' || transition.kind === 'fail') return [];
+  if (transition.kind === 'subagent-start') {
+    if (ledger.has(transition.id)) reject('identity-conflict');
+    if (transition.parent !== undefined && ledger.get(transition.parent)?.kind !== 'subagent') reject('invalid-order');
+    return [[transition.id, { kind: 'subagent', open: true, interrupts: [] }],
+      ...transition.correlations.filter(id => !ledger.has(id))
+        .map((id): readonly [string, Entity] => [id, { kind: 'observation', open: false }])];
+  }
+  if (transition.kind === 'subagent-end') {
+    const current = ledger.get(transition.id);
+    if (current?.kind !== 'subagent' || !current.open) reject('invalid-order');
+    return [[transition.id, { kind: 'subagent', open: false, interrupts: transition.interrupts }],
+      ...transition.interrupts.filter(id => !ledger.has(id))
+        .map((id): readonly [string, Entity] => [id, { kind: 'observation', open: false }])];
+  }
   if (transition.kind === 'finish') {
     if ([...ledger.values()].some(entity => entity.open)) reject('invalid-order');
     const pending = [...ledger].filter(([, entity]) => entity.kind === 'tool' && entity.result === undefined).map(([id]) => id);
@@ -216,6 +233,10 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, k
       for (const id of [interrupt.id, interrupt.tool, interrupt.owner]) {
         if (id !== undefined && !ledger.has(id)) updates.push([id, { kind: 'observation', open: false }]);
       }
+    }
+    for (const [owner, entity] of ledger) {
+      if (entity.kind === 'subagent' && entity.interrupts.some(id =>
+        !transition.interrupts?.some(interrupt => interrupt.id === id && interrupt.owner === owner))) reject('identity-conflict');
     }
     return updates;
   }
@@ -273,7 +294,7 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, k
       ...(current?.kind === 'tool' && current.result !== undefined ? { result: current.result } : {}),
     }]);
   } else {
-    if (!current || current.kind === 'result' || current.kind === 'owner' || current.kind === 'observation' || current.kind === 'activity') reject('invalid-order');
+    if (!current || current.kind === 'result' || current.kind === 'owner' || current.kind === 'observation' || current.kind === 'activity' || current.kind === 'subagent') reject('invalid-order');
     if (current.owner !== owner) reject('identity-conflict');
     if (transition.kind === 'result') {
       if (current.kind !== 'tool' || current.open || current.result !== undefined) reject('invalid-order');
