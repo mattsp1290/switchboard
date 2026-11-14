@@ -100,6 +100,10 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
   }
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
+  assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
+  assert.match(runtimeOutput, /^ok \d+ - qualification rejects effect-derived delivery$/m);
+  assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
+  assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
   process.stdout.write(runtimeOutput);
   const consumerConfig = {
     compilerOptions: {
