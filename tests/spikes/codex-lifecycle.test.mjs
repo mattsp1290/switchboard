@@ -266,7 +266,10 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
         assert.equal(args[0], 'run');
         name = args[args.indexOf('--name') + 1];
         if (args.includes('--version')) return 'codex-cli 0.169.0';
-        if (args.some((arg) => arg.includes('/bindings.mjs,'))) return JSON.stringify({ 'a.ts': 'import { b } from "./b";', 'b.ts': 'export const b = 1;' });
+        if (args.some((arg) => arg.includes('/bindings.mjs,'))) return JSON.stringify({
+          'a.ts': 'import type { RequestId } from "./RequestId";',
+          'RequestId.ts': readFileSync(new URL('../../src/adapters/codex/protocol/RequestId.ts', import.meta.url), 'utf8'),
+        });
         if (args.some((arg) => arg.includes('/probe.mjs,'))) return JSON.stringify({ node: process.versions.node, architecture: 'arm64' });
         if (args.at(-1) === 'prepare') return JSON.stringify({ records: ['first', 'second', 'unauthorized'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),
           files: Object.fromEntries(['first', 'second', 'unauthorized'].map((name) => [`sessions/${name}.jsonl`, Buffer.from('synthetic opaque bytes').toString('base64')])) });

@@ -6,9 +6,13 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, admittedPath, fingerprint, requestBudget } from './inventory.mjs';
 import { ownedContainer } from './lifecycle.mjs';
+import { assertSelectedBinding, transformBindings } from './protocol-bindings.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pins = JSON.parse(readFileSync(join(here, 'pins.json'), 'utf8'));
+const selectedBinding = readFileSync(join(here, '../../src/adapters/codex/protocol/RequestId.ts'), 'utf8');
+assert.equal(createHash('sha256').update(selectedBinding).digest('hex'),
+  'beeb38dfd0b050b171141bd66d51663786a50a81cbe904ba9b006289a101fd39', 'Selected RequestId integrity before native entry');
 assert.equal(process.versions.node, pins.node);
 const [archive, architecture = process.arch] = process.argv.slice(2);
 assert(archive, 'Usage: node spikes/codex-native/qualify.mjs <official-codex.tgz> [arm64|x64]');
@@ -52,21 +56,14 @@ try {
   };
   assert.equal(docker(['/opt/codex', '--version']).trim(), `codex-cli ${pins.native}`);
   const generated = JSON.parse(docker(['node', '/opt/fixture.mjs'], 'bindings.mjs'));
-  let transformedImports = 0;
-  for (const [file, source] of Object.entries(generated)) {
-    assert(/^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.ts$/.test(file));
+  const binding = transformBindings(generated);
+  const selectedBindingIdentity = assertSelectedBinding(generated['RequestId.ts'], selectedBinding);
+  for (const [file, source] of Object.entries(binding.files)) {
     const target = join(work, 'generated', file);
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, source.replace(/(\bfrom\s+")(\.\.?\/[^"\n]+)(")/g, (_, start, specifier, end) => {
-      assert(!/\.[a-z]+$/i.test(specifier), 'Expected generated extensionless module import');
-      const module = posix.join(posix.dirname(file), specifier);
-      const suffix = Object.hasOwn(generated, `${module}.ts`) ? '.js' : '/index.js';
-      assert(Object.hasOwn(generated, suffix === '.js' ? `${module}.ts` : `${module}/index.ts`));
-      transformedImports++;
-      return `${start}${specifier}${suffix}${end}`;
-    }));
+    writeFileSync(target, source);
   }
-  assert(transformedImports > 0);
+  assert(binding.transformedImports > 0);
   copyFileSync(join(here, 'consumer.ts'), join(work, 'consumer.ts'));
   writeFileSync(join(work, 'tsconfig.json'), JSON.stringify({ compilerOptions: {
     target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', lib: ['ES2022'], types: ['node'],
@@ -199,7 +196,8 @@ try {
     assert.deepEqual(fingerprint(accountSource, accountInventory), accountHashes, 'All originals preserved over container lifetime');
   }
   result = { native: pins.native, image: pins.image, platform: pin.platform,
-    archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports,
+    archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,
+    bindingIdentity: { ...selectedBindingIdentity, sourceSha256: binding.sourceSha256, consumedSha256: binding.consumedSha256 },
     strictNodeNextNoDOM: 'passed', behavior, boundary, discovery, accounts, accountPreparationRequests: accountPrepared.fixtureRequests };
 } finally {
   if (cleanupUncertain) console.error(JSON.stringify({ cleanupUncertain, container: name, retainedWork: work }));
