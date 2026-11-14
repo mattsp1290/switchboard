@@ -2,7 +2,7 @@
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
 The foundation supplies public adapter contracts, session envelope validation, bounded event streams, and package verification.
-Native adapters, native session discovery, and AG-UI mappings remain future work.
+Native adapters and native session discovery remain future work.
 The private core package has no mandatory runtime dependencies.
 The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
 
@@ -27,11 +27,12 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 `src/index.ts` exports core contracts and helpers without importing AG-UI.
 `src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
-Its frozen `aguiProtocol` descriptor marks mappings as planned; no mapper is exposed yet.
+`createAguiProjection` maps observed lifecycle, text, tool, content and step facts through one bounded per-run actor.
+Its frozen `aguiProtocol` descriptor identifies basic mapping support; advanced categories remain planned.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
-The following directories describe source ownership. Core contracts live in `src/core/`; protocol metadata lives in `src/agui/`.
+The following directories describe source ownership. Core contracts live in `src/core/`; protocol mapping and metadata live in `src/agui/`.
 
 | Source area | Responsibility | Allowed direction |
 | --- | --- | --- |
@@ -285,3 +286,15 @@ Record exact native, proxy, model, protocol, and source versions with configurat
 Distinguish deterministic fixture checks from live evidence.
 All GitHub Actions must use Linux runners. Record macOS native evidence separately.
 The temporary consumer check proves packaging on the machine running it. It does not qualify a native integration on either platform.
+
+## Basic AG-UI projection
+
+Hosts serialize `accept` calls and publish each successful batch in order. Local validation failures emit nothing and fault the actor.
+Success and cancellation require every opened stream or step to close. Only observed native failure abandons open entities.
+Ended tool arguments can remain unanswered; an optional success `pendingTools` list must match first-start order exactly.
+`NativeRef` IDs use the public JSON tuple `[1, sourceKey, kind, scope, id]`. Message references share one identity domain across text and tool results.
+The tuple preserves lone UTF-16 surrogates and omits host run IDs so stable native references survive resume.
+These identifiers are reversible public values. The host must supply authorized public namespaces and IDs.
+Identical closed text/tool streams may reopen. Owner or opener disagreement faults the actor.
+Step identity becomes `stepName`; an observed display label is retained in `metadata.switchboard.name`.
+Returned events and nested JSON are detached and recursively readonly. No native availability or qualification follows from representation fixtures.
