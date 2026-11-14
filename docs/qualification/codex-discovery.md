@@ -1,0 +1,59 @@
+# Native Codex discovery qualification
+
+Codex 0.169.0 can discover indexed and unindexed native history while the original history and SQLite files are mounted read-only. The supported `sqlite_home` override sends startup backfill and metadata repair to a disposable private index. This retires the suspected source-write incompatibility. It does not close API selection. Malformed history can disappear without a structured coverage warning, and native pagination does not impose a byte limit on startup backfill.
+
+The executable proof is [discovery.mjs](../../spikes/codex-native/discovery.mjs), invoked unconditionally by the existing [qualify.mjs](../../spikes/codex-native/qualify.mjs) entry point. The [native qualification instructions](codex-native-api.md) reproduce it on Linux arm64 or x64. The existing x64 CI job invokes that same entry point, including the new discovery cases. Local execution on 2026-11-13 passed the pinned Linux arm64 binary, archive integrity check, strict generated bindings, original native behavior probe, and all five discovery variants. The emitted JSON contains the per-variant results. This document does not claim a completed x64 CI run for this change.
+
+The proof creates eight native threads through `thread/start` and completed turns against a synthetic loopback Responses server. The threads cover two matching records, another cwd, another provider, archived history, a separate unauthorized root, and two synthetic account identities. Native archive operations produce the archived fixture. The probe exports native history and SQLite bytes after process shutdown. It does not parse, synthesize, or import private history formats. The malformed case deliberately replaces one native-created file with invalid JSON.
+
+The data shape is a fixture manifest of native IDs, role names, cwd values, providers, and native-returned paths. The runner uses those paths to preserve and remount opaque files. No native-generated skill instructions are read or executed by the qualification script.
+
+## Storage and authorization boundary
+
+Each discovery container has a fresh writable auxiliary home on `/root` tmpfs. The runner mounts `sessions`, `archived_sessions`, and every exported original SQLite file read-only at their native locations under `/root/.codex`. This includes `state_5`, `thread_history_1`, goals, memories, queue, and logs databases with any WAL and SHM sidecars present after shutdown. `state_5` is the metadata index. `thread_history_1` and all other original databases receive the same protection without assuming they are all discovery indexes.
+
+The process uses `sqlite_home=/tmp/private-index` and `log_dir=/tmp/private-logs`. The original SQLite files are protected but are not the active discovery index. Both indexed and unindexed cases rebuild a private cache from native history. SQLite-only customizations, such as explicit titles, sections, and project metadata, are not proven to survive reconstruction. The private cache already serves `useStateDbOnly=true` at initialization, before the first scan listing. Source hashes are identical before startup, after initialization, after listing, and after shutdown. The host also compares source hashes across the entire container lifetime. Write attempts against the mounted history fail with `EROFS`.
+
+Writes to the fresh auxiliary home and private cache are intentional. Native startup creates helper files and other auxiliary state. A private preliminary experiment mounting the entire native home read-only failed before initialization. That failure does not imply that history or indexes must be writable. No production home, credentials, history, or sockets are mounted. The probe never assigns `HOME`, `home`, or `CODEX_HOME`.
+
+The host must authorize the entire mounted history root and its account contents before startup. `cwd`, provider, source, and account parameters select results after native reads. They cannot establish read confinement. Each fixture contains an actual unauthorized native history file in a separate read-only `/unauthorized` mount. Native discovery excludes its ID, including when the original protected index still contains that ID. File and directory symlinks into that root are also excluded in the native probe. The host preflight rejects either symlink before ordinary discovery. The explicit symlink test bypasses that rejection solely to characterize native behavior in the isolated synthetic container.
+
+The fixture namespace is immutable during each run. This proof does not solve races with another writer replacing files between host admission and a production mount. Root authorization, stable namespace admission, and subsequent native-ID resume authorization remain host responsibilities.
+
+## Observed behavior
+
+| Case | Native assertion |
+| --- | --- |
+| Indexed source | Native-created history and every original SQLite file remain unchanged. Discovery uses the private index. |
+| Unindexed source | With all original SQLite files omitted, the same compatible native IDs remain discoverable. |
+| Pagination | A limit of one returns at most one item, advances opaque cursors without repetition, and returns unique IDs within eight pages. |
+| Source | Native app-server creation records source `vscode`. A `vscode`-inclusive query returns it. An `appServer`-only query excludes it. |
+| Provider and cwd | Explicit provider filters and exact cwd filters include their matching fixtures. An absent provider and a child cwd return no records. |
+| Archive | Active and archived queries return separate native fixtures. |
+| Accounts | Each synthetic ChatGPT account sees its own thread plus unattributed shared history. Disabling the account filter returns both accounts. An API-key login sees both accounts even with `currentAccountOnly=true`. |
+| Invalid public inputs | A malformed cursor, invalid source enum, and invalid excluded thread ID return protocol errors. |
+| Malformed history | The corrupted native rollout is omitted. Other compatible records remain discoverable. No structured coverage warning identifies the omitted record. |
+| Inaccessible layout | A regular file at the sessions-directory path returns error `-32603` with `Not a directory`. This tests `ENOTDIR`, not permission-denied behavior. |
+| Scope | A separate native root and file or directory symlinks do not contribute IDs. Host admission rejects symlinks. |
+| Lifecycle | Source bytes remain unchanged across startup, listing, and shutdown. Discovery dispatches zero inference requests. |
+
+Account fixtures use the public `account/login/start` request with fabricated JWT claims. `chatgptAuthTokens` requires the explicit `experimentalApi` initialization capability in this version. `features.apps=false` disables default account-linked app startup in this isolated fixture. These tests establish local account-filter semantics, not real login, OAuth validation, account authorization, or live provider behavior. Account switching and the API-key login affect only fresh auxiliary state. The existing strict binding check still generates and checks the stable public bindings without experimental generation.
+
+## Bounds and remaining selection blockers
+
+Every container retains the existing network-disabled, read-only root filesystem, 128-process, two-CPU, 768 MiB memory, 128 MiB `/tmp`, and 64 MiB `/root` limits. The container deadline is 40 seconds and the host deadline is 45 seconds. Each protocol wait has a six-second deadline. The discovery client bounds requests to 80, stdout to 2 MiB, and pagination to eight pages with cursors below 512 characters. The host output limit is 8 MiB. Fixture admission limits source entries to 128 and source bytes to less than 8 MiB. Only the digest-verified executable, fixture code, manifest, and synthetic data enter the container.
+
+These are process and fixture bounds. They are not native per-file read bounds. Pinned source shows that initialization recursively collects rollout paths and loads rollout items for metadata backfill before `thread/list`. The scanner has a 10,000-file traversal cap and bounded record lookahead on some listing paths. Neither limit bounds initialization, JSONL line bytes, total rollout bytes, compressed expansion, or total directory enumeration. A general production byte budget requires separately qualified host admission over the authorized stable root. Oversized or unreadable roots must produce an explicit incomplete or inaccessible outcome before native execution.
+
+The supported path preserves original history and indexes and covers unindexed compatible history. Required coverage semantics remain unresolved. The public list response cannot distinguish a complete result from omitted malformed history in this probe. The adapter must report coverage as unknown rather than turn such results into a complete empty history. Per-file incompatible outcomes and unreadable-file behavior are not established here. No guessed private-format importer is proposed. API selection remains conditional until the host can represent the required discovery outcomes through a qualified supported path or the user explicitly revises that requirement.
+
+## Pinned source evidence
+
+All source links use Codex commit `d32063f96c2dff1dc96af839b3952abb6acfeda4`.
+
+- The [configuration schema](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/core/config.schema.json) documents `sqlite_home`, `log_dir`, and the apps feature configuration.
+- [ThreadListParams](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/app-server-protocol/schema/typescript/v2/ThreadListParams.ts) documents explicit source, provider, archive, account, cwd, and DB-only parameters.
+- [Local listing](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/thread-store/src/local/list_threads.rs#L244) separates the DB-only and scan paths.
+- [State initialization](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/rollout/src/state_db.rs#L99) waits for backfill. [Metadata extraction and collection](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/rollout/src/metadata.rs#L150) load rollout items and recursively collect paths.
+- [Listing limits](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/rollout/src/list.rs#L147) and [directory collection](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/rollout/src/list_files.rs#L220) explain why pagination and file caps do not establish total byte bounds.
+- [Account filtering](https://github.com/openai/codex/blob/d32063f96c2dff1dc96af839b3952abb6acfeda4/codex-rs/app-server/src/request_processors/thread_processor.rs#L6044) shares unattributed history and bypasses account filtering for API-key authentication.
