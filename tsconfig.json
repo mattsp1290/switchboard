@@ -14,15 +14,13 @@
     "noEmitOnError": true,
     "forceConsistentCasingInFileNames": true,
     "lib": [
-      "ES2024"
+      "ES2022"
     ],
     "types": [
       "node"
-    ],
-    "allowJs": true
+    ]
   },
   "include": [
-    "src/**/*.ts",
-    "src/testkit/**/*.mjs"
+    "src/**/*.ts"
   ]
 }

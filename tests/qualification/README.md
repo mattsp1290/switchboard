@@ -7,7 +7,7 @@ Import `contracts` and `createFakeFixture` from that entry. Importing it does no
 Each named contract runs its group when called with a fixture factory and an `AbortSignal`.
 To qualify another controlled driver, supply an immediate or asynchronous `QualificationFactory`.
 The entry exports `QualificationFixture` and its connection, request, result, controls, and counter types.
-The compiler checks the fake implementation against those declarations.
+The compiler checks the scenarios and the fake implementation against those declarations.
 The installed consumer checks valid fixture authors and rejects missing cleanup, publish-only events, and recovery dispatch.
 It runs all four groups with both immediate and asynchronous fixture acquisition.
 

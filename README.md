@@ -23,9 +23,7 @@ The package test runs `verify:package`, which rebuilds, packs, and installs the 
 It checks public contract types, installed runtime helpers, blocked private imports, and package contents.
 The `tests/core/*.test.ts` fixtures compile against the installed tarball and are never executed.
 The `tests/core/*.consumer.mjs` fixtures run with `node --test` inside that installed consumer.
-Source compilation targets ES2022 with ES2024 library declarations for the Node 24 fixture helpers.
-ES2024 runtime APIs are also available to core source under the supported Node 24 runtime.
-Installed consumer compilation uses ES2022 and Node declarations without DOM libraries.
+Source and consumer compilation use ES2022 and Node declarations without DOM libraries.
 The script removes its temporary files on success or failure.
 Run `npm run build` to compile separately. The build removes `dist` before compilation. `npm run clean` removes the local build.
 

@@ -1,5 +1,5 @@
-export { contracts } from './contracts.mjs';
-export { createFakeFixture } from './fake.mjs';
+export { contracts } from './contracts.js';
+export { createFakeFixture } from './fake.js';
 export type {
   CompletionGate, QualificationConnection, QualificationContract, QualificationContracts,
   QualificationCounts, QualificationEvent, QualificationFactory, QualificationFixture, QualificationRequest,

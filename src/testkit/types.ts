@@ -1,7 +1,7 @@
 import type {
-  AdapterIdentity, DispatchSnapshot, EventObserver, FreshDispatchOptions, InteractionContinuation,
+  AdapterError, AdapterIdentity, DispatchIdentity, DispatchSnapshot, EventObserver, FreshDispatchOptions, InteractionContinuation,
   InteractionError, NativeDispatchObservation, Outcome, PendingApproval, PendingInteraction,
-  ReconciliationHandle, SessionReference, SessionReferenceError, ToolTarget,
+  ReconciliationHandle, SessionReference, SessionReferenceError,
 } from '@mattsp1290/switchboard';
 
 export interface QualificationResult {
@@ -26,9 +26,10 @@ export interface QualificationSubmitError {
     | 'missing-session' | 'stale-interaction' | 'busy' | 'closed';
 }
 
-export type RecoverableSnapshot = DispatchSnapshot<QualificationResult> & {
+export interface RecoverableSnapshot {
+  readonly identity: DispatchIdentity;
   readonly observation: NativeDispatchObservation<QualificationResult>;
-};
+}
 
 export interface QualificationConnection {
   readonly identity: AdapterIdentity;
@@ -42,7 +43,7 @@ export interface QualificationConnection {
     DispatchSnapshot<QualificationResult>, QualificationSubmitError
   >>;
   readonly recover: (saved: RecoverableSnapshot) => ReconciliationHandle<QualificationResult>;
-  readonly close: () => Promise<Outcome<void, { readonly code: string }>>;
+  readonly close: () => Promise<Outcome<void, AdapterError>>;
 }
 
 export interface CompletionGate {
@@ -63,7 +64,7 @@ export interface QualificationFixture {
     readonly a: SessionReference;
     readonly b: SessionReference;
     readonly approval: PendingApproval;
-    readonly tool: { readonly kind: 'tool'; readonly target: ToolTarget };
+    readonly tool: Extract<PendingInteraction, { readonly kind: 'tool' }>;
   };
   readonly connect: (recordIntent: RecordIntent) => QualificationConnection;
   readonly controls: {
