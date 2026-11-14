@@ -1,0 +1,11 @@
+{
+  "name": "@switchboard-proof/inert",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "dependencies": { "@switchboard-proof/declarations": "1.0.0" }
+}
