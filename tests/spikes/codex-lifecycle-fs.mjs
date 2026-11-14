@@ -2,6 +2,7 @@ export * from 'node:fs';
 import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 export function readFileSync(path, ...options) {
+  if (String(path) === new URL('../../src/adapters/codex/wire.ts', import.meta.url).pathname) return globalThis.codexQualification.wireSource;
   if (String(path).endsWith('/pins.json')) {
     const pins = JSON.parse(fs.readFileSync(path, 'utf8'));
     for (const pin of Object.values(pins.artifacts)) pin.sha512 = createHash('sha512').update('inert archive').digest('base64');
