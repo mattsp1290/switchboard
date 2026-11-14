@@ -130,11 +130,11 @@ def verify_notices(cid):
     (OUT / 'notice-controls.stderr').write_text(result.stderr)
     assert result.returncode == 0, 'notice controls exited unsuccessfully'
     rows = re.findall(r'^NOTICE_TEST (\d+) ([a-z-]+) result=(\d+)$', result.stdout, re.M)
-    expected = list(range(157))
+    expected = list(range(165))
     assert [int(row[0]) for row in rows] == expected, 'incomplete notice controls'
     assert all(row[2] == '1' for row in rows), 'notice control failed'
     assert len({row[1] for row in rows}) == len(expected), 'duplicate notice control name'
-    assert result.stdout.count('\n') == 158 and result.stdout.endswith('NOTICE_TESTS count=157 failed=0\n')
+    assert result.stdout.count('\n') == 166 and result.stdout.endswith('NOTICE_TESTS count=165 failed=0\n')
     assert not result.stderr, 'unexpected notice control diagnostics'
     check_notice_identity()
     save('notice-controls.json', {'controlIds': expected, 'nativeRoutineObserved': True,

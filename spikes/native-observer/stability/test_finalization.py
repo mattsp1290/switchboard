@@ -72,8 +72,8 @@ class FinalizationTests(unittest.TestCase):
                             self.assertIn(name, external)
                         elif command == 'exec':
                             if name == 'notice-tests':
-                                stdout = ''.join(f'NOTICE_TEST {i} control-{chr(97+i//26)}{chr(97+i%26)} result=1\n' for i in range(157))
-                                stdout += 'NOTICE_TESTS count=157 failed=0\n'
+                                stdout = ''.join(f'NOTICE_TEST {i} control-{chr(97+i//26)}{chr(97+i%26)} result=1\n' for i in range(165))
+                                stdout += 'NOTICE_TESTS count=165 failed=0\n'
                                 if fault == 'incomplete':
                                     stdout = stdout.replace('NOTICE_TEST 0 control-aa result=1\n', '')
                                 if fault == 'nonzero':
@@ -126,7 +126,7 @@ class FinalizationTests(unittest.TestCase):
                     self.assertEqual(failed['code'], 90 if fault == 'nonzero' else 0)
                     self.assertEqual((out / 'notice-controls.stdout').read_text(), failed['stdout'])
                     self.assertEqual((out / 'notice-controls.stderr').read_text(), failed['stderr'])
-                    self.assertTrue(failed['stdout'].endswith('NOTICE_TESTS count=157 failed=0\n'))
+                    self.assertTrue(failed['stdout'].endswith('NOTICE_TESTS count=165 failed=0\n'))
                     self.assertEqual(failed['stderr'], 'complete failure diagnostic\n' if fault == 'nonzero' else '')
                     continue
                 self.assertEqual(result['noticeControlsSha256'], real_digest(out / 'notice-controls.json'))

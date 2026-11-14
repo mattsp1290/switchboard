@@ -14,14 +14,14 @@ from test_admission import AdmissionTests
 
 class NoticeTests(unittest.TestCase):
     def evidence(self):
-        rows = [f'NOTICE_TEST {i} control-{chr(97+i//26)}{chr(97+i%26)} result=1\n' for i in range(157)]
-        return ''.join(rows) + 'NOTICE_TESTS count=157 failed=0\n'
+        rows = [f'NOTICE_TEST {i} control-{chr(97+i//26)}{chr(97+i%26)} result=1\n' for i in range(165)]
+        return ''.join(rows) + 'NOTICE_TESTS count=165 failed=0\n'
 
     def test_actual_control_collector_requires_complete_success_and_binding(self):
         good = self.evidence()
         variants = [('', ''), (good, 'unexpected'), (good.replace('result=1', 'result=0', 1), ''),
                     (good.replace('NOTICE_TEST 0 ', 'NOTICE_TEST 1 ', 1), ''),
-                    (good.replace('count=157', 'count=156'), ''), (good + 'extra\n', '')]
+                    (good.replace('count=165', 'count=164'), ''), (good + 'extra\n', '')]
         for line in good.splitlines(keepends=True):
             variants.extend(((good.replace(line, '', 1), ''), (good + line, ''),
                              (good.replace(line, line[:-2] + '\n', 1), '')))
@@ -34,7 +34,7 @@ class NoticeTests(unittest.TestCase):
             with patch.object(run, 'docker', return_value=subprocess.CompletedProcess([], 0, good, '')):
                 run.verify_notices('synthetic')
             report = json.loads((run.OUT / 'notice-controls.json').read_text())
-            self.assertEqual(report['controlIds'], list(range(157)))
+            self.assertEqual(report['controlIds'], list(range(165)))
             for key, name in [('stdoutSha256', 'notice-controls.stdout'), ('stderrSha256', 'notice-controls.stderr'),
                               ('sourceInventorySha256', 'hashes.json'), ('binarySha256', 'prerequisite')]:
                 self.assertEqual(report[key], run.digest(run.OUT / name))

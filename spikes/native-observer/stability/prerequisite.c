@@ -230,9 +230,12 @@ static int read_notices(int fd, pid_t tracer, int death, NoticeReceipt *receipt,
 static int target_absent(pid_t pid, const NoticeIO *io) {
     char path[80];
     snprintf(path, sizeof(path), "/proc/%d", pid);
-    for (int i = 0; i < 100 && io->access(path, F_OK) == 0; i++)
-        if (io->delay(10)) return 0;
-    return io->access(path, F_OK) == -1 && errno == ENOENT;
+    for (int i = 0; i <= 100; i++) {
+        int result = io->access(path, F_OK);
+        if (result == -1) return errno == ENOENT;
+        if (result != 0 || i == 100 || io->delay(10)) return 0;
+    }
+    return 0;
 }
 
 typedef struct {
@@ -267,12 +270,18 @@ typedef struct {
     Notice record;
 } NoticeStep;
 
+typedef struct {
+    int result, error;
+} NoticeAccess;
+
 static struct {
     NoticeStep steps[4];
     unsigned cursor, polls, reads, actions, clocks, expiry, waits, accesses, absence_delays, wait_delays;
     unsigned clock_error;
     unsigned late_poll, late_read;
     int delay_error, access_error;
+    NoticeAccess access_steps[3];
+    unsigned access_step_count;
     unsigned reader_clocks, expected_actions, expected_waits;
     int action_error, timeouts_wrong, order_wrong, wait_results[2], state, absent;
     long now;
@@ -335,9 +344,14 @@ static pid_t scripted_waitpid(pid_t pid, int *state, int flags) {
 }
 
 static int scripted_access(const char *path, int mode) {
-    notice_script.accesses++;
+    unsigned index = notice_script.accesses++;
     if (strcmp(path, "/proc/23") || mode != F_OK || notice_script.waits != notice_script.expected_waits)
         notice_script.order_wrong = 1;
+    if (index < notice_script.access_step_count) {
+        NoticeAccess step = notice_script.access_steps[index];
+        errno = step.error;
+        return step.result;
+    }
     errno = notice_script.access_error ? notice_script.access_error : ENOENT;
     return notice_script.access_error || notice_script.absent ? -1 : 0;
 }
@@ -441,7 +455,7 @@ static int notice_tests(void) {
                     (cases[i].clock_error ? cases[i].clock_error :
                      cases[i].polls + cases[i].reads + 1 + !!cases[i].expiry) &&
                 outcome.receipt.ready == (cases[i].actions != 0) && outcome.receipt.death_sent == sent &&
-                notice_script.waits == !!caller && notice_script.accesses == (caller && cases[i].root > 0 ? 2U : 0U) &&
+                notice_script.waits == !!caller && notice_script.accesses == (caller && cases[i].root > 0 ? 1U : 0U) &&
                 !notice_script.order_wrong && !notice_script.wait_delays && !notice_script.absence_delays;
             failures += !correct;
             dprintf(1, "NOTICE_TEST %u %s-%s result=%d\n", id++,
@@ -453,18 +467,25 @@ static int notice_tests(void) {
         int death, waits[2], state, action_error, absent, valid;
         unsigned actions, wait_count, delay_count, clock_error;
         int delay_error, access_error;
+        unsigned access_count, absence_delay_count;
+        NoticeAccess access_steps[3];
+        unsigned access_step_count;
     } cleanup[] = {
-        {"completion-failure", 0, {1, 0}, 90 << 8, 0, 1, 1, 0, 1, 0, 0, 0, 0},
-        {"absence-failure", 0, {1, 0}, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0},
-        {"wait-error", 1, {-1, 0}, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0},
-        {"wait-deadline", 1, {0, 1}, SIGKILL, 0, 1, 0, 2, 2, 1, 0, 0, 0},
-        {"fallback-signal-failure", 0, {0, 1}, SIGKILL, -1, 1, 0, 1, 2, 1, 0, 0, 0},
-        {"fallback-reap-failure", 0, {0, 0}, SIGKILL, 0, 1, 0, 1, 2, 2, 0, 0, 0},
-        {"initial-wait-clock-error", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 0, 0, 8, 0, 0},
-        {"later-wait-clock-error", 1, {0, 0}, SIGKILL, 0, 1, 0, 1, 1, 1, 9, 0, 0},
-        {"wait-delay-error", 1, {0, 0}, SIGKILL, 0, 1, 0, 1, 1, 1, 0, 2, 0},
-        {"absence-delay-error", 1, {1, 0}, SIGKILL, 0, 0, 0, 1, 1, 0, 0, 10, 0},
-        {"access-error", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, EACCES}
+        {"completion-failure", 0, {1, 0}, 90 << 8, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"absence-failure", 0, {1, 0}, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 101, 100, {{0, 0}}, 0},
+        {"wait-error", 1, {-1, 0}, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"wait-deadline", 1, {0, 1}, SIGKILL, 0, 1, 0, 2, 2, 1, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"fallback-signal-failure", 0, {0, 1}, SIGKILL, -1, 1, 0, 1, 2, 1, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"fallback-reap-failure", 0, {0, 0}, SIGKILL, 0, 1, 0, 1, 2, 2, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"initial-wait-clock-error", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 0, 0, 8, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"later-wait-clock-error", 1, {0, 0}, SIGKILL, 0, 1, 0, 1, 1, 1, 9, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"wait-delay-error", 1, {0, 0}, SIGKILL, 0, 1, 0, 1, 1, 1, 0, 2, 0, 1, 0, {{0, 0}}, 0},
+        {"absence-delay-error", 1, {1, 0}, SIGKILL, 0, 0, 0, 1, 1, 0, 0, 10, 0, 1, 1, {{0, 0}}, 0},
+        {"access-error", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, EACCES, 1, 0, {{0, 0}}, 0},
+        {"immediate-access-eacces", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, {{-1, EACCES}, {-1, ENOENT}}, 2},
+        {"later-access-eacces", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 2, 1, {{0, 0}, {-1, EACCES}, {-1, ENOENT}}, 3},
+        {"immediate-access-eio", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, {{-1, EIO}, {-1, ENOENT}}, 2},
+        {"later-access-eio", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 2, 1, {{0, 0}, {-1, EIO}, {-1, ENOENT}}, 3}
     };
     for (unsigned i = 0; i < sizeof(cleanup) / sizeof(*cleanup); i++) {
         for (int raw = 0; raw < 2; raw++) {
@@ -479,6 +500,8 @@ static int notice_tests(void) {
             notice_script.clock_error = cleanup[i].clock_error;
             notice_script.delay_error = cleanup[i].delay_error;
             notice_script.access_error = cleanup[i].access_error;
+            memcpy(notice_script.access_steps, cleanup[i].access_steps, sizeof(notice_script.access_steps));
+            notice_script.access_step_count = cleanup[i].access_step_count;
             notice_script.expected_actions = cleanup[i].death;
             notice_script.expected_waits = cleanup[i].wait_count;
             NoticeOutcome outcome = supervise_notices(17, 91, raw, cleanup[i].death, &io);
@@ -487,8 +510,8 @@ static int notice_tests(void) {
                 outcome.receipt.ready == cleanup[i].death && outcome.receipt.death_sent == cleanup[i].death &&
                 notice_script.polls == (cleanup[i].death ? 3U : 2U) && notice_script.reads == notice_script.polls &&
                 !notice_script.timeouts_wrong && !notice_script.order_wrong &&
-                notice_script.accesses == (cleanup[i].delay_error == 10 ? 1U : cleanup[i].absent ? 2U : 101U) &&
-                notice_script.absence_delays == (cleanup[i].delay_error == 10 ? 1U : cleanup[i].absent ? 0U : 100U) &&
+                notice_script.accesses == cleanup[i].access_count &&
+                notice_script.absence_delays == cleanup[i].absence_delay_count &&
                 notice_script.clocks == (cleanup[i].death ? 8U : 6U) + (cleanup[i].wait_count == 2) +
                     cleanup[i].delay_count - (cleanup[i].delay_error == 2) &&
                 notice_script.wait_delays == cleanup[i].delay_count &&
