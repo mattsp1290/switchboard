@@ -6,13 +6,13 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, admittedPath, fingerprint, requestBudget } from './inventory.mjs';
 import { ownedContainer } from './lifecycle.mjs';
-import { assertSelectedBinding, transformBindings } from './protocol-bindings.mjs';
+import { assertSelectedBinding, selectedRequestIdSha256, transformBindings } from './protocol-bindings.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pins = JSON.parse(readFileSync(join(here, 'pins.json'), 'utf8'));
 const selectedBinding = readFileSync(join(here, '../../src/adapters/codex/protocol/RequestId.ts'), 'utf8');
 assert.equal(createHash('sha256').update(selectedBinding).digest('hex'),
-  'beeb38dfd0b050b171141bd66d51663786a50a81cbe904ba9b006289a101fd39', 'Selected RequestId integrity before native entry');
+  selectedRequestIdSha256, 'Selected RequestId integrity before native entry');
 assert.equal(process.versions.node, pins.node);
 const [archive, architecture = process.arch] = process.argv.slice(2);
 assert(archive, 'Usage: node spikes/codex-native/qualify.mjs <official-codex.tgz> [arm64|x64]');
@@ -56,8 +56,8 @@ try {
   };
   assert.equal(docker(['/opt/codex', '--version']).trim(), `codex-cli ${pins.native}`);
   const generated = JSON.parse(docker(['node', '/opt/fixture.mjs'], 'bindings.mjs'));
-  const binding = transformBindings(generated);
   const selectedBindingIdentity = assertSelectedBinding(generated['RequestId.ts'], selectedBinding);
+  const binding = transformBindings(generated);
   for (const [file, source] of Object.entries(binding.files)) {
     const target = join(work, 'generated', file);
     mkdirSync(dirname(target), { recursive: true });

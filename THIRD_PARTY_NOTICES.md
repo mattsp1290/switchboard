@@ -1,6 +1,8 @@
 # Selected Codex binding
 
 `src/adapters/codex/protocol/RequestId.ts` is copied without changes from OpenAI Codex CLI `0.169.0`.
+The packed artifact contains its compiled forms, `dist/adapters/codex/protocol/RequestId.js` and `dist/adapters/codex/protocol/RequestId.d.ts`. No package export reaches those private paths.
+The root MIT package metadata describes Switchboard's original code. This copied component remains Apache-2.0 under the shipped license and notice. Task `bzn9` owns reconciliation of aggregate SPDX metadata before release.
 The selected source revision is `d32063f96c2dff1dc96af839b3952abb6acfeda4`.
 The binding's consumed bytes equal its source bytes. It has no imports and receives zero import rewrites.
 
@@ -13,4 +15,4 @@ The binding's consumed bytes equal its source bytes. It has no imports and recei
 The complete upstream license and notice are preserved in `licenses/codex-APACHE-2.0.txt` and `licenses/codex-NOTICE.txt`.
 The qualifier uses `spikes/codex-native/protocol-bindings.mjs` for its generated tree. Only validated module specifiers change.
 Its result records deterministic SHA-256 hashes of sorted `[path, source]` pairs before and after transformation.
-Native generator parity with this source leaf requires the existing native CI check. A mismatch records both hashes and bounded raw generated source, then fails without header normalization.
+Native generator parity compares the pinned `0.169.0` binary's `generate-ts` output against the committed leaf. It does not compare against the linked blob. The existing native CI job must establish that parity. A mismatch records both hashes and raw generated source bounded to 512 JSON-encoded UTF-8 bytes, then fails without header normalization.

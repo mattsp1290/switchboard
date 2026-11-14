@@ -3,9 +3,15 @@ import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 
 const sha256 = (source) => createHash('sha256').update(source).digest('hex');
+export const selectedRequestIdSha256 = 'beeb38dfd0b050b171141bd66d51663786a50a81cbe904ba9b006289a101fd39';
+const excerpt = (source) => {
+  let raw = source.slice(0, 512);
+  while (Buffer.byteLength(JSON.stringify(raw)) > 512) raw = raw.slice(0, -1);
+  return raw;
+};
 const fileName = /^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.ts(?![\s\S])/;
 const tokens = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\])*`|[A-Za-z_$][\w$]*|[^\s]/g;
-const declaration = /^(?:import type \{ [\w$ ,]+ \}|export (?:type )?(?:\{ [\w$ ,]+ \}|\*)) from ("[^"]+") ;$/;
+const declaration = /^(?:import type (?:\{ [\w$ ,]+ \}|\* as [A-Za-z_$][\w$]*)|export (?:type )?(?:\{ [\w$ ,]+ \}|\*(?: as [A-Za-z_$][\w$]*)?)) from ("[^"]+") ;$/;
 
 export function transformBindings(inventory) {
   assert(inventory !== null && typeof inventory === 'object' && !Array.isArray(inventory), 'Binding inventory must be an object');
@@ -29,18 +35,19 @@ export function transformBindings(inventory) {
       if (keyword === 'import' && [':', '?'].includes(lexical[i + 1]?.[0])) continue;
       if (keyword === 'export' && lexical[i + 1]?.[0] !== '*' && lexical[i + 1]?.[0] !== '{'
         && !(lexical[i + 1]?.[0] === 'type' && ['{', '*'].includes(lexical[i + 2]?.[0]))) continue;
-      const end = lexical.findIndex(([token], index) => index >= i && token === ';');
-      assert(end >= i, `Unexpected binding import syntax in ${file}`);
+      let end = i;
+      while (end < lexical.length && lexical[end][0] !== ';') end++;
       const statement = lexical.slice(i, end + 1);
-      const match = declaration.exec(statement.map(([token]) => token).join(' '));
-      assert(match, `Unexpected binding import syntax in ${file}`);
+      const text = statement.map(([token]) => token).join(' ');
+      const match = end < lexical.length && declaration.exec(text);
+      assert(match, `Unexpected binding import syntax in ${file}: ${JSON.stringify(excerpt(text))}`);
       const quoted = match[1];
       const specifier = quoted.slice(1, -1);
-      assert(/^(?:\.\/|(?:\.\.\/)+)(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+$/.test(specifier), `Expected extensionless relative binding import in ${file}`);
+      assert(/^(?:\.\/|(?:\.\.\/)+)(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+$/.test(specifier), `Expected extensionless relative binding import in ${file}: ${JSON.stringify(excerpt(specifier))}`);
       const module = posix.join(posix.dirname(file), specifier);
-      assert(module !== '..' && !module.startsWith('../'), `Binding import escapes root in ${file}`);
+      assert(module !== '..' && !module.startsWith('../'), `Binding import escapes root in ${file}: ${JSON.stringify(excerpt(specifier))}`);
       const suffix = names.has(`${module}.ts`) ? '.js' : '/index.js';
-      assert(names.has(suffix === '.js' ? `${module}.ts` : `${module}/index.ts`), `Dangling binding import in ${file}`);
+      assert(names.has(suffix === '.js' ? `${module}.ts` : `${module}/index.ts`), `Dangling binding import in ${file}: ${JSON.stringify(excerpt(specifier))}`);
       const token = statement.at(-2);
       edits.push({ start: token.index + 1, end: token.index + quoted.length - 1, value: specifier + suffix });
       transformedImports++;
@@ -60,8 +67,9 @@ export function transformBindings(inventory) {
 export function assertSelectedBinding(generated, selected) {
   assert(typeof generated === 'string' && typeof selected === 'string', 'Selected binding sources must be strings');
   const identity = { generatedSha256: sha256(generated), selectedSha256: sha256(selected) };
+  const generatedSource = excerpt(generated);
   assert(generated === selected, `Selected RequestId byte mismatch ${JSON.stringify({
-    ...identity, generatedSource: generated.slice(0, 4096), truncated: generated.length > 4096,
+    ...identity, generatedSource, truncated: generatedSource.length < generated.length,
   })}`);
   return identity;
 }

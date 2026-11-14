@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { assertSelectedBinding, transformBindings } from '../../spikes/codex-native/protocol-bindings.mjs';
+import { assertSelectedBinding, selectedRequestIdSha256, transformBindings } from '../../spikes/codex-native/protocol-bindings.mjs';
 
 const root = new URL('../../', import.meta.url);
 const selected = readFileSync(new URL('src/adapters/codex/protocol/RequestId.ts', root), 'utf8');
@@ -22,6 +22,7 @@ const intendedFailure = (name) => (error) => error.code === 'ERR_ASSERTION' && e
 
 test('selected binding and upstream notices retain exact bytes', () => {
   selectedOracle(selected);
+  assert.equal(selectedRequestIdSha256, leafHash, 'production-pin-matches-independent-oracle');
   for (const [file, expected] of noticeHashes) assert.equal(hash(readFileSync(new URL(file, root))), expected, file);
   const provenance = readFileSync(new URL('THIRD_PARTY_NOTICES.md', root), 'utf8');
   for (const digest of [leafHash, ...noticeHashes.map(([, digest]) => digest)]) assert(provenance.includes(digest));
@@ -51,6 +52,15 @@ test('directory index, sibling preference, nested parent and exports resolve', (
   assert.equal(result.sourceSha256, reordered.sourceSha256);
   assert.equal(result.consumedSha256, reordered.consumedSha256);
   assert.notEqual(result.sourceSha256, result.consumedSha256);
+  const namespaces = transformBindings({
+    'index.ts': 'export * as v2 from "./v2";\nexport type * as v3 from "./v3";\nimport type * as V2 from "./v2";\n',
+    'v2/index.ts': 'export type { X } from "./X";\n',
+    'v2/X.ts': 'export type X = string;\n',
+    'v3/index.ts': 'export type Y = string;\n',
+  });
+  assert.equal(namespaces.transformedImports, 4);
+  assert.equal(namespaces.files['index.ts'], 'export * as v2 from "./v2/index.js";\nexport type * as v3 from "./v3/index.js";\nimport type * as V2 from "./v2/index.js";\n');
+  assert.equal(namespaces.files['v2/index.ts'], 'export type { X } from "./X.js";\n');
 });
 
 test('only actual module specifiers change while notices and source remain exact', () => {
@@ -84,12 +94,19 @@ test('dangling, escaping, suffixed and unexpected import dialects are rejected',
     './B/../B', './B//index', './B?query', './B#hash', './B\\index', './']) {
     assert.throws(() => transformBindings({
       'A.ts': `import type { B } from "${specifier}";\n`, 'B.ts': '',
-    }), /Dangling|escapes root|extensionless/, specifier);
+    }), (error) => /Dangling|escapes root|extensionless/.test(error.message)
+      && error.message.includes(JSON.stringify(specifier)), specifier);
   }
   for (const source of ["import type { B } from './B';", 'import "./B";', 'import("./B");',
-    'import type { B } from "./B"', 'import B from "./B";', 'export * from "external";']) {
+    'import type { B } from "./B"', 'import B from "./B";', 'export * from "external";',
+    'export * as from "./B";', 'export type * as 2Bad from "./B";', 'import type * as from "./B";']) {
     assert.throws(() => transformBindings({ 'A.ts': source, 'B.ts': '' }), /syntax|extensionless/, source);
   }
+  const huge = 'export * as ' + 'X'.repeat(10000) + ' nope "./B";';
+  assert.throws(() => transformBindings({ 'A.ts': huge }), (error) => {
+    assert(error.message.startsWith('Unexpected binding import syntax in A.ts: "export * as'));
+    return Buffer.byteLength(error.message) < 600;
+  });
 });
 
 test('selected leaf mismatch retains bounded raw generator evidence without normalization', () => {
@@ -101,11 +118,18 @@ test('selected leaf mismatch retains bounded raw generator evidence without norm
     assert(error.message.includes('different generator header'));
     return error.code === 'ERR_ASSERTION';
   });
-  assert.throws(() => assertSelectedBinding('x'.repeat(10000), selected), (error) => {
-    assert(error.message.length < 4500, 'bounded-leaf-mismatch-diagnostic');
-    assert(error.message.includes('"truncated":true'));
-    return error.code === 'ERR_ASSERTION';
-  });
+  for (const unit of ['x', '\u0001', '"\\', '雪', '😀', '\ud800', '\udc00']) {
+    const raw = unit.repeat(10000);
+    assert.throws(() => assertSelectedBinding(raw, selected), (error) => {
+      assert(Buffer.byteLength(error.message) < 900, 'bounded-leaf-mismatch-diagnostic');
+      const evidence = JSON.parse(error.message.slice('Selected RequestId byte mismatch '.length));
+      assert(Buffer.byteLength(JSON.stringify(evidence.generatedSource)) <= 512);
+      assert(raw.startsWith(evidence.generatedSource));
+      assert.equal(evidence.generatedSha256, hash(raw));
+      assert.equal(evidence.truncated, true);
+      return error.code === 'ERR_ASSERTION';
+    });
+  }
   assert.throws(() => assertSelectedBinding(undefined, selected), /must be strings/);
 });
 

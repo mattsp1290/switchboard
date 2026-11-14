@@ -243,7 +243,7 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
   const log = console.log;
   const errorLog = console.error;
   try {
-    for (const fault of ['unknown-empty', 'late', 'daemon', 'removed', 'success']) {
+    for (const fault of ['unknown-empty', 'late', 'daemon', 'removed', 'success', 'leaf-mismatch', 'leaf-missing']) {
       const work = realpathSync(mkdtempSync(join(tmpdir(), 'codex-lifecycle-')));
       const archive = join(work, 'inert.tgz');
       writeFileSync(archive, 'inert archive');
@@ -266,10 +266,13 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
         assert.equal(args[0], 'run');
         name = args[args.indexOf('--name') + 1];
         if (args.includes('--version')) return 'codex-cli 0.169.0';
-        if (args.some((arg) => arg.includes('/bindings.mjs,'))) return JSON.stringify({
-          'a.ts': 'import type { RequestId } from "./RequestId";',
-          'RequestId.ts': readFileSync(new URL('../../src/adapters/codex/protocol/RequestId.ts', import.meta.url), 'utf8'),
-        });
+        if (args.some((arg) => arg.includes('/bindings.mjs,'))) {
+          const leaf = readFileSync(new URL('../../src/adapters/codex/protocol/RequestId.ts', import.meta.url), 'utf8');
+          return JSON.stringify({
+            'a.ts': fault.startsWith('leaf-') ? 'import unexpected syntax;' : 'import type { RequestId } from "./RequestId";',
+            ...(fault === 'leaf-missing' ? {} : { 'RequestId.ts': fault === 'leaf-mismatch' ? `// different generator header\n${leaf}` : leaf }),
+          });
+        }
         if (args.some((arg) => arg.includes('/probe.mjs,'))) return JSON.stringify({ node: process.versions.node, architecture: 'arm64' });
         if (args.at(-1) === 'prepare') return JSON.stringify({ records: ['first', 'second', 'unauthorized'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),
           files: Object.fromEntries(['first', 'second', 'unauthorized'].map((name) => [`sessions/${name}.jsonl`, Buffer.from('synthetic opaque bytes').toString('base64')])) });
@@ -287,10 +290,28 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
       console.log = (value) => { assert(!existsSync(work), 'Success output follows work cleanup'); output.push(value); };
       console.error = (value) => errors.push(JSON.parse(value));
       try {
+        if (fault.startsWith('leaf-')) {
+          await assert.rejects(import(`../../spikes/codex-native/qualify.mjs?${fault}`), (error) =>
+            fault === 'leaf-mismatch' ? /Selected RequestId byte mismatch/.test(error.message)
+              && error.message.includes('different generator header') : /Selected binding sources must be strings/.test(error.message));
+          assert(!calls.some((call) => call[0] === process.execPath), 'No compilation after leaf refusal');
+          assert(!calls.some((call) => call.some((arg) => /\/(probe|discovery)\.mjs,/.test(arg))), 'No probe or discovery after leaf refusal');
+          assert(!existsSync(work), 'Owned work removed after leaf refusal');
+          assert.equal(output.length, 0);
+          assert.equal(errors.length, 0);
+          continue;
+        }
         if (fault === 'success') {
           await import(`../../spikes/codex-native/qualify.mjs?${fault}`);
           assert(!existsSync(work));
-          assert.deepEqual(JSON.parse(output[0]).discovery.map((entry) => entry.mode), ['indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink']);
+          const report = JSON.parse(output[0]);
+          assert.deepEqual(report.discovery.map((entry) => entry.mode), ['indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink']);
+          assert.equal(report.transformedImports, 1);
+          assert.equal(report.bindingIdentity.generatedSha256, 'beeb38dfd0b050b171141bd66d51663786a50a81cbe904ba9b006289a101fd39');
+          assert.equal(report.bindingIdentity.selectedSha256, report.bindingIdentity.generatedSha256);
+          assert.match(report.bindingIdentity.sourceSha256, /^[0-9a-f]{64}$/);
+          assert.match(report.bindingIdentity.consumedSha256, /^[0-9a-f]{64}$/);
+          assert.notEqual(report.bindingIdentity.sourceSha256, report.bindingIdentity.consumedSha256);
           continue;
         }
         await assert.rejects(import(`../../spikes/codex-native/qualify.mjs?${fault}`), (error) => {
