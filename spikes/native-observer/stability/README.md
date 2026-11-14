@@ -162,3 +162,20 @@ Fresh parent runs passed all 165 notice controls in each caller, all three prere
 `RAW_EVIDENCE_RESULT.json` binds both runs and independent absence of all fourteen containers and both scratch images.
 All 165 native notice controls, three prerequisite cases, nine raw cases, source and binary identity, actual init, import, resource, flush, finalizer, and 36-instruction checks remain required.
 All 72 birth cases, full lifetime, epochs, imports, compiler, SDK, adapter, and live gates remain open. Full stability remains `INCONCLUSIVE`.
+
+## FD inventory source-costing experiment
+
+The current FD repair and its complete proof driver are SOURCE ONLY and UNRUN. `nativeObserved=false`.
+No current result hash or independent absence hash is available. Historical results above do not qualify this source.
+The loop clears errno before every read, saves the terminating errno through one close, and refuses through the existing failure owner.
+The driver selects eight controls in each caller family. It covers EIO before entries and after stdio, EINTR before inherited FD 9, and EBADF after FD 9.
+Clean controls plant stale EIO after successful open or entries, with both normal and inherited policy and zero or EACCES after actual close.
+Natural entry order remains authoritative. Missing before-9 order, injection, contamination, wrapper coverage, or complete evidence refuses the entire run.
+Prerequisite read errors require actual incomplete-notice refusal and supervisor exit 90. They have no root receipt.
+The existing owner retains streams, command indices, live-init identity and inventory, hold exit, verified removal, and final cleanup.
+Only the final checked save can publish `FD_INVENTORY_CONTROLS_OBSERVED`. Overall stability stays `INCONCLUSIVE`.
+After separate exact-source execution admission, the commands are `python3 -B spikes/native-observer/stability/repro_fd_inventory_eio.py` and `python3 -B spikes/native-observer/stability/run.py`.
+The first retains all nine raw modes, 165 notice controls, 36 instructions, and sixteen inventory controls. The second retains the three prerequisite modes.
+The inert verification command is `python3 -B -m unittest discover -s spikes/native-observer/stability -p 'test_*.py'`.
+The original 48 host tests remain unchanged. New tests challenge literal evidence, actual collection, original main, cleanup, hashing, callbacks, and restoration.
+Native qualification still requires actual function-pointer wrapper coverage, complete current-source run hashes, and independently observed resource absence.
