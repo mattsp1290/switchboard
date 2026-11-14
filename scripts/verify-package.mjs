@@ -277,6 +277,16 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   }));
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], integration);
   const aguiInvalidCases = [
+    ['subagent-outcome-readonly', "declare const value: Extract<import('@mattsp1290/switchboard/agui').SubagentFact, { kind: 'subagent-finished' }>; if (value.outcome?.type === 'suspended') value.outcome.interrupts?.push({ scope: [], id: '' });", 2339],
+    ['subagent-parent-wire', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-started', subagent: { scope: [], id: '' }, name: '', parentMessage: 'wire' };", 2322],
+    ['subagent-private-error', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-failed', subagent: { scope: [], id: '' }, failure: 'native-failure', message: 'private' };", 2353],
+    ['subagent-wire', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-started', subagent: 'wire', name: '' };", 2322],
+    ['subagent-missing-name', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-started', subagent: { scope: [], id: '' } };", 2322],
+    ['subagent-readonly', "declare const value: import('@mattsp1290/switchboard/agui').SubagentFact; value.subagent.id = 'changed';", 2540],
+    ['subagent-outcome', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-finished', subagent: { scope: [], id: '' }, outcome: { type: 'success', interrupts: [] } };", 2353],
+    ['subagent-error', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-failed', subagent: { scope: [], id: '' }, failure: 'private' };", 2322],
+    ['subagent-usage', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-finished', subagent: { scope: [], id: '' }, usage: [] };", 2353],
+    ['subagent-result', "const invalid: import('@mattsp1290/switchboard/agui').SubagentFact = { kind: 'subagent-finished', subagent: { scope: [], id: '' }, result: () => {} };", 2322],
     ['reasoning-role', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningFact = { kind: 'reasoning-message-started', message: { scope: [], id: '' }, role: 'assistant' };", 2322],
     ['reasoning-role-missing', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningFact = { kind: 'reasoning-message-started', message: { scope: [], id: '' } };", 2322],
     ['reasoning-target', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningTarget = { kind: 'message', tool: { scope: [], id: '' } };", 2353],
@@ -351,6 +361,18 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     assert.match(output, /^# tests [1-9]\d*$/m, `${file} executes nonzero installed tests.`);
     process.stdout.write(output);
   }
+  const subagentCases = readFileSync(collected, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    .filter(item => item.path.startsWith('subagents/') && item.origin === 'switchboard-projection').map(item => item.value);
+  for (const type of ['SUBAGENT_STARTED', 'SUBAGENT_FINISHED', 'SUBAGENT_ERROR']) {
+    assert(subagentCases.some(event => event.type === type), `Installed subagent output includes ${type}.`);
+  }
+  const childFinishes = subagentCases.filter(event => event.type === 'SUBAGENT_FINISHED');
+  assert(childFinishes.some(event => !('outcome' in event)));
+  assert(childFinishes.some(event => event.outcome?.type === 'success'));
+  for (const size of [undefined, 0, 1, 2]) {
+    assert(childFinishes.some(event => event.outcome?.type === 'suspended' && event.outcome.interruptIds?.length === size));
+  }
+  console.log(`Collected ${subagentCases.length} actual installed subagent-test events.`);
   const reasoningCases = readFileSync(collected, 'utf8').trim().split('\n').map(line => JSON.parse(line))
     .filter(item => item.path.startsWith('reasoning/') && item.origin === 'switchboard-projection');
   for (const type of ['REASONING_START', 'REASONING_END', 'REASONING_MESSAGE_START',

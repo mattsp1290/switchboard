@@ -28,7 +28,7 @@ Future adapters must scope credentials per adapter and session, preserve native 
 `src/index.ts` exports core contracts and helpers without importing AG-UI.
 `src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
 `createAguiProjection` maps observed lifecycle, text, tool, content, step and reasoning facts through one bounded per-run actor.
-Its frozen `aguiProtocol` descriptor identifies basic, value, message snapshot, terminal payload and reasoning support. Subagent lifecycle mappings remain planned.
+Its frozen `aguiProtocol` descriptor identifies basic, value, message snapshot, terminal payload, reasoning and subagent lifecycle support. The aggregate disposition audit remains pending.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 

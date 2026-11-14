@@ -6,7 +6,8 @@ The frozen `aguiProtocol` descriptor exposes these pins and the implemented life
 It maps observed run start, success, clean cancellation, and fixed public native or transport failures, including failures before start and after finish.
 Host thread, run, and parent IDs are preserved verbatim. `sourceKey` is an authorized public namespace supplied by the host, never a session credential.
 Scoped native identity encoding covers text, tools, results, steps, activities, snapshots and interrupts.
-State, activity, raw, custom, interrupt terminal and usage values are implemented. Reasoning mappings are implemented. Subagent lifecycle mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
+State, activity, raw, custom, interrupt terminal, usage, reasoning and subagent lifecycle mappings are implemented.
+The aggregate per-definition disposition and emitted-category audit remains pending. Native adapter qualification and consumer replay remain unimplemented.
 
 Message snapshots preserve all seven canonical roles, nested tool calls, encryption, metadata, tool errors and ordered content parts.
 `NativeMessage` derives from the pinned SDK union and replaces only scoped message, owner, call and part references.
@@ -27,7 +28,8 @@ An interrupt finish requires a nonempty readonly tuple with unique interrupt IDs
 A linked actual tool must have the same owner. Unknown tools, attribution-only owners and tool-less interrupts are valid.
 Only explicit reference positions are rewritten. Metadata and response schemas remain opaque bounded JSON objects; expiry strings are not interpreted.
 Unique new interrupt, tool and owner references consume `maxEntities`. The full expanded output consumes the output budget.
-Cross-event announced and suspended subagent consistency belongs to the planned subagent lifecycle stage.
+Named child suspension references must match root terminal interrupts with the exact encoded ID and child owner.
+Root-owned interrupts do not satisfy child references. Root failure abandons these unresolved checks.
 
 `NativeTokenUsage` is the readonly SDK `TokenUsage` shape. Adapters supply already-normalized canonical counts for the run.
 Input includes disjoint cache-read and cache-write subsets. Output includes reasoning. Total equals input plus output when both are supplied.
@@ -170,3 +172,19 @@ They require no target existence, type, owner match or open span. Unknown and ac
 Consumers own warning, dropping and storage. Snapshots replace supplied encryption wholesale, including its omission.
 The actor retains no encrypted values or reasoning transcript. It charges unknown target and owner identities without creating lifecycles.
 A first actual opener promotes an encrypted observation and establishes its own immutable owner. Repeated known identities add no charge.
+
+
+## Subagent lifecycle facts
+
+`SubagentFact` derives semantic fields from the pinned SDK and replaces invocation, parent and interrupt identities with `NativeRef` values.
+Start requires a name. Description, parent invocation, tool and message correlations are optional.
+A parent invocation must already be announced, active or closed. Tool and message links are observations without stream or ownership requirements.
+Only a new start reserves an announced invocation. Any prior use of its ID, including encrypted attribution, prevents announcement or reuse.
+Attribution without announcement and attribution after a child terminal remain valid. Child terminals leave actual streams and descendants untouched.
+Every root finish independently requires all actual streams and announced invocations closed. Root error abandons everything.
+An absent child outcome means success. Explicit success remains explicit. Suspended outcomes preserve omitted, empty and duplicate interrupt references.
+Only named suspension references require matching root interrupts. Empty or omitted lists add no further lifecycle requirement.
+Child errors use fixed library messages and permit continued root work. No child terminal accepts usage.
+Results use bounded JSON. A top-level null result becomes omission, matching root results. Nested nulls remain unchanged.
+The ledger retains invocation state and suspension IDs, never result payloads or descriptions. Every unique retained correlation and interrupt ID consumes `maxEntities`.
+References create no actual streams or pending tools. Promoting an observed tool establishes its pending-call order at the actual first start.

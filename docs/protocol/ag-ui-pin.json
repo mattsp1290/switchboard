@@ -33,7 +33,8 @@
   },
   "classification": {
     "protocol": "represented-by-canonical-schema",
-    "switchboardMapping": "basic-values-messages-terminals-and-reasoning",
+    "switchboardMapping": "basic-values-messages-terminals-reasoning-and-subagents",
+    "planned": "aggregate-disposition-audit",
     "nativeAdapters": {
       "claude-direct": "unqualified",
       "claude-litellm": "unqualified",
