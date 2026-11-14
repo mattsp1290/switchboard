@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +36,7 @@ try {
     .filter((entry) => entry.isFile())
     .map((entry) => relative(root, join(entry.parentPath, entry.name)).split(sep).join('/'));
   assert(buildFiles.length > 0, 'The build emits package files.');
-  assert(buildFiles.every((path) => /\.(?:js|d\.ts)$/.test(path)), 'Only JavaScript and declarations ship from dist.');
+  assert(buildFiles.every((path) => /\.(?:m?js|d\.m?ts)$/.test(path)), 'Only JavaScript and declarations ship from dist.');
   assert.deepEqual(files, [
     'LICENSE',
     'README.md',
@@ -59,6 +59,7 @@ try {
   assert.deepEqual(installedManifest.exports, {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
     './agui': { types: './dist/agui/index.d.ts', import: './dist/agui/index.js' },
+    './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
   });
   assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4' });
   assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true } });
@@ -68,12 +69,17 @@ try {
 
   writeFileSync(join(consumer, 'runtime.mjs'), `
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import * as switchboard from '${manifest.name}';
+import { createRequire, registerHooks } from 'node:module';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  assert(!resolved.url.includes('/testkit/'), 'Core cannot import the testkit.');
+  return resolved;
+} });
+const switchboard = await import('${manifest.name}');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
-for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]))}) {
+for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
 `);
@@ -87,7 +93,10 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
-  cpSync(join(root, 'tests/qualification'), join(consumer, 'qualification'), { recursive: true });
+  mkdirSync(join(consumer, 'qualification'));
+  for (const file of readdirSync(join(root, 'tests/qualification')).filter((name) => name.endsWith('.consumer.mjs') || name.endsWith('.test.ts'))) {
+    copyFileSync(join(root, 'tests/qualification', file), join(consumer, 'qualification', file));
+  }
   const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
     .sort().map((file) => `qualification/${file}`);
   assert(qualificationFixtures.length > 0, 'Installed qualification consumers exist.');
@@ -95,8 +104,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   delete runtimeEnvironment.NODE_TEST_CONTEXT;
   const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures, ...qualificationFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
-  const { contracts } = await import(new URL('../tests/qualification/harness/contracts.mjs', import.meta.url));
-  for (const name of Object.keys(contracts)) {
+  for (const name of ['uncertainty', 'sessions', 'interaction', 'events']) {
     assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
   }
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
@@ -128,6 +136,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   const compilerManifest = JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8'));
   const compiler = join(root, 'node_modules/typescript', compilerManifest.bin.tsc);
   const coreTypes = run(process.execPath, [compiler, '-p', 'tsconfig.json', '--listFilesOnly'], consumer);
+  assert(!coreTypes.includes('/testkit/'), 'Root declarations do not reference the testkit.');
   assert(!coreTypes.includes('/agui/'), 'Root declarations do not reference the integration.');
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
@@ -135,6 +144,65 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     allowedFiles: checkedFixtures.map(file => join(consumer, file)),
   });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
+
+  const qualificationTypes = ['qualification/fixture.test.ts'];
+  writeFileSync(join(consumer, 'testkit.json'), JSON.stringify({
+    compilerOptions: consumerConfig.compilerOptions, files: qualificationTypes,
+  }));
+  const kitTypes = run(process.execPath, [compiler, '-p', 'testkit.json', '--listFilesOnly'], consumer);
+  assert(!kitTypes.includes('/agui/') && !kitTypes.includes('/@ag-ui/'), 'Testkit types have no AG-UI dependency.');
+  assertCoreIsolation(consumer, kitTypes.trim().split('\n'), {
+    allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
+    allowedFiles: qualificationTypes.map(file => join(consumer, file)),
+  });
+  run(process.execPath, [compiler, '-p', 'testkit.json'], consumer);
+  writeFileSync(join(consumer, 'import-testkit.mjs'), `
+import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (context.parentURL?.includes('/dist/testkit/')) {
+    assert(specifier === '${manifest.name}' || specifier.startsWith('./') || specifier.startsWith('node:'), 'Testkit must use the public core entry.');
+    assert(!specifier.includes('/agui'), 'Testkit cannot import AG-UI.');
+    assert.notEqual(specifier, 'node:test', 'Testkit cannot import a test runner.');
+  }
+  return nextResolve(specifier, context);
+} });
+const { contracts, createFakeFixture } = await import('${manifest.name}/testkit');
+assert.deepEqual(Object.keys(contracts), ['uncertainty', 'sessions', 'interaction', 'events']);
+assert(Object.isFrozen(contracts), 'The public scenario registry is immutable.');
+await createFakeFixture().dispose();
+`);
+  const importOutput = run(process.execPath, ['--test-reporter=tap', 'import-testkit.mjs'], consumer, runtimeEnvironment);
+  assert.doesNotMatch(importOutput, /^# tests [1-9]\d*$/m, 'Importing testkit does not register tests.');
+  console.log('Verified installed testkit factory declarations, isolation, and import without test registration.');
+
+  const aliasConsumer = join(temporary, 'alias-consumer');
+  const alias = '@mattsp1290/switchboard-qualification';
+  mkdirSync(aliasConsumer);
+  writeFileSync(join(aliasConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--omit=optional', '--no-audit', '--no-fund',
+    `${alias}@file:${join(artifacts, pack.filename)}`,
+    `@types/node@${manifest.devDependencies['@types/node']}`,
+  ], aliasConsumer));
+  assert(!existsSync(join(aliasConsumer, 'node_modules', ...manifest.name.split('/'))), 'Alias has no separately installed core.');
+  assert(!existsSync(join(aliasConsumer, 'node_modules/@ag-ui/core')), 'Alias consumer has no SDK.');
+  writeFileSync(join(aliasConsumer, 'qualification.mjs'), `
+import test from 'node:test';
+import { contracts, createFakeFixture } from '${alias}/testkit';
+for (const [name, contract] of Object.entries(contracts)) {
+  test('alias qualification: ' + name, { timeout: 10000 }, (t) => contract(createFakeFixture, t.signal));
+}
+`);
+  const aliasOutput = run(process.execPath, ['--test', '--test-reporter=tap', 'qualification.mjs'], aliasConsumer, runtimeEnvironment);
+  assert.match(aliasOutput, /^# tests 4$/m);
+  process.stdout.write(aliasOutput);
+  writeFileSync(join(aliasConsumer, 'fixture.ts'), readFileSync(join(root, 'tests/qualification/fixture.test.ts'), 'utf8').replaceAll(`${manifest.name}/testkit`, `${alias}/testkit`));
+  writeFileSync(join(aliasConsumer, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: consumerConfig.compilerOptions, files: ['fixture.ts'],
+  }));
+  run(process.execPath, [compiler, '-p', 'tsconfig.json'], aliasConsumer);
+  console.log('Verified dev-only artifact alias with package self-reference and no canonical core install.');
 
   const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;
   const discoveryInvalidCases = [
@@ -171,7 +239,17 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     ['page-diagnostics-readonly', "observedPage.diagnostics = [];", 2540],
     ['page-diagnostics-push', "observedPage.diagnostics.push(fileDiagnostic);", 2339],
   ].map(([name, source, code]) => [`session-discovery-${name}`, `${discoveryImports} ${source}`, code]);
+  const testkitImports = `import type { QualificationFixture, QualificationConnection } from '${manifest.name}/testkit'; import { contracts, createFakeFixture } from '${manifest.name}/testkit';`;
+  const testkitInvalidCases = [
+    ['contracts-readonly', `${testkitImports} contracts.uncertainty = contracts.events;`, 2540],
+    ['contract-factory-missing-dispose', `${testkitImports} const { dispose, ...fixture } = createFakeFixture(); contracts.uncertainty(() => fixture, new AbortController().signal);`, 2322],
+    ['fake-observer-publish', `${testkitImports} createFakeFixture().connect(() => {}).events.publish({ kind: 'progress', sequence: 1 });`, 2339],
+    ['fixture-missing-dispose', `${testkitImports} const { dispose, ...fixture } = createFakeFixture(); const invalid: QualificationFixture = fixture;`, 2741],
+    ['fixture-publish-only', `${testkitImports} const fixture = createFakeFixture(); const connection = fixture.connect(() => {}); const invalid: QualificationConnection = { ...connection, events: { publish() {} } };`, 2353],
+    ['fixture-recovery-run', `${testkitImports} declare const saved: Parameters<QualificationConnection['recover']>[0]; createFakeFixture().connect(() => {}).recover(saved).run();`, 2339],
+  ];
   const invalidCases = [
+    ...testkitInvalidCases,
     ...discoveryInvalidCases,
     ['unnarrowed-capability', 'catalog.api;', 2339],
     ['unsupported-api', "if (catalog.kind === 'unsupported') catalog.api;", 2339],

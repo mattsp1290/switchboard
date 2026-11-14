@@ -1,9 +1,14 @@
 # Controlled fixture qualification
 
 Run `npm run verify:package` to execute these tests against the installed tarball.
-The verifier copies this directory into a clean consumer. These files are not shipped.
-`contracts` registers the uncertainty, sessions, interaction, and events groups through one factory argument.
-To qualify another controlled driver, supply an immediate or asynchronous factory with the same methods.
+The verifier copies only the consumer tests into a clean installation.
+The reusable scenarios and reference fake ship in `@mattsp1290/switchboard/testkit`.
+Import `contracts` and `createFakeFixture` from that entry. Importing it does not register tests.
+Each named contract runs its group when called with a fixture factory and an `AbortSignal`.
+To qualify another controlled driver, supply an immediate or asynchronous `QualificationFactory`.
+The entry exports `QualificationFixture` and its connection, request, result, controls, and counter types.
+The compiler checks the fake implementation against those declarations.
+The installed consumer checks valid fixture authors and rejects missing cleanup, publish-only events, and recovery dispatch.
 
 The factory returns immutable `samples`, `connect(recordIntent)`, `controls`, and idempotent `dispose()`.
 Each connection exposes `identity`, subscribe-only `events`, `submit(request, signal)`, `recover(saved)`, and `close()`.

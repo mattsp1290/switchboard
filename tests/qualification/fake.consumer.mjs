@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getEventListeners } from 'node:events';
-import { contracts } from './harness/contracts.mjs';
-import { createFakeFixture } from './harness/fake.mjs';
+import { contracts, createFakeFixture } from '@mattsp1290/switchboard/testkit';
 
 for (const [name, contract] of Object.entries(contracts)) {
   test(`fake qualification: ${name}`, { timeout: 10_000 }, (t) => contract(createFakeFixture, t.signal));

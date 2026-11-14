@@ -1,10 +1,24 @@
+// @ts-check
 import {
   createDispatchOperation, createEventStream, parseInteractionContinuation, parseSessionReference,
 } from '@mattsp1290/switchboard';
 
+/** @typedef {import('./types.js').QualificationFixture} QualificationFixture */
+/** @typedef {import('./types.js').QualificationConnection} QualificationConnection */
+/** @typedef {import('./types.js').QualificationResult} QualificationResult */
+/** @typedef {import('@mattsp1290/switchboard').DispatchIdentity} DispatchIdentity */
+/** @typedef {import('@mattsp1290/switchboard').InteractionContinuation} InteractionContinuation */
+/** @typedef {{ accepted: boolean }} Reservation */
+/** @typedef {{ reference: import('@mattsp1290/switchboard').SessionReference, reservation: Reservation | null, pending: Parameters<QualificationFixture['controls']['pending']>[0] | null }} Session */
+/** @typedef {{ promise: Promise<void>, resolve: () => void, reject: (reason?: unknown) => void }} VoidResolvers */
+/** @typedef {{ entered: VoidResolvers, released: VoidResolvers, completed: VoidResolvers, release: () => void }} Gate */
+/** @typedef {{ identity: DispatchIdentity, receipt: string, continuation: InteractionContinuation | undefined, session: Session, reservation: Reservation, gate: Gate | null, state: 'accepted' | 'conclusive' }} NativeRecord */
+
 const namespace = 'switchboard-qualification';
+/** @template {string} Code @param {Code} code @returns {{ kind: 'error', error: { code: Code } }} */
 const fail = (code) => ({ kind: 'error', error: { code } });
 
+/** @template {object} T @param {T} value @returns {Readonly<T>} */
 function freezeTree(value) {
   for (const child of Object.values(value)) {
     if (child !== null && typeof child === 'object') freezeTree(child);
@@ -12,21 +26,24 @@ function freezeTree(value) {
   return Object.freeze(value);
 }
 
+/** @template T @param {Set<Promise<T>>} tasks @param {Promise<T>} promise */
 function track(tasks, promise) {
   tasks.add(promise);
   promise.then(() => tasks.delete(promise), () => tasks.delete(promise));
   return promise;
 }
 
+/** @returns {QualificationFixture} */
 export function createFakeFixture() {
   const binding = {
     engine: 'fixture', nativeVersion: '1', account: 'test-account',
     authorizedScope: 'test-scope', nativeFormat: 'fixture-session-v1',
   };
+  /** @type {import('@mattsp1290/switchboard').SessionReference} */
   const a = { kind: 'session', formatVersion: 1, binding, opaque: 'session-a' };
   const b = { ...a, opaque: 'session-b' };
   const extension = { namespace, schemaVersion: 1, data: {} };
-  const samples = freezeTree({
+  const samples = freezeTree(/** @satisfies {QualificationFixture['samples']} */ ({
     a, b,
     approval: {
       kind: 'approval',
@@ -35,27 +52,39 @@ export function createFakeFixture() {
       choices: [{ nativeChoiceId: 'allow-once', label: 'Allow once' }],
     },
     tool: { kind: 'tool', target: { kind: 'tool', session: a, nativeToolCallId: 'tool-1' } },
-  });
+  }));
   const identity = Object.freeze({ engine: 'fixture', adapter: namespace, version: '1', contractVersion: 1 });
+  /** @type {Map<string, Session>} */
   const sessions = new Map([a, b].map((reference) => [reference.opaque,
     { reference, reservation: null, pending: null }]));
+  /** @type {NativeRecord[]} */
   const records = [];
   const counts = { dispatchAttempts: 0, acceptedEffects: 0, lookupCalls: 0, transportCloses: 0 };
+  /** @type {Set<Gate>} */
   const gates = new Set();
+  /** @type {Set<QualificationConnection>} */
   const connections = new Set();
+  /** @type {Set<import('@mattsp1290/switchboard').EventStream<{ kind: 'progress', sequence: number }>>} */
   const bridges = new Set();
+  /** @type {Set<ReturnType<QualificationConnection['submit']>>} */
   const submits = new Set();
+  /** @type {Set<Promise<void>>} */
   const completions = new Set();
   let nextLoss = false;
+  /** @type {Gate | null} */
   let nextCompletion = null;
   let visibility = 'authoritative';
   let disposing = false;
+  /** @type {Promise<void> | undefined} */
   let disposePromise;
 
   function holdNextCompletion() {
     if (nextCompletion !== null) throw new Error('A completion gate is already armed.');
+    /** @type {VoidResolvers} */
     const entered = Promise.withResolvers();
+    /** @type {VoidResolvers} */
     const released = Promise.withResolvers();
+    /** @type {VoidResolvers} */
     const completed = Promise.withResolvers();
     const gate = { entered, released, completed, release: () => released.resolve() };
     gates.add(gate);
@@ -63,6 +92,7 @@ export function createFakeFixture() {
     return { entered: entered.promise, release: gate.release, completed: completed.promise };
   }
 
+  /** @param {NativeRecord} record @param {import('@mattsp1290/switchboard').DispatchEvidence['source']} source @returns {import('@mattsp1290/switchboard').NativeDispatchObservation<QualificationResult>} */
   function observe(record, source) {
     const evidence = {
       identity: record.identity, source,
@@ -73,6 +103,7 @@ export function createFakeFixture() {
       : { kind: 'conclusive', evidence, result: { continuation: record.continuation } };
   }
 
+  /** @param {NativeRecord} record */
   function finish(record) {
     record.state = 'conclusive';
     if (record.session.reservation === record.reservation) record.session.reservation = null;
@@ -82,13 +113,17 @@ export function createFakeFixture() {
     }
   }
 
+  /** @type {QualificationFixture['connect']} */
   function connect(recordIntent) {
     if (disposing) throw new Error('Fixture is disposed.');
+    /** @type {import('@mattsp1290/switchboard').EventStream<{ kind: 'progress', sequence: number }>} */
     const stream = createEventStream({ maxObservers: 2, capacity: 2 });
     bridges.add(stream);
     let closed = false;
+    /** @type {ReturnType<QualificationConnection['close']> | undefined} */
     let closePromise;
 
+    /** @param {DispatchIdentity} canonicalIdentity @param {Session} session @param {InteractionContinuation | undefined} continuation @param {Reservation} reservation */
     function accept(canonicalIdentity, session, continuation, reservation) {
       if (closed) throw new Error('Transport is closed.');
       const loss = nextLoss;
@@ -96,6 +131,7 @@ export function createFakeFixture() {
       nextLoss = false;
       nextCompletion = null;
       counts.dispatchAttempts++;
+      /** @type {NativeRecord} */
       const record = {
         identity: canonicalIdentity, receipt: `receipt-${records.length + 1}`,
         continuation, session, reservation, gate, state: 'accepted',
@@ -114,21 +150,25 @@ export function createFakeFixture() {
       return observe(record, 'native-acknowledgement');
     }
 
+    /** @param {import('@mattsp1290/switchboard').DispatchSnapshot<QualificationResult>} previous @returns {import('@mattsp1290/switchboard').NativeDispatchObservation<QualificationResult>} */
     function lookup(previous) {
       if (closed) throw new Error('Transport is closed.');
       counts.lookupCalls++;
       const matches = records.filter((record) =>
         JSON.stringify(record.identity) === JSON.stringify(previous.identity));
       if (visibility === 'unknown' || matches.length !== 1) return { kind: 'outcome-unknown' };
-      return observe(matches[0], 'authoritative-native-lookup');
+      return observe(/** @type {NativeRecord} */ (matches[0]), 'authoritative-native-lookup');
     }
 
+    /** @type {QualificationConnection['submit']} */
     function submit(request, signal) {
       if (closed) return Promise.resolve(fail('closed'));
       const parsed = parseSessionReference({ value: request.session, expected: binding });
       if (parsed.kind === 'error') return Promise.resolve(parsed);
       const session = sessions.get(parsed.value.opaque);
       if (!session) return Promise.resolve(fail('missing-session'));
+      const activeSession = session;
+      /** @type {InteractionContinuation | undefined} */
       let continuation;
       if (request.continuation !== undefined) {
         if (!session.pending) return Promise.resolve(fail('stale-interaction'));
@@ -141,26 +181,28 @@ export function createFakeFixture() {
       session.reservation = reservation;
       return track(submits, execute());
 
+      /** @returns {ReturnType<QualificationConnection['submit']>} */
       async function execute() {
         try {
           const operation = createDispatchOperation({
             mode: 'fresh', signal,
             identity: { hostOperationId: request.hostOperationId,
-              target: { kind: 'session', reference: session.reference } },
+              target: { kind: 'session', reference: activeSession.reference } },
             recordIntent: async (canonicalIdentity, intentSignal) => {
               if (closed) throw new Error('Transport is closed.');
               await recordIntent(canonicalIdentity, intentSignal);
               if (closed) throw new Error('Transport closed during intent.');
             },
-            dispatchNative: (canonicalIdentity) => accept(canonicalIdentity, session, continuation, reservation),
+            dispatchNative: (canonicalIdentity) => accept(canonicalIdentity, activeSession, continuation, reservation),
           });
           return { kind: 'ok', value: await operation.run() };
         } finally {
-          if (!reservation.accepted && session.reservation === reservation) session.reservation = null;
+          if (!reservation.accepted && activeSession.reservation === reservation) activeSession.reservation = null;
         }
       }
     }
 
+    /** @type {QualificationConnection['recover']} */
     function recover(saved) {
       if (saved.observation.kind === 'not-dispatched') throw new TypeError('Cannot recover undispatched work.');
       return createDispatchOperation({
@@ -183,6 +225,7 @@ export function createFakeFixture() {
     return connection;
   }
 
+  /** @type {QualificationFixture['controls']} */
   const controls = {
     loseNextAcknowledgement() { nextLoss = true; },
     holdNextCompletion,
@@ -193,7 +236,7 @@ export function createFakeFixture() {
     pending(value) {
       const checked = parseSessionReference({ value: value.target.session, expected: binding });
       if (checked.kind === 'error' || !sessions.has(checked.value.opaque)) throw new TypeError('Invalid pending session.');
-      sessions.get(checked.value.opaque).pending = freezeTree(structuredClone(value));
+      /** @type {Session} */ (sessions.get(checked.value.opaque)).pending = freezeTree(structuredClone(value));
     },
     emit(sequence) {
       for (const bridge of bridges) bridge.publish({ kind: 'progress', sequence });

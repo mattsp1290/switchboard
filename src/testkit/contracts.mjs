@@ -561,4 +561,5 @@ async function events(factory, signal) {
   });
 }
 
-export const contracts = { uncertainty, sessions, interaction, events };
+/** @type {import('./types.js').QualificationContracts} */
+export const contracts = Object.freeze({ uncertainty, sessions, interaction, events });

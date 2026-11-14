@@ -15,6 +15,10 @@
     "./agui": {
       "types": "./dist/agui/index.d.ts",
       "import": "./dist/agui/index.js"
+    },
+    "./testkit": {
+      "types": "./dist/testkit/index.d.ts",
+      "import": "./dist/testkit/index.js"
     }
   },
   "files": [
