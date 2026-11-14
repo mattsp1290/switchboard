@@ -115,6 +115,30 @@ const originalEntry = readFileSync(entry, 'utf8');
 try {
   writeFileSync(entry, originalEntry.replace('./helper.js', './missing.js'));
   assert.throws(() => assertEmitted(installed), /Missing emitted relative import/);
+  for (const expression of [
+    "import('./helper.js' + '.missing')", "import('' + './missing.js')", 'import(specifier)',
+    "import(`./helper.js`)", "import(('./helper.js'))", "import('./helper.js', {})",
+    "import('./helper.js' /* trailing */)", "import(/* leading */ './helper.js')",
+    "import /* between */ ('./helper.js')", "import('./helper.js' // trailing\n)",
+    String.raw`import('./helper\u002ejs')`, String.raw`import('./helper.js\' + suffix')`,
+  ]) {
+    writeFileSync(entry, `${originalEntry}\nexport const load = () => ${expression};\n`);
+    assert.throws(() => assertEmitted(installed), /Dynamic imports|Commented import syntax/, expression);
+  }
+  for (const syntax of [
+    "import './missing.js';", 'export * from "./missing.js";', "export const load = () => import('./missing.js');",
+  ]) {
+    writeFileSync(entry, `${originalEntry}\n${syntax}\n`);
+    assert.throws(() => assertEmitted(installed), /Missing emitted relative import/, syntax);
+  }
+  for (const syntax of [String.raw`import './helper\u002ejs';`, String.raw`export * from './helper.js\' + suffix';`]) {
+    writeFileSync(entry, `${originalEntry}\n${syntax}\n`);
+    assert.throws(() => assertEmitted(installed), /Emitted imports require complete unescaped/, syntax);
+  }
+  writeFileSync(entry, `${originalEntry}\nimport './helper.js';\nexport * from "./helper.js";
+export const load = () => import('./helper.js');
+export const loadDouble = () => import( "./helper.js" );\n`);
+  assert.equal(assertEmitted(installed).length, 2, 'Quoted static, re-export and dynamic imports reach the helper.');
 } finally {
   writeFileSync(entry, originalEntry);
 }
@@ -142,7 +166,8 @@ const summary = {
     'strict noDOM and explicitDOM installed consumers', 'owned source and third-party declaration diagnostics',
     'extra/unrelated errors and wrong location/code', 'unexpected output/status/signal/timeout',
     'foreign transitive declaration and source leak', 'symlink declaration', 'private source/output imports',
-    'malformed relative emitted import', 'installed/resolvable/reachable native-name controls',
+    'malformed relative emitted import', 'computed/commented/escaped emitted import rejection',
+    'quoted static/re-export/dynamic emitted imports', 'installed/resolvable/reachable native-name controls',
     'positive fixture restoration after every mutation group',
   ],
   sources: readdirSync(fileURLToPath(new URL('./', import.meta.url)), { recursive: true, withFileTypes: true })

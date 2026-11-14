@@ -106,9 +106,15 @@ export function assertEmitted(packageRoot) {
     seen.add(file);
     const source = readFileSync(file, 'utf8');
     assert(!/\b(?:import|from)\s*\/[/*]/.test(source), 'Commented import syntax needs explicit emitted inspection.');
-    assert(!/\bimport\s*\(\s*[^"'\s]/.test(source), 'Dynamic imports require quoted literal specifiers.');
-    const imports = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)["']([^"']+)["']/g;
-    for (const [, specifier] of source.matchAll(imports)) {
+    assert(!/\bimport\s*\((?!\s*(?:"[^"\\\r\n]*"|'[^'\\\r\n]*')\s*\))/.test(source),
+      'Dynamic imports require a complete unescaped quoted literal argument.');
+    const imports = /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?)(?=["'])/g;
+    const literal = /(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)')/y;
+    for (const match of source.matchAll(imports)) {
+      literal.lastIndex = match.index + match[0].length;
+      const quoted = literal.exec(source);
+      assert(quoted, 'Emitted imports require complete unescaped quoted literal specifiers.');
+      const specifier = quoted[1] ?? quoted[2];
       if (specifier.startsWith('.')) pending.push(relative(packageRoot, resolve(dirname(file), specifier)));
     }
   }
