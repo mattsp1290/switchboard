@@ -10,6 +10,7 @@ import type {
   SessionBinding,
   SessionCorrelation,
   SessionDiscovery,
+  SessionDiscoveryDiagnostic,
   SessionDiscoveryPage,
   SessionInspection,
   SessionInspectionResult,
@@ -71,7 +72,33 @@ export const inspectionStates: readonly SessionInspectionResult[] = [
   { kind: 'incompatible', reason: 'native-version' }, { kind: 'incompatible', reason: 'native-format' },
 ];
 export const discoveryPages: readonly SessionDiscoveryPage[] = [
-  { kind: 'complete', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 } },
-  { kind: 'truncated', reason: 'examined', sessions: [], examined: 10, skipped: { corrupt: 4, inaccessible: 6 } },
-  { kind: 'cancelled', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 } },
+  { kind: 'complete', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [] },
+  { kind: 'truncated', reason: 'examined', sessions: [], examined: 10, skipped: { corrupt: 4, inaccessible: 6 }, diagnostics: [] },
+  { kind: 'cancelled', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [] },
 ];
+
+export const fileDiagnostic: SessionDiscoveryDiagnostic = {
+  kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '1' },
+};
+export const observedPage: SessionDiscoveryPage = {
+  kind: 'complete', sessions: [sessionReference], examined: 3,
+  skipped: { corrupt: 0, inaccessible: 0 },
+  diagnostics: [fileDiagnostic, { kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '2' } }],
+};
+export const observedPages: readonly SessionDiscoveryPage[] = [
+  observedPage,
+  { ...observedPage, kind: 'truncated', reason: 'results' },
+  { ...observedPage, kind: 'truncated', reason: 'examined' },
+  { ...observedPage, kind: 'truncated', reason: 'duration' },
+  { ...observedPage, kind: 'cancelled' },
+];
+for (const page of observedPages) {
+  const diagnostics: readonly SessionDiscoveryDiagnostic[] = page.diagnostics;
+  for (const diagnostic of diagnostics) {
+    const kind: 'file-inspection-failed' = diagnostic.kind;
+    const subjectKind: 'discovery-file' = diagnostic.subject.kind;
+    const token: string = diagnostic.subject.token;
+    void [kind, subjectKind, token];
+  }
+  pageState(page);
+}

@@ -111,11 +111,38 @@ Adapters define scope handles and authorize discovery sources. The optional file
 The result limit cannot exceed the examined-entry limit. Validation returns a frozen budget copy.
 Adapters enforce all budgets and stop cooperatively on abort. They count each examined candidate, including filtered, corrupt, or inaccessible entries.
 They remain within authorized resolved roots and symlink boundaries and read only supported native discovery sources.
-Discovery skips corrupt and inaccessible entries and reports both counts. A scope-wide access failure is an `inaccessible` error.
+Discovery reports skipped corrupt and inaccessible counts only for independently established classifications.
 Pages distinguish complete, truncated by a named budget, and cancelled results. A complete empty page differs from an interrupted empty page.
+Every page requires `diagnostics`, with `[]` when none was observed. All diagnostic and termination combinations are valid.
+`complete` means the adapter exhausted its authorized enumeration, including its qualified filters and candidate observations.
+It does not mean every candidate succeeded. Neither empty diagnostics nor native list exhaustion proves full native coverage, compatibility, history validity, or resume safety.
+
+`SessionDiscoveryDiagnostic` reports `file-inspection-failed` only after an actual supported inspection of an admitted file fails before session identity or classification is established.
+A listing omission or unattempted candidate cannot produce this diagnostic. The diagnostic establishes no corrupt, inaccessible, incompatible, account, format, or busy classification.
+It does not increment `skipped.corrupt` or `skipped.inaccessible`. Consumers can display a fixed message from `kind`.
+Its subject is `{ kind: 'discovery-file', token: string }`, structurally distinct from `SessionReference`.
+The adapter generates an opaque token independent of paths, filenames, native IDs, account names, format names, error messages, and their encodings or hashes.
+The token is unique among file subjects within one call and stable for that subject until the call settles. Distinct admitted paths stay distinct, including hardlinks or files sharing a native session ID.
+Tokens have no cross-call identity guarantee. Hosts correlate retained pages with their own call identity.
+The adapter releases any temporary token-to-file association at settlement. No public resolver, persistent map, or process-global cache exists.
+The returned subject is display and correlation data. It grants no reopen, retry, inspect, or resume access.
+
+The adapter owns authorization, wire validation, classification evidence, exact-field construction, and redaction before returning diagnostics.
+It must not spread raw RPC records or copy a qualifier's relative-path token. No arbitrary native message field crosses this contract.
+Core types cannot prove token provenance, sanitize strings, reject aliased extra fields, or freeze runtime records. Readonly is a compile-time promise.
+`serializeDiagnostic` retains its existing provenance rules and redacts these unowned records.
+Each examined candidate contributes at most one diagnostic, so `diagnostics.length <= examined <= bounds.maxExamined`.
+The adapter enforces nonblank control-free tokens within `sessionLimits.identifierLength`, result limits, time limits, and abort together.
+It retains all accumulated sessions and diagnostics through completion, every named truncation, and cancellation. It never prunes earlier diagnostics to fit a later stop.
+A settled failed inspection is recorded before a later abort or budget check. Cancellation alone creates no failed-file diagnostic.
+These partial pages remain successful outer outcomes. Outer `native-failure`, `cancelled`, or `bounds-exceeded` errors cannot discard their observations.
+Admission failures before useful discovery retain the existing outer errors, including scope-wide `inaccessible` failures.
+Fatal scope-wide failures after observations need separate design before adapter support. Additional byte or depth termination reasons also require separate scope.
+
 Inspection reports available, absent, busy, or incompatible. Inspection cancellation or exhausted budgets return `cancelled` or `bounds-exceeded` errors.
 Neither discovery nor inspection acquires a lease. A later resume operation rechecks native availability before use.
-The installed session tests verify envelope validation, budget validation, and typed outcomes. Native discovery and resume remain adapter qualification obligations.
+The installed session tests verify envelope validation, budget validation, typed outcomes, retained observations, and diagnostic separation from session handles.
+Controlled consumers prove representation and handling, not native discovery or adapter budget enforcement. Native discovery and resume remain adapter qualification obligations.
 
 ## Event delivery
 
