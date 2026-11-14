@@ -5,6 +5,15 @@ Use a thin adapter around its public protocol and preserve the native agent loop
 Inventory-driven path inspection and retained unidentified-file diagnostics resolve the exact unknown-omission selection blocker.
 Completed adapters, broader discovery coverage, and live journeys remain downstream requirements. Selection does not qualify their support.
 
+The discovery qualifier uses a private shared wire codec for UTF-8 JSONL and envelope validation.
+Each frame is bounded to 1,048,576 bytes excluding LF and including CR; each input chunk is bounded to 2,097,151 bytes.
+The client's separate cumulative stdout refusal at 2 MiB and 128-request limit remain in place.
+Malformed, truncated, oversized, or routing-incompatible input, including a reply carrying both result and error, stops the owned child. Duplicate JSON member names follow JSON.parse last-wins and are not detected. Unknown payload members remain available to method decoders.
+Outgoing serialization must preserve routing kind, method, ID, and the result/error branch. Serialization work inside caller payloads is outside the codec's storage bound.
+A consumer exception closes the reader and propagates unchanged. Reentrant push closes the reader and throws; callback close and end remain allowed.
+The codec owns only framing storage. The qualifier retains shutdown, final drain, failure identity, progress, and refusal of server requests.
+This does not qualify transport correlation, approval handling, a native adapter, or live provider routes.
+
 ## Evidence and pins
 
 The [native pins](../../spikes/codex-native/pins.json) identify the official Linux arm64 and x64 archives by SHA512 and the Node image by OCI digest. The [native qualification](codex-native-api.md) records actual app-server execution against a synthetic loopback Responses service, independently of the SDK. The [discovery qualification](codex-discovery.md) records read-only-source discovery and inspection. Neither establishes a real provider or LiteLLM support claim. These standalone app-server fixtures use synthetic immutable roots. Global native SDK import confinement remains unqualified.

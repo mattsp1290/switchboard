@@ -33,6 +33,8 @@ let result;
 const run = (command, args, options = {}) => execFileSync(command, args, { timeout: 45000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', ...options });
 try {
   const binary = join(work, 'codex');
+  const codecRoot = join(work, 'codec');
+  const wireCodec = join(codecRoot, 'adapters/codex/wire.js');
   const fd = openSync(binary, 'wx');
   try { run('tar', ['-xOf', resolve(archive), `package/vendor/${pin.target}/bin/codex`], { stdio: ['ignore', fd, 'pipe'] }); }
   finally { closeSync(fd); }
@@ -42,6 +44,8 @@ try {
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
     if (script === 'discovery.mjs') {
       for (const helper of ['inventory.mjs', 'client.mjs', 'account-reads.mjs', 'history-copy.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
+      mounts.push('--mount', `type=bind,source=${wireCodec},target=/dist/adapters/codex/wire.js,readonly`,
+        '--mount', `type=bind,source=${resolve(here, '../../package.json')},target=/dist/package.json,readonly`);
     }
     try {
       return ownedContainer(run, ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
@@ -74,6 +78,12 @@ try {
   const behavior = JSON.parse(docker(['node', '/opt/fixture.mjs'], 'probe.mjs'));
   assert.equal(behavior.node, pins.node);
   assert.equal(behavior.architecture, architecture);
+  const sourceHash = () => createHash('sha256').update(readFileSync(resolve(here, '../../src/adapters/codex/wire.ts'))).digest('hex');
+  const sourceSha256Before = sourceHash();
+  run(process.execPath, [join(here, '../../node_modules/typescript/bin/tsc'), '-p', resolve(here, '../../tsconfig.json'), '--outDir', codecRoot]);
+  const sourceSha256After = sourceHash();
+  assert.equal(sourceSha256After, sourceSha256Before, 'Wire source unchanged during compilation');
+  const compiledSha256 = createHash('sha256').update(readFileSync(wireCodec)).digest('hex');
   const prepared = JSON.parse(docker(['node', '/opt/fixture.mjs', 'prepare'], 'discovery.mjs'));
   const recordsFile = join(work, 'records.json');
   writeFileSync(recordsFile, JSON.stringify(prepared.records));
@@ -196,6 +206,7 @@ try {
     assert.deepEqual(fingerprint(accountSource, accountInventory), accountHashes, 'All originals preserved over container lifetime');
   }
   result = { native: pins.native, image: pins.image, platform: pin.platform,
+    wireCodec: { sourceSha256Before, sourceSha256After, compiledSha256 },
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,
     bindingIdentity: { ...selectedBindingIdentity, sourceSha256: binding.sourceSha256, consumedSha256: binding.consumedSha256 },
     strictNodeNextNoDOM: 'passed', behavior, boundary, discovery, accounts, accountPreparationRequests: accountPrepared.fixtureRequests };
