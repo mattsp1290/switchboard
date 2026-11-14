@@ -23,9 +23,9 @@ class FinalizationTests(unittest.TestCase):
             self.assertEqual(result[field], expected)
         return result, json.loads((out / 'cleanup.json').read_text())
 
-    def test_current_callers_finalize_success_after_image_removal(self):
-        for raw in (False, True):
-            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as directory:
+    def test_current_callers_stop_before_cases_or_finalize_success(self):
+        for raw, fault in itertools.product((False, True), (None, 'incomplete', 'nonzero')):
+            with self.subTest(raw=raw, fault=fault), tempfile.TemporaryDirectory() as directory:
                 out = Path(directory) / 'evidence'
                 external, calls = set(), []
                 image = False
@@ -71,11 +71,19 @@ class FinalizationTests(unittest.TestCase):
                         elif command == 'start':
                             self.assertIn(name, external)
                         elif command == 'exec':
-                            stdout, stderr = b'inert init', b''
+                            if name == 'notice-tests':
+                                stdout = ''.join(f'NOTICE_TEST {i} control-{chr(97+i//26)}{chr(97+i%26)} result=1\n' for i in range(157))
+                                stdout += 'NOTICE_TESTS count=157 failed=0\n'
+                                if fault == 'incomplete':
+                                    stdout = stdout.replace('NOTICE_TEST 0 control-aa result=1\n', '')
+                                if fault == 'nonzero':
+                                    code, stderr = 90, 'complete failure diagnostic\n'
+                            else:
+                                stdout, stderr = b'inert init', b''
                         elif command == 'logs':
                             mode = name.rsplit('-', 1)[-1]
                             stdout = 'allowed\n' if mode == 'normal' else ''
-                            stderr = 'REAPED 23 SUPERVISOR 7\n' + {
+                            stderr = f'REAPED 23 SUPERVISOR 7\nNOTICE_RECEIPT root=23 ready={int(mode == "death")}\n' + {
                                 'normal': 'PREREQUISITES_OBSERVED\n', 'inherited': 'REJECT_INHERITED_FD\n', 'death': ''}[mode]
                         elif command == 'inspect':
                             if name in external:
@@ -104,6 +112,24 @@ class FinalizationTests(unittest.TestCase):
                         patch.object(admission, 'collect', side_effect=collect) as collector, redirect_stdout(io.StringIO()):
                     run.execute(raw=raw)
                 result, report = self.read_final(out)
+                if fault:
+                    self.assertEqual(result['status'], 'INCONCLUSIVE')
+                    self.assertEqual(result['stage'], 'notice-controls')
+                    self.assertNotIn('cases', result)
+                    self.assertEqual(collector.call_count, 0)
+                    self.assertEqual([c[0] for c in calls].count('create'), 1)
+                    self.assertFalse(image)
+                    self.assertFalse(external)
+                    self.assertEqual(report, {'containers': [], 'image': None, 'errors': []})
+                    records = json.loads((out / 'commands.json').read_text())
+                    failed = next(r for r in records if r['args'][-1] == 'notice-tests')
+                    self.assertEqual(failed['code'], 90 if fault == 'nonzero' else 0)
+                    self.assertEqual((out / 'notice-controls.stdout').read_text(), failed['stdout'])
+                    self.assertEqual((out / 'notice-controls.stderr').read_text(), failed['stderr'])
+                    self.assertTrue(failed['stdout'].endswith('NOTICE_TESTS count=157 failed=0\n'))
+                    self.assertEqual(failed['stderr'], 'complete failure diagnostic\n' if fault == 'nonzero' else '')
+                    continue
+                self.assertEqual(result['noticeControlsSha256'], real_digest(out / 'notice-controls.json'))
                 self.assertEqual(result['status'], 'SUPPORTED_SINGLE_TARGET_ADMISSION' if raw else 'INCONCLUSIVE')
                 self.assertEqual([c['mode'] for c in result['cases']], list(admission.MODES) if raw else ['normal', 'inherited', 'death'])
                 self.assertEqual(collector.call_count, 9 if raw else 0)

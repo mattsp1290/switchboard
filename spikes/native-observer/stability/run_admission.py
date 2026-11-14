@@ -38,10 +38,12 @@ def inspect_binary(binary):
 
 
 def check(mode, evidence, init):
-    owned = re.findall(r'^OWNED_TARGET (\d+)$', evidence, re.M)
+    owned = re.findall(r'^OWNED_TARGET.*$', evidence, re.M)
     assert len(owned) == 1, 'missing or duplicate target ownership'
-    pid = owned[0]
-    assert re.search(rf'^REAPED {pid} SUPERVISOR \d+$', evidence, re.M), 'independent disappearance absent'
+    ownership = re.fullmatch(r'OWNED_TARGET ([1-9][0-9]*)', owned[0])
+    assert ownership, 'invalid target ownership'
+    pid = ownership[1]
+    assert resources.check_notice('raw-' + mode, evidence) == pid, 'notice ownership differs'
     assert 'SUPERVISOR subreaper=0 SIGCHLD=default NOCLDWAIT=0\n' in evidence
     assert 'SUPERVISOR_DEADLINE' not in evidence, 'supervisor deadline expired'
     errors = re.findall(r'^FAIL (.*?) errno=\d+$', evidence, re.M)
