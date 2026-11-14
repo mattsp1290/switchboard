@@ -1,15 +1,16 @@
 # AG-UI fork reuse
 
 Switchboard must consume the owned [combined SDK PR 49](https://github.com/mattsp1290/ag-ui/pull/49) without losing its native requirements.
-The [fork manifest](../protocol/ag-ui-fork.json) records immutable source readiness.
-It does not change installed dependencies or establish runtime adoption.
+The [fork manifest](../protocol/ag-ui-fork.json) records immutable source and core archive identities.
+Development and the installed projection consumer select the delivered core archive.
+Codex and Pi native adapter use remains unqualified.
 
 ## Source identity
 
 The selected combined source is `ed2c1d5b63299d3f08676a1418cc2640bbe55fd1`.
 Its tree is `4dd1b37d5fd8486b022827c102f2b53ea2bfdfc8`.
 The manifest pins six package manifests, public entries, native translators, protocol inputs, license notices, and the workspace lockfile.
-These are source hashes. Package archives require their own integrity pins and installed-consumer checks.
+The source hashes remain separate from the core archive integrity pin and installed-consumer checks.
 
 The combined commit includes the following source revisions.
 
@@ -62,11 +63,19 @@ These gaps remain qualification requirements, rather than permission to reduce n
 
 ## Delivery gates and ownership
 
-`agentui-wtdo` owns portable delivery and installed qualification of the six frozen fork archives.
-`switchboard-193h` owns Switchboard's actual installed core adoption from that delivery.
-Switchboard must consume that delivery with exact artifact digests and confirm its actual installed package resolution.
-Its existing installed projection suite must run against the delivered core bytes before claiming fork adoption.
-Adding unused adapter dependencies or recording this source manifest does not satisfy that gate.
+`agentui-wtdo` owns portable delivery and qualification of the six frozen fork archives.
+Its delivery at [AgentUI commit 661216e](https://github.com/mattsp1290/agentui/commit/661216eab627be33067951ffad7a1691127a80fe) supplies Switchboard's core archive.
+The delivery's review remains pending. Its immutable identity does not imply approval of that AgentUI change.
+`switchboard-193h` owns Switchboard's installed core adoption from this delivery.
+
+The development dependency and installed integration consumer use the exact `coreArtifact.url` from the fork manifest.
+The archive has 193,883 bytes and is byte-identical to the historical canonical core artifact.
+Its SHA-256 and npm integrity stay separate from the source tree and file hashes.
+The installed check requires one AG-UI core package with that URL, version, and integrity, with no nested or registry fallback.
+Run `npm ci` and `npm run verify:package` with the selected toolchain to verify the actual dependency and projection behavior.
+The source-only check above cannot establish that installed result.
+The optional peer remains `@ag-ui/core@1.0.4`; the root package has no mandatory runtime dependency.
+No unused Codex or Pi dependency is added.
 
 `switchboard-rlsx` retains Pi selection and reuse qualification.
 `switchboard-mebb` retains complete Codex adapter integration.

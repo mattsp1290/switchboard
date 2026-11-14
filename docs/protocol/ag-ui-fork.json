@@ -94,5 +94,15 @@
     "integrations/community/pi/typescript/README.md": "325f9295c256a818a2d2342abb35bff9cf08d13731ace7b9867cb8dcf1ec56aa",
     "integrations/community/pi/typescript/LICENSE": "107a3586a1f2f3adccd334f54c9db5971f7ace330f399fa83b18c59fae0c86a8",
     "integrations/community/pi/typescript/PROVENANCE.md": "52a403d87c8b525f98658c0db09df0e7265d65be439fb5091ca8beb095fa8376"
+  },
+  "coreArtifact": {
+    "package": "@ag-ui/core",
+    "version": "1.0.4",
+    "deliveryRepository": "https://github.com/mattsp1290/agentui",
+    "deliveryCommit": "661216eab627be33067951ffad7a1691127a80fe",
+    "url": "https://raw.githubusercontent.com/mattsp1290/agentui/661216eab627be33067951ffad7a1691127a80fe/vendor/ag-ui/ed2c1d5b63299d3f08676a1418cc2640bbe55fd1/ag-ui-core-1.0.4.tgz",
+    "bytes": 193883,
+    "sha256": "2cd54a879083e0c351e8c38861b1d2e2b7355a5712b7128da690257c687dad19",
+    "integrity": "sha512-Z/G3UXYRyZ/1LcOtCCf6RJiFPTjRqaNublW/kQ7wsfiP4Qw5oIVmvO6NkUQYoqCoMXuXggyD3MMH2Td5OVKECQ=="
   }
 }

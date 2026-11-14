@@ -38,6 +38,8 @@ Three canonical chunk kinds normalize to explicit stream events. Input and capab
 
 The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
 The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
+Development and the installed AG-UI consumer use the immutable core archive from owned [AG-UI PR 49](https://github.com/mattsp1290/ag-ui/pull/49).
+The [fork reuse record](docs/qualification/ag-ui-fork-reuse.md) pins its delivery and separates core adoption from native adapter qualification.
 Native tools and credentials are unnecessary for this foundation check.
 No native integration or direct or LiteLLM route is qualified by this package check.
 

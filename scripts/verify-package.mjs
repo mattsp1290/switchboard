@@ -9,6 +9,11 @@ import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-com
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const { coreArtifact } = JSON.parse(readFileSync(join(root, 'docs/protocol/ag-ui-fork.json'), 'utf8'));
+assert.equal(manifest.devDependencies['@ag-ui/core'], coreArtifact.url, 'Development uses the frozen fork core archive.');
+const developmentLock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+assert.equal(developmentLock.packages['node_modules/@ag-ui/core'].resolved, coreArtifact.url);
+assert.equal(developmentLock.packages['node_modules/@ag-ui/core'].integrity, coreArtifact.integrity);
 const npm = process.env.npm_execpath;
 assert(npm, 'Run this check with npm run verify:package.');
 
@@ -275,9 +280,17 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   writeFileSync(join(integration, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   process.stdout.write(runNpm([
     'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-    `@ag-ui/core@${manifest.peerDependencies['@ag-ui/core']}`,
+    coreArtifact.url,
     `@types/node@${manifest.devDependencies['@types/node']}`,
   ], integration));
+  const integrationLock = JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8'));
+  const aguiPackages = Object.entries(integrationLock.packages)
+    .filter(([path]) => /(?:^|\/)node_modules\/@ag-ui\//.test(path));
+  assert.deepEqual(aguiPackages.map(([path]) => path), ['node_modules/@ag-ui/core'], 'Only one fork AG-UI core package is installed.');
+  const [[, installedCore]] = aguiPackages;
+  assert.equal(installedCore.version, coreArtifact.version);
+  assert.equal(installedCore.resolved, coreArtifact.url, 'Installed consumer uses the frozen fork archive without registry fallback.');
+  assert.equal(installedCore.integrity, coreArtifact.integrity, 'Installed fork archive integrity.');
   assert(!existsSync(join(integration, 'node_modules/zod')), 'Integration consumer has no optional Zod installed.');
   const aguiFixtures = readdirSync(join(root, 'tests/agui')).filter((file) => file.endsWith('.ts')).sort();
   const aguiTests = aguiFixtures.filter((file) => file.endsWith('.test.ts'));
