@@ -1,0 +1,8 @@
+{
+  "name": "@anthropic-ai/claude-agent-sdk",
+  "version": "0.0.0-inert-control",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" } }
+}
