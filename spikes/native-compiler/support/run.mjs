@@ -79,6 +79,8 @@ for (const [script, timeout] of [['process.exit(2)', 1000], ["process.kill(proce
 }
 const original = readFileSync(declaration, 'utf8');
 const sourceLeak = join(installed, 'dist/stray.ts');
+const nestedModules = join(consumer, 'node_modules/@switchboard-proof/declarations/node_modules');
+const nestedForeign = join(nestedModules, '@switchboard-proof/foreign');
 try {
   writeFileSync(declaration, 'export type Label = MissingDeclaration;\n');
   exactDiagnostics(compile(consumer, ['host.ts']), [{
@@ -90,6 +92,24 @@ try {
   assert.throws(() => assertCoreIsolation(consumer, closure(), {
     allowedRoots: allowed, allowedFiles: [join(consumer, 'host.ts')],
   }), /Foreign compiler file/);
+  mkdirSync(nestedForeign, { recursive: true });
+  cpSync(join(consumer, 'node_modules/@switchboard-proof/foreign'), nestedForeign, { recursive: true });
+  successful(compile(consumer, ['host.ts']));
+  const nestedClosure = closure();
+  const nestedDeclaration = join(nestedForeign, 'dist/index.d.ts');
+  assert(nestedClosure.includes(nestedDeclaration), 'The strict consumer reaches the nested foreign declaration.');
+  assert.throws(() => assertClosure(nestedClosure, allowed, [join(consumer, 'host.ts')]), /Foreign compiler file/);
+  assert.throws(() => assertCoreIsolation(consumer, nestedClosure, {
+    allowedRoots: allowed, allowedFiles: [join(consumer, 'host.ts')],
+  }), /Foreign compiler file/);
+  for (const policy of [
+    { allowedRoots: [...allowed, nestedForeign], allowedFiles: [join(consumer, 'host.ts')] },
+    { allowedRoots: allowed, allowedFiles: [join(consumer, 'host.ts'), nestedDeclaration] },
+  ]) {
+    assertClosure(nestedClosure, policy.allowedRoots, policy.allowedFiles);
+    assertCoreIsolation(consumer, nestedClosure, policy);
+  }
+  rmSync(nestedModules, { recursive: true });
   writeFileSync(sourceLeak, 'export type Label = string;\n');
   writeFileSync(declaration, "export type Label = import('../../inert/dist/stray.js').Label;\n");
   successful(compile(consumer, ['host.ts']));
@@ -104,6 +124,7 @@ try {
 } finally {
   rmSync(declaration, { force: true });
   rmSync(sourceLeak, { force: true });
+  rmSync(nestedModules, { recursive: true, force: true });
   writeFileSync(declaration, original);
 }
 positive();
@@ -165,7 +186,8 @@ const summary = {
   passedControls: [
     'strict noDOM and explicitDOM installed consumers', 'owned source and third-party declaration diagnostics',
     'extra/unrelated errors and wrong location/code', 'unexpected output/status/signal/timeout',
-    'foreign transitive declaration and source leak', 'symlink declaration', 'private source/output imports',
+    'foreign transitive declaration and source leak', 'nested foreign declaration and explicit root/file admission',
+    'symlink declaration', 'private source/output imports',
     'malformed relative emitted import', 'computed/commented/escaped emitted import rejection',
     'quoted static/re-export/dynamic emitted imports', 'installed/resolvable/reachable native-name controls',
     'positive fixture restoration after every mutation group',

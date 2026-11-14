@@ -68,7 +68,8 @@ export function assertClosure(files, allowedRoots, allowedFiles) {
     const actual = realpathSync(file);
     assert.equal(actual, file, `Compiler closure cannot use symlinks: ${file}`);
     assert(exact.has(actual) || /\.d\.(?:ts|mts|cts)$/.test(actual), `Unexpected compiler source: ${actual}`);
-    assert(exact.has(actual) || roots.some((root) => inside(actual, root)), `Foreign compiler file: ${actual}`);
+    assert(exact.has(actual) || roots.some((root) => inside(actual, root)
+      && !relative(root, actual).split(sep).includes('node_modules')), `Foreign compiler file: ${actual}`);
   }
 }
 
