@@ -27,8 +27,8 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 `src/index.ts` exports core contracts and helpers without importing AG-UI.
 `src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
-`createAguiProjection` maps observed lifecycle, text, tool, content and step facts through one bounded per-run actor.
-Its frozen `aguiProtocol` descriptor identifies basic, value, message snapshot and terminal payload support; reasoning and subagent lifecycle mappings remain planned.
+`createAguiProjection` maps observed lifecycle, text, tool, content, step and reasoning facts through one bounded per-run actor.
+Its frozen `aguiProtocol` descriptor identifies basic, value, message snapshot, terminal payload and reasoning support. Subagent lifecycle mappings remain planned.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
@@ -312,3 +312,10 @@ JSON validation establishes shape and budgets; it cannot establish that selected
 A valid `not-observable` fact emits an empty batch without fabricating a native event. The host records the gap independently.
 `describeProjection` reports represented families separately from caller-asserted native availability and qualification.
 Missing assertions remain undeclared. Mapping or fixture success never upgrades native availability or qualification.
+
+## AG-UI reasoning
+
+Reasoning spans and messages have independent lifecycles in the single bounded actor ledger. No hidden reasoning or subagent lifecycle is synthesized.
+Opaque encrypted observations open and close nothing. Their attribution records the producer independently of target ownership.
+Unknown target identities consume capacity without establishing target existence. Later actual openers establish their own ownership.
+The host supplies authorized reasoning facts and owns publication, persistence and native qualification. All six native routes remain unqualified.

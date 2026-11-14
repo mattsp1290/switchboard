@@ -250,6 +250,11 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   }));
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], integration);
   const aguiInvalidCases = [
+    ['reasoning-role', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningFact = { kind: 'reasoning-message-started', message: { scope: [], id: '' }, role: 'assistant' };", 2322],
+    ['reasoning-role-missing', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningFact = { kind: 'reasoning-message-started', message: { scope: [], id: '' } };", 2322],
+    ['reasoning-target', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningTarget = { kind: 'message', tool: { scope: [], id: '' } };", 2353],
+    ['reasoning-wire-id', "const invalid: import('@mattsp1290/switchboard/agui').ReasoningTarget = { kind: 'tool', tool: 'wire' };", 2322],
+    ['reasoning-readonly', "declare const value: import('@mattsp1290/switchboard/agui').ReasoningTarget; value.kind = 'tool';", 2540],
     ['interrupt-empty', "const invalid: import('@mattsp1290/switchboard/agui').TerminalFact = { kind: 'run-finished', outcome: 'interrupt', interrupts: [] };", 2322],
     ['interrupt-wire-id', "const invalid: import('@mattsp1290/switchboard/agui').NativeInterrupt = { interrupt: 'wire', reason: '' };", 2322],
     ['interrupt-array-schema', "const invalid: import('@mattsp1290/switchboard/agui').NativeInterrupt = { interrupt: { scope: [], id: '' }, reason: '', responseSchema: [] };", 2322],
@@ -319,6 +324,17 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     assert.match(output, /^# tests [1-9]\d*$/m, `${file} executes nonzero installed tests.`);
     process.stdout.write(output);
   }
+  const reasoningCases = readFileSync(collected, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    .filter(item => item.path.startsWith('reasoning/') && item.origin === 'switchboard-projection');
+  for (const type of ['REASONING_START', 'REASONING_END', 'REASONING_MESSAGE_START',
+    'REASONING_MESSAGE_CONTENT', 'REASONING_MESSAGE_END', 'REASONING_ENCRYPTED_VALUE']) {
+    assert(reasoningCases.some(item => item.value.type === type), `Installed reasoning output includes ${type}.`);
+  }
+  for (const subtype of ['message', 'tool-call']) {
+    assert(reasoningCases.some(item => item.value.type === 'REASONING_ENCRYPTED_VALUE' && item.value.subtype === subtype));
+  }
+  assert(reasoningCases.filter(item => item.value.type === 'REASONING_MESSAGE_START').every(item => item.value.role === 'reasoning'));
+  console.log(`Collected ${reasoningCases.length} actual installed reasoning-test events.`);
   const terminalCases = readFileSync(collected, 'utf8').trim().split('\n').map(line => JSON.parse(line))
     .filter(item => item.path.startsWith('terminals/') && item.origin === 'switchboard-projection');
   assert(terminalCases.some(item => item.value.type === 'RUN_FINISHED' && item.value.outcome?.type === 'interrupt'));

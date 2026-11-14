@@ -6,7 +6,7 @@ The frozen `aguiProtocol` descriptor exposes these pins and the implemented life
 It maps observed run start, success, clean cancellation, and fixed public native or transport failures, including failures before start and after finish.
 Host thread, run, and parent IDs are preserved verbatim. `sourceKey` is an authorized public namespace supplied by the host, never a session credential.
 Scoped native identity encoding covers text, tools, results, steps, activities, snapshots and interrupts.
-State, activity, raw, custom, interrupt terminal and usage values are implemented. Reasoning and subagent lifecycle mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
+State, activity, raw, custom, interrupt terminal and usage values are implemented. Reasoning mappings are implemented. Subagent lifecycle mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
 
 Message snapshots preserve all seven canonical roles, nested tool calls, encryption, metadata, tool errors and ordered content parts.
 `NativeMessage` derives from the pinned SDK union and replaces only scoped message, owner, call and part references.
@@ -19,7 +19,7 @@ Snapshots reset that constraint. Matching explicit text/tool reopening continues
 An actual activity snapshot or delta promotes snapshot-only observations to activity evidence, preventing a first text opener or emitted result from reusing that identity.
 Current activity can still coexist with immutable text or result evidence retained from before a message snapshot.
 Snapshot calls and tool messages never create pending calls or answer actual calls. Actual duplicate results remain rejected.
-`maxEntities` charges unique message, tool, step and owner identities once per run, including inferred parents and omitted snapshots.
+`maxEntities` charges unique message, tool, step, reasoning span and owner identities once per run, including inferred parents and omitted snapshots.
 Nested snapshot call IDs consume payload/work bounds but do not enter the actual call ledger. All state updates and output capture commit together.
 
 `NativeInterrupt` derives semantic fields from SDK `Interrupt`, replacing its ID, tool link and owner with `NativeRef` values.
@@ -155,3 +155,18 @@ The initial `sdk-sentinel` comes from SDK constants/types and `omitOptionalNulls
 It checks the collection path and is not Switchboard mapping or native qualification evidence.
 Lifecycle mapper tests use the same collector with its default `switchboard-projection` provenance.
 Their installed output exercises lifecycle ordering, failure isolation, mutation safety, hostile inputs, and resource bounds.
+
+## Reasoning facts
+
+`ReasoningFact` maps independent spans and messages through the existing actor ledger. Span references use a separate `reasoning-span` domain.
+Messages use the shared `message` domain. Start and complete facts require the SDK literal `role: 'reasoning'`.
+Complete facts emit the same start, content and end triad as streamed facts, atomically. Chunk spelling is normalized to that triad.
+Spans need no messages, messages need no span, and closing a span does not close any message. Identical closed streams can reopen.
+Every finish requires both sets closed. Observed native failure abandons them. Snapshots preserve immutable reasoning openers.
+Normalized entity facts carry the resolved opener owner on every continuation. Canonical untagged continuations inherit their opener's owner.
+
+Encrypted facts use a closed native message or tool target and emit the unchanged opaque string as a standalone event.
+They require no target existence, type, owner match or open span. Unknown and activity targets remain valid observations.
+Consumers own warning, dropping and storage. Snapshots replace supplied encryption wholesale, including its omission.
+The actor retains no encrypted values or reasoning transcript. It charges unknown target and owner identities without creating lifecycles.
+A first actual opener promotes an encrypted observation and establishes its own immutable owner. Repeated known identities add no charge.
