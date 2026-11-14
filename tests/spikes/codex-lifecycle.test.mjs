@@ -14,6 +14,9 @@ const hook = registerHooks({ resolve(specifier, context, next) {
   if (specifier === 'node:fs' && context.parentURL.includes('/codex-native/qualify.mjs')) {
     return { url: new URL('./codex-lifecycle-fs.mjs', import.meta.url).href, shortCircuit: true };
   }
+  if (['node:fs', 'node:http'].includes(specifier) && context.parentURL.includes('/codex-native/discovery.mjs')) {
+    return { url: new URL('./codex-discovery-boundary.mjs', import.meta.url).href, shortCircuit: true };
+  }
   return next(specifier, context);
 } });
 const { nativeClient } = await import('../../spikes/codex-native/client.mjs');
@@ -65,7 +68,7 @@ test('client rejects malformed, null, array, unexpected-request and oversized ou
     await assert.rejects(client.rpc('thread/read', {}), /JSON|envelope|Unexpected|budget/);
     assert.equal(child.sent.length, 0);
     assert(child.signals.includes('SIGKILL'));
-    await client.stop();
+    await assert.rejects(client.stop(), /JSON|envelope|Unexpected|budget/);
   }
 });
 test('client captures asynchronous spawn and stdin errors during pending calls', async () => {
@@ -77,7 +80,7 @@ test('client captures asynchronous spawn and stdin errors during pending calls',
     await assert.rejects(request, /synthetic/);
     await assert.rejects(client.rpc('thread/read', {}), /synthetic/);
     assert.equal(child.sent.length, 1);
-    await client.stop();
+    await assert.rejects(client.stop(), /synthetic/);
   }
 });
 test('client waits for graceful stdio drain and repeated stop is harmless', async () => {
@@ -92,6 +95,95 @@ test('client waits for graceful stdio drain and repeated stop is harmless', asyn
   assert.equal(client.events.at(-1).method, 'last-notice');
   await client.stop();
   assert.deepEqual(child.signals, ['SIGTERM']);
+});
+test('client rejects final-drain faults after close and keeps failed repeated stop observable', async () => {
+  const faults = [
+    ['malformed', (child) => child.stdout.write('{bad\n')],
+    ['null', (child) => child.stdout.write('null\n')],
+    ['array', (child) => child.stdout.write('[]\n')],
+    ['request', (child) => child.stdout.write('{"id":100,"method":"unexpected"}\n')],
+    ['overflow', (child) => child.stdout.write('x'.repeat(2 * 1024 * 1024))],
+    ['spawn', (child) => child.emit('error', new Error('synthetic final spawn failure'))],
+    ['stdin', (child) => child.stdin.emit('error', new Error('synthetic final stdin failure'))],
+  ];
+  for (const [name, inject] of faults) {
+    const child = transport();
+    const kill = child.kill;
+    child.kill = (signal) => {
+      const sent = kill(signal);
+      if (signal === 'SIGTERM') queueMicrotask(() => inject(child));
+      return sent;
+    };
+    const client = nativeClient({}, () => {}, () => child);
+    await client.call('thread/list', {});
+    let closed = false;
+    child.once('close', () => { closed = true; });
+    let failure;
+    await assert.rejects(client.stop(), (error) => {
+      assert(closed, name);
+      assert.match(error.message, /JSON|envelope|Unexpected|budget|synthetic final/);
+      failure = error;
+      return true;
+    });
+    await assert.rejects(client.stop(), (error) => error === failure);
+    await assert.rejects(client.rpc('thread/list', {}), (error) => error === failure);
+    assert.equal(child.sent.length, 1, name);
+    assert.deepEqual(child.signals, name === 'spawn' ? ['SIGTERM'] : ['SIGTERM', 'SIGKILL']);
+  }
+});
+test('actual discovery retains a final-drain failure and exits nonzero through inert boundaries', async () => {
+  const argv = process.argv;
+  const log = console.log;
+  const stderrWrite = process.stderr.write;
+  const exitCode = process.exitCode;
+  try {
+    for (const fault of [false, true]) {
+      const child = transport((request) => request.method === 'thread/list'
+        ? { id: request.id, error: { code: -32603, message: 'Not a directory' } }
+        : { id: request.id, result: request.method === 'config/read' ? { config: { sqlite_home: '/tmp/private-index' } } : {} });
+      const kill = child.kill;
+      child.kill = (signal) => {
+        const sent = kill(signal);
+        if (fault && signal === 'SIGTERM') child.stdout.write('{bad\n');
+        return sent;
+      };
+      globalThis.codexDiscovery = child;
+      const reports = [];
+      const progress = [];
+      process.argv = [process.execPath, 'discovery.mjs', 'inaccessible'];
+      process.exitCode = undefined;
+      console.log = (value) => reports.push(JSON.parse(value));
+      process.stderr.write = (value) => { progress.push(JSON.parse(value)); return true; };
+      await import(`../../spikes/codex-native/discovery.mjs?shutdown=${fault}`);
+      assert.equal(reports.length, 1);
+      const report = reports[0];
+      assert.equal(process.exitCode ?? 0, fault ? 1 : 0);
+      assert.equal(report.inferenceRequests, 0);
+      assert.equal(report.transcript.at(-1).reply.error.code, -32603);
+      assert.deepEqual(report.transcript.map((entry) => entry.request.method), ['initialize', 'config/read', 'thread/list']);
+      assert.deepEqual(report.preservation, ['before startup', 'after initialization', 'after requests',
+        fault ? 'after failed drained shutdown' : 'after drained shutdown']);
+      assert(progress.some((entry) => entry.sourcePreservation === report.preservation.at(-1)));
+      if (fault) {
+        assert.match(report.failure.message, /Malformed native JSON/);
+        assert.match(report.shutdownFailure, /Malformed native JSON/);
+        assert.equal(report.preservationSummary, undefined);
+        assert.deepEqual(child.signals, ['SIGTERM', 'SIGKILL']);
+      } else {
+        assert.equal(report.failure.code, -32603);
+        assert.equal(report.shutdownFailure, undefined);
+        assert.match(report.preservationSummary, /unchanged/);
+        assert.deepEqual(child.signals, ['SIGTERM']);
+      }
+      log(JSON.stringify({ inertDiscovery: fault ? 'final-drain-failure' : 'graceful-control', exitCode: process.exitCode ?? 0, report }));
+    }
+  } finally {
+    process.argv = argv;
+    console.log = log;
+    process.stderr.write = stderrWrite;
+    process.exitCode = exitCode;
+    delete globalThis.codexDiscovery;
+  }
 });
 test('client bounds ignored TERM, escalates to KILL, and rejects failed close', async () => {
   for (const closes of [true, false]) {

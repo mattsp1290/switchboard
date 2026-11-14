@@ -63,12 +63,14 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   const call = async (method, params) => { const reply = await rpc(method, params); assert(!reply.error, JSON.stringify(reply)); return reply.result; };
   return { events, transcript, call, rpc, initialized: () => { ready(); send({ method: 'initialized' }); }, stop: async () => {
     stopping = true;
-    if (!closed) child.kill('SIGTERM');
-    try { await until(() => closed, 'Native shutdown and output drain'); }
-    catch {
-      child.kill('SIGKILL');
-      await until(() => closed, 'Forced native shutdown and output drain');
-    }
-    lines.close();
+    try {
+      if (!closed) child.kill('SIGTERM');
+      try { await until(() => closed, 'Native shutdown and output drain'); }
+      catch {
+        child.kill('SIGKILL');
+        await until(() => closed, 'Forced native shutdown and output drain');
+      }
+    } finally { lines.close(); }
+    if (failure) throw failure;
   } };
 }
