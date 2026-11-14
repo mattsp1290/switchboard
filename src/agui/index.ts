@@ -51,5 +51,5 @@ export const aguiProtocol = Object.freeze({
   typescriptSdk: '1.0.4',
   pythonSdk: '1.0.0',
   mapping: 'basic-values-messages-terminals-reasoning-and-subagents',
-  planned: 'aggregate-disposition-audit',
+  planned: 'none',
 });

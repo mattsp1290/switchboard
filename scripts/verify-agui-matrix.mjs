@@ -6,11 +6,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { auditDispositions } from './audit-agui-dispositions.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pin = JSON.parse(await readFile(join(root, 'docs/protocol/ag-ui-pin.json'), 'utf8'));
 const readRows = async (file) => (await readFile(join(root, file), 'utf8')).split('\n').filter(Boolean).slice(1).map((line) => line.split('\t'));
 const rows = await readRows('docs/protocol/ag-ui-matrix.tsv');
+const dispositions = await readRows('docs/protocol/ag-ui-dispositions.tsv');
 const fixtures = await readRows('tests/agui/fixtures/upstream.tsv');
 assert.equal(rows.length, 98, 'Pinned definition count');
 assert.equal(fixtures.length, 219, 'Pinned upstream fixture count');
@@ -106,6 +108,7 @@ for (const item of emitted) {
   assert.equal(typeof item.path, 'string');
   assert(['sdk-sentinel', 'switchboard-projection'].includes(item.origin), 'Output evidence has explicit provenance.');
 }
+auditDispositions({ definitions: rows, dispositions, ...(arguments_.length ? { emitted } : {}) });
 cases.push(...emitted);
 const scratch = await mkdtemp(join(tmpdir(), 'switchboard-agui-sdk-'));
 const run = (command, args, options = {}) => {
@@ -171,6 +174,7 @@ try {
   }
   assert.deepEqual(python.accepted, cases.map((item) => item.py ?? true), 'Python fixture acceptance');
   console.log(`Installed output verified: ${emitted.filter((item) => item.origin === 'switchboard-projection').length} Switchboard events; ${emitted.filter((item) => item.origin === 'sdk-sentinel').length} SDK sentinels (not mapping evidence).`);
+  console.log(`Disposition audit: ${dispositions.length} exact declarations; ${arguments_.length ? 'all implemented events and child terminal variants verified' : 'inventory only; installed output coverage requires --emitted-events'}.`);
   console.log(`AG-UI ${pin.protocol}: ${events.length} events, ${rows.length} definitions, ${fixtures.length} pinned fixtures verified against canonical schema and both published SDKs.`);
 } finally {
   await rm(scratch, { recursive: true, force: true });

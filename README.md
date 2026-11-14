@@ -3,7 +3,7 @@
 Switchboard is a Node-hosted TypeScript library for native agent interfaces and adapters.
 This foundation contains one private ESM package, `@mattsp1290/switchboard@0.0.0`.
 Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
-Claude, Codex, Pi, and AG-UI integrations are future work.
+The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output. Claude, Codex, and Pi adapters remain unqualified.
 
 Use Node 24.22.3 and npm 11.19.1. The package supports Node `>=24.22.3 <25`.
 Development dependencies pin TypeScript 7.0.2, Oxlint 1.93.0, and `@types/node` 24.19.2. There are no runtime dependencies.
@@ -32,10 +32,13 @@ The workflow uses `npm ci`, immutable action commits, and read-only repository a
 It also runs `npm run verify:agui` against checksum-pinned canonical schema fixtures and published Python and TypeScript SDKs.
 That repository development check requires uv 0.11.3, Python 3.13.12, and initial registry/GitHub access.
 Its SDK environments are temporary. It adds no package dependencies or native qualification claims.
-The protocol matrix and validation differences are recorded under `docs/protocol/`.
+The protocol matrix, exact per-definition dispositions, and validation differences are recorded under `docs/protocol/`.
+Installed verification requires actual projection output for all 28 explicit event kinds and five child terminal variants.
+Three canonical chunk kinds normalize to explicit stream events. Input and capability declarations do not create output events.
 
 The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
-Only the root entry exists. Native tools and credentials are unnecessary for this foundation check.
+The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
+Native tools and credentials are unnecessary for this foundation check.
 No native integration or direct or LiteLLM route is qualified by this package check.
 
 [Architecture boundaries](docs/architecture/boundaries.md) records host responsibilities, source ownership, and native prerequisite evidence.
