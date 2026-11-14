@@ -1,7 +1,29 @@
 import { PROTOCOL_VERSION } from '@ag-ui/core';
 
-export { createAguiProjection } from './basic.js';
-export type { AguiProjection, BasicEntityFact, BasicFact, ProjectionEvent, ProjectionFact, ProjectionOptions, ProjectionResult, PublicFailure } from './basic.js';
+import { createProjection, encodeBasic } from './basic.js';
+import type { BasicFact, Projection, ProjectionOptions } from './basic.js';
+import { encodeAdvanced } from './advanced.js';
+import type { AdvancedFact } from './advanced.js';
+import type { Json } from './internal.js';
+
+export type ProjectionFact = BasicFact | AdvancedFact;
+export type AguiProjection = Projection<ProjectionFact>;
+export function createAguiProjection(options: ProjectionOptions) {
+  return createProjection<ProjectionFact>(options, (fact: Json, scope: ProjectionOptions) => {
+    const kind = fact && typeof fact === 'object' && !Array.isArray(fact) && 'kind' in fact ? fact.kind : undefined;
+    switch (kind) {
+      case 'state-snapshot': case 'state-delta': case 'activity-snapshot': case 'activity-delta':
+      case 'raw': case 'custom': case 'not-observable':
+        return encodeAdvanced(fact, scope);
+      default:
+        return encodeBasic(fact, scope);
+    }
+  });
+}
+export { describeProjection } from './advanced.js';
+export type { AdvancedFact, NativeJsonPatch, ProjectionFamily, NativeAvailability, NativeQualification,
+  ProjectionEvidence, ProjectionDescription } from './advanced.js';
+export type { BasicEntityFact, BasicFact, ProjectionEvent, ProjectionOptions, ProjectionResult, PublicFailure } from './basic.js';
 export type { Json, NativeRef, ProjectionBounds, ProjectionError } from './internal.js';
 
 export type { NativeContent } from './payloads.js';
@@ -11,6 +33,6 @@ export const aguiProtocol = Object.freeze({
   sourceCommit: '0fc064bb2647fc0bce4fc795af33b5551ac03f88',
   typescriptSdk: '1.0.4',
   pythonSdk: '1.0.0',
-  mapping: 'basic',
-  planned: 'advanced',
+  mapping: 'basic-and-values',
+  planned: 'messages-terminals-reasoning-subagents',
 });

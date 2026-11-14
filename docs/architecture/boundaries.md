@@ -28,7 +28,7 @@ Future adapters must scope credentials per adapter and session, preserve native 
 `src/index.ts` exports core contracts and helpers without importing AG-UI.
 `src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
 `createAguiProjection` maps observed lifecycle, text, tool, content and step facts through one bounded per-run actor.
-Its frozen `aguiProtocol` descriptor identifies basic mapping support; advanced categories remain planned.
+Its frozen `aguiProtocol` descriptor identifies basic and value mapping support; message snapshots, terminals, reasoning and subagents remain planned.
 The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
@@ -300,3 +300,15 @@ When native continuations omit attribution, the adapter carries forward the open
 Identical closed text/tool streams may reopen. Owner or opener disagreement faults the actor.
 Step identity becomes `stepName`; an observed display label is retained in `metadata.switchboard.name`.
 Returned events and nested JSON are detached and recursively readonly. No native availability or qualification follows from representation fixtures.
+
+## AG-UI values and explicit public data
+
+State snapshots and deltas preserve bounded JSON and all six JSON Patch operations, including extra operation members.
+The mapper forwards patches without applying them or retaining materialized state. Native producers remain responsible for patch applicability.
+Activity snapshots establish a message baseline. Replacing snapshots can re-mint ownership and type; `replace: false` retains the established values.
+Activity deltas require that baseline and matching resolved ownership, and can change the activity type.
+Raw and custom facts require nonempty namespace and version strings plus selected `publicPayload`. No raw native error or private payload is selected automatically.
+JSON validation establishes shape and budgets; it cannot establish that selected values are safe to publish.
+A valid `not-observable` fact emits an empty batch without fabricating a native event. The host records the gap independently.
+`describeProjection` reports represented families separately from caller-asserted native availability and qualification.
+Missing assertions remain undeclared. Mapping or fixture success never upgrades native availability or qualification.
