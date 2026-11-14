@@ -13,6 +13,7 @@ from unittest.mock import patch
 import run
 import run_admission as admission
 from test_cleanup import BUILD, FakeDocker
+from test_raw_evidence import fixture
 
 
 class FinalizationTests(unittest.TestCase):
@@ -24,10 +25,12 @@ class FinalizationTests(unittest.TestCase):
         return result, json.loads((out / 'cleanup.json').read_text())
 
     def test_current_callers_stop_before_cases_or_finalize_success(self):
-        for raw, fault in itertools.product((False, True), (None, 'incomplete', 'nonzero')):
+        for raw, fault in itertools.product((False, True), (None, 'incomplete', 'nonzero', 'raw-record')):
+            if fault == 'raw-record' and not raw:
+                continue
             with self.subTest(raw=raw, fault=fault), tempfile.TemporaryDirectory() as directory:
                 out = Path(directory) / 'evidence'
-                external, calls = set(), []
+                external, calls, modes, waited, inventories = set(), [], {}, set(), set()
                 image = False
                 real_digest = run.digest
                 init_hash = 'd286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1'
@@ -67,7 +70,9 @@ class FinalizationTests(unittest.TestCase):
                             else:
                                 code, stdout, stderr = 1, '[]', f'Error response from daemon: No such image: {name}'
                         elif command == 'create':
-                            external.add(args[args.index('--name') + 1])
+                            cid = args[args.index('--name') + 1]
+                            external.add(cid)
+                            modes[cid] = name
                         elif command == 'start':
                             self.assertIn(name, external)
                         elif command == 'exec':
@@ -81,7 +86,14 @@ class FinalizationTests(unittest.TestCase):
                             else:
                                 stdout, stderr = b'inert init', b''
                         elif command == 'logs':
-                            mode = name.rsplit('-', 1)[-1]
+                            mode = modes[name]
+                            if mode.startswith('raw-'):
+                                stdout, stderr = '', 'REAPED 23 SUPERVISOR 7\n'
+                                if name in waited:
+                                    stderr, stdout = fixture(mode.removeprefix('raw-'))
+                                    if fault == 'raw-record' and mode == 'raw-death':
+                                        stderr = stderr.replace('RAW_INFO_BYTES ', 'RAW_INFO_BYTES broken', 1)
+                                return subprocess.CompletedProcess(args, code, stdout, stderr)
                             stdout = 'allowed\n' if mode == 'normal' else ''
                             stderr = f'REAPED 23 SUPERVISOR 7\nNOTICE_RECEIPT root=23 ready={int(mode == "death")}\n' + {
                                 'normal': 'PREREQUISITES_OBSERVED\n', 'inherited': 'REJECT_INHERITED_FD\n', 'death': ''}[mode]
@@ -91,8 +103,12 @@ class FinalizationTests(unittest.TestCase):
                             else:
                                 code, stdout, stderr = 1, '[]', f'error: no such object: {name}'
                         elif command == 'top':
+                            self.assertNotIn(args[4], waited)
+                            inventories.add(args[4])
                             stdout = 'PID PPID STAT COMMAND\n1 0 S docker-init\n7 1 S probe\n'
                         elif command == 'wait':
+                            self.assertIn(name, inventories)
+                            waited.add(name)
                             stdout = '0'
                         elif command == 'rm':
                             external.remove(name)
@@ -100,23 +116,26 @@ class FinalizationTests(unittest.TestCase):
                             self.fail(f'unexpected transport {args}')
                     return subprocess.CompletedProcess(args, code, stdout, stderr)
 
-                def collect(cid, mode, init):
-                    self.assertIn(cid, external)
-                    self.assertEqual(init, init_hash)
-                    run.remove(cid)
-                    return {'mode': mode, 'outcome': 'inert collector boundary'}
-
                 with patch.multiple(run, OUT=out, commands=[], containers={}, images={}, tag=None, stage='identities'), \
                         patch.object(run, 'digest', digest), patch.object(run.subprocess, 'run', transport), \
                         patch.object(run.time, 'sleep'), patch.object(admission, 'inspect_binary') as inspect, \
-                        patch.object(admission, 'collect', side_effect=collect) as collector, redirect_stdout(io.StringIO()):
+                        redirect_stdout(io.StringIO()):
                     run.execute(raw=raw)
                 result, report = self.read_final(out)
+                if fault == 'raw-record':
+                    self.assertEqual(result['status'], 'INCONCLUSIVE')
+                    self.assertEqual(result['stage'], 'death')
+                    self.assertNotIn('cases', result)
+                    self.assertIn('RAW_INFO_BYTES broken', (out / 'raw-death.evidence').read_text())
+                    self.assertEqual((out / 'raw-death.init').read_text(), fixture('death')[1])
+                    self.assertFalse(external)
+                    self.assertFalse(image)
+                    self.assertEqual(report, {'containers': [], 'image': None, 'errors': []})
+                    continue
                 if fault:
                     self.assertEqual(result['status'], 'INCONCLUSIVE')
                     self.assertEqual(result['stage'], 'notice-controls')
                     self.assertNotIn('cases', result)
-                    self.assertEqual(collector.call_count, 0)
                     self.assertEqual([c[0] for c in calls].count('create'), 1)
                     self.assertFalse(image)
                     self.assertFalse(external)
@@ -132,7 +151,12 @@ class FinalizationTests(unittest.TestCase):
                 self.assertEqual(result['noticeControlsSha256'], real_digest(out / 'notice-controls.json'))
                 self.assertEqual(result['status'], 'SUPPORTED_SINGLE_TARGET_ADMISSION' if raw else 'INCONCLUSIVE')
                 self.assertEqual([c['mode'] for c in result['cases']], list(admission.MODES) if raw else ['normal', 'inherited', 'death'])
-                self.assertEqual(collector.call_count, 9 if raw else 0)
+                self.assertEqual(len(waited), 9 if raw else 3)
+                if raw:
+                    for mode in admission.MODES:
+                        evidence, init = fixture(mode)
+                        self.assertEqual((out / f'raw-{mode}.evidence').read_text(), evidence)
+                        self.assertEqual((out / f'raw-{mode}.init').read_text(), init)
                 self.assertEqual(inspect.call_count, int(raw))
                 if not raw:
                     self.assertEqual(result['prerequisites'], 'observed')
