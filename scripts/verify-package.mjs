@@ -34,8 +34,11 @@ try {
     'README.md',
     ...buildFiles,
     'docs/architecture/boundaries.md',
+    'licenses/codex-APACHE-2.0.txt',
+    'licenses/codex-NOTICE.txt',
+    'THIRD_PARTY_NOTICES.md',
     'package.json',
-  ].sort(), 'The package contains only its public build, manifest, license, and README.');
+  ].sort(), 'The package contains only its public build, manifest, architecture boundary, licenses, notices, and README.');
   assert.equal(pack.name, manifest.name);
   assert.equal(pack.version, manifest.version);
 
@@ -47,6 +50,9 @@ try {
 
   const installed = join(consumer, 'node_modules', ...manifest.name.split('/'));
   assert.equal(readFileSync(join(installed, 'LICENSE'), 'utf8'), readFileSync(join(root, 'LICENSE'), 'utf8'));
+  for (const file of ['licenses/codex-APACHE-2.0.txt', 'licenses/codex-NOTICE.txt', 'THIRD_PARTY_NOTICES.md']) {
+    assert.deepEqual(readFileSync(join(installed, file)), readFileSync(join(root, file)), `Installed ${file} preserves exact source bytes.`);
+  }
   const installedManifest = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'));
   assert.deepEqual(installedManifest.exports, {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
