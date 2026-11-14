@@ -1,0 +1,99 @@
+definition	disposition	carriers	rationale
+Event	nested	RUN_STARTED,RUN_FINISHED,RUN_ERROR	Union of explicit emitted events; every implemented member is checked separately.
+EventType	nested	RUN_STARTED,RUN_FINISHED,RUN_ERROR	Discriminator values on explicit output events; chunks use normalized spellings.
+BaseEvent	nested	RUN_STARTED,RUN_FINISHED,RUN_ERROR	Shared event type and optional timestamp; private rawEvent is omitted.
+Attributable	nested	TEXT_MESSAGE_START,SUBAGENT_STARTED	Scoped subagentRunId on attributable events.
+SubagentRunId	nested	SUBAGENT_STARTED,SUBAGENT_FINISHED,SUBAGENT_ERROR	Scoped invocation identity and event attribution.
+Metadata	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT,RUN_FINISHED	Explicit message, content-part and interrupt metadata; no implicit native metadata copy.
+State	nested	STATE_SNAPSHOT,STATE_DELTA	Bounded snapshot and patch values; no retained materialized state.
+TextMessageRole	nested	TEXT_MESSAGE_START	Role on an explicit text opener.
+Role	nested	MESSAGES_SNAPSHOT	All seven canonical message role alternatives.
+TextMessageStartEvent	implemented	TEXT_MESSAGE_START	Observed facts emit this explicit event through createAguiProjection.
+TextMessageContentEvent	implemented	TEXT_MESSAGE_CONTENT	Observed facts emit this explicit event through createAguiProjection.
+TextMessageEndEvent	implemented	TEXT_MESSAGE_END	Observed facts emit this explicit event through createAguiProjection.
+TextMessageChunkEvent	normalized	TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END	Complete or streamed facts emit explicit start, content or arguments, and end events.
+ToolCallStartEvent	implemented	TOOL_CALL_START	Observed facts emit this explicit event through createAguiProjection.
+ToolCallArgsEvent	implemented	TOOL_CALL_ARGS	Observed facts emit this explicit event through createAguiProjection.
+ToolCallEndEvent	implemented	TOOL_CALL_END	Observed facts emit this explicit event through createAguiProjection.
+ToolCallChunkEvent	normalized	TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END	Complete or streamed facts emit explicit start, content or arguments, and end events.
+ToolCallResultEvent	implemented	TOOL_CALL_RESULT	Observed facts emit this explicit event through createAguiProjection.
+StateSnapshotEvent	implemented	STATE_SNAPSHOT	Observed facts emit this explicit event through createAguiProjection.
+StateDeltaEvent	implemented	STATE_DELTA	Observed facts emit this explicit event through createAguiProjection.
+MessagesSnapshotEvent	implemented	MESSAGES_SNAPSHOT	Observed facts emit this explicit event through createAguiProjection.
+ActivitySnapshotEvent	implemented	ACTIVITY_SNAPSHOT	Observed facts emit this explicit event through createAguiProjection.
+ActivityDeltaEvent	implemented	ACTIVITY_DELTA	Observed facts emit this explicit event through createAguiProjection.
+RawEvent	implemented	RAW	Observed facts emit this explicit event through createAguiProjection.
+CustomEvent	implemented	CUSTOM	Observed facts emit this explicit event through createAguiProjection.
+RunStartedEvent	implemented	RUN_STARTED	Observed facts emit this explicit event through createAguiProjection.
+RunFinishedEvent	implemented	RUN_FINISHED	Observed facts emit this explicit event through createAguiProjection.
+RunErrorEvent	implemented	RUN_ERROR	Observed facts emit this explicit event through createAguiProjection.
+StepStartedEvent	implemented	STEP_STARTED	Observed facts emit this explicit event through createAguiProjection.
+StepFinishedEvent	implemented	STEP_FINISHED	Observed facts emit this explicit event through createAguiProjection.
+ReasoningStartEvent	implemented	REASONING_START	Observed facts emit this explicit event through createAguiProjection.
+ReasoningMessageStartEvent	implemented	REASONING_MESSAGE_START	Observed facts emit this explicit event through createAguiProjection.
+ReasoningMessageContentEvent	implemented	REASONING_MESSAGE_CONTENT	Observed facts emit this explicit event through createAguiProjection.
+ReasoningMessageEndEvent	implemented	REASONING_MESSAGE_END	Observed facts emit this explicit event through createAguiProjection.
+ReasoningMessageChunkEvent	normalized	REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT,REASONING_MESSAGE_END	Complete or streamed facts emit explicit start, content or arguments, and end events.
+ReasoningEndEvent	implemented	REASONING_END	Observed facts emit this explicit event through createAguiProjection.
+ReasoningEncryptedValueEvent	implemented	REASONING_ENCRYPTED_VALUE	Observed facts emit this explicit event through createAguiProjection.
+ReasoningEncryptedValueSubtype	nested	REASONING_ENCRYPTED_VALUE	Message or tool-call target subtype.
+SubagentStartedEvent	implemented	SUBAGENT_STARTED	Observed facts emit this explicit event through createAguiProjection.
+SubagentFinishedEvent	implemented	SUBAGENT_FINISHED	Observed facts emit this explicit event through createAguiProjection.
+SubagentErrorEvent	implemented	SUBAGENT_ERROR	Observed facts emit this explicit event through createAguiProjection.
+RunFinishedOutcome	nested	RUN_FINISHED	Optional root success, interrupt or cancelled outcome.
+RunFinishedSuccessOutcome	nested	RUN_FINISHED	Explicit success with optional ordered pendingToolCallIds.
+RunFinishedInterruptOutcome	nested	RUN_FINISHED	Interrupt outcome with nonempty interrupts.
+RunFinishedCancelledOutcome	nested	RUN_FINISHED	Confirmed cancelled outcome.
+SubagentFinishedOutcome	nested	SUBAGENT_FINISHED	Optional child success or suspended outcome.
+SubagentFinishedSuccessOutcome	nested	SUBAGENT_FINISHED	Explicit child success is preserved separately from absent outcome.
+SubagentFinishedSuspendedOutcome	nested	SUBAGENT_FINISHED	Suspension preserves omitted, empty or named interruptIds.
+Interrupt	nested	RUN_FINISHED	Root interrupt outcome carries scoped IDs and optional child attribution.
+ResumeEntry	declaration	RunAgentInput	Incoming resume entry; emitted Interrupt is a separate definition.
+TokenUsage	nested	RUN_FINISHED,RUN_ERROR	Optional normalized usage rows on root terminals.
+Message	nested	MESSAGES_SNAPSHOT	Message snapshot value with explicit identity conversion and bounded payloads.
+BaseMessage	nested	MESSAGES_SNAPSHOT	BaseMessage snapshot value with explicit identity conversion and bounded payloads.
+DeveloperMessage	nested	MESSAGES_SNAPSHOT	DeveloperMessage snapshot value with explicit identity conversion and bounded payloads.
+SystemMessage	nested	MESSAGES_SNAPSHOT	SystemMessage snapshot value with explicit identity conversion and bounded payloads.
+AssistantMessage	nested	MESSAGES_SNAPSHOT	AssistantMessage snapshot value with explicit identity conversion and bounded payloads.
+UserMessage	nested	MESSAGES_SNAPSHOT	UserMessage snapshot value with explicit identity conversion and bounded payloads.
+ToolMessage	nested	MESSAGES_SNAPSHOT	ToolMessage snapshot value with explicit identity conversion and bounded payloads.
+ActivityMessage	nested	MESSAGES_SNAPSHOT	ActivityMessage snapshot value with explicit identity conversion and bounded payloads.
+ReasoningMessage	nested	MESSAGES_SNAPSHOT	ReasoningMessage snapshot value with explicit identity conversion and bounded payloads.
+ToolCall	nested	MESSAGES_SNAPSHOT	Assistant message toolCalls preserve scoped call identities and encryption.
+FunctionCall	nested	MESSAGES_SNAPSHOT	Nested ToolCall.function preserves name and complete arguments.
+ContentPart	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	Ordered message or tool-result content parts.
+TextPart	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	TextPart content value; optional part identity is scoped.
+ImagePart	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	ImagePart content value; optional part identity is scoped.
+AudioPart	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	AudioPart content value; optional part identity is scoped.
+VideoPart	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	VideoPart content value; optional part identity is scoped.
+DocumentPart	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	DocumentPart content value; optional part identity is scoped.
+PartSource	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	Opaque data, URL or provider-file source on media parts.
+DataSource	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	DataSource is preserved opaquely without fetching media.
+UrlSource	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	UrlSource is preserved opaquely without fetching media.
+FileSource	nested	MESSAGES_SNAPSHOT,TOOL_CALL_RESULT	FileSource is preserved opaquely without fetching media.
+Context	declaration	RunAgentInput	Incoming context declaration; no output event or dispatcher is invented.
+Tool	declaration	RunAgentInput,ToolsCapabilities	Tool declaration differs from emitted tool execution and snapshot calls.
+RunAgentInput	declaration	RunAgentInput	Host input contract; run start does not echo private input.
+SubagentInfo	declaration	MultiAgentCapabilities	Subagent capability declaration differs from observed invocation events.
+IdentityCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+TransportCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+ToolsCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+OutputCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+StateCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+MultiAgentCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+ReasoningCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+MultimodalInputCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+MultimodalOutputCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+MultimodalCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+ExecutionCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+HumanInTheLoopCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+AgentCapabilities	declaration	AgentCapabilities	Canonical capability declaration; native availability and qualification remain independent.
+JsonPatch	nested	STATE_DELTA,ACTIVITY_DELTA	Ordered patch array; the host owns application.
+JsonPatchOperation	nested	STATE_DELTA,ACTIVITY_DELTA	All six canonical operation alternatives.
+AddOperation	nested	STATE_DELTA,ACTIVITY_DELTA	AddOperation preserves canonical fields and validates pointer syntax.
+RemoveOperation	nested	STATE_DELTA,ACTIVITY_DELTA	RemoveOperation preserves canonical fields and validates pointer syntax.
+ReplaceOperation	nested	STATE_DELTA,ACTIVITY_DELTA	ReplaceOperation preserves canonical fields and validates pointer syntax.
+MoveOperation	nested	STATE_DELTA,ACTIVITY_DELTA	MoveOperation preserves canonical fields and validates pointer syntax.
+CopyOperation	nested	STATE_DELTA,ACTIVITY_DELTA	CopyOperation preserves canonical fields and validates pointer syntax.
+TestOperation	nested	STATE_DELTA,ACTIVITY_DELTA	TestOperation preserves canonical fields and validates pointer syntax.
+JsonPointer	nested	STATE_DELTA,ACTIVITY_DELTA	Validated path and from pointer strings.

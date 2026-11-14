@@ -34,7 +34,7 @@
   "classification": {
     "protocol": "represented-by-canonical-schema",
     "switchboardMapping": "basic-values-messages-terminals-reasoning-and-subagents",
-    "planned": "aggregate-disposition-audit",
+    "planned": "none",
     "nativeAdapters": {
       "claude-direct": "unqualified",
       "claude-litellm": "unqualified",
@@ -47,6 +47,7 @@
   "ownership": {
     "schemaFixtures": "tests/agui/fixtures/upstream.tsv",
     "schemaTest": "scripts/verify-agui-matrix.mjs",
+    "dispositions": "docs/protocol/ag-ui-dispositions.tsv",
     "pythonTest": "tests/agui/compare-python.py",
     "nativeFixtures": "Each adapter qualification task owns native-to-AG-UI fixtures for both routes.",
     "hostFixtures": "Consumer contract tasks own durable projection, authorization, snapshots, cursors, and replay."

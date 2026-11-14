@@ -7,7 +7,7 @@ It maps observed run start, success, clean cancellation, and fixed public native
 Host thread, run, and parent IDs are preserved verbatim. `sourceKey` is an authorized public namespace supplied by the host, never a session credential.
 Scoped native identity encoding covers text, tools, results, steps, activities, snapshots and interrupts.
 State, activity, raw, custom, interrupt terminal, usage, reasoning and subagent lifecycle mappings are implemented.
-The aggregate per-definition disposition and emitted-category audit remains pending. Native adapter qualification and consumer replay remain unimplemented.
+The exact per-definition disposition and emitted-category audit covers all canonical output categories. Native adapter qualification and consumer replay remain unimplemented.
 
 Message snapshots preserve all seven canonical roles, nested tool calls, encryption, metadata, tool errors and ordered content parts.
 `NativeMessage` derives from the pinned SDK union and replaces only scoped message, owner, call and part references.
@@ -67,6 +67,9 @@ Each call is bounded independently; the host owns total stream retention.
 [The release manifest](ag-ui-pin.json) pins download URLs, artifact hashes, verification tools, source hashes, category classifications, and fixture owners.
 [The matrix](ag-ui-matrix.tsv) classifies every canonical definition and lists its event discriminator, inherited wire fields, required fields, Python defaults, and Python public export status.
 Rows retain the manifest's protocol representation, native qualification, and fixture ownership classifications; the lifecycle stage above narrows implemented mappings.
+The [dispositions](ag-ui-dispositions.tsv) give every definition one concrete disposition, named carriers, and a rationale.
+There are 28 implemented event kinds, three normalized chunk spellings, nested output values, and input or capability declarations.
+`ResumeEntry`, `Tool`, `SubagentInfo`, `RunAgentInput`, `Context`, and capability models declare inputs rather than invent output events.
 The comparison covers 31 events and 98 definitions. All six Claude, Codex, and Pi direct and LiteLLM combinations remain `unqualified`.
 
 The immutable sources are the [canonical schema](https://github.com/ag-ui-protocol/ag-ui/blob/0fc064bb2647fc0bce4fc795af33b5551ac03f88/spec/1.0/schema.json), [TypeScript declarations](https://github.com/ag-ui-protocol/ag-ui/blob/0fc064bb2647fc0bce4fc795af33b5551ac03f88/sdks/typescript/packages/core/src/generated/types.ts), and [Python models](https://github.com/ag-ui-protocol/ag-ui/blob/0fc064bb2647fc0bce4fc795af33b5551ac03f88/sdks/python/ag_ui/_generated/models.py).
@@ -75,7 +78,8 @@ The [npm tarball](https://registry.npmjs.org/@ag-ui/core/-/core-1.0.4.tgz) and [
 
 ## Mapping requirements by category
 
-These requirements govern future mappings. Protocol representation does not establish native emission or implemented mapper support.
+These requirements describe protocol responsibilities. The disposition rows identify implemented output and declaration-only values.
+Protocol representation does not establish native emission. Private raw event envelopes and run input echoes remain omitted.
 Each category owns the matrix rows with its name. Every category uses the schema fixture and test owners recorded in the manifest.
 Native adapter qualification tasks own engine-specific mapping fixtures for both routes. Consumer contract tasks own host behavior fixtures.
 
@@ -151,10 +155,15 @@ The AG-UI consumer installs the exact SDK peer without Zod, compiles every `test
 and executes each emitted `.test.js` file with a nonzero test count. Core `.test.ts` fixtures remain compile-only.
 Tests call `collectEvents(name, events)` from `tests/agui/collector.ts` with actual returned batches.
 The collector records Event cases with canonical, TypeScript, and Python acceptance all required.
-The verifier receives the JSONL artifact through `--emitted-events` before consumer cleanup and validates it
+The verifier receives the JSONL artifact through `--emitted-events` before consumer cleanup and audits actual projection event coverage.
+The audit requires every implemented event, all three subagent events, and absent, explicit success, suspended omitted, suspended empty, and suspended named child outcomes.
+SDK sentinels and upstream fixtures cannot satisfy that coverage. The verifier validates collected output
 alongside the unchanged 98-definition and 219-fixture corpus, preserving the known SDK-permissiveness expectations.
 The initial `sdk-sentinel` comes from SDK constants/types and `omitOptionalNulls`.
 It checks the collection path and is not Switchboard mapping or native qualification evidence.
+Without `--emitted-events`, the verifier checks the complete declaration inventory and schema corpus without claiming mapping coverage.
+`tests/agui-dispositions.test.mjs` exercises the same audit with local synthetic cases and rejects missing, duplicate, unknown, and invalid declarations.
+It also removes or relabels each implemented event and removes each required child outcome without rerunning SDK installation.
 Lifecycle mapper tests use the same collector with its default `switchboard-projection` provenance.
 Their installed output exercises lifecycle ordering, failure isolation, mutation safety, hostile inputs, and resource bounds.
 

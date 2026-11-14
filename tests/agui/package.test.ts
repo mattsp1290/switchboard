@@ -20,8 +20,20 @@ test('installed metadata matches the canonical pin without optional Zod', () => 
     planned: pin.classification.planned,
   });
   assert.equal(integration.aguiProtocol.version, PROTOCOL_VERSION);
+  assert.equal(integration.aguiProtocol.planned, 'none');
+  assert.deepEqual(Object.values(pin.classification.nativeAdapters), Array(6).fill('unqualified'));
   assert(Object.isFrozen(integration.aguiProtocol));
   assert.throws(() => require.resolve('zod'), { code: 'MODULE_NOT_FOUND' });
+});
+
+test('all advanced output families keep availability and qualification separate', () => {
+  for (const family of ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'usage', 'reasoning', 'subagents'] as const) {
+    assert.deepEqual(integration.describeProjection(family), { kind: 'ok', value: {
+      family, representability: 'represented', availability: 'undeclared', qualification: 'undeclared',
+    } });
+    assert.deepEqual(integration.describeProjection(family, { availability: 'unavailable', qualification: 'unqualified' }),
+      { kind: 'ok', value: { family, representability: 'represented', availability: 'unavailable', qualification: 'unqualified' } });
+  }
 });
 
 test('SDK sentinel exercises collection and is not Switchboard mapping evidence', () => {
