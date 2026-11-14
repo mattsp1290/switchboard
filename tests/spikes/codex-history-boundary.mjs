@@ -3,7 +3,9 @@ import * as fs from 'node:fs';
 import { basename, join } from 'node:path';
 
 const state = () => globalThis.codexHistory;
-const mapped = (path) => String(path).replace('/root/.codex', join(state().work, 'source')).replace(/^\/tmp\//, `${state().work}/`);
+const mapped = (path) => /^\/root\/\.codex(?:\/|$)/.test(String(path))
+  ? String(path).replace(/^\/root\/\.codex/, join(state().work, 'source'))
+  : String(path).replace(/^\/tmp\//, `${state().work}/`);
 export const existsSync = (path) => fs.existsSync(mapped(path));
 export const readdirSync = (path, ...options) => fs.readdirSync(mapped(path), ...options);
 export const readFileSync = (path, ...options) => {
