@@ -143,6 +143,18 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     ['page-invalid-reason', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'truncated', reason: 'bytes' };", 2322],
     ['page-complete-reason', "const invalid: SessionDiscoveryPage = { kind: 'complete', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], reason: 'results' };", 2353],
     ['page-cancelled-reason', "const invalid: SessionDiscoveryPage = { kind: 'cancelled', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], reason: 'results' };", 2353],
+    ['page-failed-missing-code', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'failed' };", 2322],
+    ['page-failed-invalid-code', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'failed', code: 'cancelled' };", 2322],
+    ['page-failed-native-code', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'failed', code: -32603 };", 2322],
+    ['page-failed-undefined-code', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'failed', code: undefined };", 2322],
+    ['page-failed-reason', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'failed', code: 'native-failure', reason: 'results' };", 2353],
+    ['page-complete-code', "const invalid: SessionDiscoveryPage = { kind: 'complete', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], code: 'native-failure' };", 2353],
+    ['page-cancelled-code', "const invalid: SessionDiscoveryPage = { kind: 'cancelled', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], code: 'native-failure' };", 2353],
+    ['page-truncated-code', "const invalid: SessionDiscoveryPage = { kind: 'truncated', reason: 'results', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], code: 'native-failure' };", 2353],
+    ['page-failed-missing-observations', "const invalid: SessionDiscoveryPage = { kind: 'failed', code: 'native-failure' };", 2322],
+    ['page-failed-code-readonly', "declare const failed: Extract<SessionDiscoveryPage, { kind: 'failed' }>; failed.code = 'inaccessible';", 2540],
+    ['page-unnarrowed-code', "observedPage.code;", 2339],
+    ['page-unhandled-failure', "declare const page: SessionDiscoveryPage; if (page.kind !== 'complete' && page.kind !== 'cancelled' && page.kind !== 'truncated') { const exhaustive: never = page; }", 2322],
     ['diagnostic-rpc', "const raw = { code: -32603, message: '/private/file' }; const invalid: SessionDiscoveryDiagnostic = raw;", 2739],
     ['diagnostic-message', "const invalid: SessionDiscoveryDiagnostic = { kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '1' }, message: 'raw' };", 2353],
     ['diagnostic-error', "const invalid: SessionDiscoveryDiagnostic = { kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '1' }, error: { code: -32603 } };", 2353],
@@ -257,6 +269,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   const expected = invalidCases.map(([name, , code]) => ({ file: `${name}.mts`, line: 4, code }));
   const byFile = (left, right) => left.file.localeCompare(right.file);
   assert.deepEqual(diagnostics.sort(byFile), expected.sort(byFile), rejected.stdout);
+  console.log(`Verified ${discoveryInvalidCases.length} installed session discovery negative type fixtures within ${invalidCases.length} exact core diagnostics.`);
   const integration = join(temporary, 'integration');
   mkdirSync(integration);
   writeFileSync(join(integration, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
