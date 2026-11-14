@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
+import { admittedPath, resultPath, requestBudget } from './inventory.mjs';
 
 const mode = process.argv[2];
 assert(['prepare', 'indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink'].includes(mode));
@@ -17,7 +18,7 @@ const server = createServer(async (request, response) => {
   let body = '';
   for await (const chunk of request) { body += chunk; assert(body.length < 1024 * 1024); }
   if (request.method === 'GET' && request.url.startsWith('/v1/models?')) { response.writeHead(404).end(); return; }
-  assert.equal(mode, 'prepare', 'Discovery never dispatches inference');
+  if (mode !== 'prepare') { inference++; response.writeHead(403).end('Inspection inference refused'); return; }
   assert.equal(request.url, '/v1/responses');
   assert.equal(request.method, 'POST');
   assert.equal(JSON.parse(body).stream, true);
@@ -42,6 +43,17 @@ for (const provider of ['fixture', 'other']) Object.assign(config, {
   [`model_providers.${provider}.stream_max_retries`]: 0,
 });
 const children = [];
+const clients = [];
+const evidence = { mode };
+let progressBytes = 0;
+function retainProgress(observation) {
+  const line = `${JSON.stringify(observation)}\n`;
+  const bytes = Buffer.byteLength(line);
+  if (progressBytes + bytes > 512 * 1024) { evidence.progressTruncated = true; return; }
+  progressBytes += bytes;
+  process.stderr.write(line);
+}
+let verifySources;
 const accountLogin = (account) => ({ type: 'chatgptAuthTokens', chatgptAccountId: account,
   accessToken: [Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url'),
     Buffer.from(JSON.stringify({ exp: 4102444800, email: `${account}@fixture.invalid`,
@@ -63,29 +75,53 @@ async function connect(overrides = {}) {
   let sequence = 0;
   let bytes = 0;
   let stderr = '';
+  let protocolFailure;
+  const transcript = [];
   child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8192); });
-  child.stdout.on('data', (chunk) => { bytes += chunk.length; assert(bytes < 2 * 1024 * 1024); });
+  child.stdout.on('data', (chunk) => {
+    bytes += chunk.length;
+    if (bytes >= 2 * 1024 * 1024) { protocolFailure = 'Native stdout budget exceeded'; child.kill('SIGKILL'); }
+  });
   const lines = createInterface({ input: child.stdout });
   const send = (value) => child.stdin.write(`${JSON.stringify(value)}\n`);
   lines.on('line', (line) => {
-    const value = JSON.parse(line);
+    let value;
+    try { value = JSON.parse(line); }
+    catch { protocolFailure = 'Malformed native JSON'; child.kill('SIGKILL'); return; }
     if (Object.hasOwn(value, 'id') && !value.method) replies.set(value.id, value);
-    else { assert(!Object.hasOwn(value, 'id'), 'No server requests during synthetic discovery'); events.push(value); }
+    else {
+      if (Object.hasOwn(value, 'id')) { protocolFailure = 'Unexpected native request'; child.kill('SIGKILL'); }
+      events.push(value);
+      retainProgress({ notification: value });
+    }
   });
   const rpc = async (method, params) => {
-    assert(++sequence <= 80, 'Bounded protocol request count');
+    assert(++sequence <= 128, 'Bounded protocol request count');
     const id = sequence;
-    send({ id, method, params });
-    return until(() => { assert(child.exitCode === null && child.signalCode === null, stderr); return replies.get(id); }, method);
+    const observation = { request: { id, method, params } };
+    transcript.push(observation);
+    retainProgress({ request: observation.request });
+    send(observation.request);
+    observation.reply = await until(() => {
+      assert(!protocolFailure, protocolFailure);
+      assert(child.exitCode === null && child.signalCode === null, stderr);
+      return replies.get(id);
+    }, method);
+    retainProgress({ reply: observation.reply });
+    return observation.reply;
   };
   const call = async (method, params) => { const reply = await rpc(method, params); assert(!reply.error, JSON.stringify(reply)); return reply.result; };
-  await call('initialize', { clientInfo: { name: 'switchboard_discovery_fixture', version: '0' }, capabilities: { experimentalApi: true } });
-  send({ method: 'initialized' });
-  return { events, call, rpc, stop: async () => {
-    child.kill('SIGTERM');
+  const client = { events, transcript, call, rpc, stop: async () => {
+    if (!closed) child.kill('SIGTERM');
     await until(() => closed, 'Native shutdown and output drain');
     lines.close();
   } };
+  clients.push(client);
+  evidence.transcript = transcript;
+  evidence.notifications = events;
+  await call('initialize', { clientInfo: { name: 'switchboard_discovery_fixture', version: '0' }, capabilities: { experimentalApi: true } });
+  send({ method: 'initialized' });
+  return client;
 }
 function filesUnder(directory) {
   if (!existsSync(directory)) return [];
@@ -128,6 +164,81 @@ async function pages(client, overrides = {}) {
   }
   throw new Error('Discovery page budget exceeded');
 }
+async function pathObservations(client, records) {
+  const inventory = JSON.parse(readFileSync('/opt/inventory.json', 'utf8'));
+  const report = { inventory, files: [], negativeControls: [], listing: [], enumeration: 'in-progress' };
+  evidence.pathInspection = report;
+  retainProgress({ admittedInventory: inventory });
+  const dispatch = requestBudget(32);
+  for (const entry of inventory.entries.filter((entry) => entry.candidate)) {
+    const path = admittedPath(root, entry.token, inventory.entries);
+    const request = { rolloutPath: path };
+    const reply = await dispatch((params) => client.rpc('getConversationSummary', params), request);
+    report.files.push({ token: entry.token, request, reply,
+      outcome: reply.error ? { kind: 'native-failure' } : { kind: 'summary', path: resultPath(root, reply.result?.summary?.path, inventory.entries) } });
+  }
+  report.enumeration = 'exhausted';
+  for (const token of ['sessions/missing-negative-control', 'sessions']) {
+    const request = { rolloutPath: admittedPath(root, token, inventory.entries, true) };
+    const reply = await dispatch((params) => client.rpc('getConversationSummary', params), request);
+    report.negativeControls.push({ token, request, reply });
+  }
+  for (const archived of [false, true]) {
+    const context = { archived, pages: [], termination: 'truncated', reason: 'page-budget' };
+    report.listing.push(context);
+    const cursors = new Set();
+    let cursor;
+    for (let page = 0; page < 8; page++) {
+      const request = { limit: 2, sourceKinds: sources, modelProviders: [], archived, currentAccountOnly: false,
+        sortKey: 'created_at', sortDirection: 'desc', useStateDbOnly: false, ...(cursor ? { cursor } : {}) };
+      const reply = await client.rpc('thread/list', request);
+      const paths = (reply.result?.data ?? []).map((item) => ({ id: item.id, path: resultPath(root, item.path, inventory.entries) }));
+      context.pages.push({ request, reply, paths });
+      if (reply.error) { context.termination = 'native-failure'; delete context.reason; break; }
+      assert(reply.result.data.length <= 2, 'Broad listing respects page size');
+      const next = reply.result.nextCursor;
+      if (!next) { context.termination = 'exhausted'; delete context.reason; break; }
+      if (typeof next !== 'string' || next.length >= 512 || cursors.has(next)) {
+        context.termination = 'cursor-refused'; context.reason = 'invalid-or-repeated'; break;
+      }
+      cursors.add(next);
+      cursor = next;
+    }
+  }
+  report.uniqueNativeIds = [...new Set(report.files.flatMap((file) => file.reply.result?.summary?.conversationId ?? []))];
+  report.expected = records.filter((record) => record.name !== 'unauthorized').map(({ name, id, path }) => ({ name, id, token: path }));
+  assert.deepEqual(report.files.map((file) => file.token), inventory.entries.filter((entry) => entry.candidate).map((entry) => entry.token));
+  for (const file of [...report.files, ...report.negativeControls]) {
+    assert.deepEqual(Object.keys(file.request), ['rolloutPath'], 'Path inspection never supplies a manifest ID');
+  }
+  for (const record of records.filter((record) => record.name !== 'unauthorized')) {
+    const file = report.files.find((file) => file.token === record.path);
+    assert(file, 'Every expected native fixture has an inventoried observation');
+    if (mode === 'malformed' && record.name === 'first') {
+      assert.equal(file.reply.error?.code, -32603);
+      assert(file.reply.error.message.includes(file.request.rolloutPath), 'Malformed unknown-ID failure identifies the requested path');
+      assert.equal(file.outcome.kind, 'native-failure');
+    } else {
+      assert.equal(file.reply.result?.summary.conversationId, record.id);
+      assert.equal(file.reply.result.summary.cwd, record.cwd);
+      assert.equal(file.reply.result.summary.modelProvider, record.modelProvider);
+      assert.equal(file.outcome.path.kind, 'contained');
+      assert.equal(file.outcome.path.inventoried, true);
+    }
+  }
+  const auxiliary = report.files.find((file) => file.token === 'sessions/fixture-notes.txt');
+  assert.equal(auxiliary.reply.error?.code, -32603, 'Auxiliary failure remains an unclassified file failure');
+  const alias = report.files.find((file) => file.token === 'sessions/hardlink-alias.opaque');
+  assert.equal(alias.reply.result?.summary.conversationId, records.find((record) => record.name === 'second').id);
+  assert.equal(alias.outcome.path.kind, 'contained');
+  assert.equal(report.uniqueNativeIds.length, mode === 'malformed' ? 6 : 7);
+  for (const negative of report.negativeControls) assert.equal(negative.reply.error?.code, -32600);
+  for (const context of report.listing) {
+    assert.equal(context.termination, 'exhausted', 'Broad ordinary listing exhausted within its page budget');
+    for (const page of context.pages) assert(page.paths.every((item) => item.path.kind === 'contained'));
+  }
+  return report;
+}
 const listing = [];
 try {
   if (mode === 'prepare') {
@@ -164,14 +275,24 @@ try {
     const authorized = records.filter((record) => record.name !== 'unauthorized');
     const protectedFiles = sourceFiles();
     const before = snapshot(protectedFiles);
+    evidence.sourceHashes = before;
+    evidence.preservation = [];
+    verifySources = (stage) => {
+      assert.deepEqual(sourceFiles(), protectedFiles, `Source file set preserved at ${stage}`);
+      assert.deepEqual(snapshot(protectedFiles), before, `Source bytes preserved at ${stage}`);
+      evidence.preservation.push(stage);
+      retainProgress({ sourcePreservation: stage, hashes: before });
+    };
+    verifySources('before startup');
     assert.throws(() => writeFileSync(`${root}/sessions/write-probe`, 'fixture'), (error) => ['EROFS', 'ENOTDIR'].includes(error.code));
     const client = await connect({ sqlite_home: '/tmp/private-index', log_dir: '/tmp/private-logs' });
-    assert.deepEqual(snapshot(protectedFiles), before, 'Source preserved through startup');
+    verifySources('after initialization');
     const resolved = await client.call('config/read', { includeLayers: false });
     assert.equal(resolved.config.sqlite_home, '/tmp/private-index');
     const expected = (names) => records.filter((record) => names.includes(record.name)).map((record) => record.id).sort();
     const ids = (items) => items.map((item) => item.id).sort();
-    const report = { mode, sourceFiles: protectedFiles.length, sqliteHome: resolved.config.sqlite_home };
+    const report = Object.assign(evidence, { sourceFiles: protectedFiles.length, sqliteHome: resolved.config.sqlite_home });
+    if (['indexed', 'unindexed', 'malformed'].includes(mode)) report.pathInspection = await pathObservations(client, records);
     if (mode === 'inaccessible') {
       const reply = await client.rpc('thread/list', params);
       assert.equal(reply.error?.code, -32603);
@@ -236,20 +357,29 @@ try {
       }
       if (mode === 'symlink') report.scope = 'File and directory symlinks excluded by native enumeration';
     }
-    assert.deepEqual(snapshot(protectedFiles), before, 'Source preserved through listing and inspection');
+    verifySources('after requests');
     await client.stop();
     if (mode === 'malformed') {
       report.notifications = client.events;
       const corruptId = report.inspection.find((target) => target.kind === 'corrupt').params.threadId;
       assert(!JSON.stringify(client.events).includes(corruptId), 'Notifications do not identify omitted corrupt target');
     }
-    assert.deepEqual(sourceFiles(), protectedFiles, 'No source files added or removed');
-    assert.deepEqual(snapshot(protectedFiles), before, 'Source preserved through shutdown');
+    verifySources('after drained shutdown');
     assert.equal(inference, 0);
-    report.preservation = 'read-only history and every original SQLite file unchanged at startup, listing, shutdown';
+    report.preservationSummary = 'read-only history and every original SQLite file unchanged at startup, listing, shutdown';
     report.inferenceRequests = inference;
     console.log(JSON.stringify(report));
   }
+} catch (error) {
+  if (evidence.pathInspection?.enumeration === 'in-progress') evidence.pathInspection.enumeration = 'failed';
+  evidence.failure = { message: error.message, stack: error.stack };
+  for (const client of clients) {
+    try { await client.stop(); } catch (shutdown) { evidence.shutdownFailure = shutdown.message; }
+  }
+  try { verifySources?.('after failed drained shutdown'); } catch (preservation) { evidence.preservationFailure = preservation.message; }
+  evidence.inferenceRequests = inference;
+  console.log(JSON.stringify(evidence));
+  process.exitCode = 1;
 } finally {
   for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   server.closeAllConnections();
