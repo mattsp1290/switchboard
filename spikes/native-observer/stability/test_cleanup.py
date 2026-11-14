@@ -1,4 +1,5 @@
 import ast
+import hashlib
 from contextlib import redirect_stdout
 import io
 import json
@@ -19,6 +20,25 @@ MAIN = next(n.body for n in TREE.body if isinstance(n, ast.FunctionDef) and n.na
 BUILD_START = next(i for i, n in enumerate(MAIN) if isinstance(n, ast.Assign) and n.targets[0].id == 'tag')
 BUILD_END = next(i for i, n in enumerate(MAIN) if isinstance(n, ast.Expr) and ast.unparse(n).startswith("save('image.json'"))
 BUILD = ast.Module(MAIN[BUILD_START:BUILD_END], type_ignores=[])
+
+
+def capture_transport(transport):
+    def metadata(stdout, stderr, incomplete):
+        capture = dict(limitBytes=16 * 1024 * 1024, overflow=False, complete=not incomplete, incomplete=incomplete)
+        for name, data in (('stdout', stdout), ('stderr', stderr)):
+            raw = data.encode() if isinstance(data, str) else data or b''
+            capture[name] = dict(retainedBytes=len(raw), retainedSha256=hashlib.sha256(raw).hexdigest(),
+                                 observedBytes=len(raw), eof=not incomplete)
+        return capture
+
+    def capture(args, timeout, binary):
+        try:
+            result = transport(args, timeout=timeout, text=not binary, capture_output=True)
+        except subprocess.TimeoutExpired as error:
+            error.capture = metadata(error.output, error.stderr, True)
+            raise
+        return result, metadata(result.stdout, result.stderr, False)
+    return capture
 
 
 class FakeDocker:
@@ -89,7 +109,7 @@ class CleanupTests(unittest.TestCase):
             if fault == 'image-remove-timeout':
                 fake.image = True
             ns['save']('result.json', {'status': 'INCONCLUSIVE'})
-            with patch.object(subprocess, 'run', fake.run), patch.object(ns['time'], 'sleep'), redirect_stdout(io.StringIO()):
+            with patch.dict(ns, _capture=capture_transport(fake.run)), patch.object(ns['time'], 'sleep'), redirect_stdout(io.StringIO()):
                 with self.assertRaises(subprocess.TimeoutExpired):
                     if image:
                         exec(compile(BUILD, str(SOURCE), 'exec'), ns)
