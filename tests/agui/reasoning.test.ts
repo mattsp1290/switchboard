@@ -92,6 +92,27 @@ test('reasoning interleaves with text and tools and preserves pending call order
   assert.deepEqual(event.outcome.pendingToolCallIds, [encoded('tool', tool)]);
 });
 
+for (const reopen of [false, true]) for (const validOrder of [true, false]) {
+  test(`encrypted tool promotion ${validOrder ? 'accepts actual' : 'rejects reversed'} first-start order with reopen ${reopen}`, () => {
+    const first = ref('first'), second = ref('second');
+    const prefix: ProjectionFact[] = [
+      { ...encrypted, target: { kind: 'tool', tool: second } },
+      { kind: 'tool-started', tool: first, name: '' }, { kind: 'tool-arguments-ended', tool: first },
+      { kind: 'tool-started', tool: second, name: '' }, { kind: 'tool-arguments-ended', tool: second },
+    ];
+    if (reopen) prefix.push(
+      { kind: 'tool-started', tool: first, name: '' }, { kind: 'tool-arguments-ended', tool: first },
+    );
+    const projection = running(prefix, { maxEntities: 2 });
+    const finish: TerminalFact = { ...success, pendingTools: validOrder ? [first, second] : [second, first] };
+    if (validOrder) {
+      const event = mapped(projection, finish)[0];
+      assert(event?.type === 'RUN_FINISHED' && event.outcome?.type === 'success');
+      assert.deepEqual(event.outcome.pendingToolCallIds, [encoded('tool', first), encoded('tool', second)]);
+    } else rejects(projection, finish, 'identity-conflict');
+  });
+}
+
 test('orphan fragments and already open duplicates fault with no returned events', () => {
   for (const fact of [{ kind: 'reasoning-message-content', message, delta: '' },
     { kind: 'reasoning-message-ended', message }, { kind: 'reasoning-ended', span }] satisfies ReasoningFact[]) {

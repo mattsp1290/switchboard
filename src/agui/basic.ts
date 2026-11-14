@@ -325,7 +325,10 @@ export function createProjection<F>(options: ProjectionOptions, encode: Encode):
           const added = [...updates.keys()].filter(id => !ledger.has(id)).length;
           if (ledger.size + added > scope.bounds.maxEntities) reject('bounds-exceeded');
           const events = capture(plan.events, scope.bounds) as unknown as readonly ProjectionEvent[];
-          for (const [id, entity] of updates) ledger.set(id, entity);
+          for (const [id, entity] of updates) {
+            if (entity.kind === 'tool' && ledger.get(id)?.kind === 'observation') ledger.delete(id);
+            ledger.set(id, entity);
+          }
           knowledge = nextKnowledge;
           if (action === 'start') phase = 'running';
           if (action === 'finish') phase = 'finished';
