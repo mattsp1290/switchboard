@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
@@ -56,6 +56,8 @@ async function connect(overrides = {}) {
   const args = Object.entries({ ...config, ...overrides }).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]);
   const child = spawn('/opt/codex', ['app-server', ...args], { cwd: '/tmp/project', env: { PATH: '/usr/local/bin:/usr/bin:/bin' } });
   children.push(child);
+  let closed = false;
+  child.once('close', () => { closed = true; });
   const events = [];
   const replies = new Map();
   let sequence = 0;
@@ -81,7 +83,7 @@ async function connect(overrides = {}) {
   send({ method: 'initialized' });
   return { events, call, rpc, stop: async () => {
     child.kill('SIGTERM');
-    await until(() => child.exitCode !== null || child.signalCode !== null, 'Native shutdown');
+    await until(() => closed, 'Native shutdown and output drain');
     lines.close();
   } };
 }
@@ -111,7 +113,11 @@ async function pages(client, overrides = {}) {
   const cursors = new Set();
   let cursor;
   for (let page = 0; page < 8; page++) {
-    const result = await client.call('thread/list', { ...params, ...overrides, cursor });
+    const request = { ...params, ...overrides, cursor };
+    const reply = await client.rpc('thread/list', request);
+    assert(!reply.error, JSON.stringify(reply));
+    if (mode === 'malformed') listing.push({ params: request, reply });
+    const result = reply.result;
     assert(result.data.length <= 1, 'Native respects page size');
     items.push(...result.data);
     if (!result.nextCursor) { assert.equal(new Set(items.map((item) => item.id)).size, items.length); return items; }
@@ -122,6 +128,7 @@ async function pages(client, overrides = {}) {
   }
   throw new Error('Discovery page budget exceeded');
 }
+const listing = [];
 try {
   if (mode === 'prepare') {
     const client = await connect();
@@ -202,11 +209,40 @@ try {
       report.filters = 'source, provider, exact cwd, archive, two synthetic accounts, shared history, API key visibility';
       report.pagination = 'one item per page, unique IDs and cursors, at most eight pages';
       report.malformedRequests = 'cursor, source enum, thread ID rejected';
-      if (mode === 'malformed') report.coverage = 'Malformed rollout omitted without structured coverage warning';
+      if (mode === 'malformed') {
+        const targets = [
+          { kind: 'valid', threadId: expected(['second'])[0] },
+          { kind: 'corrupt', threadId: expected(['first'])[0] },
+          { kind: 'absent', threadId: randomUUID() },
+        ];
+        assert(targets.every((target) => target.threadId));
+        assert(!records.some((record) => record.id === targets[2].threadId));
+        report.inspection = [];
+        for (const { kind, threadId } of targets) {
+          const params = { threadId, includeTurns: true };
+          report.inspection.push({ kind, params, reply: await client.rpc('thread/read', params) });
+        }
+        const [valid, corrupt, absent] = report.inspection;
+        assert.equal(valid.reply.result?.thread.id, targets[0].threadId);
+        assert(Array.isArray(valid.reply.result.thread.turns));
+        assert.equal(corrupt.reply.error?.code, -32603);
+        assert.match(corrupt.reply.error.message, /failed to read session metadata.*rollout.*is empty/);
+        assert.equal(absent.reply.error?.code, -32600);
+        assert.equal(absent.reply.error.message, `thread not loaded: ${targets[2].threadId}`);
+        for (const { reply } of listing) assert.deepEqual(Object.keys(reply.result).sort(),
+          ['backwardsCursor', 'data', 'nextCursor', 'readStates']);
+        report.listing = listing;
+        report.coverage = 'Malformed rollout omitted; raw metadata and notifications retained for inspection';
+      }
       if (mode === 'symlink') report.scope = 'File and directory symlinks excluded by native enumeration';
     }
-    assert.deepEqual(snapshot(protectedFiles), before, 'Source preserved through listing');
+    assert.deepEqual(snapshot(protectedFiles), before, 'Source preserved through listing and inspection');
     await client.stop();
+    if (mode === 'malformed') {
+      report.notifications = client.events;
+      const corruptId = report.inspection.find((target) => target.kind === 'corrupt').params.threadId;
+      assert(!JSON.stringify(client.events).includes(corruptId), 'Notifications do not identify omitted corrupt target');
+    }
     assert.deepEqual(sourceFiles(), protectedFiles, 'No source files added or removed');
     assert.deepEqual(snapshot(protectedFiles), before, 'Source preserved through shutdown');
     assert.equal(inference, 0);
