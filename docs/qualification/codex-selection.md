@@ -103,5 +103,6 @@ The original downstream tasks retain their acceptance requirements:
 - `bzn9`, `e2oc`, and `q5wd` own packed exports/dependency/license checks, separate native macOS evidence, and final release reconciliation. Global native SDK import confinement remains unqualified.
 
 All three engines, direct operation, LiteLLM, native features, external-session discovery/resume, and no-blind-retry remain required by the original plan.
+The app-server adapter must also meet the [native process requirements](../architecture/boundaries.md#adapter-contracts).
 The exact API-selection blocker is resolved. Unqualified downstream behavior still blocks its corresponding support or release claim.
 Oversized downstream work must be split without dropping an acceptance journey.
