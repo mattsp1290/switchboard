@@ -42,6 +42,8 @@ try {
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
     if (script === 'discovery.mjs') {
       for (const helper of ['inventory.mjs', 'client.mjs', 'account-reads.mjs', 'history-copy.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
+      mounts.push('--mount', `type=bind,source=${resolve(here, '../../dist/adapters/codex/wire.js')},target=/dist/adapters/codex/wire.js,readonly`,
+        '--mount', `type=bind,source=${resolve(here, '../../package.json')},target=/dist/package.json,readonly`);
     }
     try {
       return ownedContainer(run, ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',

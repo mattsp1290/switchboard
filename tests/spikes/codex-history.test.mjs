@@ -9,6 +9,10 @@ import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 
 const hook = registerHooks({ resolve(specifier, context, next) {
+  if (specifier === '../../dist/adapters/codex/wire.js'
+    && context.parentURL === new URL('../../spikes/codex-native/client.mjs', import.meta.url).href) {
+    return { url: new URL('../../src/adapters/codex/wire.ts', import.meta.url).href, shortCircuit: true };
+  }
   if (['node:fs', 'node:http', 'node:child_process'].includes(specifier) && /codex-native\/(discovery|history-copy|inventory|client)\.mjs/.test(context.parentURL)) {
     return { url: new URL('./codex-history-boundary.mjs', import.meta.url).href, shortCircuit: true };
   }

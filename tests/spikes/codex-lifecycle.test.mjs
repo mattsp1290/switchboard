@@ -6,8 +6,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const hook = registerHooks({ resolve(specifier, context, next) {
+  if (specifier === '../../dist/adapters/codex/wire.js'
+    && context.parentURL === new URL('../../spikes/codex-native/client.mjs', import.meta.url).href) {
+    return { url: new URL('../../src/adapters/codex/wire.ts', import.meta.url).href, shortCircuit: true };
+  }
   if (specifier === 'node:child_process' && /codex-native\/(client|qualify)\.mjs/.test(context.parentURL)) {
     return { url: new URL('./codex-lifecycle-transport.mjs', import.meta.url).href, shortCircuit: true };
   }
@@ -81,6 +86,57 @@ test('client captures asynchronous spawn and stdin errors during pending calls',
     await assert.rejects(client.rpc('thread/read', {}), /synthetic/);
     assert.equal(child.sent.length, 1);
     await assert.rejects(client.stop(), /synthetic/);
+  }
+});
+test('actual client wire faults reach exact terminal assertions after stdout and codec entry', async () => {
+  for (const scenario of ['malformed', 'ambiguous', 'oversize', 'utf8', 'truncated']) {
+    const child = transport();
+    let delivered = 0;
+    child.stdout.on('data', (bytes) => { delivered += bytes.length; });
+    const progress = [];
+    const client = nativeClient({}, (entry) => progress.push(entry), () => child);
+    child.stdout.write('{"method":"codec-entered"}\n');
+    assert.equal(progress[0].notification.method, 'codec-entered', 'actual-wire-codec-entered');
+    const enteredBytes = delivered;
+    if (scenario === 'oversize') {
+      for (let remaining = 1048577; remaining > 0; remaining -= 32768) {
+        child.stdout.write(Buffer.alloc(Math.min(32768, remaining), 120));
+      }
+    } else if (scenario === 'truncated') {
+      child.stdout.end('{"method":"unfinished"}');
+      await new Promise((resolve) => setImmediate(resolve));
+    } else child.stdout.write(scenario === 'utf8' ? Buffer.from([0xff, 10])
+      : scenario === 'ambiguous' ? '{"id":1,"result":null,"error":{"code":1,"message":"x"}}\n' : '{bad\n');
+    assert(delivered > enteredBytes && delivered < 2097152, 'actual-wire-stdout-delivered-below-total-budget');
+    if (scenario === 'oversize') assert.equal(delivered - enteredBytes, 1048577, 'actual-wire-oversize-delivered');
+    const expected = scenario === 'oversize' ? 'Native frame byte budget exceeded'
+      : scenario === 'ambiguous' ? 'Invalid native envelope' : 'Malformed native JSON';
+    const oracle = scenario === 'oversize' ? 'actual-wire-frame-budget-terminal' : `actual-wire-${scenario}-terminal`;
+    let failure;
+    assert.throws(() => client.initialized(), (error) => {
+      assert.equal(error.message, expected, oracle);
+      failure = error;
+      return true;
+    }, oracle);
+    assert.equal(child.sent.length, 0);
+    await assert.rejects(client.stop(), (error) => error === failure);
+    await assert.rejects(client.stop(), (error) => error === failure);
+    assert(child.signals.includes('SIGKILL'));
+  }
+});
+test('actual client refuses outgoing invalid envelopes without writing and retains the owned failure', async () => {
+  for (const [method, params] of [['', {}], ['x', { toJSON: () => 1n }], ['x', 'x'.repeat(1048576)]]) {
+    const child = transport();
+    const client = nativeClient({}, () => {}, () => child);
+    let failure;
+    await assert.rejects(client.rpc(method, params), (error) => {
+      assert.equal(error.message, 'Invalid native outgoing envelope');
+      failure = error;
+      return true;
+    });
+    assert.equal(child.sent.length, 0);
+    assert(child.signals.includes('SIGKILL'));
+    await assert.rejects(client.stop(), (error) => error === failure);
   }
 });
 test('client waits for graceful stdio drain and repeated stop is harmless', async () => {
@@ -274,6 +330,10 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
           });
         }
         if (args.some((arg) => arg.includes('/probe.mjs,'))) return JSON.stringify({ node: process.versions.node, architecture: 'arm64' });
+        for (const [source, target] of [['dist/adapters/codex/wire.js', '/dist/adapters/codex/wire.js'], ['package.json', '/dist/package.json']]) {
+          const mount = `type=bind,source=${fileURLToPath(new URL(`../../${source}`, import.meta.url))},target=${target},readonly`;
+          assert(args.some((arg, index) => arg === '--mount' && args[index + 1] === mount), 'Exact compiled wire and ESM scope mounts');
+        }
         if (args.at(-1) === 'prepare') return JSON.stringify({ records: ['first', 'second', 'unauthorized'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),
           files: Object.fromEntries(['first', 'second', 'unauthorized'].map((name) => [`sessions/${name}.jsonl`, Buffer.from('synthetic opaque bytes').toString('base64')])) });
         if (args.at(-1) === 'prepare-accounts') return JSON.stringify({ records: ['accountA', 'accountB', 'apiKey', 'corrupt'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),

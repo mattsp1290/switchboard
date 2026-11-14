@@ -8,6 +8,7 @@ The following commands describe the Linux x64 CI invocation with Node 24.22.3 an
 
 ```sh
 npm ci --ignore-scripts
+npm run build
 mkdir -p spikes/codex-native/.work
 curl --fail --location --max-time 120 \
   --output spikes/codex-native/.work/codex-linux-x64.tgz \
@@ -17,6 +18,8 @@ node spikes/codex-native/qualify.mjs spikes/codex-native/.work/codex-linux-x64.t
 ```
 
 The arm64 invocation substitutes `linux-arm64.tgz`, `linux/arm64`, and `arm64`. The runner prints assertion results and observed HTTP calls as JSON. A failed assertion exits nonzero. Generated files and extracted executables live in a unique ignored directory. The runner removes it after confirmed container absence and retains it with its exact path when cleanup remains uncertain.
+
+Build the current source before qualification. Discovery mounts the private compiled wire codec at `/dist/adapters/codex/wire.js` and the repository ESM manifest at `/dist/package.json`, both read-only. Native CI performs this build in its own checkout.
 
 Each native execution uses `--rm --network none --read-only --pids-limit 128 --cpus 2 --memory 768m`. Fresh tmpfs mounts provide 128 MiB at `/tmp` and 64 MiB at `/root`. Only the verified executable, fixture code, and synthetic data are mounted read-only. There are no host credentials, history, home directories, or sockets in the container. There are no `HOME` or `CODEX_HOME` overrides. Synthetic credential commands and native thread state exist only inside the disposable container. Native commands have a 40-second container deadline and a 45-second host deadline. Individual protocol waits have six-second deadlines. HTTP bodies, HTTP request counts, native stdout, host stdout, and archive size have explicit limits.
 
