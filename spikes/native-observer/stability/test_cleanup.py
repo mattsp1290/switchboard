@@ -14,8 +14,6 @@ SOURCE = Path(__file__).with_name('run.py')
 TREE = ast.parse(SOURCE.read_text())
 DEFINITIONS = ast.Module([n for n in TREE.body if isinstance(n, (
     ast.Import, ast.ImportFrom, ast.Assign, ast.FunctionDef))], type_ignores=[])
-FINALIZER = ast.Module(next(n.finalbody for f in TREE.body if isinstance(f, ast.FunctionDef) and f.name == 'execute'
-                                 for n in f.body if isinstance(n, ast.Try)), type_ignores=[])
 MAIN = next(n.body for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
 BUILD_START = next(i for i, n in enumerate(MAIN) if isinstance(n, ast.Assign) and n.targets[0].id == 'tag')
 BUILD_END = next(i for i, n in enumerate(MAIN) if isinstance(n, ast.Expr) and ast.unparse(n).startswith("save('image.json'"))
@@ -103,24 +101,28 @@ class CleanupTests(unittest.TestCase):
         exec(compile(DEFINITIONS, str(SOURCE), 'exec'), ns)
         fake = FakeDocker(fault)
         with tempfile.TemporaryDirectory() as directory:
-            ns['OUT'], ns['tag'] = Path(directory), 'owned-image'
+            ns['OUT'], ns['tag'] = Path(directory) / 'evidence', 'owned-image'
             if not image:
                 ns['images'] = {ns['tag']: 'confirmed'}
             if fault == 'image-remove-timeout':
                 fake.image = True
-            ns['save']('result.json', {'status': 'INCONCLUSIVE'})
-            with patch.dict(ns, _capture=capture_transport(fake.run)), patch.object(ns['time'], 'sleep'), redirect_stdout(io.StringIO()):
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    if image:
-                        exec(compile(BUILD, str(SOURCE), 'exec'), ns)
-                    else:
-                        ns['create'](mode)
-                exec(compile(FINALIZER, str(SOURCE), 'exec'), ns)
-            records = json.loads((ns['OUT'] / 'commands.json').read_text()) if (ns['OUT'] / 'commands.json').exists() else []
-            report = json.loads((ns['OUT'] / 'cleanup.json').read_text()) if (ns['OUT'] / 'cleanup.json').exists() else {}
-            if records and records[0].get('timedOut'):
-                for stream, expected in [('stdout', b'partial-id\n'), ('stderr', b'partial-error\n')]:
-                    self.assertEqual((ns['OUT'] / records[0]['partialFiles'][stream]).read_bytes(), expected)
+            def main(raw):
+                if image:
+                    exec(compile(BUILD, str(SOURCE), 'exec'), ns)
+                else:
+                    ns['create'](mode)
+                return {'status': 'INCONCLUSIVE'}
+
+            with patch.dict(ns, main=main, _capture=capture_transport(fake.run)), patch.object(ns['time'], 'sleep'), redirect_stdout(io.StringIO()):
+                result = ns['execute']()
+                self.assertEqual(result['status'], 'INCONCLUSIVE')
+                self.assertIn('error', result)
+            records = json.loads((ns['OUT'] / 'commands.json').read_text())
+            report = json.loads((ns['OUT'] / 'cleanup.json').read_text())
+            self.assertEqual(records[0]['args'][3], 'build' if image else 'create')
+            self.assertTrue(records[0]['timedOut'])
+            for stream, expected in [('stdout', b'partial-id\n'), ('stderr', b'partial-error\n')]:
+                self.assertEqual((ns['OUT'] / records[0]['partialFiles'][stream]).read_bytes(), expected)
         self.assertTrue(any(call[:2] == ['image', 'rm'] for call in fake.calls), 'image cleanup was skipped')
         return fake, records, report, ns['containers']
 

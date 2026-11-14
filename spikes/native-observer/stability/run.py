@@ -269,7 +269,7 @@ def check_notice(mode, evidence):
     return match[1]
 
 
-def main(raw=False):
+def main(raw=False, compile_args=()):
     global tag, stage
     assert digest(DOCKER) == 'd79e988b423edbe34460a2e4d86ecc841997f16c5e2a2ee5263f679d0c483a84'
     assert digest(ZIG) == '9fb480d3398506f5e2bef77f175766a8de0ee191dbdfbfb0c117a1150f141c91'
@@ -291,7 +291,7 @@ def main(raw=False):
     stage = 'build'
     binary = OUT / 'prerequisite'
     run([ZIG, 'cc', '-target', 'aarch64-linux-musl', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
-         str(HERE / 'prerequisite.c'), '-o', str(binary)], timeout=60)
+         str(HERE / 'prerequisite.c'), '-o', str(binary), *compile_args], timeout=60)
     hashes = {path.name: digest(path) for path in [binary, *sorted(
         path for path in HERE.iterdir() if path.suffix in ('.c', '.py', '.json', '.md'))]}
     if raw:
@@ -337,9 +337,8 @@ def main(raw=False):
         for mode in MODES:
             stage = mode
             cases.append(collect(create('raw-' + mode), mode, init_hash))
-        save('result.json', {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': cases,
-                             'stability': 'INCONCLUSIVE', 'scope': 'Single raw target only.'})
-        return
+        return {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': cases,
+                'stability': 'INCONCLUSIVE', 'scope': 'Single raw target only.'}
     cases = []
     for mode in ['normal', 'inherited', 'death']:
         stage = mode
@@ -370,24 +369,27 @@ def main(raw=False):
         remove(cid)
         cases.append({'mode': mode, 'cleanup': 'target absent with live init before removal',
                       'initReaping': 'inferred from orphan disappearance' if mode == 'death' else 'tracer waitpid observed'})
-    save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'observed', 'cases': cases,
-                         'reason': 'Finite stability mechanism is not implemented.'})
+    return {'status': 'INCONCLUSIVE', 'prerequisites': 'observed', 'cases': cases,
+            'reason': 'Finite stability mechanism is not implemented.'}
 
 
-def execute(raw=False):
+def execute(raw=False, suite=None, finalize=None):
     OUT.mkdir(parents=True)
     (OUT / 'docker-config').mkdir()
     save('commands.json', commands)
+    result = {'status': 'INCONCLUSIVE'}
+    pending = OUT / 'result.pending'
+    save('result.json', result)
     try:
-        main(raw)
-    except Exception as error:
-        save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'unavailable',
-                             'stage': stage, 'error': str(error),
-                             'nativeCleanup': 'unverified; inspect retained evidence'})
-    finally:
-        cleanup()
+        try:
+            result = (suite or main)(raw)
+        except Exception as error:
+            result.update(status='INCONCLUSIVE', prerequisites='unavailable',
+                          stage=stage, error=str(error),
+                          nativeCleanup='unverified; inspect retained evidence')
+        finally:
+            cleanup()
         report = json.loads((OUT / 'cleanup.json').read_text())
-        result = json.loads((OUT / 'result.json').read_text())
         if report['errors'] or report['containers'] or report['image']:
             result.update(status='INCONCLUSIVE', cleanup='unresolved ownership')
         result.update(commandsSha256=digest(OUT / 'commands.json'),
@@ -398,10 +400,26 @@ def execute(raw=False):
             except Exception as error:
                 result.update(status='INCONCLUSIVE', noticeIdentity=str(error))
             result['noticeControlsSha256'] = digest(OUT / 'notice-controls.json')
-        save('result.json', result)
+        save('result.json', dict(result, status='INCONCLUSIVE'))
+        refused = any(key in result for key in ('error', 'noticeIdentity', 'cleanup', 'nativeCleanup', 'refusal'))
+        if finalize is not None:
+            result = finalize(result)
+        if refused:
+            result['status'] = 'INCONCLUSIVE'
+        save(pending.name, result)
+        pending.replace(OUT / 'result.json')
         print(OUT)
         print((OUT / 'result.json').read_text())
         print((OUT / 'cleanup.json').read_text())
+    except BaseException as error:
+        result.update(status='INCONCLUSIVE', refusal=str(error))
+        try:
+            pending.unlink(missing_ok=True)
+        finally:
+            save('result.json', result)
+        if not isinstance(error, Exception):
+            raise
+    return result
 
 
 if __name__ == '__main__':

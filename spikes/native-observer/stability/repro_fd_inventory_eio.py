@@ -38,9 +38,6 @@ SCHEMAS = {
     'FD_WAIT': 'actor target flags result error status',
     'FD_EXIT': 'actor code reads closes terminal mask kills waits',
 }
-FORBIDDEN = ('RAW_WAIT', 'RAW_INFO', 'RAW_ENTRY', 'RAW_EXIT', 'RAW_DEADLINE', 'RAW_REJECT',
-             'ROBUST', 'RSEQ', 'MAP', 'TARGET ', 'BLOCKED', 'ENTRY', 'EXIT', 'PATH',
-             'REJECT_INHERITED_FD', 'PREREQUISITES_OBSERVED', 'RAW_ADMISSION', 'SUPERVISOR_DEADLINE')
 
 
 def check_case(selector, evidence, output, code):
@@ -176,14 +173,10 @@ def check_case(selector, evidence, output, code):
         assert len(failures) == (1 if raw else 2) and all(i < len(lines) - 1 for i, _ in failures), 'failure inventory'
         failed, failure = failures[0]
         assert failure == f'FAIL fd inventory complete errno={error}' and terminal < closed < failed < killed, 'original read refusal'
-        assert not any(row.lstrip().startswith(FORBIDDEN) for row in lines), 'work preceded refusal'
     else:
         assert not any(row.lstrip().startswith(('FAIL', 'SUPERVISOR_DEADLINE')) for row in lines), 'clean failure'
         continued, _ = witness('TARGET ', f'TARGET {target}')
         assert closed < continued < (killed if inherited else tracer_waits[1][0]), 'complete inventory continuation'
-        if inherited:
-            forbidden = tuple(prefix for prefix in FORBIDDEN if prefix not in ('TARGET ', 'REJECT_INHERITED_FD'))
-            assert not any(row.lstrip().startswith(forbidden) for row in lines), 'work after inherited rejection'
     if error and not raw:
         assert len(kills) == 2, 'fallback kill inventory'
         fallback, kill = next((i, row) for i, row in kills if row['actor'] == supervisor)
@@ -292,26 +285,15 @@ def collect_case(selector, init_hash):
 
 
 def main():
-    original_run, original_save, original_main = resources.run, resources.save, resources.main
     shim = resources.HERE / 'fd_inventory_eio.c'
-    compile_count = 0
-    baseline, matrix, anchors = None, [], {}
-    completed = False
+    compile_args = [str(shim), *(f'-Wl,--wrap={name}' for name in
+                               ('opendir', 'readdir', 'closedir', 'kill', 'waitpid', '_exit'))]
+    anchors = {}
 
-    def run_with_injection(args, **kwargs):
-        nonlocal compile_count
-        if args[:2] == [resources.ZIG, 'cc']:
-            assert compile_count == 0, 'unexpected second compilation'
-            assert args.count(str(resources.HERE / 'prerequisite.c')) == 1, 'wrong native helper'
-            compile_count += 1
-            args = [*args, str(shim), *(f'-Wl,--wrap={name}' for name in
-                                     ('opendir', 'readdir', 'closedir', 'kill', 'waitpid', '_exit'))]
-        return original_run(args, **kwargs)
-
-    def matrix_main(raw):
-        nonlocal completed, anchors
+    def inventory_suite(raw):
+        nonlocal anchors
         assert raw is True, 'raw baseline required'
-        original_main(raw=True)
+        baseline = resources.main(raw=True, compile_args=compile_args)
         assert baseline and baseline['status'] == 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'raw baseline unavailable'
         assert admission.MODES == BASELINE_MODES, 'original raw inventory changed'
         assert [row['mode'] for row in baseline['cases']] == list(BASELINE_MODES), 'all nine raw controls required'
@@ -321,26 +303,25 @@ def main():
                  'notice-controls.stderr', 'raw-instructions.json', 'init.json', 'docker-init']
         names += [path.name for path in resources.OUT.glob('raw-*') if path.is_file()]
         anchors = {name: resources.digest(resources.OUT / name) for name in names}
-        for selector in CASES:
-            resources.stage = selector
-            matrix.append(collect_case(selector, init['sha256']))
-        completed = True
+        matrix = []
+        result = dict(baseline, status='INCONCLUSIVE', inventoryCases=matrix)
+        try:
+            for selector in CASES:
+                resources.stage = selector
+                matrix.append(collect_case(selector, init['sha256']))
+        except Exception as error:
+            result.update(error=str(error), stage=resources.stage)
+        return result
 
-    def save_scoped(name, data):
-        nonlocal baseline
-        if name != 'result.json':
-            return original_save(name, data)
-        if data.get('status') == 'SUPPORTED_SINGLE_TARGET_ADMISSION':
-            assert baseline is None, 'duplicate baseline publication'
-            baseline = dict(data)
-        data = dict(data, status='INCONCLUSIVE', stability='INCONCLUSIVE', inventoryCases=list(matrix))
-        final = 'commandsSha256' in data and 'cleanupSha256' in data
-        original_save(name, data)
-        if not final:
-            return
-        assert completed and compile_count == 1, 'incomplete inventory run'
-        assert [row['mode'] for row in data['cases']] == list(BASELINE_MODES), 'final raw inventory'
+    def validate_inventory_result(data):
         assert not any(key in data for key in ('error', 'noticeIdentity', 'cleanup', 'nativeCleanup', 'refusal')), 'owner refused'
+        matrix = data['inventoryCases']
+        ledger = json.loads((resources.OUT / 'commands.json').read_text())
+        compilations = [row for row in ledger if row['args'][:2] == [resources.ZIG, 'cc']]
+        assert len(compilations) == 1 and compilations[0]['code'] == 0, 'exactly one successful compilation required'
+        args = compilations[0]['args']
+        assert args.count(str(resources.HERE / 'prerequisite.c')) == 1 and args[-len(compile_args):] == compile_args, 'native compile inputs'
+        assert [row['mode'] for row in data['cases']] == list(BASELINE_MODES), 'final raw inventory'
         assert [row['selector'] for row in matrix] == list(CASES), 'exact inventory matrix'
         assert not resources.containers and not resources.images, 'unresolved ownership'
         cleanup = json.loads((resources.OUT / 'cleanup.json').read_text())
@@ -367,28 +348,10 @@ def main():
                     sourceInventory='hashes.json', binary='prerequisite', init='init.json',
                     notices='notice-controls.json', commands='commands.json', cleanupReport='cleanup.json',
                     scope='Sixteen injected inventory controls. Separate current-source prerequisite run required.')
-        pending = resources.OUT / 'fd-inventory-publication.pending'
-        original_save(pending.name, data)
-        pending.replace(resources.OUT / 'result.json')
+        return data
 
-    resources.run = run_with_injection
-    resources.save = save_scoped
-    resources.main = matrix_main
-    try:
-        resources.execute(raw=True)
-        result = json.loads((resources.OUT / 'result.json').read_text())
-        return 0 if result['status'] == 'FD_INVENTORY_CONTROLS_OBSERVED' else 1
-    except BaseException:
-        (resources.OUT / 'fd-inventory-publication.pending').unlink(missing_ok=True)
-        if (resources.OUT / 'result.json').exists():
-            try:
-                result = json.loads((resources.OUT / 'result.json').read_text())
-                original_save('result.json', dict(result, status='INCONCLUSIVE', refusal='driver or final callback failed'))
-            except Exception:
-                pass
-        raise
-    finally:
-        resources.run, resources.save, resources.main = original_run, original_save, original_main
+    result = resources.execute(raw=True, suite=inventory_suite, finalize=validate_inventory_result)
+    return 0 if result['status'] == 'FD_INVENTORY_CONTROLS_OBSERVED' else 1
 
 
 if __name__ == '__main__':

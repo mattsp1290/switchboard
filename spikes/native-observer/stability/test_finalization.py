@@ -187,7 +187,7 @@ class FinalizationTests(unittest.TestCase):
                         except subprocess.TimeoutExpired:
                             if failure:
                                 raise
-                        run.save('result.json', {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': []})
+                        return {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': []}
 
                     with patch.multiple(run, OUT=out, commands=[], containers={}, images={} if fault.startswith('image-')
                                         else {'owned-image': 'confirmed'}, tag='owned-image', stage='fault'), \
@@ -214,8 +214,8 @@ class FinalizationTests(unittest.TestCase):
             out = Path(directory) / 'evidence'
 
             def main(raw):
-                run.save('result.json', {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': [],
-                                         'commandsSha256': 'stale', 'cleanupSha256': 'stale'})
+                return {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': [],
+                        'commandsSha256': 'stale', 'cleanupSha256': 'stale'}
 
             def remove(name, image=False):
                 del run.containers[name]

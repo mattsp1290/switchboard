@@ -316,11 +316,31 @@ class InventoryFinalizationTests(unittest.TestCase):
             out = Path(directory) / 'evidence'
             containers, modes, waited = set(), {}, set()
             image_present, matrix_count, compiled = False, 0, 0
-            real_digest, real_save = run.digest, run.save
+            real_digest, real_save, real_execute = run.digest, run.save, run.execute
             identities = run.main, run.run, run.save, admission.MODES, admission.check
             initial_hash = 'd286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1'
             tool = '/Library/Developer/CommandLineTools/usr/bin/llvm-objdump'
             publications, selectors, baseline_modes = [], [], []
+            finalizations = []
+            real_replace = Path.replace
+
+            def replace_pending(path, destination):
+                if fault == 'replace' and path == out / 'result.pending':
+                    self.assertEqual(destination, out / 'result.json')
+                    self.assertEqual(json.loads(path.read_text())['status'], 'FD_INVENTORY_CONTROLS_OBSERVED')
+                    raise OSError('atomic result replace refused')
+                return real_replace(path, destination)
+
+            def execute(raw, suite, finalize):
+                def checked(result):
+                    finalizations.append(result)
+                    for field, name in [('commandsSha256', 'commands.json'), ('cleanupSha256', 'cleanup.json')]:
+                        self.assertEqual(result[field], real_digest(out / name))
+                    self.assertTrue((out / 'cleanup.json').exists())
+                    if fault == 'validator':
+                        raise RuntimeError('explicit finalizer failed')
+                    return finalize(result)
+                return real_execute(raw=raw, suite=suite, finalize=checked)
 
             def digest(path):
                 pins = {run.DOCKER: 'd79e988b423edbe34460a2e4d86ecc841997f16c5e2a2ee5263f679d0c483a84',
@@ -341,12 +361,12 @@ class InventoryFinalizationTests(unittest.TestCase):
                 return pins.get(str(path)) or real_digest(path)
 
             def save(name, data):
-                if name in ('result.json', 'fd-inventory-publication.pending'):
+                if name in ('result.json', 'result.pending'):
                     publications.append(dict(data))
                     if fault == 'callback-before' and data['status'] == 'FD_INVENTORY_CONTROLS_OBSERVED':
                         raise OSError('final callback refused')
                 real_save(name, data)
-                if name == 'fd-inventory-publication.pending' and fault == 'callback-after':
+                if name == 'result.pending' and fault == 'callback-after':
                     raise OSError('final callback failed after write')
                 if name == 'cleanup.json' and fault == 'cleanup-callback':
                     raise OSError('owner callback failed')
@@ -409,6 +429,8 @@ class InventoryFinalizationTests(unittest.TestCase):
                             selectors.append(selector)
                             matrix_count += 1
                             evidence, output, code = fixture(selector)
+                            if fault == 'interrupt' and matrix_count == 4:
+                                raise KeyboardInterrupt('matrix interrupted')
                             if fault == 'matrix' and matrix_count == 4:
                                 evidence += 'FD_INVALID injected matrix failure\n'
                             stdout, stderr = output.encode(), evidence.encode()
@@ -449,21 +471,25 @@ class InventoryFinalizationTests(unittest.TestCase):
                         self.fail(f'unexpected transport {args}')
                 return subprocess.CompletedProcess(args, code, stdout, stderr)
 
-            failure = None
             with patch.multiple(run, OUT=out, commands=[], containers={}, images={}, tag=None, stage='identities'), \
                     patch.object(run, 'digest', digest), patch.object(run, 'save', save), \
+                    patch.object(run, 'execute', execute), patch.object(Path, 'replace', replace_pending), \
                     patch.object(run, '_capture', capture_transport(transport)), patch.object(run.time, 'sleep'), \
                     redirect_stdout(io.StringIO()):
                 patched_identities = run.main, run.run, run.save, admission.MODES, admission.check
-                try:
+                if fault == 'interrupt':
+                    with self.assertRaisesRegex(KeyboardInterrupt, 'matrix interrupted'):
+                        inventory.main()
+                    code = 1
+                    self.assertEqual(matrix_count, 4)
+                else:
                     code = inventory.main()
-                except (AssertionError, OSError, RuntimeError) as error:
-                    failure, code = error, 1
                 self.assertEqual((run.main, run.run, run.save, admission.MODES, admission.check), patched_identities)
                 result = json.loads((out / 'result.json').read_text())
+                self.assertEqual(len(finalizations), int(fault not in ('commands-hash', 'cleanup-hash', 'cleanup-callback', 'interrupt')))
+                self.assertFalse((out / 'result.pending').exists())
                 if fault is None:
                     self.assertEqual(code, 0)
-                    self.assertIsNone(failure)
                     self.assertEqual(result['status'], 'FD_INVENTORY_CONTROLS_OBSERVED')
                     self.assertEqual(selectors, list(EXPECTED))
                     self.assertEqual(baseline_modes, ['raw-' + name for name in
@@ -482,7 +508,13 @@ class InventoryFinalizationTests(unittest.TestCase):
                 else:
                     self.assertNotEqual(code, 0)
                     self.assertEqual(result['status'], 'INCONCLUSIVE')
-                    self.assertTrue(failure or 'error' in result or 'refusal' in result)
+                    self.assertTrue('error' in result or 'refusal' in result)
+                if fault == 'matrix':
+                    self.assertEqual(len(result['inventoryCases']), 3)
+                if fault in ('original-main', 'matrix'):
+                    self.assertEqual(result['refusal'], 'owner refused')
+                if fault == 'replace':
+                    self.assertEqual(result['refusal'], 'atomic result replace refused')
                 if fault == 'ownership':
                     self.assertTrue(run.images)
                     self.assertTrue(image_present)
@@ -496,31 +528,33 @@ class InventoryFinalizationTests(unittest.TestCase):
     def test_actual_main_execute_and_final_publication(self):
         for fault in (None, 'original-main', 'matrix', 'callback-before', 'callback-after', 'source', 'binary',
                       'notice', 'receipt', 'evidence', 'commands-hash', 'cleanup-hash', 'ownership',
-                      'cleanup-callback', 'init', 'instructions', 'raw-evidence'):
+                      'cleanup-callback', 'init', 'instructions', 'raw-evidence', 'validator', 'interrupt', 'replace'):
             with self.subTest(fault=fault):
                 self.exercise(fault)
 
-    def test_owner_create_uncertainty_still_restores_every_adapter(self):
+    def test_owner_create_uncertainty_preserves_shared_functions(self):
         for fault in ('created', 'late', 'remove-timeout', 'daemon', 'unseen', 'verify-daemon'):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 fake = FakeDocker(fault)
                 fake.image = False
                 out = Path(directory) / 'evidence'
 
-                def baseline(raw):
+                def baseline(raw, compile_args=()):
                     self.assertIs(raw, True)
                     run.create('hold')
+                    return {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': []}
 
                 with patch.multiple(run, OUT=out, commands=[], containers={}, images={}, tag='inert'), \
                         patch.object(run, 'main', baseline), patch.object(run, '_capture', capture_transport(fake.run)), \
                         patch.object(run.time, 'sleep'), redirect_stdout(io.StringIO()):
                     originals = run.main, run.run, run.save, admission.MODES, admission.check
-                    with self.assertRaises(AssertionError):
-                        inventory.main()
+                    self.assertEqual(inventory.main(), 1)
                     self.assertEqual((run.main, run.run, run.save, admission.MODES, admission.check), originals)
                     self.assertEqual(json.loads((out / 'result.json').read_text())['status'], 'INCONCLUSIVE')
                     self.assertEqual(bool(run.containers), fault in ('daemon', 'unseen', 'verify-daemon'))
-                    self.assertTrue(run.commands[0]['incomplete'])
+                    self.assertEqual(run.commands[0]['args'][3], 'create')
+                    self.assertTrue(run.commands[0]['timedOut'])
+                    self.assertEqual(json.loads((out / 'result.json').read_text())['refusal'], 'owner refused')
 
 
 if __name__ == '__main__':
