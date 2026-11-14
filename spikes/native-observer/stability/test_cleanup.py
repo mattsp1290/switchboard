@@ -13,7 +13,8 @@ SOURCE = Path(__file__).with_name('run.py')
 TREE = ast.parse(SOURCE.read_text())
 DEFINITIONS = ast.Module([n for n in TREE.body if isinstance(n, (
     ast.Import, ast.ImportFrom, ast.Assign, ast.FunctionDef))], type_ignores=[])
-FINALIZER = ast.Module(next(n.finalbody for n in TREE.body if isinstance(n, ast.Try)), type_ignores=[])
+FINALIZER = ast.Module(next(n.finalbody for f in TREE.body if isinstance(f, ast.FunctionDef) and f.name == 'execute'
+                                 for n in f.body if isinstance(n, ast.Try)), type_ignores=[])
 MAIN = next(n.body for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
 BUILD_START = next(i for i, n in enumerate(MAIN) if isinstance(n, ast.Assign) and n.targets[0].id == 'tag')
 BUILD_END = next(i for i, n in enumerate(MAIN) if isinstance(n, ast.Expr) and ast.unparse(n).startswith("save('image.json'"))
@@ -77,7 +78,7 @@ class FakeDocker:
 
 
 class CleanupTests(unittest.TestCase):
-    def exercise(self, fault, image=False):
+    def exercise(self, fault, image=False, mode='normal'):
         ns = {'__file__': str(SOURCE)}
         exec(compile(DEFINITIONS, str(SOURCE), 'exec'), ns)
         fake = FakeDocker(fault)
@@ -93,7 +94,7 @@ class CleanupTests(unittest.TestCase):
                     if image:
                         exec(compile(BUILD, str(SOURCE), 'exec'), ns)
                     else:
-                        ns['create']('normal')
+                        ns['create'](mode)
                 exec(compile(FINALIZER, str(SOURCE), 'exec'), ns)
             records = json.loads((ns['OUT'] / 'commands.json').read_text()) if (ns['OUT'] / 'commands.json').exists() else []
             report = json.loads((ns['OUT'] / 'cleanup.json').read_text()) if (ns['OUT'] / 'cleanup.json').exists() else {}
