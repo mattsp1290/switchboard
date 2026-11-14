@@ -105,6 +105,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
   process.stdout.write(runtimeOutput);
+  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs'];
   const consumerConfig = {
     compilerOptions: {
       target: 'ES2022',
@@ -118,8 +119,10 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
       verbatimModuleSyntax: true,
       skipLibCheck: false,
       noEmit: true,
+      allowJs: true,
+      checkJs: true,
     },
-    files: typeFixtures,
+    files: checkedFixtures,
   };
   writeFileSync(join(consumer, 'tsconfig.json'), JSON.stringify(consumerConfig));
   const compilerManifest = JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8'));
@@ -129,11 +132,35 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
     allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
-    allowedFiles: typeFixtures.map(file => join(consumer, file)),
+    allowedFiles: checkedFixtures.map(file => join(consumer, file)),
   });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
 
+  const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;
+  const discoveryInvalidCases = [
+    ['page-missing-diagnostics', "const invalid: SessionDiscoveryPage = { kind: 'complete', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 } };", 2322],
+    ['page-missing-reason', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'truncated' };", 2322],
+    ['page-invalid-reason', "const invalid: SessionDiscoveryPage = { ...observedPage, kind: 'truncated', reason: 'bytes' };", 2322],
+    ['page-complete-reason', "const invalid: SessionDiscoveryPage = { kind: 'complete', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], reason: 'results' };", 2353],
+    ['page-cancelled-reason', "const invalid: SessionDiscoveryPage = { kind: 'cancelled', sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 }, diagnostics: [], reason: 'results' };", 2353],
+    ['diagnostic-rpc', "const raw = { code: -32603, message: '/private/file' }; const invalid: SessionDiscoveryDiagnostic = raw;", 2739],
+    ['diagnostic-message', "const invalid: SessionDiscoveryDiagnostic = { kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '1' }, message: 'raw' };", 2353],
+    ['diagnostic-error', "const invalid: SessionDiscoveryDiagnostic = { kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '1' }, error: { code: -32603 } };", 2353],
+    ['diagnostic-path', "const invalid: SessionDiscoveryDiagnostic = { kind: 'file-inspection-failed', subject: { kind: 'discovery-file', token: '1' }, path: '/private/file' };", 2353],
+    ['diagnostic-session-subject', "const invalid: SessionDiscoveryDiagnostic = { kind: 'file-inspection-failed', subject: sessionReference };", 2741],
+    ['diagnostic-reference', "const invalid: SessionReference = fileDiagnostic;", 2739],
+    ['subject-reference', "const invalid: SessionReference = fileDiagnostic.subject;", 2739],
+    ['diagnostic-inspection', "declare const inspection: SessionInspection<unknown>; declare const access: Parameters<typeof inspection.inspect>[0]; inspection.inspect({ ...access, reference: fileDiagnostic });", 2739],
+    ['subject-inspection', "declare const inspection: SessionInspection<unknown>; declare const access: Parameters<typeof inspection.inspect>[0]; inspection.inspect({ ...access, reference: fileDiagnostic.subject });", 2739],
+    ['diagnostic-dispatch', "const invalid: DispatchTarget = { kind: 'session', reference: fileDiagnostic };", 2739],
+    ['subject-dispatch', "const invalid: DispatchTarget = { kind: 'session', reference: fileDiagnostic.subject };", 2739],
+    ['diagnostic-kind-readonly', "fileDiagnostic.kind = 'file-inspection-failed';", 2540],
+    ['subject-token-readonly', "fileDiagnostic.subject.token = 'changed';", 2540],
+    ['page-diagnostics-readonly', "observedPage.diagnostics = [];", 2540],
+    ['page-diagnostics-push', "observedPage.diagnostics.push(fileDiagnostic);", 2339],
+  ].map(([name, source, code]) => [`session-discovery-${name}`, `${discoveryImports} ${source}`, code]);
   const invalidCases = [
+    ...discoveryInvalidCases,
     ['unnarrowed-capability', 'catalog.api;', 2339],
     ['unsupported-api', "if (catalog.kind === 'unsupported') catalog.api;", 2339],
     ['unavailable-api', "if (catalog.kind === 'unavailable') catalog.api;", 2339],
