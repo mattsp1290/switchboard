@@ -12,7 +12,7 @@ The compiler checks the scenarios and the fake implementation against those decl
 The installed consumer checks valid fixture authors and rejects missing cleanup, publish-only events, and recovery dispatch.
 It runs all four groups with both immediate and asynchronous fixture acquisition.
 
-The shipped [fixture declarations](../../dist/testkit/types.d.ts) define the fixture contract.
+The [fixture declarations](../../src/testkit/types.ts) define the fixture contract and ship as `dist/testkit/types.d.ts`.
 The [root README](../../README.md) shows public usage.
 
 Accepted commands do not prove a real external tool effect.

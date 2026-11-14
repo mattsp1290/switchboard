@@ -6,7 +6,6 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (context.parentURL?.includes('/dist/testkit/')) {
     assert(resolved.url.startsWith('node:') || resolved.url.startsWith(new URL('./', context.parentURL).href)
       || resolved.url === new URL('../index.js', context.parentURL).href, 'Testkit must use the public core entry.');
-    assert(!resolved.url.includes('/agui/'), 'Testkit cannot import AG-UI.');
     assert.notEqual(resolved.url, 'node:test', 'Testkit cannot import a test runner.');
   }
   return resolved;

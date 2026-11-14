@@ -53,6 +53,7 @@ for (const [name, contract] of Object.entries(contracts)) {
 
 Fixture obligations are documented on `QualificationFixture`, `QualificationConnection`, and `QualificationFactory`
 in the shipped [testkit declarations](dist/testkit/types.d.ts).
+The source is `src/testkit/types.ts`.
 The groups cover uncertainty, sessions, interaction, and events with separate result, effect, and delivery assertions.
 These controlled checks do not qualify native engines, credentials, or durable host admission.
 

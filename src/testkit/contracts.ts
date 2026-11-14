@@ -363,14 +363,15 @@ function gatedObserver(events: QualificationConnection['events'], owner: Scenari
   let delivery: AbortSignal | undefined;
   owner.registerHold(release.resolve);
   const subscription = ok(events.subscribe(async (event, deliverySignal) => {
-    owner.registerCallbackExit(exited.promise);
+    const exit = deferred();
+    owner.registerCallbackExit(exit.promise);
     activity.active++;
     activity.maximum = Math.max(activity.maximum, activity.active);
     values.push(event.sequence);
     delivery = deliverySignal;
     entered.resolve();
     try { await owner.wait(release.promise); } catch (error) { errors.push(error); }
-    finally { activity.active--; exited.resolve(); }
+    finally { activity.active--; exit.resolve(); exited.resolve(); }
   }, { signal: input.signal }));
   owner.registerObserver(subscription.dispose);
   return {

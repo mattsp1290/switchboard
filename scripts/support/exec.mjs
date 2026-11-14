@@ -4,6 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
+export function testEnvironment() {
+  const environment = { ...process.env };
+  delete environment.NODE_TEST_CONTEXT;
+  return environment;
+}
+
 export function run(command, args, cwd = root, env = process.env) {
   return execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 }

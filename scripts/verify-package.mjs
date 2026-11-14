@@ -5,13 +5,12 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
-import { run, runNpm } from './support/exec.mjs';
+import { run, runNpm, testEnvironment } from './support/exec.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-
 
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
@@ -87,8 +86,7 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
-  const runtimeEnvironment = { ...process.env };
-  delete runtimeEnvironment.NODE_TEST_CONTEXT;
+  const runtimeEnvironment = testEnvironment();
   const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
   process.stdout.write(runtimeOutput);

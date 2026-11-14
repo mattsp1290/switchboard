@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { run, runNpm } from './support/exec.mjs';
+import { run, runNpm, testEnvironment } from './support/exec.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 import { qualificationGroups, qualificationSupportFiles, qualificationTypeFixtures } from '../tests/qualification/groups.mjs';
@@ -11,16 +11,14 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 export function verifyTestkit({ consumer, tarball, compiler, compilerOptions }) {
-  const runtimeEnvironment = { ...process.env };
-  delete runtimeEnvironment.NODE_TEST_CONTEXT;
+  const runtimeEnvironment = testEnvironment();
   mkdirSync(join(consumer, 'qualification'));
   const qualificationConsumers = readdirSync(join(root, 'tests/qualification')).filter((name) => name.endsWith('.consumer.mjs'));
   for (const file of [...qualificationConsumers, ...qualificationTypeFixtures, ...qualificationSupportFiles]) {
     copyFileSync(join(root, 'tests/qualification', file), join(consumer, 'qualification', file));
   }
-  const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
-    .sort().map((file) => `qualification/${file}`);
-  assert(qualificationFixtures.length > 0, 'Installed qualification consumers exist.');
+  assert(qualificationConsumers.length > 0, 'Installed qualification consumers exist.');
+  const qualificationFixtures = qualificationConsumers.sort().map((file) => `qualification/${file}`);
   const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...qualificationFixtures], consumer, runtimeEnvironment);
   for (const name of qualificationGroups) {
     assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
