@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { isBuiltin } from 'node:module';
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export function command(executable, args, cwd, env, evidence, timeout = 120_000) {
   const result = spawnSync(executable, args, { cwd, env, encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024 });
@@ -95,14 +97,24 @@ export function compilerLibraryRoots(project) {
 
 export function assertEmitted(packageRoot) {
   const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'));
-  const pending = Object.values(manifest.exports).map((entry) => entry.import);
+  const owned = (specifier, base, exported = false) => {
+    assert(typeof specifier === 'string' && (exported ? specifier.startsWith('./') : /^\.\.?\//.test(specifier)),
+      `Owned ESM requires a relative URL: ${specifier}`);
+    assert(!/[?#\\]/.test(specifier) && !/%(?:2f|5c)/i.test(specifier),
+      `Unsupported emitted URL syntax: ${specifier}`);
+    if (exported) assert(!decodeURIComponent(specifier.slice(2)).split('/').some((part) => /^(?:\.{1,2}|node_modules)$/i.test(part)),
+      `Invalid public export target: ${specifier}`);
+    const file = fileURLToPath(new URL(specifier, base));
+    assert.equal(extname(file), '.js', `Owned ESM requires explicit .js: ${specifier}`);
+    assert(inside(file, packageRoot) && existsSync(file), `Missing emitted relative import: ${specifier}`);
+    assert.equal(realpathSync(file), file, 'Emitted files cannot be symlinks.');
+    return file;
+  };
+  const root = pathToFileURL(`${packageRoot}${sep}`);
+  const pending = Object.values(manifest.exports).map((entry) => owned(entry.import, root, true));
   const seen = new Set();
   while (pending.length) {
-    const target = pending.pop();
-    assert(target?.endsWith('.js'), `Owned ESM requires explicit .js: ${target}`);
-    const file = resolve(packageRoot, target);
-    assert(inside(file, packageRoot) && existsSync(file), `Missing emitted relative import: ${target}`);
-    assert.equal(realpathSync(file), file, 'Emitted files cannot be symlinks.');
+    const file = pending.pop();
     if (seen.has(file)) continue;
     seen.add(file);
     const source = readFileSync(file, 'utf8');
@@ -116,7 +128,10 @@ export function assertEmitted(packageRoot) {
       const quoted = literal.exec(source);
       assert(quoted, 'Emitted imports require complete unescaped quoted literal specifiers.');
       const specifier = quoted[1] ?? quoted[2];
-      if (specifier.startsWith('.')) pending.push(relative(packageRoot, resolve(dirname(file), specifier)));
+      if (specifier.startsWith('.')) pending.push(owned(specifier, pathToFileURL(file)));
+      else assert((specifier.startsWith('node:') && isBuiltin(specifier))
+        || /^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9._-]+)*$/i.test(specifier),
+      `Unsupported emitted import specifier: ${specifier}`);
     }
   }
   return [...seen];

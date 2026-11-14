@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertClosure, assertEmitted, command, compilerLibraryRoots, compilerPolicy, exactDiagnostics, nodeDeclarationRoots, successful } from './compiler.mjs';
 import { assertCoreIsolation, digest, installPackages, installTools, npmCommand, npmEnvironment, packPackage, readJson, writeJson } from './package.mjs';
 
@@ -49,6 +49,33 @@ mkdirSync(consumer);
 installPackages(consumer, [inert, declarations, foreign], tools, npm);
 for (const file of ['host.ts', 'invalid.ts', 'extra.ts', 'private.ts']) copyFileSync(join(fixtures, file), join(consumer, file));
 const installed = join(consumer, 'node_modules/@switchboard-proof/inert');
+const encoded = join(temporary, 'encoded');
+mkdirSync(join(encoded, 'src'), { recursive: true });
+installPackages(encoded, [declarations], tools, npm);
+writeJson(join(encoded, 'package.json'), { ...sourceManifest, name: '@switchboard-proof/encoded' });
+writeFileSync(join(encoded, 'src/index.ts'), "export { format } from './%68elper.js';\n");
+copyFileSync(join(fixtures, 'inert/src/helper.ts'), join(encoded, 'src/%68elper.ts'));
+successful(compile(encoded, ['src/index.ts'], false, true));
+const encodedArtifact = packPackage(encoded, artifacts, npm);
+const encodedConsumer = join(temporary, 'encoded-consumer');
+mkdirSync(encodedConsumer);
+installPackages(encodedConsumer, [encodedArtifact, declarations], tools, npm);
+const encodedInstalled = join(encodedConsumer, 'node_modules/@switchboard-proof/encoded');
+const encodedManifest = join(encodedInstalled, 'package.json');
+const loadEncoded = () => invoke(['--input-type=module', '-e',
+  "import('@switchboard-proof/encoded').catch(error => { console.log(error.code); process.exitCode = 1; })"], encodedConsumer);
+const failedEncoded = loadEncoded();
+assert.equal(failedEncoded.status, 1);
+assert.match(failedEncoded.stdout, /ERR_MODULE_NOT_FOUND/);
+assert.throws(() => assertEmitted(encodedInstalled), /Missing emitted relative import/);
+for (const [target, accepted] of [['./dist/%68elper.js', false], ['./dist/%2568elper.js', true]]) {
+  const manifest = readJson(encodedManifest);
+  manifest.exports['.'].import = target;
+  writeJson(encodedManifest, manifest);
+  assert.equal(loadEncoded().status, accepted ? 0 : 1, target);
+  if (accepted) assert.equal(assertEmitted(encodedInstalled).length, 1);
+  else assert.throws(() => assertEmitted(encodedInstalled), /Missing emitted relative import/);
+}
 const declaration = join(consumer, 'node_modules/@switchboard-proof/declarations/dist/index.d.ts');
 const allowed = [...compilerLibraryRoots(tools), ...nodeDeclarationRoots(consumer),
   installed, join(consumer, 'node_modules/@switchboard-proof/declarations')];
@@ -133,7 +160,41 @@ exactDiagnostics(compile(consumer, ['private.ts']), [
 ]);
 const entry = join(installed, 'dist/index.js');
 const originalEntry = readFileSync(entry, 'utf8');
+const originalManifest = readFileSync(join(installed, 'package.json'), 'utf8');
+const outside = join(installed, '../../outside.js');
+writeFileSync(outside, 'export const inert = true;\n');
+const urlMatrix = [
+  ['./helper.js', true, 0], ['./%68elper.js', true, 0], ['./helper%2ejs', true, 0],
+  ['./helper.js?query', false, 0], ['./helper.js#fragment', false, 0],
+  ['./%2fhelper.js', false, 1], ['./%5chelper.js', false, 1], ['./%ZZ.js', false, 1],
+  ['./../../../outside.js', false, 0], [outside, false, 0], [pathToFileURL(outside).href, false, 0],
+  ['https://example.invalid/helper.js', false, 1], ['data:text/javascript,export default 1', false, 0],
+  ['#private', false, 1], ['.hidden.js', false, 1], ['node:path', true, 0], ['node:missing', false, 1],
+];
 try {
+  for (const [specifier, accepted, status] of urlMatrix) {
+    writeFileSync(entry, `${originalEntry}\nimport ${JSON.stringify(specifier)};\n`);
+    const result = invoke(['--input-type=module', '-e',
+      'import(process.argv[1]).catch(error => { console.log(error.code ?? error.name); process.exitCode = 1; })',
+      pathToFileURL(entry).href], consumer);
+    assert.equal(result.status, status, `${specifier}: ${result.stdout}${result.stderr}`);
+    if (accepted) assert.equal(assertEmitted(installed).length, 2, specifier);
+    else assert.throws(() => assertEmitted(installed), undefined, specifier);
+  }
+  writeFileSync(entry, `${originalEntry}\nimport '@switchboard-proof/declarations';\n`);
+  assert.equal(assertEmitted(installed).length, 2, 'Bare public packages remain for later loader acceptance.');
+  writeFileSync(entry, originalEntry);
+  for (const target of [
+    './dist/index.js?query', './dist/index.js#fragment', './dist/%2findex.js', './dist/%5cindex.js',
+    './dist/../dist/index.js', './dist/%2e%2e/dist/index.js', './dist/node_modules/index.js',
+    '../inert/dist/index.js', entry, pathToFileURL(entry).href, 'https://example.invalid/index.js',
+  ]) {
+    const manifest = JSON.parse(originalManifest);
+    manifest.exports['.'].import = target;
+    writeJson(join(installed, 'package.json'), manifest);
+    assert.throws(() => assertEmitted(installed), undefined, target);
+  }
+  writeFileSync(join(installed, 'package.json'), originalManifest);
   writeFileSync(entry, originalEntry.replace('./helper.js', './missing.js'));
   assert.throws(() => assertEmitted(installed), /Missing emitted relative import/);
   for (const expression of [
@@ -162,6 +223,8 @@ export const loadDouble = () => import( "./helper.js" );\n`);
   assert.equal(assertEmitted(installed).length, 2, 'Quoted static, re-export and dynamic imports reach the helper.');
 } finally {
   writeFileSync(entry, originalEntry);
+  writeFileSync(join(installed, 'package.json'), originalManifest);
+  rmSync(outside, { force: true });
 }
 positive();
 const contaminated = join(temporary, 'contaminated');
@@ -181,13 +244,15 @@ const summary = {
   node: process.version, npm: '11.19.1', typescript: '7.0.2', nodeTypes: '24.19.2',
   sourceLockSha256: digest(join(root, 'package-lock.json')),
   sourceManifestSha256: digest(join(root, 'package.json')),
-  artifacts: [inert, declarations, foreign, native].map(({ path, sha256 }) => ({ path, sha256 })),
-  compilerClosure: initialClosure, compiler: 'passed', moduleLoad: 'not run', confinement: 'not claimed',
+  artifacts: [inert, declarations, foreign, native, encodedArtifact].map(({ path, sha256 }) => ({ path, sha256 })),
+  compilerClosure: initialClosure, compiler: 'passed', moduleLoad: 'inert URL controls only; native not run', confinement: 'not claimed',
   passedControls: [
     'strict noDOM and explicitDOM installed consumers', 'owned source and third-party declaration diagnostics',
     'extra/unrelated errors and wrong location/code', 'unexpected output/status/signal/timeout',
     'foreign transitive declaration and source leak', 'nested foreign declaration and explicit root/file admission',
     'symlink declaration', 'private source/output imports',
+    'strict compiled packed installed percent-filename rejection and decoded public export targets',
+    'Node ESM URL matrix and owned graph containment', 'unsupported import forms and exact public export targets',
     'malformed relative emitted import', 'computed/commented/escaped emitted import rejection',
     'quoted static/re-export/dynamic emitted imports', 'installed/resolvable/reachable native-name controls',
     'positive fixture restoration after every mutation group',
