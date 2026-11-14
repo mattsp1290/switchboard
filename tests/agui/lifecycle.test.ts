@@ -103,9 +103,14 @@ test('options and result JSON are detached and recursively frozen', () => {
   assert(event?.type === 'RUN_FINISHED');
   assert.equal(event.threadId, options.threadId);
   assert.throws(() => Reflect.apply(Array.prototype.push, events, [{}]), TypeError);
-  assert.throws(() => Object.defineProperty(event.result.left, 'text', { value: 'rewrite' }), TypeError);
-  assert(Object.isFrozen(event.result.right.values));
-  assert.equal(event.result.__proto__.safe, true);
+  const resultObject = event.result;
+  assert(resultObject && typeof resultObject === 'object' && !Array.isArray(resultObject));
+  assert('left' in resultObject && 'right' in resultObject && '__proto__' in resultObject);
+  assert.throws(() => Object.defineProperty(resultObject.left, 'text', { value: 'rewrite' }), TypeError);
+  const right = resultObject.right;
+  assert(right && typeof right === 'object' && 'values' in right);
+  assert(Object.isFrozen(right.values));
+  assert.deepEqual(resultObject.__proto__, { safe: true });
 });
 
 test('only the implemented fact shape and safe failure classifications are accepted', () => {

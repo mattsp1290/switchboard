@@ -239,6 +239,23 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     files: aguiFixtures,
   }));
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], integration);
+  const aguiInvalidCases = [
+    ['part-null-metadata', "const invalid: import('@mattsp1290/switchboard/agui').NativeContent = [{ type: 'text', text: 'x', metadata: null }];", 2322],
+    ['event-readonly', "declare const event: Extract<ProjectionEvent, { type: 'RUN_STARTED' }>; event.threadId = 'changed';", 2540],
+    ['content-readonly', "declare const event: Extract<ProjectionEvent, { type: 'TOOL_CALL_RESULT' }>; if (typeof event.content !== 'string') event.content.push({ type: 'text', text: 'changed' });", 2339],
+    ['result-readonly', "declare const result: Extract<NonNullable<Extract<ProjectionEvent, { type: 'RUN_FINISHED' }>['result']>, readonly unknown[]>; result.push(0);", 2339],
+  ];
+  for (const [name, source] of aguiInvalidCases) writeFileSync(join(integration, `${name}.mts`),
+    `import type { ProjectionEvent } from '${manifest.name}/agui';\n${source}\n`);
+  writeFileSync(join(integration, 'invalid.json'), JSON.stringify({
+    compilerOptions: consumerConfig.compilerOptions, files: aguiInvalidCases.map(([name]) => `${name}.mts`),
+  }));
+  const invalidAgui = spawnSync(process.execPath, [compiler, '-p', 'invalid.json', '--pretty', 'false'], { cwd: integration, encoding: 'utf8' });
+  assert.equal(invalidAgui.status, 1, invalidAgui.stdout + invalidAgui.stderr);
+  const actualAgui = [...invalidAgui.stdout.matchAll(/^([^\n(]+)\((\d+),\d+\): error TS(\d+):/gm)]
+    .map(([, file, line, code]) => ({ file, line: Number(line), code: Number(code) }));
+  assert.equal(actualAgui.length, (invalidAgui.stdout.match(/error TS\d+:/g) ?? []).length, invalidAgui.stdout);
+  assert.deepEqual(actualAgui.sort(byFile), aguiInvalidCases.map(([name, , code]) => ({ file: `${name}.mts`, line: 2, code })).sort(byFile), invalidAgui.stdout);
   const collected = join(temporary, 'emitted-events.jsonl');
   writeFileSync(collected, '');
   writeFileSync(join(integration, 'compiled/empty-test.js'), '');

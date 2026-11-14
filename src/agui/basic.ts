@@ -1,8 +1,10 @@
 import { EventType, PROTOCOL_VERSION } from '@ag-ui/core';
-import type { Event } from '@ag-ui/core';
+import type { Event, TextMessageRole } from '@ag-ui/core';
 import type { Outcome } from '../core/contracts.js';
-import { capture, errorResult, failure, readBounds, record, reject } from './internal.js';
-import type { Json, ProjectionBounds, ProjectionError } from './internal.js';
+import { capture, errorResult, failure, identity, readBounds, record, reject, string } from './internal.js';
+import { content } from './payloads.js';
+import type { NativeContent } from './payloads.js';
+import type { DeepReadonly, Json, NativeRef, ProjectionBounds, ProjectionError } from './internal.js';
 
 export interface ProjectionOptions {
   readonly threadId: string;
@@ -17,15 +19,31 @@ const publicFailures = Object.freeze({
   'transport-failure': 'The native run transport failed.',
 });
 export type PublicFailure = keyof typeof publicFailures;
+export type BasicEntityFact = { readonly owner?: NativeRef } & (
+  | { readonly kind: 'text-started'; readonly message: NativeRef; readonly role: TextMessageRole; readonly name?: string }
+  | { readonly kind: 'text-content'; readonly message: NativeRef; readonly delta: string }
+  | { readonly kind: 'text-ended'; readonly message: NativeRef }
+  | { readonly kind: 'text-complete'; readonly message: NativeRef; readonly role: TextMessageRole;
+      readonly name?: string; readonly text: string }
+  | { readonly kind: 'tool-started'; readonly tool: NativeRef; readonly name: string; readonly parentMessage?: NativeRef }
+  | { readonly kind: 'tool-arguments'; readonly tool: NativeRef; readonly delta: string }
+  | { readonly kind: 'tool-arguments-ended'; readonly tool: NativeRef }
+  | { readonly kind: 'tool-result'; readonly tool: NativeRef; readonly resultMessage: NativeRef; readonly content: NativeContent }
+  | { readonly kind: 'step-started'; readonly step: NativeRef; readonly name?: string }
+  | { readonly kind: 'step-finished'; readonly step: NativeRef }
+);
 export type BasicFact = { readonly timestamp?: number } & (
   | { readonly kind: 'run-started' }
-  | { readonly kind: 'run-finished'; readonly outcome: 'success'; readonly result?: Json }
+  | { readonly kind: 'run-finished'; readonly outcome: 'success';
+      readonly result?: Json; readonly pendingTools?: readonly NativeRef[] }
   | { readonly kind: 'run-finished'; readonly outcome: 'cancelled' }
   | { readonly kind: 'run-failed'; readonly failure: PublicFailure }
+  | BasicEntityFact
 );
 export type ProjectionFact = BasicFact;
+export type ProjectionEvent = DeepReadonly<Event>;
 export type ProjectionResult =
-  | { readonly kind: 'mapped'; readonly events: readonly Event[] }
+  | { readonly kind: 'mapped'; readonly events: readonly ProjectionEvent[] }
   | { readonly kind: 'error'; readonly error: ProjectionError };
 export interface AguiProjection {
   accept(fact: ProjectionFact): ProjectionResult;
@@ -33,7 +51,25 @@ export interface AguiProjection {
 }
 
 type Phase = 'idle' | 'running' | 'finished' | 'errored' | 'faulted' | 'closed';
-type Transition = 'start' | 'finish' | 'fail';
+type StreamKind = 'text' | 'tool' | 'step';
+type Opener =
+  | { readonly kind: 'text'; readonly role: TextMessageRole; readonly name?: string }
+  | { readonly kind: 'tool'; readonly name: string; readonly parentMessageId?: string }
+  | { readonly kind: 'step' };
+type Stream = Opener & {
+  readonly owner: string | undefined;
+  readonly open: boolean;
+} & ({ readonly kind: 'tool'; readonly result?: string } | { readonly kind: 'text' | 'step' });
+type Entity = Stream
+  | { readonly kind: 'result'; readonly owner: string | undefined; readonly tool: string; readonly open: false }
+  | { readonly kind: 'owner'; readonly open: false };
+type Transition =
+  | { readonly kind: 'start' }
+  | { readonly kind: 'fail' }
+  | { readonly kind: 'finish'; readonly pending?: readonly string[] }
+  | { readonly kind: 'open'; readonly id: string; readonly stream: Stream }
+  | { readonly kind: 'content' | 'end'; readonly id: string; readonly entityKind: StreamKind; readonly owner: string | undefined }
+  | { readonly kind: 'result'; readonly id: string; readonly messageId: string; readonly owner: string | undefined };
 interface Encoding {
   readonly events: readonly Event[];
   readonly transition: Transition;
@@ -52,7 +88,8 @@ function readOptions(value: unknown): ProjectionOptions {
 }
 
 function encodeBasic(value: Json, options: ProjectionOptions): Encoding {
-  const fact = record(value, ['kind', 'timestamp', 'outcome', 'result', 'failure']);
+  const fact = record(value, ['kind', 'timestamp', 'outcome', 'result', 'failure', 'pendingTools',
+    'owner', 'message', 'role', 'name', 'text', 'delta', 'tool', 'parentMessage', 'resultMessage', 'content', 'step']);
   const timestamp = fact.timestamp;
   if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp))) reject();
   const observed = timestamp === undefined ? {} : { timestamp };
@@ -60,17 +97,20 @@ function encodeBasic(value: Json, options: ProjectionOptions): Encoding {
   switch (fact.kind) {
     case 'run-started':
       record(value, ['kind', 'timestamp']);
-      return { transition: 'start', events: [{
+      return { transition: { kind: 'start' }, events: [{
         type: EventType.RUN_STARTED, ...observed, threadId, runId,
         protocolVersion: PROTOCOL_VERSION,
         ...(options.parentRunId === undefined ? {} : { parentRunId: options.parentRunId }),
       }] };
     case 'run-finished': {
-      record(value, fact.outcome === 'success' ? ['kind', 'timestamp', 'outcome', 'result'] : ['kind', 'timestamp', 'outcome']);
+      record(value, fact.outcome === 'success' ? ['kind', 'timestamp', 'outcome', 'result', 'pendingTools'] : ['kind', 'timestamp', 'outcome']);
       if (fact.outcome !== 'success' && fact.outcome !== 'cancelled') reject();
-      return { transition: 'finish', events: [{
+      const pending = fact.pendingTools;
+      if (pending !== undefined && !Array.isArray(pending)) reject();
+      const ids = pending === undefined ? undefined : pending.map((ref: unknown) => identity(options.sourceKey, 'tool', ref));
+      return { transition: { kind: 'finish', ...(ids === undefined ? {} : { pending: ids }) }, events: [{
         type: EventType.RUN_FINISHED, ...observed, threadId, runId,
-        outcome: { type: fact.outcome },
+        outcome: { type: fact.outcome, ...(ids === undefined ? {} : { pendingToolCallIds: ids }) },
         ...('result' in fact && fact.result !== null ? { result: fact.result } : {}),
       }] };
     }
@@ -78,13 +118,138 @@ function encodeBasic(value: Json, options: ProjectionOptions): Encoding {
       record(value, ['kind', 'timestamp', 'failure']);
       const code = fact.failure;
       if (code !== 'native-failure' && code !== 'transport-failure') reject();
-      return { transition: 'fail', events: [{
+      return { transition: { kind: 'fail' }, events: [{
         type: EventType.RUN_ERROR, ...observed, code, message: publicFailures[code],
       }] };
     }
     default:
+      return encodeEntity(fact, options, observed);
+  }
+}
+
+function encodeEntity(fact: Record<string, unknown>, options: ProjectionOptions, observed: { readonly timestamp?: number }): Encoding {
+  const id = (kind: string, ref: unknown) => identity(options.sourceKey, kind, ref);
+  const owner = fact.owner === undefined ? undefined : id('subagent', fact.owner);
+  const common = { ...observed, ...(owner === undefined ? {} : { subagentRunId: owner }) };
+  const fields = (keys: readonly string[]) => record(fact, ['kind', 'timestamp', 'owner', ...keys]);
+  const open = (key: string, opener: Opener, events: Event[], closed = false): Encoding => ({
+    events, transition: { kind: 'open', id: key, stream: { ...opener, owner, open: !closed } },
+  });
+  switch (fact.kind) {
+    case 'text-started':
+    case 'text-complete': {
+      fields(fact.kind === 'text-started' ? ['message', 'role', 'name'] : ['message', 'role', 'name', 'text']);
+      const messageId = id('message', fact.message);
+      const role = fact.role;
+      if (role !== 'assistant' && role !== 'user' && role !== 'system' && role !== 'developer') reject();
+      const name = fact.name === undefined ? {} : { name: string(fact.name) };
+      const events: Event[] = [{ type: EventType.TEXT_MESSAGE_START, ...common, messageId, role, ...name }];
+      if (fact.kind === 'text-complete') events.push(
+        { type: EventType.TEXT_MESSAGE_CONTENT, ...common, messageId, delta: string(fact.text) },
+        { type: EventType.TEXT_MESSAGE_END, ...common, messageId },
+      );
+      return open(messageId, { kind: 'text', role, ...name }, events, fact.kind === 'text-complete');
+    }
+    case 'tool-started': {
+      fields(['tool', 'name', 'parentMessage']);
+      const toolCallId = id('tool', fact.tool);
+      const toolCallName = string(fact.name);
+      const parent = fact.parentMessage === undefined ? {} : { parentMessageId: id('message', fact.parentMessage) };
+      return open(toolCallId, { kind: 'tool', name: toolCallName, ...parent }, [{
+        type: EventType.TOOL_CALL_START, ...common, toolCallId, toolCallName, ...parent,
+      }]);
+    }
+    case 'step-started': {
+      fields(['step', 'name']);
+      const stepName = id('step', fact.step);
+      const name = fact.name === undefined ? {} : { name: string(fact.name) };
+      return open(stepName, { kind: 'step' }, [{ type: EventType.STEP_STARTED, ...common, stepName,
+        ...(fact.name === undefined ? {} : { metadata: { switchboard: name } }),
+      }]);
+    }
+    case 'tool-result': {
+      fields(['tool', 'resultMessage', 'content']);
+      const toolCallId = id('tool', fact.tool);
+      const messageId = id('message', fact.resultMessage);
+      return { transition: { kind: 'result', id: toolCallId, messageId, owner }, events: [{
+        type: EventType.TOOL_CALL_RESULT, ...common, toolCallId, messageId, content: content(fact.content, options.sourceKey),
+      }] };
+    }
+    case 'text-content':
+    case 'text-ended':
+    case 'tool-arguments':
+    case 'tool-arguments-ended':
+    case 'step-finished': {
+      const entityKind = fact.kind === 'step-finished' ? 'step' : fact.kind.startsWith('text-') ? 'text' : 'tool';
+      const refField = entityKind === 'text' ? 'message' : entityKind;
+      const hasDelta = fact.kind === 'text-content' || fact.kind === 'tool-arguments';
+      fields(hasDelta ? [refField, 'delta'] : [refField]);
+      const key = id(entityKind === 'text' ? 'message' : entityKind, fact[refField]);
+      const transition: Transition = { kind: hasDelta ? 'content' : 'end', id: key, entityKind, owner };
+      const event: Event = entityKind === 'step' ? { type: EventType.STEP_FINISHED, ...common, stepName: key }
+        : entityKind === 'text' ? hasDelta
+          ? { type: EventType.TEXT_MESSAGE_CONTENT, ...common, messageId: key, delta: string(fact.delta) }
+          : { type: EventType.TEXT_MESSAGE_END, ...common, messageId: key }
+          : hasDelta ? { type: EventType.TOOL_CALL_ARGS, ...common, toolCallId: key, delta: string(fact.delta) }
+            : { type: EventType.TOOL_CALL_END, ...common, toolCallId: key };
+      return { transition, events: [event] };
+    }
+    default:
       return reject();
   }
+}
+
+function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): readonly (readonly [string, Entity])[] {
+  if (transition.kind === 'start' || transition.kind === 'fail') return [];
+  if (transition.kind === 'finish') {
+    if ([...ledger.values()].some(entity => entity.open)) reject('invalid-order');
+    const pending = [...ledger].filter(([, entity]) => entity.kind === 'tool' && entity.result === undefined).map(([id]) => id);
+    if (transition.pending !== undefined && JSON.stringify(transition.pending) !== JSON.stringify(pending)) reject('identity-conflict');
+    return [];
+  }
+  const current = ledger.get(transition.id);
+  const owner = transition.kind === 'open' ? transition.stream.owner : transition.owner;
+  const updates: [string, Entity][] = [];
+  if (owner !== undefined && !ledger.has(owner)) updates.push([owner, { kind: 'owner', open: false }]);
+  if (transition.kind === 'open') {
+    const incoming = transition.stream;
+    if (incoming.kind === 'tool' && incoming.parentMessageId !== undefined) {
+      const parent = ledger.get(incoming.parentMessageId);
+      if (parent && (parent.kind !== 'text' || parent.role !== 'assistant' || parent.owner !== owner)) reject('identity-conflict');
+      if ([...ledger.values()].some(entity => entity.kind === 'tool'
+        && entity.parentMessageId === incoming.parentMessageId && entity.owner !== owner)) reject('identity-conflict');
+    }
+    if (incoming.kind === 'text' && [...ledger.values()].some(entity => entity.kind === 'tool'
+      && entity.parentMessageId === transition.id && (incoming.role !== 'assistant' || entity.owner !== owner))) reject('identity-conflict');
+    if (current !== undefined) {
+      const identical = current.kind === 'text' && incoming.kind === 'text'
+        ? current.role === incoming.role && current.name === incoming.name
+        : current.kind === 'tool' && incoming.kind === 'tool'
+          ? current.name === incoming.name && current.parentMessageId === incoming.parentMessageId
+          : current.kind === 'step' && incoming.kind === 'step';
+      if (!identical || !('owner' in current) || current.owner !== owner) reject('identity-conflict');
+      if (current.open) reject('invalid-order');
+    }
+    updates.push([transition.id, { ...transition.stream,
+      ...(current?.kind === 'tool' && current.result !== undefined ? { result: current.result } : {}),
+    }]);
+  } else {
+    if (!current || current.kind === 'result' || current.kind === 'owner') reject('invalid-order');
+    if (current.owner !== owner) reject('identity-conflict');
+    if (transition.kind === 'result') {
+      if (current.kind !== 'tool' || current.open || current.result !== undefined) reject('invalid-order');
+      if (ledger.has(transition.messageId)) reject('identity-conflict');
+      if ([...ledger.values()].some(entity => entity.kind === 'tool'
+        && entity.parentMessageId === transition.messageId)) reject('identity-conflict');
+      updates.push([transition.messageId, { kind: 'result', owner, tool: transition.id, open: false }],
+        [transition.id, { ...current, result: transition.messageId }]);
+    } else {
+      if (current.kind !== transition.entityKind) reject('identity-conflict');
+      if (!current.open) reject('invalid-order');
+      if (transition.kind === 'end') updates.push([transition.id, { ...current, open: false }]);
+    }
+  }
+  return updates;
 }
 
 export function createAguiProjection(options: ProjectionOptions): Outcome<AguiProjection, ProjectionError> {
@@ -92,9 +257,11 @@ export function createAguiProjection(options: ProjectionOptions): Outcome<AguiPr
     let context: ProjectionOptions | undefined = readOptions(options);
     let phase: Phase = 'idle';
     let accepting = false;
+    const ledger = new Map<string, Entity>();
     const stop = (next: 'faulted' | 'closed') => {
       phase = next;
       context = undefined;
+      ledger.clear();
     };
     const projection: AguiProjection = Object.freeze({
       accept(fact: ProjectionFact): ProjectionResult {
@@ -108,12 +275,21 @@ export function createAguiProjection(options: ProjectionOptions): Outcome<AguiPr
           const scope = context;
           const plan = encodeBasic(capture(fact, scope.bounds), scope);
           if (!context) reject(phase === 'closed' ? 'closed' : 'invalid-input');
-          const permitted = plan.transition === 'start' ? phase === 'idle'
-            : plan.transition === 'finish' ? phase === 'running'
-              : phase === 'idle' || phase === 'running' || phase === 'finished';
+          const action = plan.transition.kind;
+          const permitted = action === 'start' ? phase === 'idle'
+            : action === 'fail' ? phase === 'idle' || phase === 'running' || phase === 'finished' : phase === 'running';
           if (!permitted) reject('invalid-order');
-          const events = capture(plan.events, scope.bounds) as unknown as readonly Event[];
-          phase = plan.transition === 'start' ? 'running' : plan.transition === 'finish' ? 'finished' : 'errored';
+          const updates = validate(plan.transition, ledger);
+          const added = updates.filter(([id]) => !ledger.has(id)).length;
+          if (ledger.size + added > scope.bounds.maxEntities) reject('bounds-exceeded');
+          const events = capture(plan.events, scope.bounds) as unknown as readonly ProjectionEvent[];
+          for (const [id, entity] of updates) ledger.set(id, entity);
+          if (action === 'start') phase = 'running';
+          if (action === 'finish') phase = 'finished';
+          if (action === 'fail') {
+            phase = 'errored';
+            ledger.clear();
+          }
           return Object.freeze({ kind: 'mapped', events });
         } catch (error) {
           if (phase !== 'closed') stop('faulted');

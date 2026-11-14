@@ -9,10 +9,10 @@ export interface ProjectionBounds {
 }
 
 export interface ProjectionError {
-  readonly code: 'invalid-input' | 'invalid-order' | 'bounds-exceeded' | 'closed';
+  readonly code: 'invalid-input' | 'invalid-order' | 'identity-conflict' | 'bounds-exceeded' | 'closed';
 }
 
-const faultCodes: readonly ProjectionError['code'][] = ['invalid-input', 'invalid-order', 'bounds-exceeded', 'closed'];
+const faultCodes: readonly ProjectionError['code'][] = ['invalid-input', 'invalid-order', 'identity-conflict', 'bounds-exceeded', 'closed'];
 const faults = new Map(faultCodes.map(code => [code, Symbol(code)]));
 
 export function reject(code: ProjectionError['code'] = 'invalid-input'): never {
@@ -120,4 +120,23 @@ export function capture(value: unknown, bounds: ProjectionBounds): Json {
     return Object.freeze(result);
   };
   return visit(value, 0);
+}
+
+export interface NativeRef {
+  readonly scope: readonly string[];
+  readonly id: string;
+}
+
+export type DeepReadonly<T> = 0 extends (1 & T) ? Json
+  : T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
+
+export function string(value: unknown): string {
+  if (typeof value !== 'string') reject();
+  return value;
+}
+
+export function identity(sourceKey: string, kind: string, value: unknown): string {
+  const ref = record(value, ['scope', 'id']);
+  if (!Array.isArray(ref.scope) || !ref.scope.every(component => typeof component === 'string')) reject();
+  return JSON.stringify([1, sourceKey, kind, ref.scope, string(ref.id)]);
 }
