@@ -31,6 +31,7 @@ export type {
   SessionCorrelation,
   SessionDiscovery,
   SessionDiscoveryBounds,
+  SessionDiscoveryDiagnostic,
   SessionDiscoveryPage,
   SessionInspection,
   SessionInspectionResult,

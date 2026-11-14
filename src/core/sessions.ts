@@ -154,10 +154,19 @@ export interface SessionAccess<Scope> {
   readonly signal: AbortSignal;
 }
 
+export interface SessionDiscoveryDiagnostic {
+  readonly kind: 'file-inspection-failed';
+  readonly subject: {
+    readonly kind: 'discovery-file';
+    readonly token: string;
+  };
+}
+
 export type SessionDiscoveryPage = {
   readonly sessions: readonly SessionReference[];
   readonly examined: number;
   readonly skipped: { readonly corrupt: number; readonly inaccessible: number };
+  readonly diagnostics: readonly SessionDiscoveryDiagnostic[];
 } & (
   | { readonly kind: 'complete' }
   | { readonly kind: 'truncated'; readonly reason: 'results' | 'examined' | 'duration' }
