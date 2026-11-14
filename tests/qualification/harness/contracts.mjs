@@ -259,20 +259,20 @@ async function interaction(factory, signal) {
     ];
     for (const [target, code] of wrongTargets) {
       error(await owner.wait(connection.submit({ session: a, hostOperationId: `invalid-${code}`,
-        continuation: { ...reply, target } }, signal)), code);
+        continuation: structuredClone({ ...reply, target }) }, signal)), code);
       counts(fixture, 0, 0, 0, 0, 'invalid approval must not dispatch');
     }
     error(await owner.wait(connection.submit({ session: a, hostOperationId: 'invalid-choice',
-      continuation: { ...reply, nativeChoiceId: 'unadvertised' } }, signal)), 'choice-mismatch');
+      continuation: structuredClone({ ...reply, nativeChoiceId: 'unadvertised' }) }, signal)), 'choice-mismatch');
     counts(fixture, 0, 0, 0, 0);
     const held = fixture.controls.holdNextCompletion();
     owner.registerHold(held.release);
     const acknowledged = ok(await owner.wait(connection.submit({ session: a,
-      hostOperationId: 'approval', continuation: reply }, signal)));
+      hostOperationId: 'approval', continuation: structuredClone(reply) }, signal)));
     await owner.wait(held.entered);
     assert.equal(acknowledged.observation.kind, 'accepted');
     error(await owner.wait(connection.submit({ session: a,
-      hostOperationId: 'approval-again', continuation: reply }, signal)), 'stale-interaction');
+      hostOperationId: 'approval-again', continuation: structuredClone(reply) }, signal)), 'stale-interaction');
     counts(fixture, 1, 1, 0, 0, 'approval is consumed at native acceptance');
     held.release();
     await owner.wait(held.completed);
@@ -284,8 +284,8 @@ async function interaction(factory, signal) {
       result: { kind: 'error', error: native }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } };
     fixture.controls.pending(tool);
     error(await owner.wait(connection.submit({ session: a, hostOperationId: 'invalid-tool',
-      continuation: { ...toolReply, outcome: { ...toolReply.outcome,
-        target: { ...tool.target, nativeToolCallId: 'wrong-tool' } } } }, signal)), 'target-mismatch');
+      continuation: structuredClone({ ...toolReply, outcome: { ...toolReply.outcome,
+        target: { ...tool.target, nativeToolCallId: 'wrong-tool' } } }) }, signal)), 'target-mismatch');
     counts(fixture, 1, 1, 1, 0, 'invalid tool must not dispatch');
     const effectEvidence = { ...native, data: { effect: 'observed' } };
     const deliveryEvidence = { ...native, data: { delivery: 'acknowledged' } };
@@ -298,11 +298,11 @@ async function interaction(factory, signal) {
       const toolHeld = fixture.controls.holdNextCompletion();
       owner.registerHold(toolHeld.release);
       const toolAcknowledged = ok(await owner.wait(connection.submit({ session: a,
-        hostOperationId: `tool-${index}`, continuation }, signal)));
+        hostOperationId: `tool-${index}`, continuation: structuredClone(continuation) }, signal)));
       await owner.wait(toolHeld.entered);
       assert.equal(toolAcknowledged.observation.kind, 'accepted');
       error(await owner.wait(connection.submit({ session: a, hostOperationId: `tool-again-${index}`,
-        continuation }, signal)), 'stale-interaction');
+        continuation: structuredClone(continuation) }, signal)), 'stale-interaction');
       counts(fixture, index + 2, index + 2, index + 1, 0, 'tool is consumed at native acceptance');
       toolHeld.release();
       await owner.wait(toolHeld.completed);
@@ -311,13 +311,76 @@ async function interaction(factory, signal) {
       assert.deepEqual(result.observation.result.continuation, continuation,
         'native result, effect and delivery remain independent');
       error(await owner.wait(connection.submit({ session: a, hostOperationId: `tool-completed-${index}`,
-        continuation }, signal)), 'stale-interaction');
+        continuation: structuredClone(continuation) }, signal)), 'stale-interaction');
       counts(fixture, index + 2, index + 2, index + 2, 0, 'completed tool remains consumed');
     }
   });
 }
 
 async function events(factory, signal) {
+  await scenario(factory, signal, async (fixture, owner) => {
+    const connection = fixture.connect(simulatedHost([fixture.samples.a]));
+    const held = fixture.controls.holdNextCompletion();
+    owner.registerHold(held.release);
+    const accepted = ok(await owner.wait(connection.submit({ session: fixture.samples.a,
+      hostOperationId: 'subscription-abort-work' }, signal)));
+    await owner.wait(held.entered);
+    assert.equal(accepted.observation.kind, 'accepted');
+    let completed = false;
+    owner.registerCallbackExit(held.completed.then(() => { completed = true; }));
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const exited = Promise.withResolvers();
+    owner.registerHold(release.resolve);
+    const input = new AbortController();
+    const slowValues = [];
+    const fastValues = [];
+    const callbackErrors = [];
+    const seen = new Map([1, 2, 3].map((sequence) => [sequence, Promise.withResolvers()]));
+    let delivery;
+    const slow = ok(connection.events.subscribe(async (event, deliverySignal) => {
+      owner.registerCallbackExit(exited.promise);
+      slowValues.push(event.sequence);
+      delivery = deliverySignal;
+      entered.resolve();
+      try { await owner.wait(release.promise); } catch (error) { callbackErrors.push(error); }
+      finally { exited.resolve(); }
+    }, { signal: input.signal }));
+    owner.registerObserver(slow.dispose);
+    const fast = ok(connection.events.subscribe((event) => {
+      fastValues.push(event.sequence);
+      seen.get(event.sequence)?.resolve();
+    }));
+    owner.registerObserver(fast.dispose);
+    fixture.controls.emit(1);
+    await owner.wait(entered.promise);
+    await owner.wait(seen.get(1).promise);
+    fixture.controls.emit(2);
+    await owner.wait(seen.get(2).promise);
+    assert.deepEqual(slowValues, [1], 'second delivery queues behind the active callback');
+    input.abort();
+    assert.equal(await owner.wait(slow.ended), 'aborted');
+    assert.equal(delivery.aborted, true);
+    assert.equal(getEventListeners(input.signal, 'abort').length, 0);
+    error(connection.events.subscribe(() => {}), 'capacity');
+    release.resolve();
+    await owner.wait(exited.promise);
+    await owner.wait(setImmediate());
+    assert.deepEqual(callbackErrors, []);
+    assert.deepEqual(slowValues, [1], 'input abort drops queued events');
+    const renewed = ok(connection.events.subscribe(() => {}));
+    owner.registerObserver(renewed.dispose);
+    fixture.controls.emit(3);
+    await owner.wait(seen.get(3).promise);
+    assert.deepEqual(fastValues, [1, 2, 3], 'input abort leaves other observers attached');
+    assert.equal(completed, false, 'input abort cannot complete native work');
+    counts(fixture, 1, 1, 0, 0);
+    held.release();
+    await owner.wait(held.completed);
+    const result = ok(await owner.wait(connection.recover(accepted).reconcile(signal)));
+    conclusive(result, accepted.identity);
+    counts(fixture, 1, 1, 1, 0);
+  });
   await scenario(factory, signal, async (fixture, owner) => {
     const first = fixture.connect(simulatedHost([fixture.samples.a]));
     const entered = Promise.withResolvers();

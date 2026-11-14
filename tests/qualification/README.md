@@ -14,13 +14,17 @@ Completion gates expose `entered`, `release()`, and `completed`; connection clos
 Counters distinguish dispatch attempts, accepted fixture commands, native lookups, and transport closes.
 Accepted commands do not prove a real external tool effect.
 Continuation checks preserve native result, effect, and delivery as independent facts.
-Tool cases cover both mixed effect and delivery states with distinct native evidence.
+Tool cases cover all four effect and delivery combinations with distinct native evidence.
+Every continuation submission receives a deep copy so driver mutation cannot rewrite the expected continuation.
 Pending approval choices and tool targets must match exactly and are consumed once at acceptance.
 Event checks use explicit callback entry, release, and exit gates instead of timing sleeps.
 An observer drains a retained event after its active callback exits, with exact FIFO order and one active callback.
-Overflow and disposal detach observers immediately; active callbacks retain their observer leases until they settle.
+Input abort, overflow, and disposal detach observers immediately; active callbacks retain their observer leases until they settle.
+Input abort drops queued events while other observers and accepted native work continue.
 Observer failure and transport close leave accepted native work held until its completion gate is released.
 Reconnect starts a fresh event stream with no replay.
-Two deliberately broken drivers perform a real recovery send or replace real acknowledgement loss with certainty.
+Broken drivers perform a real recovery send, replace acknowledgement loss with certainty, or derive delivery from effect.
 Each must fail its named contract assertion and then close every acquired connection through real fixture disposal.
+A driver that ignores subscription input signals must remain blocked until bounded caller cancellation.
+Its callback then settles and fixture disposal closes every acquired connection.
 These tests qualify the fixture and reusable assertions, not native engines, auth routes, platforms, real protocols, or crash-durable host admission.
