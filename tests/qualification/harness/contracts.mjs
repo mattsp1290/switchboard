@@ -287,9 +287,13 @@ async function interaction(factory, signal) {
       continuation: { ...toolReply, outcome: { ...toolReply.outcome,
         target: { ...tool.target, nativeToolCallId: 'wrong-tool' } } } }, signal)), 'target-mismatch');
     counts(fixture, 1, 1, 1, 0, 'invalid tool must not dispatch');
-    for (const [index, continuation] of [toolReply, { ...toolReply, outcome: { ...toolReply.outcome,
-      effect: { kind: 'known', effect: 'occurred', evidence: native },
-      delivery: { kind: 'confirmed', evidence: native } } }].entries()) {
+    const effectEvidence = { ...native, data: { effect: 'observed' } };
+    const deliveryEvidence = { ...native, data: { delivery: 'acknowledged' } };
+    const effects = [{ kind: 'unknown' }, { kind: 'known', effect: 'occurred', evidence: effectEvidence }];
+    const deliveries = [{ kind: 'unknown' }, { kind: 'confirmed', evidence: deliveryEvidence }];
+    const continuations = effects.flatMap((effect) => deliveries.map((delivery) =>
+      ({ ...toolReply, outcome: { ...toolReply.outcome, effect, delivery } })));
+    for (const [index, continuation] of continuations.entries()) {
       if (index > 0) fixture.controls.pending(tool);
       const toolHeld = fixture.controls.holdNextCompletion();
       owner.registerHold(toolHeld.release);
@@ -314,6 +318,54 @@ async function interaction(factory, signal) {
 }
 
 async function events(factory, signal) {
+  await scenario(factory, signal, async (fixture, owner) => {
+    const first = fixture.connect(simulatedHost([fixture.samples.a]));
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const exited = Promise.withResolvers();
+    const secondDelivered = Promise.withResolvers();
+    const values = [];
+    const callbackErrors = [];
+    let active = 0;
+    let maximum = 0;
+    owner.registerHold(release.resolve);
+    const observer = ok(first.events.subscribe(async (event) => {
+      const callbackExit = Promise.withResolvers();
+      owner.registerCallbackExit(callbackExit.promise);
+      active++;
+      maximum = Math.max(maximum, active);
+      values.push(event.sequence);
+      try {
+        if (event.sequence === 1) {
+          entered.resolve();
+          await owner.wait(release.promise);
+        } else {
+          secondDelivered.resolve();
+        }
+      } catch (error) { callbackErrors.push(error); }
+      finally {
+        active--;
+        callbackExit.resolve();
+        if (event.sequence === 1) exited.resolve();
+      }
+    }));
+    owner.registerObserver(observer.dispose);
+    fixture.controls.emit(1);
+    await owner.wait(entered.promise);
+    fixture.controls.emit(2);
+    assert.deepEqual(values, [1], 'queued callback waits for the active callback');
+    release.resolve();
+    await owner.wait(exited.promise);
+    await owner.wait(secondDelivered.promise);
+    assert.deepEqual(values, [1, 2], 'slow observer drains queued events in order');
+    assert.equal(maximum, 1, 'observer callbacks do not overlap');
+    await owner.wait(setImmediate());
+    assert.equal(active, 0);
+    assert.deepEqual(callbackErrors, []);
+    observer.dispose();
+    assert.equal(await owner.wait(observer.ended), 'disposed');
+    counts(fixture, 0, 0, 0, 0);
+  });
   await scenario(factory, signal, async (fixture, owner) => {
     const { a, b } = fixture.samples;
     const host = simulatedHost([a, b]);

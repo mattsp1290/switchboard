@@ -14,8 +14,10 @@ Completion gates expose `entered`, `release()`, and `completed`; connection clos
 Counters distinguish dispatch attempts, accepted fixture commands, native lookups, and transport closes.
 Accepted commands do not prove a real external tool effect.
 Continuation checks preserve native result, effect, and delivery as independent facts.
+Tool cases cover both mixed effect and delivery states with distinct native evidence.
 Pending approval choices and tool targets must match exactly and are consumed once at acceptance.
 Event checks use explicit callback entry, release, and exit gates instead of timing sleeps.
+An observer drains a retained event after its active callback exits, with exact FIFO order and one active callback.
 Overflow and disposal detach observers immediately; active callbacks retain their observer leases until they settle.
 Observer failure and transport close leave accepted native work held until its completion gate is released.
 Reconnect starts a fresh event stream with no replay.
