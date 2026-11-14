@@ -28,3 +28,18 @@ Each must fail its named contract assertion and then close every acquired connec
 A driver that ignores subscription input signals must remain blocked until bounded caller cancellation.
 Its callback then settles and fixture disposal closes every acquired connection.
 These tests qualify the fixture and reusable assertions, not native engines, auth routes, platforms, real protocols, or crash-durable host admission.
+
+`host-consumers.mjs` adds private host owners checked against the installed public types.
+The installed `host-consumers.consumer.mjs` schedules reconstruct a Crew-like owner from a temporary JSON file.
+The host writes complete native session references and separate host correlation before native entry.
+Saved unknown outcomes select lookup-only recovery. Intent-only records block fresh admission.
+Malformed records, wrong bindings, and different command identities reject before backend work.
+The file proves sequential reconstruction from bytes, not atomic writes, concurrent admission, or process-crash durability.
+
+The AgentUI-like schedule overlaps two views on separate connections while an independent command owner holds work.
+Closing the old view leaves the replacement observing and the command owner available for reconciliation and replies.
+Private pending approval targets, associated tool IDs, and native choices survive client mutations.
+Host request IDs cannot substitute for native approval IDs.
+Capability distinctions and reasons are declared presentation inputs, not reports from the fake backend.
+Two broken-host controls demonstrate the assertions fail after an actual duplicate send or mistaken command close.
+These schedules do not import Crew, AgentUI, native SDKs, or providers and do not complete integrated qualification.
