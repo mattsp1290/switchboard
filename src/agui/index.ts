@@ -2,16 +2,19 @@ import { PROTOCOL_VERSION } from '@ag-ui/core';
 
 import { createProjection, encodeBasic } from './basic.js';
 import type { BasicFact, Projection, ProjectionOptions } from './basic.js';
+import { encodeMessages } from './messages.js';
+import type { MessagesFact } from './messages.js';
 import { encodeAdvanced } from './advanced.js';
 import type { AdvancedFact } from './advanced.js';
 import type { Json } from './internal.js';
 
-export type ProjectionFact = BasicFact | AdvancedFact;
+export type ProjectionFact = BasicFact | AdvancedFact | MessagesFact;
 export type AguiProjection = Projection<ProjectionFact>;
 export function createAguiProjection(options: ProjectionOptions) {
   return createProjection<ProjectionFact>(options, (fact: Json, scope: ProjectionOptions) => {
     const kind = fact && typeof fact === 'object' && !Array.isArray(fact) && 'kind' in fact ? fact.kind : undefined;
     switch (kind) {
+      case 'messages-snapshot': return encodeMessages(fact, scope);
       case 'state-snapshot': case 'state-delta': case 'activity-snapshot': case 'activity-delta':
       case 'raw': case 'custom': case 'not-observable':
         return encodeAdvanced(fact, scope);
@@ -20,6 +23,7 @@ export function createAguiProjection(options: ProjectionOptions) {
     }
   });
 }
+export type { NativeMessage, MessagesFact } from './messages.js';
 export { describeProjection } from './advanced.js';
 export type { AdvancedFact, NativeJsonPatch, ProjectionFamily, NativeAvailability, NativeQualification,
   ProjectionEvidence, ProjectionDescription } from './advanced.js';
@@ -33,6 +37,6 @@ export const aguiProtocol = Object.freeze({
   sourceCommit: '0fc064bb2647fc0bce4fc795af33b5551ac03f88',
   typescriptSdk: '1.0.4',
   pythonSdk: '1.0.0',
-  mapping: 'basic-and-values',
-  planned: 'messages-terminals-reasoning-subagents',
+  mapping: 'basic-values-and-messages',
+  planned: 'terminals-reasoning-subagents',
 });

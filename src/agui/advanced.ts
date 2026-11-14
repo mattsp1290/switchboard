@@ -11,7 +11,7 @@ type NativeOperation<P = JsonPatchOperation> = P extends JsonPatchOperation
   : never;
 export type NativeJsonPatch = readonly NativeOperation[];
 type ActivityContent = DeepReadonly<ActivitySnapshotEvent['content']>;
-export type ProjectionFamily = 'state' | 'activity' | 'raw' | 'custom';
+export type ProjectionFamily = 'state' | 'activity' | 'raw' | 'custom' | 'messages';
 export type NativeAvailability = 'supported' | 'unavailable' | 'unsupported' | 'undeclared';
 export type NativeQualification = 'qualified' | 'unqualified' | 'undeclared';
 export interface ProjectionEvidence {
@@ -36,7 +36,7 @@ export type AdvancedFact = { readonly timestamp?: number; readonly owner?: Nativ
 );
 
 function family(value: unknown): ProjectionFamily {
-  if (value !== 'state' && value !== 'activity' && value !== 'raw' && value !== 'custom') reject();
+  if (value !== 'state' && value !== 'activity' && value !== 'raw' && value !== 'custom' && value !== 'messages') reject();
   return value;
 }
 
@@ -130,7 +130,7 @@ export function encodeAdvanced(value: Json, options: ProjectionOptions): Encodin
       const activityType = string(fields.activityType);
       const replace = fields.replace;
       if (snapshot && replace !== undefined && typeof replace !== 'boolean') reject();
-      return { transition: { kind: 'activity', id: messageId, owner, activityType,
+      return { transition: { kind: 'activity', id: messageId, owner,
         mode: snapshot ? replace === false ? 'preserve' : 'replace' : 'delta' }, events: [snapshot
         ? { type: EventType.ACTIVITY_SNAPSHOT, ...common, messageId, activityType,
           content: jsonObject(member(fields, 'content')), ...(replace === undefined ? {} : { replace: replace === true }) }

@@ -226,7 +226,7 @@ test('entity tombstones, result identities and attribution owners consume the en
   mapped(projection, { kind: 'text-complete', message, role: 'assistant', text: 'reopen' });
   rejects(projection, { kind: 'step-started', step }, 'bounds-exceeded');
   rejects(running([], { maxEntities: 1 }), { ...text, owner }, 'bounds-exceeded');
-  rejects(running([toolStart, toolEnd], { maxEntities: 1 }),
+  rejects(running([toolStart, toolEnd], { maxEntities: 2 }),
     { kind: 'tool-result', tool, resultMessage: ref('result'), content: '' }, 'bounds-exceeded');
   mapped(running([], { maxEntities: 2 }), { ...text, owner });
 });
