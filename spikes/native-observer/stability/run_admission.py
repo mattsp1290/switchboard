@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import re
+import struct
 import time
 import run as resources
 
@@ -37,6 +38,122 @@ def inspect_binary(binary):
                    'binarySha256': resources.digest(binary), 'syscalls': calls, 'instructions': len(instructions)})
 
 
+_RAW_STOPS = dict(zip(MODES, ('EXEXEXET', '', '', 'S', 'EX', 'EX', 'EXEXE', 'EXEXE', 'EXE')))
+
+
+def _raw_evidence(mode, evidence, owned_pid):
+    assert mode in _RAW_STOPS, 'unknown raw mode'
+    number = r'(?:0|[1-9][0-9]*)'
+    queried = mode in ('normal', 'query-bad', 'query-short', 'registration', 'deadline', 'death')
+    anchors = {
+        'RAW_OPTIONS': r'RAW_OPTIONS mask=1048577 result=0',
+        'SUPERVISOR': r'SUPERVISOR subreaper=0 SIGCHLD=default NOCLDWAIT=0',
+        'ROBUST': (r'ROBUST result=-1 errno=14 pointer=0x1 size=0 expected=24' if mode == 'query-bad'
+                   else rf'ROBUST result=0 errno={number} pointer=0 size=24 expected=24') if queried else None,
+        'RSEQ': (f'RSEQ requested={1 if mode == "query-short" else 24} returned=24 '
+                 'pointer=0 size=0 signature=0 flags=0 pad=0') if queried and mode != 'query-bad' else None,
+        'RAW_ADMISSION_OBSERVED': 'RAW_ADMISSION_OBSERVED' if mode == 'normal' else None,
+        'RAW_REJECT_REGISTRATION_BEFORE_EXECUTION': 'RAW_REJECT_REGISTRATION_BEFORE_EXECUTION'
+                                                   if mode == 'registration' else None,
+        'BLOCKED_READ': r'BLOCKED_READ nr=63 fd=0 pointer=(0|[1-9a-f][0-9a-f]{0,15}) size=1' if mode == 'deadline' else None,
+        'BLOCKED_PIPE': r'BLOCKED_PIPE pipe:\[[1-9][0-9]*\] supervisor_writer=[1-9][0-9]* target_reader=0'
+                        if mode == 'deadline' else None,
+        'RAW_DEADLINE': 'RAW_DEADLINE step=2 entering=0' if mode == 'deadline' else None,
+        'REJECT_INHERITED_FD': 'REJECT_INHERITED_FD' if mode == 'inherited' else None,
+        'FAIL': rf'FAIL {FAILURES[mode]} errno={number}' if mode in FAILURES else None,
+        'RAW_CLEANUP': f'RAW_CLEANUP target={owned_pid} reaped={owned_pid} status=9' if mode in FAILURES else None,
+        'NOTICE_RECEIPT': f'NOTICE_RECEIPT root={owned_pid} ready={int(mode == "death")}',
+        'TRACER_TERMINAL': rf'TRACER_TERMINAL [1-9][0-9]* wait_status={9 if mode == "death" else 23040 if mode in FAILURES else 0}',
+        'REAPED': rf'REAPED {owned_pid} SUPERVISOR [1-9][0-9]*',
+        'OWNED_TARGET': f'OWNED_TARGET {owned_pid}',
+        'TARGET_BYTES': 'TARGET_BYTES ' + ('7 7261772d6f6b0a' if mode == 'normal' else '0 '),
+    }
+    core = ('RAW_INFO_BYTES', 'RAW_INFO', 'RAW_WAIT', 'RAW_ENTRY', 'RAW_EXIT')
+    rows, witnesses = [], {}
+    lines = evidence.split('\n')
+    for position, row in enumerate(lines):
+        terminated = position < len(lines) - 1
+        candidate = row.lstrip()
+        if candidate.startswith(core):
+            assert row == candidate and terminated and '\r' not in row, ('raw row framing', position)
+            rows.append((position, row))
+        else:
+            for prefix, pattern in anchors.items():
+                if candidate.startswith(prefix):
+                    match = re.fullmatch(pattern, row) if pattern is not None else None
+                    assert terminated and match and prefix not in witnesses, ('raw witness', prefix, position)
+                    witnesses[prefix] = (position, match)
+                    break
+    assert set(witnesses) == {key for key, pattern in anchors.items() if pattern is not None}, 'raw witness inventory'
+    spans, cursor = [], 0
+    for index, kind in enumerate(_RAW_STOPS[mode]):
+        count = 1 if kind == 'T' else 3 if kind == 'S' else 4
+        block = rows[cursor:cursor + count]
+        assert len(block) == count, ('missing raw block', mode, index)
+        lines = tuple(row for _, row in block)
+        assert lines[0] == f'RAW_WAIT status={0 if kind == "T" else 34175}', ('raw wait', block[0][0])
+        if kind == 'S':
+            assert lines[1:] == ('RAW_INFO requested=1 returned=80 op=1 arch=0', 'RAW_INFO_BYTES 01'), 'short info'
+        elif kind != 'T':
+            entry, step = kind == 'E', index // 2
+            size, operation = (80, 1) if entry else (33, 2)
+            assert lines[1] == f'RAW_INFO requested=88 returned={size} op={operation} arch=c00000b7', 'raw header'
+            encoded = re.fullmatch(rf'RAW_INFO_BYTES ([0-9a-f]{{{size * 2}}})', lines[2])
+            assert encoded, 'raw byte grammar'
+            payload = bytes.fromhex(encoded[1])
+            observed_op, _padding, arch, _ip, _sp = struct.unpack_from('<B3sIQQ', payload)
+            assert observed_op == operation and arch == 0xc00000b7, 'raw layout'
+            if entry:
+                words = struct.unpack_from('<7Q', payload, 24)
+                syscall, args = words[0], words[1:]
+                assert lines[3] == f'RAW_ENTRY step={step} nr={syscall} args=' + ','.join(map(str, args)), 'raw entry agreement'
+                expected = 99 if mode == 'registration' and step == 2 else 63 if mode == 'deadline' and step == 2 else (96, 172, 64, 93)[step]
+                assert syscall == expected, 'raw syscall recipe'
+                if not (mode == 'registration' and step == 2):
+                    pointer = int(witnesses['BLOCKED_READ'][1][1], 16) if mode == 'deadline' and step == 2 else args[1]
+                    expected_args = (0, pointer, 1) if mode == 'deadline' else (1, pointer, 7)
+                    assert tuple(args[:3]) == (expected_args if step == 2 else (0, 0, 0)), 'raw argument recipe'
+            else:
+                result, error = struct.unpack_from('<qB', payload, 24)
+                assert error in (0, 1), 'raw error representation'
+                assert lines[3] == f'RAW_EXIT step={step} result={result} error={error}', 'raw exit agreement'
+                assert result == (owned_pid if step < 2 else 7) and error == 0, 'raw result recipe'
+        spans.append((block[0][0], block[-1][0]))
+        cursor += count
+    assert cursor == len(rows), 'extra raw records'
+    positions = {name: value[0] for name, value in witnesses.items()}
+    assert positions['SUPERVISOR'] < positions['OWNED_TARGET'] < positions['RAW_OPTIONS'], 'raw setup order'
+    if mode == 'deadline':
+        assert positions['SUPERVISOR'] < positions['BLOCKED_PIPE'] < positions['OWNED_TARGET'], 'blocked pipe order'
+    if spans:
+        assert positions['RAW_OPTIONS'] < spans[0][0], 'options after raw wait'
+    if queried:
+        assert spans[1][1] < positions['ROBUST'], 'query before clear exit'
+        if mode != 'query-bad':
+            assert positions['ROBUST'] < positions['RSEQ'], 'rseq before robust'
+        if len(spans) > 2:
+            assert positions['RSEQ'] < spans[2][0], 'query after next wait'
+    end = spans[-1][1] if spans else positions['RAW_OPTIONS']
+    tail = []
+    if mode == 'query-bad':
+        tail = ['ROBUST']
+    elif mode == 'query-short':
+        tail = ['ROBUST', 'RSEQ']
+    elif mode == 'normal':
+        tail = ['RAW_ADMISSION_OBSERVED']
+    elif mode == 'inherited':
+        tail = ['REJECT_INHERITED_FD']
+    elif mode == 'registration':
+        tail = ['RAW_REJECT_REGISTRATION_BEFORE_EXECUTION']
+    elif mode == 'deadline':
+        tail = ['BLOCKED_READ', 'RAW_DEADLINE']
+    if mode in FAILURES:
+        tail += ['FAIL', 'RAW_CLEANUP']
+    tail += ['NOTICE_RECEIPT', 'TRACER_TERMINAL', 'REAPED', 'TARGET_BYTES']
+    order = [end, *(positions[name] for name in tail)]
+    assert all(left < right for left, right in zip(order, order[1:])), 'raw completion order'
+
+
 def check(mode, evidence, init):
     owned = re.findall(r'^OWNED_TARGET.*$', evidence, re.M)
     assert len(owned) == 1, 'missing or duplicate target ownership'
@@ -44,49 +161,12 @@ def check(mode, evidence, init):
     assert ownership, 'invalid target ownership'
     pid = ownership[1]
     assert resources.check_notice('raw-' + mode, evidence) == pid, 'notice ownership differs'
-    assert 'SUPERVISOR subreaper=0 SIGCHLD=default NOCLDWAIT=0\n' in evidence
+    _raw_evidence(mode, evidence, int(pid))
     assert 'SUPERVISOR_DEADLINE' not in evidence, 'supervisor deadline expired'
-    errors = re.findall(r'^FAIL (.*?) errno=\d+$', evidence, re.M)
-    assert errors == ([FAILURES[mode]] if mode in FAILURES else []), errors
-    expected = '7 7261772d6f6b0a' if mode == 'normal' else '0 '
-    assert re.findall(r'^TARGET_BYTES (.*)$', evidence, re.M) == [expected], 'target output differs'
-    terminals = re.findall(r'^TRACER_TERMINAL \d+ wait_status=(\d+)$', evidence, re.M)
-    assert terminals == [str(9 if mode == 'death' else 90 << 8 if mode in FAILURES else 0)]
-    if mode in FAILURES:
-        assert re.search(rf'^RAW_CLEANUP target={pid} reaped={pid} status=9$', evidence, re.M)
     if mode == 'inherited':
-        assert 'FD 9 /outside/sentinel\n' in evidence and 'REJECT_INHERITED_FD\n' in evidence
+        assert 'FD 9 /outside/sentinel\n' in evidence
     if mode == 'bad-root':
-        assert 'LINK cwd /sealed/fixture\n' in evidence and 'RAW_ENTRY ' not in evidence
-    if mode == 'inherited':
-        assert 'RAW_ENTRY ' not in evidence
-    if mode == 'info-short':
-        assert 'RAW_INFO requested=1 returned=80 op=1 arch=0\n' in evidence
-        assert 'RAW_INFO_BYTES 01\n' in evidence
-    if mode == 'query-bad':
-        assert re.search(r'^ROBUST result=-1 errno=14 ', evidence, re.M)
-    if mode == 'query-short':
-        assert 'RSEQ requested=1 returned=24 ' in evidence
-    if mode in ('normal', 'registration', 'deadline', 'death', 'query-bad', 'query-short'):
-        assert 'RAW_OPTIONS mask=1048577 result=0\n' in evidence
-        assert re.search(r'^RAW_ENTRY step=0 nr=96 args=0,0,0,', evidence, re.M)
-        assert re.search(rf'^RAW_EXIT step=0 result={pid} error=0$', evidence, re.M)
-    if mode in ('normal', 'registration', 'deadline', 'death'):
-        assert re.search(r'^ROBUST result=0 errno=\d+ pointer=0 size=24 expected=24$', evidence, re.M)
-        assert 'RSEQ requested=24 returned=24 pointer=0 size=0 signature=0 flags=0 pad=0\n' in evidence
-    if mode == 'registration':
-        assert 'RAW_REJECT_REGISTRATION_BEFORE_EXECUTION\n' in evidence
-        assert 'RAW_EXIT step=2 ' not in evidence
-    if mode == 'deadline':
-        assert 'RAW_DEADLINE step=2 entering=0\n' in evidence
-        assert re.search(r'^BLOCKED_READ nr=63 fd=0 pointer=[0-9a-f]+ size=1$', evidence, re.M)
-        assert re.search(r'^BLOCKED_PIPE pipe:\[\d+\] supervisor_writer=\d+ target_reader=0$', evidence, re.M)
-        assert 'RAW_EXIT step=2 ' not in evidence
-    if mode == 'normal':
-        assert 'RAW_ADMISSION_OBSERVED\n' in evidence
-        assert 'RAW_EXIT step=2 result=7 error=0\n' in evidence
-    else:
-        assert 'RAW_ADMISSION_OBSERVED\n' not in evidence
+        assert 'LINK cwd /sealed/fixture\n' in evidence
     if mode == 'death':
         assert len(re.findall(rf"Reaped child with pid: '{pid}'(?:\r?\n|$)", init)) == 1, 'actual init reaping witness absent'
     return {'mode': mode, 'outcome': 'admitted' if mode == 'normal' else 'control observed',

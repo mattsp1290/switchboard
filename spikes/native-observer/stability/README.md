@@ -85,7 +85,7 @@ No command runs after these hashes are computed. `result.json` does not hash its
 
 Run `python3 -B -m unittest test_cleanup.CleanupTests test_admission.AdmissionTests test_finalization.FinalizationTests` from this directory.
 The focused tests drive actual source with intercepted subprocess transport. They do not establish native outcomes.
-Success tests run both actual callers through `main` and `execute`, with native binary inspection and raw collection mocked separately.
+Success tests run both actual callers through `main` and `execute`, with native binary inspection mocked and actual raw collection.
 Existing actual collector and delayed-init-flush controls remain. Resource faults exercise actual create, build, removal, and finalization.
 `FINAL_EVIDENCE_RESULT.json` records the fresh three-prerequisite and nine-raw verification.
 The historical `RESULT.json` and `ADMISSION_RESULT.json` retain their original observations.
@@ -132,3 +132,19 @@ Fresh independent inspection confirmed all fourteen owned containers and both sc
 All original resource, import, flush, collector, finalizer, and 36-instruction raw checks remain required.
 All 72 birth controls B1 through B20, L9, and P1 through P5, full lifetime, epochs, imports, compiler, SDK, adapter, and live gates remain open.
 No residual birth fit or authority claim follows from this current single-root boundary.
+
+## Retained raw evidence validation
+
+The raw checker requires complete ordered wait, header, byte, and summary blocks for each of the nine existing modes.
+It validates the pinned little-endian layout, canonical text agreement, scalar recipe, and unique query and completion witnesses.
+Missing, duplicate, malformed, misplaced, or contradictory governed rows refuse before a case can be published, including both modes with no syscall-info records.
+The short control proves only its one copied byte. Successful robust-query errno remains an observed stale value.
+The deadline pointer must match the same unique blocked-read witness that follows its complete entry block.
+IP, SP, padding, high arguments, and the normal write pointer have no added host authority. Native source and maps remain the write-address authority.
+Wait rows contain neither TID nor acquired ordinal. The host checks consistency under the pinned single-target producer, not independent kernel provenance.
+Run `python3 -B -m unittest test_cleanup.CleanupTests test_admission.AdmissionTests test_finalization.FinalizationTests test_notices.NoticeTests test_raw_evidence.RawEvidenceTests` for inert verification.
+These tests use independent bytes and fixtures, actual final-stream collection, both actual mains, the shared resource owner, and final digest binding.
+Fresh parent runs passed all 165 notice controls in each caller, all three prerequisite cases, and all nine raw modes.
+`RAW_EVIDENCE_RESULT.json` binds both runs and independent absence of all fourteen containers and both scratch images.
+All 165 native notice controls, three prerequisite cases, nine raw cases, source and binary identity, actual init, import, resource, flush, finalizer, and 36-instruction checks remain required.
+All 72 birth cases, full lifetime, epochs, imports, compiler, SDK, adapter, and live gates remain open. Full stability remains `INCONCLUSIVE`.
