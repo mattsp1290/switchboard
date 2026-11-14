@@ -1,0 +1,46 @@
+{
+  "status": "SUPPORTED_FINAL_EVIDENCE_BINDING",
+  "nativeObserved": true,
+  "scope": "Final evidence binding for existing prerequisite and single raw target callers only.",
+  "prerequisite": {
+    "status": "INCONCLUSIVE",
+    "modes": [
+      "normal",
+      "inherited",
+      "death"
+    ],
+    "evidence": "local/1794634822778672000",
+    "resultSha256": "91f53a80e7b5d578152d9d415ea40248924b39366cd5f9f97537ac7f224793f2",
+    "commandsSha256": "1dff422cabb6b53b6a6f90d71ab5ad9ecf273cece3cfdd4c81037fb7b84d2f6d",
+    "cleanupSha256": "35378ab045c42033478c9e26f6467c90c5b15018f61cd8aa7bbc0f5a90e83298",
+    "hashesSha256": "4e287000d32751bfed4b217d9cbaa8043f31112409064b2faf174037e6631dda",
+    "binarySha256": "81a8211aabc153f3cfdc295ea7cf38e21d121e7f96edd1b79554fc25bbb4732d",
+    "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
+    "independentAbsenceEvidence": "local/1794634822778672000/parent-independent-absence.json",
+    "independentAbsenceSha256": "daff6963c17c3e1a5d1971af2ebfd3adb929412cfb1d2e943325a55cb001cbc0"
+  },
+  "rawAdmission": {
+    "status": "SUPPORTED_SINGLE_TARGET_ADMISSION",
+    "modes": [
+      "normal",
+      "inherited",
+      "bad-root",
+      "info-short",
+      "query-bad",
+      "query-short",
+      "registration",
+      "deadline",
+      "death"
+    ],
+    "evidence": "local/1794634858491410000",
+    "resultSha256": "29358ca1e749b18220ead957f5de615c9b138faa336dbe2d15dda6547110c65a",
+    "commandsSha256": "d071de1f5060aec16f83adccc2ffc074b2ea137546f0987630d1b86bf04e8de4",
+    "cleanupSha256": "35378ab045c42033478c9e26f6467c90c5b15018f61cd8aa7bbc0f5a90e83298",
+    "hashesSha256": "cedc85b4ee1c7682116a0397da77ad68bca24e46d319c8e59eacbf331056a2d1",
+    "binarySha256": "91e6f3943d7b4968119826becdd47c92cb3f2f4c0e9d3ed425e28a84ea27b89a",
+    "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
+    "independentAbsenceEvidence": "local/1794634858491410000/parent-independent-absence.json",
+    "independentAbsenceSha256": "df6999941913c4b4003c31171fb213ccf1c04a89751a0e7a5e1630e6bbab94fe"
+  },
+  "remaining": "Full family custody, pathname stability, Node, SDK imports, native adapters and live acceptance remain open."
+}
