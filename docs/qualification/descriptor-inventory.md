@@ -2,10 +2,13 @@
 
 On 2026-11-14, the frozen switchboard-xp2c repair passed its finite native descriptor controls on Lunus macOS with Linux AArch64 Docker.
 This qualifies the captured descriptor error handling only. Overall pathname stability remains `INCONCLUSIVE`.
-This exact-source evidence supersedes the earlier SOURCE ONLY and UNRUN statement in the observer README for the hashes below.
+This exact-source evidence supersedes the FD section's SOURCE ONLY, UNRUN, missing-hash, and pending-native-qualification statements in the observer README for the hashes below.
 
 The repair clears errno before each readdir, preserves the terminating errno through one closedir, and refuses through the existing target cleanup owner.
 The pinned Zig 0.17.0 musl readdir leaves errno unchanged when getdents returns -ENOENT, so a vanished /proc task appears as clean EOF after the caller clears errno.
+This behavior is established by local source inspection of `/opt/homebrew/Cellar/zig/0.17.0/lib/zig/libc/musl/src/dirent/readdir.c` on Lunus.
+The inspected source has SHA256 `e3f239d10c9305f61949f8f70b0ff138f6d9eef19e43a89889380f3fcb6ed743` and is retained in `~/.codex/orchestrate/switchboard-epic/fd-pinned-musl-readdir.txt`.
+That inspection establishes the pinned source behavior only. It does not establish an observed native ENOENT case.
 That case relies on the later stdio and ptrace refusals rather than the descriptor read-error refusal.
 Both raw and prerequisite helper modes ran each of these eight controls, for sixteen cases, each launched by docker exec into a live hold container.
 
@@ -40,6 +43,8 @@ The 21-file source manifest `source-manifest.json` has SHA256 `b0cf8a9886ac3f96a
 The helper, shim, and driver source SHA256 values are `3891e8c10341e58896219380ca74c68d8810e69a7b06e8f53a788efc33dc7f10`, `742d63451ac9f59543316e7ac1c76af0c041e873d59abe617c54d8a5787e7bf4`, and `42ef209c621dd42d910f0432317efe71983fbc4b7f49ffb2a6836df587d1dd0a`.
 The source is `c7e12ccf983b3ec8f8b6911d834082fdc2a38a20` plus the six approved owner-refactor postimages. Run IDs are prerequisite `1794693887605534000` and inventory `1794693912735137000`.
 `run.main(raw, compile_args)` returns the suite result. `execute(raw, suite, finalize)` owns cleanup, final hashes, the single finalizer, and atomic publication through `result.pending`.
+The owner refactor migrated the original cleanup, finalization, and notice fault oracles in `test_cleanup.py`, `test_finalization.py`, and `test_notices.py` to drive the actual `execute` with the returned-result contract.
+This supersedes the observer README statement that the original 48 host tests remain unchanged.
 Prerequisite and instrumented binary SHA256 values are `8f7321887dccd8b2321e96ab92bf764f7ba9a5fd1b3bdcf8ded2f72bb39608a1` and `3a1b4a84ba90d2c2187b27c6b0f3fd3f1f9a15413bf4a74e19fdf501b6225de1`.
 Prerequisite and inventory command-ledger SHA256 values are `c9aa1b9edd46dc01b7e0c0b54b9ff3e64c51626c9e055a83bee0bb57699c3e69` and `471404ccb6863fdcedf35f3b8f18908ab60d433d1a2afa6b0522181cacca201f`.
 Their result SHA256 values are `f09dcd791d70c512ca01265e7112ad8ca49e76e813518a635091d3a84607d08e` and `79ea77b910fb209f55cae0cc0d98d21dfbd96b2dbb80a468da9d5902ff0cfbc3`.
