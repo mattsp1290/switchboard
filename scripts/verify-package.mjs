@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,10 +85,19 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
+  cpSync(join(root, 'tests/qualification'), join(consumer, 'qualification'), { recursive: true });
+  const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
+    .sort().map((file) => `qualification/${file}`);
+  assert(qualificationFixtures.length > 0, 'Installed qualification consumers exist.');
   const runtimeEnvironment = { ...process.env };
   delete runtimeEnvironment.NODE_TEST_CONTEXT;
-  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
+  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures, ...qualificationFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
+  const { contracts } = await import(new URL('../tests/qualification/harness/contracts.mjs', import.meta.url));
+  for (const name of Object.keys(contracts)) {
+    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
+  }
+  assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
   process.stdout.write(runtimeOutput);
   const consumerConfig = {
     compilerOptions: {
