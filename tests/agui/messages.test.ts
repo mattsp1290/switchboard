@@ -132,6 +132,28 @@ test('explicit text reopening stays immutable across replacement, omission and a
   mapped(actor, ended); rejects(actor, startTool());
 });
 
+test('historical text reopeners preserve the current actual-tool parent constraint', () => {
+  for (const role of ['assistant', 'user'] as const) {
+    const opener: ProjectionFact = { kind: 'text-started', message, role, owner: a };
+    const ended: ProjectionFact = { kind: 'text-ended', message, owner: a };
+    const prefix = [opener, ended, snapshot([parent(b)]), startTool(b), opener, ended];
+    mapped(running(prefix), startTool(b, ref('second')));
+    rejects(running(prefix), startTool(a, ref('second')));
+  }
+});
+
+test('actual activity promotes snapshot observations before text and result collisions', () => {
+  const baseline: ProjectionFact = { kind: 'activity-snapshot', message, owner: b, activityType: 'progress', content: {} };
+  const unrelated: ProjectionFact = { kind: 'tool-started', tool, name: 'fn', owner: a };
+  for (const preliminary of [[], [snapshot([activity()])]] satisfies ProjectionFact[][]) {
+    const prefix = [...preliminary, baseline, delta()];
+    rejects(running(prefix), text());
+    rejects(running([...prefix, unrelated, endTool()]), result(message));
+  }
+  mapped(running([snapshot([activity()])]), text());
+  mapped(running([snapshot([activity()]), unrelated, endTool()]), result(message));
+});
+
 test('activity current baseline can coexist with immutable text and emitted-result evidence', () => {
   const textActor = running([text(), { kind: 'text-ended', message, owner: a }, snapshot([activity()])]);
   mapped(textActor, delta());
@@ -139,6 +161,7 @@ test('activity current baseline can coexist with immutable text and emitted-resu
   mapped(textActor, text()); mapped(textActor, { kind: 'text-ended', message, owner: a });
   const resultActor = running([startTool(), endTool(), result(), snapshot([activity(ref('result'))])]);
   mapped(resultActor, delta(ref('result')));
+  mapped(resultActor, { kind: 'activity-snapshot', message: ref('result'), owner: b, activityType: 'progress', content: {} });
   rejects(resultActor, { kind: 'text-started', message: ref('result'), role: 'assistant' });
   rejects(running([{ kind: 'activity-snapshot', message, activityType: 'old', content: {} }]), text());
   rejects(running([snapshot([activity()])]), { ...delta(), owner: a });

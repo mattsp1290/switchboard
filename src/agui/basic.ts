@@ -247,7 +247,8 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, k
       updates.push([transition.owner, { kind: 'owner', open: false }]);
     }
     knowledge.set(transition.id, { role: 'activity', owner: transition.owner });
-    updates.push([transition.id, ledger.get(transition.id) ?? { kind: 'activity', owner: transition.owner, open: false }]);
+    updates.push([transition.id, !historical || historical.kind === 'observation'
+      ? { kind: 'activity', owner: transition.owner, open: false } : historical]);
     return updates;
   }
   const current = ledger.get(transition.id);
@@ -275,8 +276,8 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, k
       if (!identical || !('owner' in current) || current.owner !== owner) reject('identity-conflict');
       if (current.open) reject('invalid-order');
     }
-    if (incoming.kind === 'text') knowledge.set(transition.id, incoming.role === 'assistant'
-      ? { role: 'assistant', owner, constrained: constrained(transition.id) !== undefined } : { role: 'other' });
+    if (incoming.kind === 'text' && !constrained(transition.id)) knowledge.set(transition.id, incoming.role === 'assistant'
+      ? { role: 'assistant', owner, constrained: false } : { role: 'other' });
     updates.push([transition.id, { ...transition.stream,
       ...(current?.kind === 'tool' && current.result !== undefined ? { result: current.result } : {}),
     }]);

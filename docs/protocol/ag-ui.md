@@ -15,7 +15,9 @@ The actor retains immutable explicit openers and emitted results separately from
 Snapshots may replace or omit current knowledge without closing explicit streams or changing actual pending-call order.
 Omitted activity and reasoning knowledge survives only when the snapshot has none of that role; an incoming same-ID message wins.
 A first actual tool start constrains its current assistant parent's owner, inferring that parent when unobserved or omitted.
-Snapshots reset that constraint. Matching explicit text/tool reopening continues to use the immutable opener.
+Snapshots reset that constraint. Matching explicit text/tool reopening continues to use the immutable opener and preserves any current actual-tool parent constraint.
+An actual activity snapshot or delta promotes snapshot-only observations to activity evidence, preventing a first text opener or emitted result from reusing that identity.
+Current activity can still coexist with immutable text or result evidence retained from before a message snapshot.
 Snapshot calls and tool messages never create pending calls or answer actual calls. Actual duplicate results remain rejected.
 `maxEntities` charges unique message, tool, step and owner identities once per run, including inferred parents and omitted snapshots.
 Nested snapshot call IDs consume payload/work bounds but do not enter the actual call ledger. All state updates and output capture commit together.
