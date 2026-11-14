@@ -3,9 +3,10 @@ import { getEventListeners } from 'node:events';
 import { setImmediate } from 'node:timers/promises';
 import type {
   DispatchIdentity, DispatchObservation, DispatchSnapshot, Outcome, SessionBinding, SessionReference,
-} from '@mattsp1290/switchboard';
+} from '../index.js';
 import type {
-  QualificationContracts, QualificationFactory, QualificationFixture, QualificationResult, RecordIntent,
+  QualificationConnection, QualificationContracts, QualificationFactory, QualificationFixture, QualificationResult,
+  QualificationSubmitError, RecordIntent,
 } from './types.js';
 import { deferred } from './deferred.js';
 import type { Deferred } from './deferred.js';
@@ -109,7 +110,7 @@ function ok<T, E>(outcome: Outcome<T, E>): T {
   return outcome.value;
 }
 
-function error(outcome: Outcome<unknown, { readonly code: string }>, code: string) {
+function error<E extends { readonly code: string }>(outcome: Outcome<unknown, E>, code: E['code']) {
   assert.equal(outcome.kind, 'error');
   assert.equal(outcome.error.code, code);
 }
@@ -284,8 +285,8 @@ async function interaction(factory: QualificationFactory, signal: AbortSignal) {
     assert.ok(choice);
     const reply = { formatVersion: 1, kind: 'approval', target: approval.target,
       nativeChoiceId: choice.nativeChoiceId };
-    const wrongTargets: [unknown, string][] = [
-      ...(['account', 'authorizedScope'] satisfies (keyof SessionBinding)[]).map<[unknown, string]>((key) => [{ ...reply.target,
+    const wrongTargets: [unknown, QualificationSubmitError['code']][] = [
+      ...(['account', 'authorizedScope'] satisfies (keyof SessionBinding)[]).map<[unknown, QualificationSubmitError['code']]>((key) => [{ ...reply.target,
         session: { ...a, binding: { ...a.binding, [key]: `${a.binding[key]}-wrong` } } }, 'binding-mismatch']),
       [{ ...reply.target, session: b }, 'session-mismatch'],
       [{ ...reply.target, nativeApprovalId: 'wrong-approval' }, 'target-mismatch'],
@@ -351,252 +352,227 @@ async function interaction(factory: QualificationFactory, signal: AbortSignal) {
   });
 }
 
-async function events(factory: QualificationFactory, signal: AbortSignal) {
-  await scenario(factory, signal, async (fixture, owner) => {
-    const connection = fixture.connect(simulatedHost([fixture.samples.a]));
-    const held = fixture.controls.holdNextCompletion();
-    owner.registerHold(held.release);
-    const accepted = ok(await owner.wait(connection.submit({ session: fixture.samples.a,
-      hostOperationId: 'subscription-abort-work' }, signal)));
-    await owner.wait(held.entered);
-    observed(accepted, 'accepted');
-    let completed = false;
-    owner.registerCallbackExit(held.completed.then(() => { completed = true; }));
-    const entered = deferred();
-    const release = deferred();
-    const exited = deferred();
-    owner.registerHold(release.resolve);
-    const input = new AbortController();
-    const slowValues: number[] = [];
-    const fastValues: number[] = [];
-    const callbackErrors: unknown[] = [];
-    const seen: [Deferred, Deferred, Deferred] = [deferred(), deferred(), deferred()];
-    let delivery: AbortSignal | undefined;
-    const slow = ok(connection.events.subscribe(async (event, deliverySignal) => {
-      owner.registerCallbackExit(exited.promise);
-      slowValues.push(event.sequence);
-      delivery = deliverySignal;
-      entered.resolve();
-      try { await owner.wait(release.promise); } catch (error) { callbackErrors.push(error); }
-      finally { exited.resolve(); }
-    }, { signal: input.signal }));
-    owner.registerObserver(slow.dispose);
-    const fast = ok(connection.events.subscribe((event) => {
-      fastValues.push(event.sequence);
-      seen[event.sequence - 1]?.resolve();
-    }));
-    owner.registerObserver(fast.dispose);
-    fixture.controls.emit(1);
-    await owner.wait(entered.promise);
-    await owner.wait(seen[0].promise);
-    fixture.controls.emit(2);
-    await owner.wait(seen[1].promise);
-    assert.deepEqual(slowValues, [1], 'second delivery queues behind the active callback');
-    input.abort();
-    assert.equal(await owner.wait(slow.ended), 'aborted');
-    assert.ok(delivery);
-    assert.equal(delivery.aborted, true);
-    assert.equal(getEventListeners(input.signal, 'abort').length, 0);
-    error(connection.events.subscribe(() => {}), 'capacity');
-    release.resolve();
-    await owner.wait(exited.promise);
-    await owner.wait(setImmediate());
-    assert.deepEqual([...callbackErrors], []);
-    assert.deepEqual(slowValues, [1], 'input abort drops queued events');
-    const renewed = ok(connection.events.subscribe(() => {}));
-    owner.registerObserver(renewed.dispose);
-    fixture.controls.emit(3);
-    await owner.wait(seen[2].promise);
-    assert.deepEqual(fastValues, [1, 2, 3], 'input abort leaves other observers attached');
-    assert.equal(completed, false, 'input abort cannot complete native work');
-    counts(fixture, 1, 1, 0, 0);
-    held.release();
-    await owner.wait(held.completed);
-    const result = ok(await owner.wait(connection.recover(accepted).reconcile(signal)));
-    conclusive(result, accepted.identity);
-    counts(fixture, 1, 1, 1, 0);
-  });
-  await scenario(factory, signal, async (fixture, owner) => {
-    const first = fixture.connect(simulatedHost([fixture.samples.a]));
-    const entered = deferred();
-    const release = deferred();
-    const exited = deferred();
-    const secondDelivered = deferred();
-    const values: number[] = [];
-    const callbackErrors: unknown[] = [];
-    let active = 0;
-    let maximum = 0;
-    owner.registerHold(release.resolve);
-    const observer = ok(first.events.subscribe(async (event) => {
-      const callbackExit = deferred();
-      owner.registerCallbackExit(callbackExit.promise);
-      active++;
-      maximum = Math.max(maximum, active);
-      values.push(event.sequence);
-      try {
-        if (event.sequence === 1) {
-          entered.resolve();
-          await owner.wait(release.promise);
-        } else {
-          secondDelivered.resolve();
-        }
-      } catch (error) { callbackErrors.push(error); }
-      finally {
-        active--;
-        callbackExit.resolve();
-        if (event.sequence === 1) exited.resolve();
+function gatedObserver(events: QualificationConnection['events'], owner: ScenarioOwner) {
+  const entered = deferred();
+  const release = deferred();
+  const exited = deferred();
+  const input = new AbortController();
+  const values: number[] = [];
+  const errors: unknown[] = [];
+  const activity = { active: 0, maximum: 0 };
+  let delivery: AbortSignal | undefined;
+  owner.registerHold(release.resolve);
+  const subscription = ok(events.subscribe(async (event, deliverySignal) => {
+    owner.registerCallbackExit(exited.promise);
+    activity.active++;
+    activity.maximum = Math.max(activity.maximum, activity.active);
+    values.push(event.sequence);
+    delivery = deliverySignal;
+    entered.resolve();
+    try { await owner.wait(release.promise); } catch (error) { errors.push(error); }
+    finally { activity.active--; exited.resolve(); }
+  }, { signal: input.signal }));
+  owner.registerObserver(subscription.dispose);
+  return {
+    subscription, input, values, errors, activity, entered: entered.promise,
+    delivery() { assert.ok(delivery); return delivery; },
+    async releaseAndDrain() {
+      release.resolve();
+      await owner.wait(exited.promise);
+      await owner.wait(setImmediate());
+    },
+  };
+}
+
+async function assertDetached(gated: ReturnType<typeof gatedObserver>, events: QualificationConnection['events'],
+  owner: ScenarioOwner, reason: 'aborted' | 'overflow' | 'disposed') {
+  assert.equal(await owner.wait(gated.subscription.ended), reason);
+  assert.equal(gated.delivery().aborted, true);
+  assert.equal(getEventListeners(gated.input.signal, 'abort').length, 0);
+  error(events.subscribe(() => {}), 'capacity');
+  await gated.releaseAndDrain();
+  assert.deepEqual<unknown[]>(gated.errors, []);
+}
+
+async function subscriptionAbort(fixture: QualificationFixture, owner: ScenarioOwner, signal: AbortSignal) {
+  const connection = fixture.connect(simulatedHost([fixture.samples.a]));
+  const held = fixture.controls.holdNextCompletion();
+  owner.registerHold(held.release);
+  const accepted = ok(await owner.wait(connection.submit({ session: fixture.samples.a,
+    hostOperationId: 'subscription-abort-work' }, signal)));
+  await owner.wait(held.entered);
+  observed(accepted, 'accepted');
+  let completed = false;
+  owner.registerCallbackExit(held.completed.then(() => { completed = true; }));
+  const slow = gatedObserver(connection.events, owner);
+  const fastValues: number[] = [];
+  const seen: [Deferred, Deferred, Deferred] = [deferred(), deferred(), deferred()];
+  const fast = ok(connection.events.subscribe((event) => {
+    fastValues.push(event.sequence);
+    seen[event.sequence - 1]?.resolve();
+  }));
+  owner.registerObserver(fast.dispose);
+  fixture.controls.emit(1);
+  await owner.wait(slow.entered);
+  await owner.wait(seen[0].promise);
+  fixture.controls.emit(2);
+  await owner.wait(seen[1].promise);
+  assert.deepEqual(slow.values, [1], 'second delivery queues behind the active callback');
+  slow.input.abort();
+  await assertDetached(slow, connection.events, owner, 'aborted');
+  assert.deepEqual(slow.values, [1], 'input abort drops queued events');
+  const renewed = ok(connection.events.subscribe(() => {}));
+  owner.registerObserver(renewed.dispose);
+  fixture.controls.emit(3);
+  await owner.wait(seen[2].promise);
+  assert.deepEqual(fastValues, [1, 2, 3], 'input abort leaves other observers attached');
+  assert.equal(completed, false, 'input abort cannot complete native work');
+  counts(fixture, 1, 1, 0, 0);
+  held.release();
+  await owner.wait(held.completed);
+  const result = ok(await owner.wait(connection.recover(accepted).reconcile(signal)));
+  conclusive(result, accepted.identity);
+  counts(fixture, 1, 1, 1, 0);
+}
+
+async function fifoDelivery(fixture: QualificationFixture, owner: ScenarioOwner) {
+  const first = fixture.connect(simulatedHost([fixture.samples.a]));
+  const entered = deferred();
+  const release = deferred();
+  const exited = deferred();
+  const secondDelivered = deferred();
+  const values: number[] = [];
+  const callbackErrors: unknown[] = [];
+  let active = 0;
+  let maximum = 0;
+  owner.registerHold(release.resolve);
+  const observer = ok(first.events.subscribe(async (event) => {
+    const callbackExit = deferred();
+    owner.registerCallbackExit(callbackExit.promise);
+    active++;
+    maximum = Math.max(maximum, active);
+    values.push(event.sequence);
+    try {
+      if (event.sequence === 1) {
+        entered.resolve();
+        await owner.wait(release.promise);
+      } else {
+        secondDelivered.resolve();
       }
-    }));
-    owner.registerObserver(observer.dispose);
-    fixture.controls.emit(1);
-    await owner.wait(entered.promise);
-    fixture.controls.emit(2);
-    assert.deepEqual(values, [1], 'queued callback waits for the active callback');
-    release.resolve();
-    await owner.wait(exited.promise);
-    await owner.wait(secondDelivered.promise);
-    assert.deepEqual(values, [1, 2], 'slow observer drains queued events in order');
-    assert.equal(maximum, 1, 'observer callbacks do not overlap');
-    await owner.wait(setImmediate());
-    assert.equal(active, 0);
-    assert.deepEqual([...callbackErrors], []);
-    observer.dispose();
-    assert.equal(await owner.wait(observer.ended), 'disposed');
-    counts(fixture, 0, 0, 0, 0);
-  });
-  await scenario(factory, signal, async (fixture, owner) => {
-    const { a, b } = fixture.samples;
-    const host = simulatedHost([a, b]);
-    const first = fixture.connect(host);
-    const held = fixture.controls.holdNextCompletion();
-    owner.registerHold(held.release);
-    fixture.controls.loseNextAcknowledgement();
-    const saved = ok(await owner.wait(first.submit({ session: a, hostOperationId: 'event-work' }, signal)));
-    await owner.wait(held.entered);
-    observed(saved, 'outcome-unknown');
-    let completed = false;
-    owner.registerCallbackExit(held.completed.then(() => { completed = true; }));
-    fixture.controls.emit(0);
-    const entered = deferred();
-    const release = deferred();
-    const exited = deferred();
-    owner.registerHold(release.resolve);
-    const input = new AbortController();
-    const slowValues: number[] = [];
-    const fastValues: number[] = [];
-    const callbackErrors: unknown[] = [];
-    const seen: [Deferred, Deferred, Deferred, Deferred, Deferred] =
-      [deferred(), deferred(), deferred(), deferred(), deferred()];
-    let active = 0;
-    let maximum = 0;
-    let delivery: AbortSignal | undefined;
-    const slow = ok(first.events.subscribe(async (event, deliverySignal) => {
-      owner.registerCallbackExit(exited.promise);
-      active++;
-      maximum = Math.max(maximum, active);
-      slowValues.push(event.sequence);
-      delivery = deliverySignal;
-      entered.resolve();
-      try { await owner.wait(release.promise); } catch (error) { callbackErrors.push(error); }
-      finally { active--; exited.resolve(); }
-    }, { signal: input.signal }));
-    owner.registerObserver(slow.dispose);
-    const fast = ok(first.events.subscribe((event) => {
-      fastValues.push(event.sequence);
-      seen[event.sequence - 1]?.resolve();
-    }));
-    owner.registerObserver(fast.dispose);
-    fixture.controls.emit(1);
-    await owner.wait(entered.promise);
-    await owner.wait(seen[0].promise);
-    fixture.controls.emit(2);
-    await owner.wait(seen[1].promise);
-    fixture.controls.emit(3);
-    await owner.wait(seen[2].promise);
-    assert.deepEqual(fastValues, [1, 2, 3]);
-    assert.deepEqual(slowValues, [1]);
-    assert.equal(await owner.wait(slow.ended), 'overflow');
-    assert.ok(delivery);
-    assert.equal(delivery.aborted, true);
-    assert.equal(getEventListeners(input.signal, 'abort').length, 0);
-    error(first.events.subscribe(() => {}), 'capacity');
-    release.resolve();
-    await owner.wait(exited.promise);
-    await owner.wait(setImmediate());
-    assert.deepEqual([...callbackErrors], []);
-    assert.deepEqual(slowValues, [1], 'overflow drops queued events');
-    assert.equal(maximum, 1);
-    assert.equal(active, 0);
-    const throwing = ok(first.events.subscribe(() => { throw new Error('Observer failed.'); }));
-    owner.registerObserver(throwing.dispose);
-    fixture.controls.emit(4);
-    await owner.wait(seen[3].promise);
-    assert.equal(await owner.wait(throwing.ended), 'listener-error');
-    await owner.wait(setImmediate());
-    const disposalEntered = deferred();
-    const disposalRelease = deferred();
-    const disposalExit = deferred();
-    owner.registerHold(disposalRelease.resolve);
-    const disposalInput = new AbortController();
-    let disposalDelivery: AbortSignal | undefined;
-    const disposed = ok(first.events.subscribe(async (_, deliverySignal) => {
-      owner.registerCallbackExit(disposalExit.promise);
-      disposalDelivery = deliverySignal;
-      disposalEntered.resolve();
-      try { await owner.wait(disposalRelease.promise); } catch (error) { callbackErrors.push(error); }
-      finally { disposalExit.resolve(); }
-    }, { signal: disposalInput.signal }));
-    owner.registerObserver(disposed.dispose);
-    fixture.controls.emit(5);
-    await owner.wait(disposalEntered.promise);
-    await owner.wait(seen[4].promise);
-    disposed.dispose();
-    assert.equal(await owner.wait(disposed.ended), 'disposed');
-    assert.ok(disposalDelivery);
-    assert.equal(disposalDelivery.aborted, true);
-    assert.equal(getEventListeners(disposalInput.signal, 'abort').length, 0);
-    error(first.events.subscribe(() => {}), 'capacity');
-    disposalRelease.resolve();
-    await owner.wait(disposalExit.promise);
-    await owner.wait(setImmediate());
-    assert.deepEqual([...callbackErrors], []);
-    assert.deepEqual(fastValues, [1, 2, 3, 4, 5]);
-    const renewed = ok(first.events.subscribe(() => {}));
-    owner.registerObserver(renewed.dispose);
-    renewed.dispose();
-    assert.equal(await owner.wait(renewed.ended), 'disposed');
-    fast.dispose();
-    assert.equal(await owner.wait(fast.ended), 'disposed');
-    assert.equal(completed, false, 'observer lifecycle cannot complete native work');
-    counts(fixture, 1, 1, 0, 0);
-    const closing = first.close();
-    assert.equal(first.close(), closing, 'close() must return the same promise');
-    const [one, two] = await owner.wait(Promise.all([closing, first.close()]));
-    assert.equal(one, two, 'close() must settle to the same outcome object');
-    ok(one);
-    error(first.events.subscribe(() => {}), 'closed');
-    error(await owner.wait(first.submit({ session: a, hostOperationId: 'closed' }, signal)), 'closed');
-    error(await owner.wait(first.recover(saved).reconcile(signal)), 'lookup-failed');
-    counts(fixture, 1, 1, 0, 1);
-    assert.equal(completed, false, 'transport close cannot complete native work');
-    held.release();
-    await owner.wait(held.completed);
-    assert.equal(completed, true);
-    const next = fixture.connect(host);
-    const nextValues: number[] = [];
-    const nextSeen = deferred();
-    const observer = ok(next.events.subscribe((event) => {
-      nextValues.push(event.sequence);
-      nextSeen.resolve();
-    }));
-    owner.registerObserver(observer.dispose);
-    fixture.controls.emit(6);
-    await owner.wait(nextSeen.promise);
-    assert.deepEqual(nextValues, [6], 'reconnect does not replay events');
-    ok(await owner.wait(next.close()));
-    assert.equal(await owner.wait(observer.ended), 'closed');
-    counts(fixture, 1, 1, 0, 2);
-  });
+    } catch (error) { callbackErrors.push(error); }
+    finally {
+      active--;
+      callbackExit.resolve();
+      if (event.sequence === 1) exited.resolve();
+    }
+  }));
+  owner.registerObserver(observer.dispose);
+  fixture.controls.emit(1);
+  await owner.wait(entered.promise);
+  fixture.controls.emit(2);
+  assert.deepEqual(values, [1], 'queued callback waits for the active callback');
+  release.resolve();
+  await owner.wait(exited.promise);
+  await owner.wait(secondDelivered.promise);
+  assert.deepEqual(values, [1, 2], 'slow observer drains queued events in order');
+  assert.equal(maximum, 1, 'observer callbacks do not overlap');
+  await owner.wait(setImmediate());
+  assert.equal(active, 0);
+  assert.deepEqual<unknown[]>(callbackErrors, []);
+  observer.dispose();
+  assert.equal(await owner.wait(observer.ended), 'disposed');
+  counts(fixture, 0, 0, 0, 0);
+}
+
+async function overflowAndLifecycle(fixture: QualificationFixture, owner: ScenarioOwner, signal: AbortSignal) {
+  const { a, b } = fixture.samples;
+  const host = simulatedHost([a, b]);
+  const first = fixture.connect(host);
+  const held = fixture.controls.holdNextCompletion();
+  owner.registerHold(held.release);
+  fixture.controls.loseNextAcknowledgement();
+  const saved = ok(await owner.wait(first.submit({ session: a, hostOperationId: 'event-work' }, signal)));
+  await owner.wait(held.entered);
+  observed(saved, 'outcome-unknown');
+  let completed = false;
+  owner.registerCallbackExit(held.completed.then(() => { completed = true; }));
+  fixture.controls.emit(0);
+  const slow = gatedObserver(first.events, owner);
+  const fastValues: number[] = [];
+  const seen: [Deferred, Deferred, Deferred, Deferred, Deferred] =
+    [deferred(), deferred(), deferred(), deferred(), deferred()];
+  const fast = ok(first.events.subscribe((event) => {
+    fastValues.push(event.sequence);
+    seen[event.sequence - 1]?.resolve();
+  }));
+  owner.registerObserver(fast.dispose);
+  fixture.controls.emit(1);
+  await owner.wait(slow.entered);
+  await owner.wait(seen[0].promise);
+  fixture.controls.emit(2);
+  await owner.wait(seen[1].promise);
+  fixture.controls.emit(3);
+  await owner.wait(seen[2].promise);
+  assert.deepEqual(fastValues, [1, 2, 3]);
+  assert.deepEqual(slow.values, [1]);
+  await assertDetached(slow, first.events, owner, 'overflow');
+  assert.deepEqual(slow.values, [1], 'overflow drops queued events');
+  assert.equal(slow.activity.maximum, 1);
+  assert.equal(slow.activity.active, 0);
+  const throwing = ok(first.events.subscribe(() => { throw new Error('Observer failed.'); }));
+  owner.registerObserver(throwing.dispose);
+  fixture.controls.emit(4);
+  await owner.wait(seen[3].promise);
+  assert.equal(await owner.wait(throwing.ended), 'listener-error');
+  await owner.wait(setImmediate());
+  const disposed = gatedObserver(first.events, owner);
+  fixture.controls.emit(5);
+  await owner.wait(disposed.entered);
+  await owner.wait(seen[4].promise);
+  disposed.subscription.dispose();
+  await assertDetached(disposed, first.events, owner, 'disposed');
+  assert.deepEqual(fastValues, [1, 2, 3, 4, 5]);
+  const renewed = ok(first.events.subscribe(() => {}));
+  owner.registerObserver(renewed.dispose);
+  renewed.dispose();
+  assert.equal(await owner.wait(renewed.ended), 'disposed');
+  fast.dispose();
+  assert.equal(await owner.wait(fast.ended), 'disposed');
+  assert.equal(completed, false, 'observer lifecycle cannot complete native work');
+  counts(fixture, 1, 1, 0, 0);
+  const closing = first.close();
+  assert.equal(first.close(), closing, 'close() must return the same promise');
+  const [one, two] = await owner.wait(Promise.all([closing, first.close()]));
+  assert.equal(one, two, 'close() must settle to the same outcome object');
+  ok(one);
+  error(first.events.subscribe(() => {}), 'closed');
+  error(await owner.wait(first.submit({ session: a, hostOperationId: 'closed' }, signal)), 'closed');
+  error(await owner.wait(first.recover(saved).reconcile(signal)), 'lookup-failed');
+  counts(fixture, 1, 1, 0, 1);
+  assert.equal(completed, false, 'transport close cannot complete native work');
+  held.release();
+  await owner.wait(held.completed);
+  assert.equal(completed, true);
+  const next = fixture.connect(host);
+  const nextValues: number[] = [];
+  const nextSeen = deferred();
+  const observer = ok(next.events.subscribe((event) => {
+    nextValues.push(event.sequence);
+    nextSeen.resolve();
+  }));
+  owner.registerObserver(observer.dispose);
+  fixture.controls.emit(6);
+  await owner.wait(nextSeen.promise);
+  assert.deepEqual(nextValues, [6], 'reconnect does not replay events');
+  ok(await owner.wait(next.close()));
+  assert.equal(await owner.wait(observer.ended), 'closed');
+  counts(fixture, 1, 1, 0, 2);
+}
+
+async function events(factory: QualificationFactory, signal: AbortSignal) {
+  await scenario(factory, signal, (fixture, owner) => subscriptionAbort(fixture, owner, signal));
+  await scenario(factory, signal, fifoDelivery);
+  await scenario(factory, signal, (fixture, owner) => overflowAndLifecycle(fixture, owner, signal));
 }
 
 export const contracts: QualificationContracts = Object.freeze({ uncertainty, sessions, interaction, events });

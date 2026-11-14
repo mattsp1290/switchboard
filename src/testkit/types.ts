@@ -2,7 +2,7 @@ import type {
   AdapterError, AdapterIdentity, DispatchIdentity, DispatchSnapshot, EventObserver, FreshDispatchOptions, InteractionContinuation,
   InteractionError, NativeDispatchObservation, Outcome, PendingApproval, PendingInteraction,
   ReconciliationHandle, SessionReference, SessionReferenceError,
-} from '@mattsp1290/switchboard';
+} from '../index.js';
 
 export interface QualificationResult {
   readonly continuation: InteractionContinuation | undefined;

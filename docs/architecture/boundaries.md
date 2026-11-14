@@ -46,7 +46,13 @@ The following directories describe source ownership. Core contracts live in `src
 | `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
 | `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
-| `src/testkit/` | Controlled qualification scenarios and reference fake for tests | May import the public root entry and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
+| `src/testkit/` | Controlled qualification scenarios and reference fake for tests | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
+
+AgentUI keeps its separately qualified production core while adopting a newer testkit as a development dependency under an npm alias.
+The aliased testkit must use its own artifact's public core at runtime and in declarations, even when an older canonical core is installed.
+Production pruning must remove the development alias while retaining the qualified core.
+The package gate checks the standalone alias; AgentUI's consumer qualification checks coexistence and pruning against its pinned production artifact.
+Relative public-barrel imports keep this identity within the aliased artifact.
 
 Native adapters need their own explicit entry points when implemented.
 AG-UI imports only the SDK main entry. Optional Zod and SDK schemas are not integration runtime dependencies.

@@ -1,26 +1,17 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyTestkit } from './verify-testkit.mjs';
-import { qualificationGroups, qualificationSupportFiles, qualificationTypeFixtures } from '../tests/qualification/groups.mjs';
+import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
+import { run, runNpm } from './support/exec.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const npm = process.env.npm_execpath;
-assert(npm, 'Run this check with npm run verify:package.');
 
-function run(command, args, cwd = root, env = process.env) {
-  return execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-}
-
-function runNpm(args, cwd = root) {
-  return run(process.execPath, [npm, ...args], cwd);
-}
 
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
@@ -96,28 +87,10 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
-  mkdirSync(join(consumer, 'qualification'));
-  const qualificationConsumers = readdirSync(join(root, 'tests/qualification')).filter((name) => name.endsWith('.consumer.mjs'));
-  for (const file of [...qualificationConsumers, ...qualificationTypeFixtures, ...qualificationSupportFiles]) {
-    copyFileSync(join(root, 'tests/qualification', file), join(consumer, 'qualification', file));
-  }
-  const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
-    .sort().map((file) => `qualification/${file}`);
-  assert(qualificationFixtures.length > 0, 'Installed qualification consumers exist.');
   const runtimeEnvironment = { ...process.env };
   delete runtimeEnvironment.NODE_TEST_CONTEXT;
-  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures, ...qualificationFixtures], consumer, runtimeEnvironment);
+  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
-  for (const name of qualificationGroups) {
-    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
-    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - async fake qualification: ${RegExp.escape(name)}$`, 'm'));
-  }
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects async close promise replacement$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects effect-derived delivery$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
   process.stdout.write(runtimeOutput);
   const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs'];
   const consumerConfig = {
@@ -151,8 +124,8 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
 
-  verifyTestkit({ root, consumer, temporary, tarball: join(artifacts, pack.filename), compiler,
-    compilerOptions: consumerConfig.compilerOptions, manifest, run, runNpm, runtimeEnvironment });
+  verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
+    compilerOptions: consumerConfig.compilerOptions });
 
   const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;
   const discoveryInvalidCases = [
@@ -189,20 +162,8 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
     ['page-diagnostics-readonly', "observedPage.diagnostics = [];", 2540],
     ['page-diagnostics-push', "observedPage.diagnostics.push(fileDiagnostic);", 2339],
   ].map(([name, source, code]) => [`session-discovery-${name}`, `${discoveryImports} ${source}`, code]);
-  const testkitImports = `import type { QualificationFixture, QualificationConnection } from '${manifest.name}/testkit'; import { contracts, createFakeFixture } from '${manifest.name}/testkit';`;
-  const testkitInvalidCases = [
-    ['contracts-readonly', `${testkitImports} contracts.uncertainty = contracts.events;`, 2540],
-    ['contract-factory-missing-dispose', `${testkitImports} const { dispose, ...fixture } = createFakeFixture(); contracts.uncertainty(() => fixture, new AbortController().signal);`, 2322],
-    ['fake-observer-publish', `${testkitImports} createFakeFixture().connect(() => {}).events.publish({ kind: 'progress', sequence: 1 });`, 2339],
-    ['fixture-missing-dispose', `${testkitImports} const { dispose, ...fixture } = createFakeFixture(); const invalid: QualificationFixture = fixture;`, 2741],
-    ['fixture-publish-only', `${testkitImports} const fixture = createFakeFixture(); const connection = fixture.connect(() => {}); const invalid: QualificationConnection = { ...connection, events: { publish() {} } };`, 2353],
-    ['fixture-recovery-run', `${testkitImports} declare const saved: Parameters<QualificationConnection['recover']>[0]; createFakeFixture().connect(() => {}).recover(saved).run();`, 2339],
-    ['fixture-submit-unknown-code', `${testkitImports} const fixture = createFakeFixture(); const connection = fixture.connect(() => {}); const invalid: QualificationConnection = { ...connection, async submit() { return { kind: 'error', error: { code: 'conflict' } }; } };`, 2322],
-    ['fixture-close-unknown-code', `${testkitImports} const fixture = createFakeFixture(); const connection = fixture.connect(() => {}); const invalid: QualificationConnection = { ...connection, async close() { return { kind: 'error', error: { code: 'conflict' } }; } };`, 2322],
-    ['fixture-recovery-undispatched', `${testkitImports} const connection = createFakeFixture().connect(() => {}); declare const saved: Parameters<QualificationConnection['recover']>[0]; connection.recover({ ...saved, observation: { kind: 'not-dispatched', reason: 'aborted' } });`, 2322],
-  ];
   const invalidCases = [
-    ...testkitInvalidCases,
+    ...testkitInvalidCases(manifest.name),
     ...discoveryInvalidCases,
     ['unnarrowed-capability', 'catalog.api;', 2339],
     ['unsupported-api', "if (catalog.kind === 'unsupported') catalog.api;", 2339],

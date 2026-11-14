@@ -1,11 +1,11 @@
 import {
   createDispatchOperation, createEventStream, parseInteractionContinuation, parseSessionReference,
-} from '@mattsp1290/switchboard';
+} from '../index.js';
 
 import type {
   DispatchEvidence, DispatchIdentity, DispatchSnapshot, EventStream, InteractionContinuation,
   NativeDispatchObservation, SessionReference,
-} from '@mattsp1290/switchboard';
+} from '../index.js';
 import type {
   QualificationConnection, QualificationEvent, QualificationFixture, QualificationResult, RecordIntent,
 } from './types.js';
@@ -52,7 +52,7 @@ function track<T>(tasks: Set<Promise<T>>, promise: Promise<T>): Promise<T> {
 
 /**
  * Creates the controlled reference fixture. Submitting a malformed `hostOperationId` rejects with TypeError.
- * IDs must contain non-whitespace text, contain no control characters, and be at most 1024 UTF-16 code units.
+ * ID validation follows the public core identifier rules and `sessionLimits.identifierLength`.
  */
 export function createFakeFixture(): QualificationFixture {
   const binding = {
@@ -84,7 +84,7 @@ export function createFakeFixture(): QualificationFixture {
   const completions: Set<Promise<void>> = new Set();
   let nextLoss = false;
   let nextCompletion: Gate | null = null;
-  let visibility = 'authoritative';
+  let visibility: Parameters<QualificationFixture['controls']['lookupVisibility']>[0] = 'authoritative';
   let disposing = false;
   let disposePromise: Promise<void> | undefined;
 

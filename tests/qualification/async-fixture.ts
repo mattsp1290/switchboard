@@ -1,6 +1,6 @@
 import { createFakeFixture } from '@mattsp1290/switchboard/testkit';
 import type {
-  QualificationConnection, QualificationFactory, QualificationFixture,
+  QualificationFactory, QualificationFixture,
 } from '@mattsp1290/switchboard/testkit';
 
 export const createFixture: QualificationFactory = async () => {
@@ -8,9 +8,7 @@ export const createFixture: QualificationFactory = async () => {
   return {
     samples: fixture.samples,
     controls: fixture.controls,
-    connect(recordIntent): QualificationConnection {
-      return fixture.connect(recordIntent);
-    },
+    connect: fixture.connect,
     dispose: fixture.dispose,
   };
 };
