@@ -10,6 +10,10 @@ export const requests = [
   { id: 4, method: 'turn/start', params: { threadId: 'native-owned-id', input: [{ type: 'text', text: 'fixture', text_elements: [] }] } },
   { id: 5, method: 'turn/interrupt', params: { threadId: 'native-owned-id', turnId: 'native-turn-id' } },
   { id: 7, method: 'getConversationSummary', params: { rolloutPath: '/authorized/sessions/inventoried-file' } },
+  { id: 8, method: 'account/read', params: { refreshToken: false } },
+  { id: 9, method: 'thread/turns/list', params: { threadId: 'native-owned-id', limit: 1, sortDirection: 'asc', itemsView: 'summary' } },
+  { id: 10, method: 'thread/items/list', params: { threadId: 'native-owned-id', limit: 1, sortDirection: 'asc' } },
+  { id: 11, method: 'thread/read', params: { threadId: 'native-owned-id', includeTurns: false } },
   { id: 6, method: 'thread/read', params: { threadId: 'native-owned-id', includeTurns: true } },
 ] satisfies ClientRequest[];
 export const decline = { decision: 'decline' } satisfies CommandExecutionRequestApprovalResponse;

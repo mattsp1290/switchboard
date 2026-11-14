@@ -52,7 +52,7 @@ The installed consumer verifies `@types/node` 24.19.2 with `lib: ["ES2022"]` and
 Both return copied, frozen envelopes. These checks do not authenticate native tokens or authorize access.
 `validateSessionDiscoveryBounds` validates result, examined-entry, and time budgets.
 Every `SessionDiscoveryPage` requires `diagnostics`, including `[]` when no failure was observed.
-Sessions and unidentified `file-inspection-failed` observations survive complete, truncated, and cancelled enumeration.
+Sessions and unidentified `file-inspection-failed` observations survive complete, truncated, cancelled, and failed enumeration.
 Each diagnostic has an opaque, call-local `discovery-file` subject. Its token grants no inspect or resume access.
 Unidentified failures do not imply corruption or increment either skipped count.
 `complete` means the adapter exhausted its qualified authorized enumeration, not that every candidate succeeded or all native history is valid.

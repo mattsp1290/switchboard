@@ -1,0 +1,16 @@
+{
+  "hypothesis": "H1",
+  "sourcePin": "d32063f96c2dff1dc96af839b3952abb6acfeda4",
+  "nativePin": "0.169.0",
+  "initialAttempt": "inconclusive-null-requester-account",
+  "authRequiredAttempt": "inconclusive-empty-saved-turn-page-after-A-requester-correspondence",
+  "coldProjectionCandidate": "passed-bounded-negative-public-read-result-on-arm64-and-emulated-x64",
+  "inertStatus": "eighteen-actual-source-controls-passed",
+  "profile": "frozen-original-rollouts-plus-opaque-cold-history-family-copies-per-reader",
+  "entryPoint": "spikes/codex-native/qualify.mjs",
+  "scope": "No history-only reconstruction, authority, coverage, adapter, or pg51 closure claim",
+  "arm64ReportSha256": "e5e2de8917eab4e2388fe1ff966a5d07139df8589f518410a6ab6a4a8014caf5",
+  "arm64AbsenceSha256": "b6c866ca39b1269565c405d597d51fb04ef72d91526f98457cdcc8cd0dd7e91d",
+  "x64ReportSha256": "6b274e2a23456cc81ae641575403f073e672ebe39229a1e55e3868946161b099",
+  "x64AbsenceSha256": "b9672ea2422c066ce151b23a20ba03ce38aafa7e864b989c8a63e5f4b35aa39c"
+}
