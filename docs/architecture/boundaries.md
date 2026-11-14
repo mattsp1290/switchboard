@@ -312,3 +312,10 @@ JSON validation establishes shape and budgets; it cannot establish that selected
 A valid `not-observable` fact emits an empty batch without fabricating a native event. The host records the gap independently.
 `describeProjection` reports represented families separately from caller-asserted native availability and qualification.
 Missing assertions remain undeclared. Mapping or fixture success never upgrades native availability or qualification.
+
+## AG-UI reasoning
+
+Reasoning spans and messages have independent lifecycles in the single bounded actor ledger. No hidden reasoning or subagent lifecycle is synthesized.
+Opaque encrypted observations open and close nothing. Their attribution records the producer independently of target ownership.
+Unknown target identities consume capacity without establishing target existence. Later actual openers establish their own ownership.
+The host supplies authorized reasoning facts and owns publication, persistence and native qualification. All six native routes remain unqualified.
