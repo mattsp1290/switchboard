@@ -37,7 +37,7 @@ All ten mechanism-judgment corrections still govern the later complete proof. Fu
 
 Run `python3 spikes/native-observer/stability/run_admission.py` to rerun the bounded admission suite.
 The retained run passed all nine native controls after independent source, instruction, ledger, and inert-test verification.
-The original result above is historical evidence. A fresh `run.py` execution on this source passed its three controls at `local/1794630610575412000`.
+The original result above is historical evidence. A historical `run.py` execution on earlier source passed its three controls at `local/1794630610575412000`.
 The second caller uses `run.execute(raw=True)` and the same container/image owner, compiler, root inventory, identity pins, and finalizer.
 The C driver shares the trusted child setup, admission, and supervisor. Named `raw_target` and `raw_trace` functions own the new fixed recipe.
 No source is textually included, and no second launcher or task ledger is introduced.
@@ -95,8 +95,40 @@ The runtime result keeps its full case list. The fixed representation links that
 Only successful native verification and independent absence can change `nativeObserved` and the top-level status.
 This shared finalization change does not qualify any newborn, full-lifetime, pathname, Node, SDK, adapter, or live behavior.
 
-The parent independently reproduced all three prerequisite and nine raw cases on this source.
+Historical parent runs reproduced all three prerequisite and nine raw cases before the later notice corrections.
 Both final command and cleanup digests match the completed retained files.
 Separate exact inspections confirmed all fourteen owned containers and both scratch images absent.
 The prerequisite result remains `INCONCLUSIVE` for full stability while its three prerequisite cases are observed.
 Only the shared final evidence binding and existing single-target admission are qualified by these runs.
+
+## Current supervisor notice boundary
+
+Both existing commands run `/probe notice-tests` in the owned init-inspection container before their native cases.
+The mode dispatches before target setup and exercises the actual reader and supervisor with scripted system operations.
+Its 165 controls cover 45 reader cases alone and through both current caller modes, plus fifteen cleanup cases in both modes.
+The private eight-byte protocol has one positive root record and optional matching death readiness. It carries no family roster.
+Exact record size, a distinct positive root, ordering, EOF, and a single three-second monotonic receive deadline are mandatory.
+The reader rechecks that original deadline after each read before accepting bytes, EOF, ownership, or readiness.
+Scripted poll and read independently advance elapsed time past the deadline for root, readiness, and EOF controls.
+Deterministic clocks test expiry and errors after root and acknowledged readiness, with exact poll timeouts and action counts.
+Consumed readiness and acknowledged signaling are separate. Trailing protocol failure cannot immediately repeat an acknowledged kill.
+On failure the supervisor attempts tracer termination, bounded waiting, and bounded absence for every validated root before refusing.
+A failed signal and a later wait deadline have distinct bounded controls. Cleanup success never repairs an invalid protocol verdict.
+Initial and later wait-clock errors, wait-delay errors, absence-delay errors, and non-ENOENT access errors refuse success.
+Each access result is classified immediately. ENOENT finishes absence; other errors refuse without another access.
+EACCES and EIO transitions to ENOENT, both immediately and after presence, require refusal in both supervisor modes.
+Absence uses at most 101 checks and 100 delays. Exact operation-count assertions retain permanent-present and delay-error controls.
+An unavailable initial wait clock makes zero waitpid attempts and leaves reaping inconclusive. Later wait errors are not retried.
+Previously validated root absence is still attempted where feasible. The external owner must complete resource cleanup.
+The same source wait and absence loops run under intercepted waitpid, access, delay, clock, poll, read, and kill operations.
+Both collectors share one strict receipt and absence checker. Raw ownership must match its positive validated receipt.
+`notice-controls.json` binds exact IDs, complete output, source inventory, and binary. The finalizer rechecks identity after cleanup.
+Inert tests cover all twelve modes and both actual host mains refusing incomplete output or nonzero controls before their suites.
+Run `python3 -B -m unittest test_cleanup.CleanupTests test_admission.AdmissionTests test_finalization.FinalizationTests test_notices.NoticeTests`.
+Historical parent runs passed 157 controls in each caller, all three prerequisite cases, and all nine raw cases before this access correction.
+Fresh parent runs passed all 165 controls in each corrected caller, all three prerequisite cases, and all nine raw cases.
+`NOTICE_RESULT.json` records both exact native result, final command, cleanup, source, binary, control, actual init, and independent absence bindings. Full stability remains inconclusive.
+Fresh independent inspection confirmed all fourteen owned containers and both scratch images absent. Corrected raw death retained the complete matched actual init waitpid record after wait.
+All original resource, import, flush, collector, finalizer, and 36-instruction raw checks remain required.
+All 72 birth controls B1 through B20, L9, and P1 through P5, full lifetime, epochs, imports, compiler, SDK, adapter, and live gates remain open.
+No residual birth fit or authority claim follows from this current single-root boundary.

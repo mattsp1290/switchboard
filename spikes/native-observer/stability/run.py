@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -114,6 +115,45 @@ def cleanup():
     save('cleanup.json', {'containers': sorted(containers), 'image': tag if tag in images else None, 'errors': errors})
 
 
+def check_notice_identity():
+    recorded = json.loads((OUT / 'hashes.json').read_text())
+    actual = {path.name: digest(path) for path in HERE.iterdir()
+              if path.suffix in ('.c', '.py', '.json', '.md')}
+    actual['prerequisite'] = digest(OUT / 'prerequisite')
+    assert recorded == actual, 'notice source or binary changed'
+
+
+def verify_notices(cid):
+    check_notice_identity()
+    result = docker('exec', cid, '/probe', 'notice-tests', check=False)
+    (OUT / 'notice-controls.stdout').write_text(result.stdout)
+    (OUT / 'notice-controls.stderr').write_text(result.stderr)
+    assert result.returncode == 0, 'notice controls exited unsuccessfully'
+    rows = re.findall(r'^NOTICE_TEST (\d+) ([a-z-]+) result=(\d+)$', result.stdout, re.M)
+    expected = list(range(165))
+    assert [int(row[0]) for row in rows] == expected, 'incomplete notice controls'
+    assert all(row[2] == '1' for row in rows), 'notice control failed'
+    assert len({row[1] for row in rows}) == len(expected), 'duplicate notice control name'
+    assert result.stdout.count('\n') == 166 and result.stdout.endswith('NOTICE_TESTS count=165 failed=0\n')
+    assert not result.stderr, 'unexpected notice control diagnostics'
+    check_notice_identity()
+    save('notice-controls.json', {'controlIds': expected, 'nativeRoutineObserved': True,
+                                  'stdoutSha256': digest(OUT / 'notice-controls.stdout'),
+                                  'stderrSha256': digest(OUT / 'notice-controls.stderr'),
+                                  'sourceInventorySha256': digest(OUT / 'hashes.json'),
+                                  'binarySha256': digest(OUT / 'prerequisite')})
+
+
+def check_notice(mode, evidence):
+    rows = re.findall(r'^NOTICE_RECEIPT.*$', evidence, re.M)
+    assert len(rows) == 1, 'notice receipt missing or duplicate'
+    match = re.fullmatch(r'NOTICE_RECEIPT root=([1-9][0-9]*) ready=([01])', rows[0])
+    assert match and int(match[2]) == int(mode in ('death', 'raw-death')), 'invalid notice receipt'
+    reaped = re.findall(r'^REAPED.*$', evidence, re.M)
+    assert len(reaped) == 1 and re.fullmatch(rf'REAPED {match[1]} SUPERVISOR [1-9][0-9]*', reaped[0])
+    return match[1]
+
+
 def main(raw=False):
     global tag, stage
     assert digest(DOCKER) == 'd79e988b423edbe34460a2e4d86ecc841997f16c5e2a2ee5263f679d0c483a84'
@@ -173,6 +213,8 @@ def main(raw=False):
     init_hash = digest(OUT / 'docker-init')
     assert init_hash == 'd286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1', 'init identity changed'
     save('init.json', {'sha256': init_hash, 'version': '0.19.0', 'commit': 'de40ad0'})
+    stage = 'notice-controls'
+    verify_notices(cid)
     remove(cid)
     if raw:
         from run_admission import MODES, collect
@@ -197,6 +239,7 @@ def main(raw=False):
         (OUT / f'{mode}.target').write_text(logs.stdout)
         assert 'FAIL ' not in logs.stderr, logs.stderr
         assert 'REAPED ' in logs.stderr, 'independent cleanup absent'
+        check_notice(mode, logs.stderr)
         assert ('PREREQUISITES_OBSERVED' in logs.stderr) == (mode == 'normal')
         assert ('REJECT_INHERITED_FD' in logs.stderr) == (mode == 'inherited')
         assert logs.stdout == ('allowed\n' if mode == 'normal' else '')
@@ -234,6 +277,12 @@ def execute(raw=False):
             result.update(status='INCONCLUSIVE', cleanup='unresolved ownership')
         result.update(commandsSha256=digest(OUT / 'commands.json'),
                       cleanupSha256=digest(OUT / 'cleanup.json'))
+        if (OUT / 'notice-controls.json').exists():
+            try:
+                check_notice_identity()
+            except Exception as error:
+                result.update(status='INCONCLUSIVE', noticeIdentity=str(error))
+            result['noticeControlsSha256'] = digest(OUT / 'notice-controls.json')
         save('result.json', result)
         print(OUT)
         print((OUT / 'result.json').read_text())

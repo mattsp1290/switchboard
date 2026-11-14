@@ -29,7 +29,7 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(records[0]['stderr'], 'partial-error\n')
 
     def death_evidence(self):
-        return ('OWNED_TARGET 23\nREAPED 23 SUPERVISOR 7\n'
+        return ('OWNED_TARGET 23\nREAPED 23 SUPERVISOR 7\nNOTICE_RECEIPT root=23 ready=1\n'
                 'SUPERVISOR subreaper=0 SIGCHLD=default NOCLDWAIT=0\n'
                 'TARGET_BYTES 0 \nTRACER_TERMINAL 8 wait_status=9\n'
                 'RAW_OPTIONS mask=1048577 result=0\nRAW_ENTRY step=0 nr=96 args=0,0,0,0,0,0\n'

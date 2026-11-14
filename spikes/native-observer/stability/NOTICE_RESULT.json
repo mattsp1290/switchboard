@@ -1,0 +1,35 @@
+{
+  "status": "INCONCLUSIVE",
+  "nativeObserved": true,
+  "scope": "Validated notices for existing prerequisite and raw callers only.",
+  "controlIds": {
+    "first": 0,
+    "last": 164,
+    "count": 165
+  },
+  "prerequisite": {
+    "evidence": "/Users/lunus/git/switchboard-observer-notices/spikes/native-observer/stability/local/1794641445707273000",
+    "resultSha256": "6fe798365c597cdee5e85c7ef93fd222d65d967902669db4c1ae650b91f7d28f",
+    "commandsSha256": "6f14a4b3a06d22dcaa8eeaae609b3ad19868943c5c54988b80bf5aa163da18c0",
+    "cleanupSha256": "35378ab045c42033478c9e26f6467c90c5b15018f61cd8aa7bbc0f5a90e83298",
+    "noticeControlsSha256": "2da30ed4ac380c5f54915436520422b16361b3d67e06c86d632fe667409742db",
+    "sourceInventorySha256": "5d3c9d7eb29e5c0f7fce603fae998fccae692dcf0f1bd88e83b0c0a3d73ca3d0",
+    "binarySha256": "e6668007c73197ad568e17ec6bc9f877111753d5f7d0a6445b773c672a62eaaa",
+    "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
+    "independentAbsenceSha256": "9e02ad23943bce0798478d5bfae60f8f59ec3f25a375ef91ae8aa223fd5761e8",
+    "independentAbsenceEvidence": "/Users/lunus/git/switchboard/.audit/observer-notices-access-prerequisite-independent-absence.json"
+  },
+  "rawAdmission": {
+    "evidence": "/Users/lunus/git/switchboard-observer-notices/spikes/native-observer/stability/local/1794641512499597000",
+    "resultSha256": "4115f46acdcb3af9e7a5adef6a353814314961ec5c7fea8b015fbffe388fd247",
+    "commandsSha256": "980f38d7468d51d77d3e6653b176a75fdbe6a90577b1c6559bf3f131c09c659a",
+    "cleanupSha256": "35378ab045c42033478c9e26f6467c90c5b15018f61cd8aa7bbc0f5a90e83298",
+    "noticeControlsSha256": "d143f81600d73025b9532fbbe8a7363cb4ed5dd9853dbc96b257b1dfc1e8744f",
+    "sourceInventorySha256": "f2ce4fa6513e4e3aa88fe9e2f1f8c43a1df349ffc85aa9545f91422666287817",
+    "binarySha256": "48b33a7a84c40e79feba02f3c555f18c8eabe41b28483517a45f2da54466e3af",
+    "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
+    "independentAbsenceSha256": "daf381f65cd169df947ec63900ca3d29ed9eb5a4824e38d62911f884ec3413e4",
+    "independentAbsenceEvidence": "/Users/lunus/git/switchboard/.audit/observer-notices-access-raw-independent-absence.json"
+  },
+  "remaining": "Full 72-case birth custody, lifetime, epochs, imports, compiler, and engine acceptance stay open."
+}

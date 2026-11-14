@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <signal.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,9 +40,13 @@ static void require(int condition, const char *operation) {
     _exit(90);
 }
 
-static void delay(long milliseconds) {
+static int pause_for(long milliseconds) {
     struct timespec duration = {milliseconds / 1000, (milliseconds % 1000) * 1000000};
-    require(clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, NULL) == 0, "monotonic delay");
+    return clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, NULL);
+}
+
+static void delay(long milliseconds) {
+    require(pause_for(milliseconds) == 0, "monotonic delay");
 }
 
 static void drop(void) {
@@ -145,19 +150,379 @@ __attribute__((noinline, noreturn)) static void raw_target(int registration, int
 
 static long milliseconds(void) {
     struct timespec now;
-    require(clock_gettime(CLOCK_MONOTONIC, &now) == 0, "clock");
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) return -1;
     return now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
-static int bounded_wait(pid_t pid, int *state, long duration) {
-    long end = milliseconds() + duration;
+typedef struct {
+    int (*poll)(struct pollfd *, nfds_t, int);
+    ssize_t (*read)(int, void *, size_t);
+    int (*kill)(pid_t, int);
+    long (*clock)(void);
+    pid_t (*waitpid)(pid_t, int *, int);
+    int (*access)(const char *, int);
+    int (*delay)(long);
+} NoticeIO;
+
+static const NoticeIO native_io = {poll, read, kill, milliseconds, waitpid, access, pause_for};
+
+static int bounded_wait(pid_t pid, int *state, long duration, const NoticeIO *io) {
+    long now = io->clock();
+    if (now < 0) return -1;
+    long end = now + duration;
     do {
-        pid_t result = waitpid(pid, state, __WALL | WNOHANG);
-        require(result >= 0, "bounded wait");
+        pid_t result = io->waitpid(pid, state, __WALL | WNOHANG);
+        if (result < 0) return -1;
         if (result == pid) return 1;
-        delay(2);
-    } while (milliseconds() < end);
+        if (io->delay(2)) return -1;
+        now = io->clock();
+        if (now < 0) return -1;
+    } while (now < end);
     return 0;
+}
+
+typedef struct {
+    int kind;
+    pid_t pid;
+} Notice;
+
+_Static_assert(sizeof(Notice) == 8, "fixed private notice record");
+
+typedef struct {
+    pid_t root;
+    int ready, death_sent;
+} NoticeReceipt;
+
+static void notify(int fd, int kind) {
+    Notice record = {.kind = kind, .pid = target};
+    require(write(fd, &record, sizeof(record)) == sizeof(record), "supervisor notice write");
+}
+
+static int read_notices(int fd, pid_t tracer, int death, NoticeReceipt *receipt, const NoticeIO *io) {
+    long now = io->clock();
+    if (now < 0) return 0;
+    long deadline = now + 3000;
+    for (;;) {
+        struct pollfd channel = {.fd = fd, .events = POLLIN};
+        now = io->clock();
+        if (now < 0) return 0;
+        long remaining = deadline - now;
+        if (remaining <= 0 || io->poll(&channel, 1, (int)remaining) != 1 ||
+                channel.revents & (POLLERR | POLLNVAL) || !(channel.revents & (POLLIN | POLLHUP))) return 0;
+        Notice record = {0};
+        ssize_t count = io->read(fd, &record, sizeof(record));
+        now = io->clock();
+        if (now < 0 || now >= deadline) return 0;
+        if (!count) return receipt->root > 0 && receipt->ready == death;
+        if (count != sizeof(record) || record.pid <= 0 || record.pid == tracer) return 0;
+        if (record.kind == 1) {
+            if (receipt->root || receipt->ready) return 0;
+            receipt->root = record.pid;
+        } else if (record.kind == 2) {
+            if (!death || !receipt->root || receipt->ready || record.pid != receipt->root) return 0;
+            receipt->ready = 1;
+            if (io->kill(tracer, SIGKILL)) return 0;
+            receipt->death_sent = 1;
+        } else return 0;
+    }
+}
+
+static int target_absent(pid_t pid, const NoticeIO *io) {
+    char path[80];
+    snprintf(path, sizeof(path), "/proc/%d", pid);
+    for (int i = 0; i <= 100; i++) {
+        int result = io->access(path, F_OK);
+        if (result == -1) return errno == ENOENT;
+        if (result != 0 || i == 100 || io->delay(10)) return 0;
+    }
+    return 0;
+}
+
+typedef struct {
+    NoticeReceipt receipt;
+    int state, expired, valid;
+} NoticeOutcome;
+
+static NoticeOutcome supervise_notices(int fd, pid_t tracer, int raw, int death, const NoticeIO *io) {
+    NoticeOutcome outcome = {0};
+    int protocol = read_notices(fd, tracer, death, &outcome.receipt, io);
+    int action = 1;
+    if (!protocol && !outcome.receipt.death_sent)
+        action = io->kill(tracer, SIGKILL) == 0 || errno == ESRCH;
+    int reaped = bounded_wait(tracer, &outcome.state, 5000, io);
+    if (!reaped) {
+        outcome.expired = 1;
+        action = (io->kill(tracer, SIGKILL) == 0 || errno == ESRCH) && action;
+        reaped = bounded_wait(tracer, &outcome.state, 1000, io);
+    }
+    int absent = outcome.receipt.root && target_absent(outcome.receipt.root, io);
+    int terminal = WIFEXITED(outcome.state) || WIFSIGNALED(outcome.state);
+    int completion = raw || (death ? WIFSIGNALED(outcome.state) && WTERMSIG(outcome.state) == SIGKILL :
+                            WIFEXITED(outcome.state) && WEXITSTATUS(outcome.state) == 0);
+    outcome.valid = protocol && action && reaped == 1 && !outcome.expired && absent && terminal && completion;
+    return outcome;
+}
+
+typedef struct {
+    int polled;
+    short events;
+    ssize_t count;
+    Notice record;
+} NoticeStep;
+
+typedef struct {
+    int result, error;
+} NoticeAccess;
+
+static struct {
+    NoticeStep steps[4];
+    unsigned cursor, polls, reads, actions, clocks, expiry, waits, accesses, absence_delays, wait_delays;
+    unsigned clock_error;
+    unsigned late_poll, late_read;
+    int delay_error, access_error;
+    NoticeAccess access_steps[3];
+    unsigned access_step_count;
+    unsigned reader_clocks, expected_actions, expected_waits;
+    int action_error, timeouts_wrong, order_wrong, wait_results[2], state, absent;
+    long now;
+} notice_script;
+
+static int scripted_poll(struct pollfd *channels, nfds_t count, int timeout) {
+    if (count != 1 || channels[0].fd != 17 || timeout <= 0 || timeout > 3000 || notice_script.cursor >= 4) {
+        notice_script.order_wrong = 1;
+        return -1;
+    }
+    if (timeout != 2990 - (int)notice_script.polls * 20) notice_script.timeouts_wrong = 1;
+    notice_script.polls++;
+    if (notice_script.polls == notice_script.late_poll) notice_script.now += 3000;
+    channels[0].revents = notice_script.steps[notice_script.cursor].events;
+    int result = notice_script.steps[notice_script.cursor].polled;
+    if (result != 1) notice_script.cursor++;
+    return result;
+}
+
+static ssize_t scripted_read(int fd, void *data, size_t size) {
+    if (fd != 17 || size != sizeof(Notice) || notice_script.cursor >= 4) {
+        notice_script.order_wrong = 1;
+        return -1;
+    }
+    NoticeStep step = notice_script.steps[notice_script.cursor++];
+    notice_script.reads++;
+    if (notice_script.reads == notice_script.late_read) notice_script.now += 3000;
+    memcpy(data, &step.record, sizeof(Notice));
+    return step.count;
+}
+
+static int scripted_kill(pid_t pid, int signal) {
+    if (pid != 91 || signal != SIGKILL) {
+        notice_script.order_wrong = 1;
+        return -1;
+    }
+    notice_script.actions++;
+    errno = EIO;
+    return notice_script.action_error;
+}
+
+static long scripted_clock(void) {
+    unsigned index = notice_script.clocks++;
+    if (index + 1 == notice_script.clock_error) return -1;
+    long next = index && index == notice_script.expiry ? 3000 : index * 10;
+    if (!notice_script.waits && next > notice_script.now) notice_script.now = next;
+    return notice_script.now;
+}
+
+static pid_t scripted_waitpid(pid_t pid, int *state, int flags) {
+    unsigned index = notice_script.waits++;
+    if (!index) notice_script.reader_clocks = notice_script.clocks - 1;
+    if (notice_script.actions != notice_script.expected_actions + index) notice_script.order_wrong = 1;
+    if (pid != 91 || index >= 2 || flags != (__WALL | WNOHANG)) {
+        notice_script.order_wrong = 1;
+        return -1;
+    }
+    *state = notice_script.state;
+    return notice_script.wait_results[index] == 1 ? pid : notice_script.wait_results[index];
+}
+
+static int scripted_access(const char *path, int mode) {
+    unsigned index = notice_script.accesses++;
+    if (strcmp(path, "/proc/23") || mode != F_OK || notice_script.waits != notice_script.expected_waits)
+        notice_script.order_wrong = 1;
+    if (index < notice_script.access_step_count) {
+        NoticeAccess step = notice_script.access_steps[index];
+        errno = step.error;
+        return step.result;
+    }
+    errno = notice_script.access_error ? notice_script.access_error : ENOENT;
+    return notice_script.access_error || notice_script.absent ? -1 : 0;
+}
+
+static int scripted_delay(long duration) {
+    if (duration == 2) {
+        notice_script.wait_delays++;
+        notice_script.now += notice_script.waits == 1 ? 5000 : 1000;
+    } else if (duration == 10) notice_script.absence_delays++;
+    else notice_script.order_wrong = 1;
+    return duration == notice_script.delay_error ? EIO : 0;
+}
+
+static int notice_tests(void) {
+    const NoticeStep root = {1, POLLIN, 8, {1, 23}};
+    const NoticeStep ready = {1, POLLIN, 8, {2, 23}};
+    const NoticeStep end = {1, POLLHUP, 0, {0, 0}};
+    const struct {
+        const char *name;
+        NoticeStep steps[4];
+        int death, valid;
+        pid_t root;
+        unsigned actions, polls, reads;
+        int action_error;
+        unsigned expiry, clock_error, late_poll, late_read;
+    } cases[] = {
+        {"normal", {root, end}, 0, 1, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"death", {root, ready, end}, 1, 1, 23, 1, 3, 3, 0, 0, 0, 0, 0},
+        {"empty-root", {end}, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"short-root", {{1, POLLIN, 1, {1, 23}}, root, ready, end}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"zero-root", {{1, POLLIN, 8, {1, 0}}}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"negative-root", {{1, POLLIN, 8, {1, -1}}}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"unknown-root", {{1, POLLIN, 8, {9, 23}}}, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"duplicate-root", {root, root}, 0, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"different-root", {root, {1, POLLIN, 8, {1, 24}}}, 0, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"short-ready", {root, {1, POLLIN, 7, {2, 23}}}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"early-ready", {ready}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"wrong-ready-root", {root, {1, POLLIN, 8, {2, 24}}}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"unexpected-ready", {root, ready}, 0, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"wrong-ready-kind", {root, {1, POLLIN, 8, {3, 23}}}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"duplicate-ready", {root, ready, ready}, 1, 0, 23, 1, 3, 3, 0, 0, 0, 0, 0},
+        {"root-after-ready", {root, ready, root}, 1, 0, 23, 1, 3, 3, 0, 0, 0, 0, 0},
+        {"missing-ready", {root, end}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"poll-timeout", {{0, 0, 0, {0, 0}}}, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+        {"poll-error", {{-1, 0, 0, {0, 0}}}, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+        {"poll-invalid", {{1, POLLNVAL, 8, {1, 23}}}, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+        {"read-error", {{1, POLLIN, -1, {1, 23}}}, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"oversize-root", {{1, POLLIN, 9, {1, 23}}}, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"poll-no-events", {{1, 0, 8, {1, 23}}}, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+        {"poll-broken", {{1, POLLERR, 8, {1, 23}}}, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+        {"kill-error", {root, ready}, 1, 0, 23, 1, 2, 2, -1, 0, 0, 0, 0},
+        {"later-poll-error", {root, {-1, 0, 0, {0, 0}}}, 1, 0, 23, 0, 2, 1, 0, 0, 0, 0, 0},
+        {"later-read-error", {root, {1, POLLIN, -1, {2, 23}}}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 0, 0},
+        {"tracer-as-root", {{1, POLLIN, 8, {1, 91}}, root, ready, end}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
+        {"first-expiry", {root, ready, end}, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+        {"root-expiry", {root, ready, end}, 1, 0, 23, 0, 1, 1, 0, 3, 0, 0, 0},
+        {"ready-expiry", {root, ready, end}, 1, 0, 23, 1, 2, 2, 0, 5, 0, 0, 0},
+        {"ready-poll-error", {root, ready, {-1, 0, 0, {0, 0}}}, 1, 0, 23, 1, 3, 2, 0, 0, 0, 0, 0},
+        {"ready-read-error", {root, ready, {1, POLLIN, -1, {0, 0}}}, 1, 0, 23, 1, 3, 3, 0, 0, 0, 0, 0},
+        {"ready-short", {root, ready, {1, POLLIN, 1, {0, 0}}}, 1, 0, 23, 1, 3, 3, 0, 0, 0, 0, 0},
+        {"later-timeout", {root, {0, 0, 0, {0, 0}}}, 1, 0, 23, 0, 2, 1, 0, 0, 0, 0, 0},
+        {"late-root-poll", {root, ready, end}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0},
+        {"late-root-read", {root, ready, end}, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1},
+        {"late-ready-poll", {root, ready, end}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 2, 0},
+        {"late-ready-read", {root, ready, end}, 1, 0, 23, 0, 2, 2, 0, 0, 0, 0, 2},
+        {"late-eof-poll", {root, ready, end}, 1, 0, 23, 1, 3, 3, 0, 0, 0, 3, 0},
+        {"late-eof-read", {root, ready, end}, 1, 0, 23, 1, 3, 3, 0, 0, 0, 0, 3},
+        {"root-clock-error", {root, ready, end}, 1, 0, 23, 0, 1, 1, 0, 0, 4, 0, 0},
+        {"ready-clock-error", {root, ready, end}, 1, 0, 23, 1, 2, 2, 0, 0, 6, 0, 0},
+        {"root-read-clock-error", {root, ready, end}, 1, 0, 23, 0, 2, 2, 0, 0, 5, 0, 0},
+        {"ready-read-clock-error", {root, ready, end}, 1, 0, 23, 1, 3, 3, 0, 0, 7, 0, 0}
+    };
+    const NoticeIO io = {scripted_poll, scripted_read, scripted_kill, scripted_clock,
+                         scripted_waitpid, scripted_access, scripted_delay};
+    unsigned failures = 0, id = 0;
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        for (int caller = 0; caller < 3; caller++) {
+            memset(&notice_script, 0, sizeof(notice_script));
+            memcpy(notice_script.steps, cases[i].steps, sizeof(notice_script.steps));
+            notice_script.action_error = cases[i].action_error;
+            notice_script.expiry = cases[i].expiry;
+            notice_script.clock_error = cases[i].clock_error;
+            notice_script.late_poll = cases[i].late_poll;
+            notice_script.late_read = cases[i].late_read;
+            notice_script.wait_results[0] = notice_script.absent = 1;
+            int sent = cases[i].actions && !cases[i].action_error;
+            unsigned actions = cases[i].actions + (caller && !cases[i].valid && !sent);
+            notice_script.expected_actions = actions;
+            notice_script.expected_waits = 1;
+            notice_script.state = cases[i].death || !cases[i].valid ? SIGKILL : 0;
+            NoticeOutcome outcome = {0};
+            int valid;
+            if (caller) {
+                outcome = supervise_notices(17, 91, caller == 2, cases[i].death, &io);
+                valid = outcome.valid;
+            } else valid = read_notices(17, 91, cases[i].death, &outcome.receipt, &io);
+            int correct = valid == cases[i].valid && outcome.receipt.root == cases[i].root &&
+                notice_script.actions == actions && notice_script.polls == cases[i].polls &&
+                notice_script.reads == cases[i].reads && !notice_script.timeouts_wrong &&
+                (caller ? notice_script.reader_clocks : notice_script.clocks) ==
+                    (cases[i].clock_error ? cases[i].clock_error :
+                     cases[i].polls + cases[i].reads + 1 + !!cases[i].expiry) &&
+                outcome.receipt.ready == (cases[i].actions != 0) && outcome.receipt.death_sent == sent &&
+                notice_script.waits == !!caller && notice_script.accesses == (caller && cases[i].root > 0 ? 1U : 0U) &&
+                !notice_script.order_wrong && !notice_script.wait_delays && !notice_script.absence_delays;
+            failures += !correct;
+            dprintf(1, "NOTICE_TEST %u %s-%s result=%d\n", id++,
+                    caller == 2 ? "raw" : caller ? "prerequisite" : "reader", cases[i].name, correct);
+        }
+    }
+    const struct {
+        const char *name;
+        int death, waits[2], state, action_error, absent, valid;
+        unsigned actions, wait_count, delay_count, clock_error;
+        int delay_error, access_error;
+        unsigned access_count, absence_delay_count;
+        NoticeAccess access_steps[3];
+        unsigned access_step_count;
+    } cleanup[] = {
+        {"completion-failure", 0, {1, 0}, 90 << 8, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"absence-failure", 0, {1, 0}, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 101, 100, {{0, 0}}, 0},
+        {"wait-error", 1, {-1, 0}, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"wait-deadline", 1, {0, 1}, SIGKILL, 0, 1, 0, 2, 2, 1, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"fallback-signal-failure", 0, {0, 1}, SIGKILL, -1, 1, 0, 1, 2, 1, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"fallback-reap-failure", 0, {0, 0}, SIGKILL, 0, 1, 0, 1, 2, 2, 0, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"initial-wait-clock-error", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 0, 0, 8, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"later-wait-clock-error", 1, {0, 0}, SIGKILL, 0, 1, 0, 1, 1, 1, 9, 0, 0, 1, 0, {{0, 0}}, 0},
+        {"wait-delay-error", 1, {0, 0}, SIGKILL, 0, 1, 0, 1, 1, 1, 0, 2, 0, 1, 0, {{0, 0}}, 0},
+        {"absence-delay-error", 1, {1, 0}, SIGKILL, 0, 0, 0, 1, 1, 0, 0, 10, 0, 1, 1, {{0, 0}}, 0},
+        {"access-error", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, EACCES, 1, 0, {{0, 0}}, 0},
+        {"immediate-access-eacces", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, {{-1, EACCES}, {-1, ENOENT}}, 2},
+        {"later-access-eacces", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 2, 1, {{0, 0}, {-1, EACCES}, {-1, ENOENT}}, 3},
+        {"immediate-access-eio", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, {{-1, EIO}, {-1, ENOENT}}, 2},
+        {"later-access-eio", 1, {1, 0}, SIGKILL, 0, 1, 0, 1, 1, 0, 0, 0, 0, 2, 1, {{0, 0}, {-1, EIO}, {-1, ENOENT}}, 3}
+    };
+    for (unsigned i = 0; i < sizeof(cleanup) / sizeof(*cleanup); i++) {
+        for (int raw = 0; raw < 2; raw++) {
+            memset(&notice_script, 0, sizeof(notice_script));
+            notice_script.steps[0] = root;
+            notice_script.steps[1] = cleanup[i].death ? ready : end;
+            notice_script.steps[2] = end;
+            memcpy(notice_script.wait_results, cleanup[i].waits, sizeof(notice_script.wait_results));
+            notice_script.state = cleanup[i].state;
+            notice_script.action_error = cleanup[i].action_error;
+            notice_script.absent = cleanup[i].absent;
+            notice_script.clock_error = cleanup[i].clock_error;
+            notice_script.delay_error = cleanup[i].delay_error;
+            notice_script.access_error = cleanup[i].access_error;
+            memcpy(notice_script.access_steps, cleanup[i].access_steps, sizeof(notice_script.access_steps));
+            notice_script.access_step_count = cleanup[i].access_step_count;
+            notice_script.expected_actions = cleanup[i].death;
+            notice_script.expected_waits = cleanup[i].wait_count;
+            NoticeOutcome outcome = supervise_notices(17, 91, raw, cleanup[i].death, &io);
+            int correct = outcome.valid == (raw && cleanup[i].valid) && outcome.receipt.root == 23 &&
+                notice_script.actions == cleanup[i].actions && notice_script.waits == cleanup[i].wait_count &&
+                outcome.receipt.ready == cleanup[i].death && outcome.receipt.death_sent == cleanup[i].death &&
+                notice_script.polls == (cleanup[i].death ? 3U : 2U) && notice_script.reads == notice_script.polls &&
+                !notice_script.timeouts_wrong && !notice_script.order_wrong &&
+                notice_script.accesses == cleanup[i].access_count &&
+                notice_script.absence_delays == cleanup[i].absence_delay_count &&
+                notice_script.clocks == (cleanup[i].death ? 8U : 6U) + (cleanup[i].wait_count == 2) +
+                    cleanup[i].delay_count - (cleanup[i].delay_error == 2) &&
+                notice_script.wait_delays == cleanup[i].delay_count &&
+                outcome.expired == (cleanup[i].wait_count == 2);
+            failures += !correct;
+            dprintf(1, "NOTICE_TEST %u %s-%s result=%d\n", id++,
+                    raw ? "raw" : "prerequisite", cleanup[i].name, correct);
+        }
+    }
+    dprintf(1, "NOTICE_TESTS count=%u failed=%u\n", id, failures);
+    return failures ? 90 : 0;
 }
 
 static void raw_maps(void) {
@@ -214,7 +579,9 @@ static void raw_trace(int notification) {
     const long recipe[] = {SYS_set_tid_address, SYS_getpid, SYS_write, SYS_exit};
     for (;;) {
         require(ptrace(PTRACE_SYSCALL, target, NULL, NULL) == 0, "raw resume");
-        if (!bounded_wait(target, &state, 700)) {
+        int waited = bounded_wait(target, &state, 700, &native_io);
+        require(waited >= 0, "bounded wait");
+        if (!waited) {
             if (raw_is("deadline") && step == 2 && !entering) {
                 char path[80];
                 snprintf(path, sizeof(path), "/proc/%d/syscall", target);
@@ -269,7 +636,7 @@ static void raw_trace(int notification) {
             require(info.entry.args[2] == (step == 2 ? (raw_is("deadline") ? 1U : sizeof(raw_bytes) - 1) : 0U),
                     "raw argument size");
             if (step == 1 && raw_is("death")) {
-                require(write(notification, "A", 1) == 1, "raw death admission notice");
+                notify(notification, 2);
                 for (;;) pause();
             }
         } else {
@@ -323,7 +690,7 @@ static void trace(const char *mode, int notification) {
     close(readiness[0]);
     if (raw_mode) {
         dprintf(2, "OWNED_TARGET %d\n", target);
-        require(write(notification, &target, sizeof(target)) == sizeof(target), "early ownership");
+        notify(notification, 1);
     }
     if (inherited >= 0) close(inherited);
     drop();
@@ -342,7 +709,7 @@ static void trace(const char *mode, int notification) {
     link_equals(target, "cwd", "/sealed");
     int leaked = descriptors(target);
     dprintf(2, "TARGET %d\n", target);
-    if (!raw_mode) require(write(notification, &target, sizeof(target)) == sizeof(target), "notify supervisor");
+    if (!raw_mode) notify(notification, 1);
     if (leaked) {
         require(!strcmp(mode, "inherited") || raw_is("inherited"), "leak mode");
         kill(target, SIGKILL);
@@ -351,7 +718,10 @@ static void trace(const char *mode, int notification) {
         _exit(0);
     }
     if (raw_mode) raw_trace(notification);
-    if (!strcmp(mode, "death")) for (;;) pause();
+    if (!strcmp(mode, "death")) {
+        notify(notification, 2);
+        for (;;) pause();
+    }
     int entering = 1, opened = 0;
     unsigned long long operation = 0;
     for (;;) {
@@ -403,8 +773,9 @@ static void trace(const char *mode, int notification) {
 }
 
 int main(int argc, char **argv) {
-    alarm(15);
     require(argc == 2, "mode");
+    if (!strcmp(argv[1], "notice-tests")) return notice_tests();
+    alarm(15);
     if (!strcmp(argv[1], "init")) {
         int fd = open("/proc/1/exe", O_RDONLY);
         require(fd >= 0, "executed init open");
@@ -462,37 +833,21 @@ int main(int argc, char **argv) {
         }
         trace(argv[1], notification[1]);
     }
-    if (raw_mode) { close(output[1]); target = tracer; }
+    if (raw_mode) close(output[1]);
+    target = tracer;
     if (blocked[0] >= 0) close(blocked[0]);
     close(notification[1]);
     drop();
     status(getpid());
-    pid_t owned = 0;
-    ssize_t received = read(notification[0], &owned, sizeof(owned));
-    if (raw_is("death") && received == sizeof(owned)) {
-        char admitted;
-        require(read(notification[0], &admitted, 1) == 1 && admitted == 'A', "raw death admitted");
-        require(kill(tracer, SIGKILL) == 0, "raw tracer death");
-    }
+    NoticeOutcome outcome = supervise_notices(notification[0], tracer, raw_mode != NULL,
+                                               raw_is("death") || !strcmp(argv[1], "death"), &native_io);
     close(notification[0]);
-    if (!strcmp(argv[1], "death") && received == sizeof(owned)) require(kill(tracer, SIGKILL) == 0, "tracer death");
-    int state;
-    if (raw_mode) {
-        if (!bounded_wait(tracer, &state, 5000)) {
-            require(kill(tracer, SIGKILL) == 0, "supervisor deadline kill");
-            require(bounded_wait(tracer, &state, 1000), "supervisor deadline reap");
-            dprintf(2, "SUPERVISOR_DEADLINE\n");
-        }
-    } else require(waitpid(tracer, &state, 0) == tracer, "supervisor reap tracer");
-    require(received == sizeof(owned), "supervisor target record");
-    if (!raw_mode) require(!strcmp(argv[1], "death") ? WIFSIGNALED(state) && WTERMSIG(state) == SIGKILL :
-            WIFEXITED(state) && WEXITSTATUS(state) == 0, "tracer completion");
-    dprintf(2, "TRACER_TERMINAL %d wait_status=%d\n", tracer, state);
-    char path[80];
-    snprintf(path, sizeof(path), "/proc/%d", owned);
-    for (int i = 0; i < 100 && access(path, F_OK) == 0; i++) delay(10);
-    require(access(path, F_OK) == -1 && errno == ENOENT, "independent target reaping");
-    dprintf(2, "REAPED %d SUPERVISOR %d\n", owned, getpid());
+    target = 0;
+    if (outcome.expired) dprintf(2, "SUPERVISOR_DEADLINE\n");
+    require(outcome.valid, "supervisor notices and cleanup");
+    dprintf(2, "NOTICE_RECEIPT root=%d ready=%d\n", outcome.receipt.root, outcome.receipt.ready);
+    dprintf(2, "TRACER_TERMINAL %d wait_status=%d\n", tracer, outcome.state);
+    dprintf(2, "REAPED %d SUPERVISOR %d\n", outcome.receipt.root, getpid());
     if (raw_mode) {
         if (blocked[1] >= 0) close(blocked[1]);
         unsigned char bytes[32];
