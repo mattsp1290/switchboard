@@ -5,7 +5,9 @@ This qualifies the captured descriptor error handling only. Overall pathname sta
 This exact-source evidence supersedes the earlier SOURCE ONLY and UNRUN statement in the observer README for the hashes below.
 
 The repair clears errno before each readdir, preserves the terminating errno through one closedir, and refuses through the existing target cleanup owner.
-Both raw and prerequisite callers ran each of these eight controls, for sixteen cases.
+The pinned Zig 0.17.0 musl readdir leaves errno unchanged when getdents returns -ENOENT, so a vanished /proc task appears as clean EOF after the caller clears errno.
+That case relies on the later stdio and ptrace refusals rather than the descriptor read-error refusal.
+Both raw and prerequisite helper modes ran each of these eight controls, for sixteen cases, each launched by docker exec into a live hold container.
 
 | Control | Captured behavior |
 | --- | --- |
@@ -21,11 +23,12 @@ Both raw and prerequisite callers ran each of these eight controls, for sixteen 
 Close contamination includes zero and EACCES. Every case closes once and preserves the read outcome.
 Refusals record successful target SIGKILL and matched terminal waitpid. Prerequisite read errors also record the supervisor fallback operation and exit 90 without a root receipt.
 Clean normal controls complete their original syscall recipe. Inherited clean controls kill and reap before rejection.
-The actual binary resolves native_io kill and waitpid pointers to their linker wrappers. Each wrapper branches to the real libc operation.
-The unchanged nine raw modes run first, in order normal, inherited, bad-root, info-short, query-bad, query-short, registration, deadline, and death.
-The separate current-source prerequisite run observes normal, inherited, and death. Its overall status remains `INCONCLUSIVE`.
+The instrumented inventory binary `e74d42f7` resolves native_io kill and waitpid pointers to their linker wrappers. Each wrapper branches to the real libc operation.
+The unchanged nine raw modes run first on that instrumented binary with no selector set, in order normal, inherited, bad-root, info-short, query-bad, query-short, registration, deadline, and death.
+The uninstrumented prerequisite binary `ceceda0f` ran only the notice controls and normal, inherited, and death. Its overall status remains `INCONCLUSIVE`.
+No uninstrumented current-source run_admission.py execution is retained. Its raw admission and raw-target instruction inspection were not executed at this source.
 Both runs pass all 165 native notice controls. The instrumented binary retains all 36 raw-target instructions and the six expected syscall sites.
-The retained host log reports 56 passing standard-library tests. This independent inspection did not execute candidate code.
+The retained host log reports 56 passing discovered test executions, 49 unique methods plus 7 imported repeats. This independent inspection did not execute candidate code.
 Live inventories retain only init and the hold or supervisor process. Raw death includes init's matched target-reaping log. Prerequisite death establishes reaping by orphan disappearance only.
 All case streams have EOF, byte counts, and hash bindings in the 345-command ledgers. Final cleanup reports contain no owned resources or errors.
 Independent final inspection records absence of all fourteen unique containers and both scratch images.
