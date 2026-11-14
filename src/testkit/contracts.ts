@@ -570,9 +570,9 @@ async function events(factory: QualificationFactory, signal: AbortSignal) {
     assert.equal(completed, false, 'observer lifecycle cannot complete native work');
     counts(fixture, 1, 1, 0, 0);
     const closing = first.close();
-    assert.equal(first.close(), closing);
+    assert.equal(first.close(), closing, 'close() must return the same promise');
     const [one, two] = await owner.wait(Promise.all([closing, first.close()]));
-    assert.equal(one, two);
+    assert.equal(one, two, 'close() must settle to the same outcome object');
     ok(one);
     error(first.events.subscribe(() => {}), 'closed');
     error(await owner.wait(first.submit({ session: a, hostOperationId: 'closed' }, signal)), 'closed');

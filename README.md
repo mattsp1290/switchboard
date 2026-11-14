@@ -53,9 +53,30 @@ for (const [name, contract] of Object.entries(contracts)) {
 
 `QualificationFactory` accepts synchronous or asynchronous fixture acquisition.
 Each fixture supplies immutable samples, a connection factory, controlled faults, and idempotent asynchronous disposal.
+The shipped declarations in `dist/testkit/types.d.ts` define the fixture obligations:
+
+- Samples `a` and `b` share a binding and differ only in `opaque`. Approval and tool samples target `a`, and approval choices are nonempty.
+- All connections share session reservations until native completion. Overlapping work returns `busy`.
+  Approval and tool continuations are consumed once at native acceptance. Later submissions return `stale-interaction`.
+- Recovery never dispatches. Authoritative evidence includes a non-null `nativeOperation` equal to the acknowledgement receipt.
+  Its observation namespace matches the receipt namespace, and its observation `schemaVersion` is `1`.
+- Every `close()` call returns the identical Promise and shares the identical settled outcome object.
+  Cache the Promise and return it directly. An `async close()` wrapper creates a new Promise per call.
+  Close ends existing observers with `closed`; later subscriptions and submits return error `closed`.
+  Native lookup after close throws or rejects, so reconciliation returns error `lookup-failed` without incrementing `lookupCalls`.
+  Close increments `transportCloses` exactly once per connection and never releases or completes native work.
+- `counts()` returns a fresh plain object with exactly `dispatchAttempts`, `acceptedEffects`, `lookupCalls`, and `transportCloses`.
+  The counters start at zero and count native sends, accepted fixture commands, native lookups, and connection closes across the fixture.
+- Acquisition receives no signal and must settle independently. Gate `release()` must eventually settle `completed` for accepted work.
+  Idempotent `dispose()` releases completion gates, closes every connection, and settles after fixture work exits.
+  Cleanup waits for acquisition, callback exits, gate completion after release, and disposal. None of these cleanup waits is bounded by the signal.
+
 Each connection's event stream admits exactly two observers and two queued or active events per observer.
 Retiring callbacks retain their observer slots. Fixtures must not consume observer slots themselves.
 These bounds match `createEventStream({ maxObservers: 2, capacity: 2 })`.
+The simulated host admits session targets only. Rejected intent becomes `not-dispatched` with reason `intent-failed`.
+The reference fake rejects malformed `hostOperationId` values with `TypeError`.
+IDs require non-whitespace text, no control characters, and at most 1024 UTF-16 code units.
 The groups cover uncertainty, sessions, interaction, and events. They retain separate result, effect, and delivery assertions.
 These controlled checks do not qualify native engines, credentials, or durable host admission.
 

@@ -50,6 +50,10 @@ function track<T>(tasks: Set<Promise<T>>, promise: Promise<T>): Promise<T> {
   return promise;
 }
 
+/**
+ * Creates the controlled reference fixture. Submitting a malformed `hostOperationId` rejects with TypeError.
+ * IDs must contain non-whitespace text, contain no control characters, and be at most 1024 UTF-16 code units.
+ */
 export function createFakeFixture(): QualificationFixture {
   const binding = {
     engine: 'fixture', nativeVersion: '1', account: 'test-account',

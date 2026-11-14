@@ -131,6 +131,42 @@ test('qualification rejects recovery dispatch', { timeout: 10_000 }, (t) =>
 test('qualification rejects false certainty', { timeout: 10_000 }, (t) =>
   rejectsDriver(falseCertaintyFactory, 'lost acknowledgement must remain outcome-unknown', 1, t.signal));
 
+test('qualification rejects async close promise replacement', { timeout: 10_000 }, async (t) => {
+  const fixtures = [];
+  const connections = [];
+  let disposed = 0;
+  await assert.rejects(contracts.events(() => {
+    const real = createFakeFixture();
+    fixtures.push(real);
+    return {
+      ...real,
+      async dispose() { await real.dispose(); disposed++; },
+      connect(recordIntent) {
+        const driver = real.connect(recordIntent);
+        connections.push(driver);
+        return { ...driver, async close() { return driver.close(); } };
+      },
+    };
+  }, t.signal), (error) => {
+    assert.equal(error.code, 'ERR_ASSERTION');
+    assert.match(error.message, /^close\(\) must return the same promise(?=\n|$)/);
+    return true;
+  });
+  assert.equal(fixtures.length, 3);
+  assert.equal(connections.length, 3);
+  assert.equal(disposed, fixtures.length);
+  for (const fixture of fixtures) {
+    assert.equal(fixture.controls.counts().transportCloses, 1);
+    await fixture.dispose();
+    assert.equal(fixture.controls.counts().transportCloses, 1);
+  }
+  for (const connection of connections) {
+    assert.deepEqual(connection.events.subscribe(() => {}), { kind: 'error', error: { code: 'closed' } });
+    assert.deepEqual(await connection.submit({ session: fixtures[0].samples.a,
+      hostOperationId: 'after-cleanup' }, t.signal), { kind: 'error', error: { code: 'closed' } });
+  }
+});
+
 function derivedDeliveryFactory(tracker) {
   const real = createFakeFixture();
   tracker.fixture = real;

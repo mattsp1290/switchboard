@@ -3,9 +3,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyTestkit } from './verify-testkit.mjs';
-import { qualificationGroups } from '../tests/qualification/groups.mjs';
+import { qualificationGroups, qualificationSupportFiles, qualificationTypeFixtures } from '../tests/qualification/groups.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
@@ -72,9 +72,10 @@ try {
   writeFileSync(join(consumer, 'runtime.mjs'), `
 import assert from 'node:assert/strict';
 import { createRequire, registerHooks } from 'node:module';
+const testkitPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/testkit/')).href)};
 registerHooks({ resolve(specifier, context, nextResolve) {
   const resolved = nextResolve(specifier, context);
-  assert(!resolved.url.includes('/testkit/'), 'Core cannot import the testkit.');
+  assert(!resolved.url.startsWith(testkitPrefix), 'Core cannot import the testkit.');
   return resolved;
 } });
 const switchboard = await import('${manifest.name}');
@@ -96,7 +97,8 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
   mkdirSync(join(consumer, 'qualification'));
-  for (const file of readdirSync(join(root, 'tests/qualification')).filter((name) => name.endsWith('.consumer.mjs') || name.endsWith('.test.ts') || name === 'async-fixture.ts')) {
+  const qualificationConsumers = readdirSync(join(root, 'tests/qualification')).filter((name) => name.endsWith('.consumer.mjs'));
+  for (const file of [...qualificationConsumers, ...qualificationTypeFixtures, ...qualificationSupportFiles]) {
     copyFileSync(join(root, 'tests/qualification', file), join(consumer, 'qualification', file));
   }
   const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
@@ -112,6 +114,7 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   }
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
+  assert.match(runtimeOutput, /^ok \d+ - qualification rejects async close promise replacement$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects effect-derived delivery$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
@@ -149,7 +152,7 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
 
   verifyTestkit({ root, consumer, temporary, tarball: join(artifacts, pack.filename), compiler,
-    compilerOptions: consumerConfig.compilerOptions, manifest });
+    compilerOptions: consumerConfig.compilerOptions, manifest, run, runNpm, runtimeEnvironment });
 
   const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;
   const discoveryInvalidCases = [

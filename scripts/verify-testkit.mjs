@@ -1,26 +1,14 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
-import { qualificationGroups } from '../tests/qualification/groups.mjs';
+import { qualificationGroups, qualificationSupportFiles, qualificationTypeFixtures } from '../tests/qualification/groups.mjs';
 
-export function verifyTestkit({ root, consumer, temporary, tarball, compiler, compilerOptions, manifest }) {
-  const runtimeEnvironment = { ...process.env };
-  delete runtimeEnvironment.NODE_TEST_CONTEXT;
-  const npm = process.env.npm_execpath;
-  assert(npm, 'Run this check with npm run verify:package.');
+export function verifyTestkit({ root, consumer, temporary, tarball, compiler, compilerOptions, manifest,
+  run, runNpm, runtimeEnvironment }) {
   const installed = join(consumer, 'node_modules', ...manifest.name.split('/'));
-  const run = (command, args, cwd, env = process.env) =>
-    execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-  const runNpm = (args, cwd) => run(process.execPath, [npm, ...args], cwd);
-
-  for (const file of ['import-testkit.mjs', 'groups.mjs']) {
-    copyFileSync(join(root, 'tests/qualification', file), join(consumer, 'qualification', file));
-  }
-  const qualificationTypes = ['qualification/fixture.test.ts', 'qualification/async-fixture.ts',
-    'qualification/import-testkit.mjs', 'qualification/groups.mjs'];
+  const qualificationTypes = [...qualificationTypeFixtures, ...qualificationSupportFiles].map(file => `qualification/${file}`);
   writeFileSync(join(consumer, 'testkit.json'), JSON.stringify({
     compilerOptions, files: qualificationTypes,
   }));
@@ -54,12 +42,12 @@ export function verifyTestkit({ root, consumer, temporary, tarball, compiler, co
     assert.match(aliasOutput, new RegExp(`^ok \\d+ - alias qualification: ${RegExp.escape(name)}$`, 'm'));
   }
   process.stdout.write(aliasOutput);
-  for (const file of ['fixture.test.ts', 'async-fixture.ts']) {
+  for (const file of qualificationTypeFixtures) {
     writeFileSync(join(aliasConsumer, file), readFileSync(join(root, 'tests/qualification', file), 'utf8')
       .replaceAll(`${manifest.name}/testkit`, `${alias}/testkit`));
   }
   writeFileSync(join(aliasConsumer, 'tsconfig.json'), JSON.stringify({
-    compilerOptions, files: ['fixture.test.ts', 'async-fixture.ts', 'qualification.mjs'],
+    compilerOptions, files: [...qualificationTypeFixtures, 'qualification.mjs'],
   }));
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], aliasConsumer);
   console.log('Verified dev-only artifact alias with package self-reference and no canonical core install.');
