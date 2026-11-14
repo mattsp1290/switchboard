@@ -62,11 +62,17 @@ type Stream = Opener & {
 type Entity = Stream
   | { readonly kind: 'result'; readonly owner: string | undefined; readonly tool: string; readonly open: false }
   | { readonly kind: 'owner'; readonly open: false }
-  | { readonly kind: 'activity'; readonly owner: string | undefined; readonly activityType: string; readonly open: false };
+  | { readonly kind: 'observation'; readonly open: false }
+  | { readonly kind: 'activity'; readonly owner: string | undefined; readonly open: false };
+export type MessageKnowledge =
+  | { readonly role: 'assistant'; readonly owner: string | undefined; readonly constrained: boolean }
+  | { readonly role: 'activity'; readonly owner: string | undefined }
+  | { readonly role: 'reasoning' | 'other' };
 type Transition =
+  | { readonly kind: 'messages'; readonly knowledge: readonly (readonly [string, MessageKnowledge])[]; readonly owners: readonly string[] }
   | { readonly kind: 'observe'; readonly owner: string | undefined }
   | { readonly kind: 'activity'; readonly id: string; readonly owner: string | undefined;
-      readonly activityType: string; readonly mode: 'replace' | 'preserve' | 'delta' }
+      readonly mode: 'replace' | 'preserve' | 'delta' }
   | { readonly kind: 'start' }
   | { readonly kind: 'fail' }
   | { readonly kind: 'finish'; readonly pending?: readonly string[] }
@@ -204,7 +210,22 @@ function encodeEntity(fact: Record<string, unknown>, options: ProjectionOptions,
   }
 }
 
-function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): readonly (readonly [string, Entity])[] {
+function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>, knowledge: Map<string, MessageKnowledge>): readonly (readonly [string, Entity])[] {
+  const constrained = (id: string) => {
+    const known = knowledge.get(id);
+    return known?.role === 'assistant' && known.constrained ? known : undefined;
+  };
+  if (transition.kind === 'messages') {
+    const incoming = new Map(transition.knowledge);
+    const roles = new Set([...incoming.values()].map(message => message.role));
+    for (const [id, message] of knowledge) {
+      if (!incoming.has(id) && (message.role === 'activity' || message.role === 'reasoning') && !roles.has(message.role)) incoming.set(id, message);
+    }
+    knowledge.clear();
+    for (const [id, message] of incoming) knowledge.set(id, message);
+    return [...transition.knowledge.map(([id]): readonly [string, Entity] => [id, ledger.get(id) ?? { kind: 'observation', open: false }]),
+      ...transition.owners.map((id): readonly [string, Entity] => [id, ledger.get(id) ?? { kind: 'owner', open: false }])];
+  }
   if (transition.kind === 'start' || transition.kind === 'fail') return [];
   if (transition.kind === 'finish') {
     if ([...ledger.values()].some(entity => entity.open)) reject('invalid-order');
@@ -215,18 +236,18 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
   if (transition.kind === 'observe') return transition.owner !== undefined && !ledger.has(transition.owner)
     ? [[transition.owner, { kind: 'owner', open: false }]] : [];
   if (transition.kind === 'activity') {
-    const current = ledger.get(transition.id);
-    if (current && current.kind !== 'activity') reject('identity-conflict');
+    const current = knowledge.get(transition.id);
+    if (current && current.role !== 'activity') reject('identity-conflict');
     if (!current && transition.mode === 'delta') reject('invalid-order');
-    if (current && transition.mode !== 'replace' && current.owner !== transition.owner) reject('identity-conflict');
-    if ([...ledger.values()].some(entity => entity.kind === 'tool'
-      && entity.parentMessageId === transition.id)) reject('identity-conflict');
+    const historical = ledger.get(transition.id);
+    if (!current && transition.mode !== 'delta' && historical && historical.kind !== 'activity' && historical.kind !== 'observation') reject('identity-conflict');
+    if (current?.role === 'activity' && transition.mode !== 'replace' && current.owner !== transition.owner) reject('identity-conflict');
     const updates: [string, Entity][] = [];
     if (transition.owner !== undefined && !ledger.has(transition.owner)) {
       updates.push([transition.owner, { kind: 'owner', open: false }]);
     }
-    updates.push([transition.id, { kind: 'activity', owner: transition.owner, open: false,
-      activityType: current && transition.mode === 'preserve' ? current.activityType : transition.activityType }]);
+    knowledge.set(transition.id, { role: 'activity', owner: transition.owner });
+    updates.push([transition.id, ledger.get(transition.id) ?? { kind: 'activity', owner: transition.owner, open: false }]);
     return updates;
   }
   const current = ledger.get(transition.id);
@@ -235,15 +256,17 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
   if (owner !== undefined && !ledger.has(owner)) updates.push([owner, { kind: 'owner', open: false }]);
   if (transition.kind === 'open') {
     const incoming = transition.stream;
-    if (incoming.kind === 'tool' && incoming.parentMessageId !== undefined) {
-      const parent = ledger.get(incoming.parentMessageId);
-      if (parent && (parent.kind !== 'text' || parent.role !== 'assistant' || parent.owner !== owner)) reject('identity-conflict');
-      if ([...ledger.values()].some(entity => entity.kind === 'tool'
-        && entity.parentMessageId === incoming.parentMessageId && entity.owner !== owner)) reject('identity-conflict');
+    if (incoming.kind === 'tool' && incoming.parentMessageId !== undefined && current?.kind !== 'tool') {
+      const parent = knowledge.get(incoming.parentMessageId);
+      if (parent && (parent.role !== 'assistant' || parent.owner !== owner)) reject('identity-conflict');
+      knowledge.set(incoming.parentMessageId, { role: 'assistant', owner, constrained: true });
+      if (!ledger.has(incoming.parentMessageId)) updates.push([incoming.parentMessageId, { kind: 'observation', open: false }]);
     }
-    if (incoming.kind === 'text' && [...ledger.values()].some(entity => entity.kind === 'tool'
-      && entity.parentMessageId === transition.id && (incoming.role !== 'assistant' || entity.owner !== owner))) reject('identity-conflict');
-    if (current !== undefined) {
+    if (incoming.kind === 'text' && current?.kind !== 'text') {
+      const parent = constrained(transition.id);
+      if (parent && (incoming.role !== 'assistant' || parent.owner !== owner)) reject('identity-conflict');
+    }
+    if (current !== undefined && current.kind !== 'observation') {
       const identical = current.kind === 'text' && incoming.kind === 'text'
         ? current.role === incoming.role && current.name === incoming.name
         : current.kind === 'tool' && incoming.kind === 'tool'
@@ -252,17 +275,19 @@ function validate(transition: Transition, ledger: ReadonlyMap<string, Entity>): 
       if (!identical || !('owner' in current) || current.owner !== owner) reject('identity-conflict');
       if (current.open) reject('invalid-order');
     }
+    if (incoming.kind === 'text') knowledge.set(transition.id, incoming.role === 'assistant'
+      ? { role: 'assistant', owner, constrained: constrained(transition.id) !== undefined } : { role: 'other' });
     updates.push([transition.id, { ...transition.stream,
       ...(current?.kind === 'tool' && current.result !== undefined ? { result: current.result } : {}),
     }]);
   } else {
-    if (!current || current.kind === 'result' || current.kind === 'owner' || current.kind === 'activity') reject('invalid-order');
+    if (!current || current.kind === 'result' || current.kind === 'owner' || current.kind === 'observation' || current.kind === 'activity') reject('invalid-order');
     if (current.owner !== owner) reject('identity-conflict');
     if (transition.kind === 'result') {
       if (current.kind !== 'tool' || current.open || current.result !== undefined) reject('invalid-order');
-      if (ledger.has(transition.messageId)) reject('identity-conflict');
-      if ([...ledger.values()].some(entity => entity.kind === 'tool'
-        && entity.parentMessageId === transition.messageId)) reject('identity-conflict');
+      const previous = ledger.get(transition.messageId);
+      if ((previous && previous.kind !== 'observation') || constrained(transition.messageId)) reject('identity-conflict');
+      knowledge.set(transition.messageId, { role: 'other' });
       updates.push([transition.messageId, { kind: 'result', owner, tool: transition.id, open: false }],
         [transition.id, { ...current, result: transition.messageId }]);
     } else {
@@ -280,10 +305,12 @@ export function createProjection<F>(options: ProjectionOptions, encode: Encode):
     let phase: Phase = 'idle';
     let accepting = false;
     const ledger = new Map<string, Entity>();
+    let knowledge = new Map<string, MessageKnowledge>();
     const stop = (next: 'faulted' | 'closed') => {
       phase = next;
       context = undefined;
       ledger.clear();
+      knowledge.clear();
     };
     const projection: Projection<F> = Object.freeze({
       accept(fact: F): ProjectionResult {
@@ -301,16 +328,19 @@ export function createProjection<F>(options: ProjectionOptions, encode: Encode):
           const permitted = action === 'start' ? phase === 'idle'
             : action === 'fail' ? phase === 'idle' || phase === 'running' || phase === 'finished' : phase === 'running';
           if (!permitted) reject('invalid-order');
-          const updates = validate(plan.transition, ledger);
-          const added = updates.filter(([id]) => !ledger.has(id)).length;
+          const nextKnowledge = new Map(knowledge);
+          const updates = new Map(validate(plan.transition, ledger, nextKnowledge));
+          const added = [...updates.keys()].filter(id => !ledger.has(id)).length;
           if (ledger.size + added > scope.bounds.maxEntities) reject('bounds-exceeded');
           const events = capture(plan.events, scope.bounds) as unknown as readonly ProjectionEvent[];
           for (const [id, entity] of updates) ledger.set(id, entity);
+          knowledge = nextKnowledge;
           if (action === 'start') phase = 'running';
           if (action === 'finish') phase = 'finished';
           if (action === 'fail') {
             phase = 'errored';
             ledger.clear();
+            knowledge.clear();
           }
           return Object.freeze({ kind: 'mapped', events });
         } catch (error) {

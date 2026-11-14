@@ -5,8 +5,20 @@ The frozen `aguiProtocol` descriptor exposes these pins and the implemented life
 `createAguiProjection` implements the per-run fact projection design through synchronous `accept(fact)` and idempotent `close()`.
 It maps observed run start, success, clean cancellation, and fixed public native or transport failures, including failures before start and after finish.
 Host thread, run, and parent IDs are preserved verbatim. `sourceKey` is an authorized public namespace supplied by the host, never a session credential.
-Scoped native identity encoding will land with entity facts, where emitted entity IDs can exercise it.
-Entities, steps, and advanced mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
+Scoped native identity encoding covers text, tools, results, steps, activities and snapshots.
+State, activity, raw and custom values are implemented. Terminals, reasoning and subagent lifecycle mappings remain planned. Native adapter qualification and consumer replay remain unimplemented.
+
+Message snapshots preserve all seven canonical roles, nested tool calls, encryption, metadata, tool errors and ordered content parts.
+`NativeMessage` derives from the pinned SDK union and replaces only scoped message, owner, call and part references.
+Snapshots emit the supplied complete set, including an empty set. Media sources and encryption remain opaque.
+The actor retains immutable explicit openers and emitted results separately from sparse current role and ownership knowledge.
+Snapshots may replace or omit current knowledge without closing explicit streams or changing actual pending-call order.
+Omitted activity and reasoning knowledge survives only when the snapshot has none of that role; an incoming same-ID message wins.
+A first actual tool start constrains its current assistant parent's owner, inferring that parent when unobserved or omitted.
+Snapshots reset that constraint. Matching explicit text/tool reopening continues to use the immutable opener.
+Snapshot calls and tool messages never create pending calls or answer actual calls. Actual duplicate results remain rejected.
+`maxEntities` charges unique message, tool, step and owner identities once per run, including inferred parents and omitted snapshots.
+Nested snapshot call IDs consume payload/work bounds but do not enter the actual call ledger. All state updates and output capture commit together.
 
 Each actor starts idle. A local input, ordering, or budget failure emits nothing and permanently faults that actor.
 Only an observed native failure emits `RUN_ERROR`; nothing follows that event on the same actor.
@@ -21,8 +33,7 @@ Arbitrary hostile JavaScript can execute inside proxy traps, so these limits do 
 All four bounds are positive safe integers. `maxJsonDepth` is additionally limited to 128, with the root at depth zero.
 `maxJsonNodes` charges each JSON value and object member name. `maxPayloadBytes` caps UTF-8 JSON for captured options,
 each fact, and the complete emitted batch separately, including host IDs, escaping, and event overhead.
-The lifecycle stage emits at most three events per actor, so per-call limits also bound its total output.
-`maxEntities` reserves the entity ledger ceiling for the entity stage; this lifecycle stage allocates no entity ledger.
+Each call is bounded independently; the host owns total stream retention.
 
 [The release manifest](ag-ui-pin.json) pins download URLs, artifact hashes, verification tools, source hashes, category classifications, and fixture owners.
 [The matrix](ag-ui-matrix.tsv) classifies every canonical definition and lists its event discriminator, inherited wire fields, required fields, Python defaults, and Python public export status.

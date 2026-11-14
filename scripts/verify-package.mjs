@@ -255,6 +255,40 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     ['content-readonly', "declare const event: Extract<ProjectionEvent, { type: 'TOOL_CALL_RESULT' }>; if (typeof event.content !== 'string') event.content.push({ type: 'text', text: 'changed' });", 2339],
     ['result-readonly', "declare const result: Extract<NonNullable<Extract<ProjectionEvent, { type: 'RUN_FINISHED' }>['result']>, readonly unknown[]>; result.push(0);", 2339],
   ];
+  const nativeMessageInvalid = [
+    ["{ id: 'wire', role: 'assistant' }", 2322],
+    ["{ id: ref, role: 'assistant', subagentRunId: 'wire' }", 2322],
+    ["{ id: ref, role: 'assistant', toolCalls: [{ id: 'wire', type: 'function', function: { name: '', arguments: '' } }] }", 2322],
+    ["{ id: ref, role: 'tool', content: '', toolCallId: 'wire' }", 2322],
+    ["{ id: ref, role: 'user', content: [{ type: 'text', id: 'wire', text: '' }] }", 2322],
+    ["{ id: ref, role: 'assistant', content: [] }", 2322],
+    ["{ id: ref, role: 'tool', content: '', toolCallId: ref, name: 'forbidden' }", 2353],
+    ["{ id: ref, role: 'activity', activityType: '', content: {}, encryptedValue: '' }", 2353],
+    ["{ id: ref, role: 'reasoning', content: '', name: '' }", 2353],
+    ...['null', '[]', '1', '{ invalid: () => {} }', '{ invalid: undefined }', '{ invalid: 1n }'].map(metadata => [`{ id: ref, role: 'assistant', metadata: ${metadata} }`, 2322]),
+    ["{ id: ref, role: 'assistant', toolCalls: [{ id: ref, type: 'function', function: { name: '', arguments: '' }, metadata: [] }] }", 2322],
+    ["{ id: ref, role: 'user', content: [{ type: 'text', text: '', metadata: null }] }", 2322],
+    ["{ id: ref, role: 'activity', activityType: '', content: [] }", 2322],
+    ["{ id: ref, role: 'tool', content: '' }", 2322],
+    ["{ id: ref, role: 'user' }", 2322],
+    ["{ id: ref, role: 'reasoning' }", 2322],
+    ["{ id: ref, role: 'assistant', subagentRunId: undefined }", 2375],
+    ["{ id: ref, role: 'assistant', metadata: { value: Symbol() } }", 2322],
+    ["{ id: ref, role: 'assistant', toolCalls: [{ id: ref, type: 'function', function: { name: '', arguments: '' }, metadata: null }] }", 2322],
+    ["{ id: ref, role: 'assistant', toolCalls: [{ id: ref, type: 'function', function: { name: '', arguments: '' }, metadata: { value: () => {} } }] }", 2322],
+    ["{ id: ref, role: 'user', content: [{ type: 'text', text: '', metadata: () => {} }] }", 2322],
+    ["{ id: ref, role: 'activity', activityType: '', content: { value: () => {} } }", 2322],
+    ["{ id: ref, role: 'developer' }", 2322],
+    ["{ id: ref, role: 'system' }", 2322],
+    ["{ id: ref, role: 'tool', toolCallId: ref }", 2322],
+    ["{ id: ref, role: 'activity', activityType: '' }", 2322],
+    ["{ id: ref, role: 'activity', content: {} }", 2322],
+    ["{ id: ref, role: 'activity', activityType: '', content: {}, name: '' }", 2353],
+  ];
+  assert.equal(nativeMessageInvalid.length, 33);
+  for (const [index, [expression, code]] of nativeMessageInvalid.entries()) {
+    aguiInvalidCases.push([`message-${index}`, `const ref = { scope: [], id: 'native' }; const invalid: import('${manifest.name}/agui').NativeMessage = ${expression};`, code]);
+  }
   for (const [name, source] of aguiInvalidCases) writeFileSync(join(integration, `${name}.mts`),
     `import type { ProjectionEvent } from '${manifest.name}/agui';\n${source}\n`);
   writeFileSync(join(integration, 'invalid.json'), JSON.stringify({
@@ -266,6 +300,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     .map(([, file, line, code]) => ({ file, line: Number(line), code: Number(code) }));
   assert.equal(actualAgui.length, (invalidAgui.stdout.match(/error TS\d+:/g) ?? []).length, invalidAgui.stdout);
   assert.deepEqual(actualAgui.sort(byFile), aguiInvalidCases.map(([name, , code]) => ({ file: `${name}.mts`, line: 2, code })).sort(byFile), invalidAgui.stdout);
+  console.log(`Verified ${nativeMessageInvalid.length} installed NativeMessage negative type fixtures.`);
   const collected = join(temporary, 'emitted-events.jsonl');
   writeFileSync(collected, '');
   writeFileSync(join(integration, 'compiled/empty-test.js'), '');
