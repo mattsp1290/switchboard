@@ -9,8 +9,6 @@ import time
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / 'local' / str(time.time_ns())
-OUT.mkdir(parents=True)
-(OUT / 'docker-config').mkdir()
 DOCKER = '/opt/homebrew/bin/docker'
 ZIG = '/opt/homebrew/bin/zig'
 IMAGE = 'node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54'
@@ -64,7 +62,8 @@ def docker(*args, **kwargs):
 def create(mode):
     cid = f'stability-prerequisite-{OUT.name}-{mode}'
     containers[cid] = 'uncertain'
-    docker('create', '--name', cid, '--init', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    init_options = ['--env', 'TINI_VERBOSITY=3'] if mode.startswith('raw-') else []
+    docker('create', '--name', cid, '--init', *init_options, '--network', 'none', '--read-only', '--cap-drop', 'ALL',
                  '--cap-add', 'SYS_CHROOT', '--cap-add', 'SETUID', '--cap-add', 'SETGID',
                  '--security-opt', 'no-new-privileges', '--security-opt', f'seccomp={HERE}/seccomp.json',
                  '--pids-limit', '32', '--memory', '256m', '--cpus', '1', '--ulimit', 'nofile=128:128',
@@ -115,7 +114,7 @@ def cleanup():
     save('cleanup.json', {'containers': sorted(containers), 'image': tag if tag in images else None, 'errors': errors})
 
 
-def main():
+def main(raw=False):
     global tag, stage
     assert digest(DOCKER) == 'd79e988b423edbe34460a2e4d86ecc841997f16c5e2a2ee5263f679d0c483a84'
     assert digest(ZIG) == '9fb480d3398506f5e2bef77f175766a8de0ee191dbdfbfb0c117a1150f141c91'
@@ -138,8 +137,11 @@ def main():
     binary = OUT / 'prerequisite'
     run([ZIG, 'cc', '-target', 'aarch64-linux-musl', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
          str(HERE / 'prerequisite.c'), '-o', str(binary)], timeout=60)
-    hashes = {path.name: digest(path) for path in [HERE / 'prerequisite.c', HERE / 'run.py',
-                                                HERE / 'seccomp.json', binary]}
+    hashes = {path.name: digest(path) for path in [binary, *sorted(
+        path for path in HERE.iterdir() if path.suffix in ('.c', '.py', '.json', '.md'))]}
+    if raw:
+        from run_admission import inspect_binary
+        inspect_binary(binary)
     save('hashes.json', hashes)
     root = OUT / 'build' / 'root'
     for directory in ['sealed/fixture', 'sealed/proc', 'sealed/sys', 'sealed/dev', 'outside']:
@@ -172,6 +174,15 @@ def main():
     assert init_hash == 'd286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1', 'init identity changed'
     save('init.json', {'sha256': init_hash, 'version': '0.19.0', 'commit': 'de40ad0'})
     remove(cid)
+    if raw:
+        from run_admission import MODES, collect
+        cases = []
+        for mode in MODES:
+            stage = mode
+            cases.append(collect(create('raw-' + mode), mode, init_hash))
+        save('result.json', {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': cases,
+                             'stability': 'INCONCLUSIVE', 'scope': 'Single raw target only.'})
+        return
     cases = []
     for mode in ['normal', 'inherited', 'death']:
         stage = mode
@@ -205,13 +216,26 @@ def main():
                          'reason': 'Finite stability mechanism is not implemented.'})
 
 
-try:
-    main()
-except Exception as error:
-    save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'unavailable',
-                         'stage': stage, 'error': str(error)})
-finally:
-    cleanup()
-    print(OUT)
-    print((OUT / 'result.json').read_text())
-    print((OUT / 'cleanup.json').read_text())
+def execute(raw=False):
+    OUT.mkdir(parents=True)
+    (OUT / 'docker-config').mkdir()
+    try:
+        main(raw)
+    except Exception as error:
+        save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'unavailable',
+                             'stage': stage, 'error': str(error),
+                             'nativeCleanup': 'unverified; inspect retained evidence'})
+    finally:
+        cleanup()
+        report = json.loads((OUT / 'cleanup.json').read_text())
+        if report['errors'] or report['containers'] or report['image']:
+            result = json.loads((OUT / 'result.json').read_text())
+            result.update(status='INCONCLUSIVE', cleanup='unresolved ownership')
+            save('result.json', result)
+        print(OUT)
+        print((OUT / 'result.json').read_text())
+        print((OUT / 'cleanup.json').read_text())
+
+
+if __name__ == '__main__':
+    execute()

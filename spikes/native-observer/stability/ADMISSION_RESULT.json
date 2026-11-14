@@ -1,0 +1,69 @@
+{
+  "status": "SUPPORTED_SINGLE_TARGET_ADMISSION",
+  "cases": [
+    {
+      "mode": "normal",
+      "outcome": "admitted",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "inherited",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "bad-root",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "info-short",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "query-bad",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "query-short",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "registration",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "deadline",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "tracer waitpid"
+    },
+    {
+      "mode": "death",
+      "outcome": "control observed",
+      "cleanup": "independent disappearance and live-init inventory",
+      "initReaping": "matched actual init waitpid log"
+    }
+  ],
+  "stability": "INCONCLUSIVE",
+  "scope": "Single raw target only.",
+  "evidence": "local/1794630556408000000",
+  "commandsSha256": "44480095ff24ce710023ed3af48ee6569f31e1af1ff5b2e65cfeaf2d3b1ab715",
+  "binarySha256": "aa83e66d198ea25375f62b7de2ef2a8137da96f1d432ae11cc7a9b29b5d8040c",
+  "initSha256": "d286e5df628bc2ceafe66dfb82e57fdf6ff66995a1cad073c9347e9bccc3dfb1",
+  "cleanupSha256": "35378ab045c42033478c9e26f6467c90c5b15018f61cd8aa7bbc0f5a90e83298",
+  "familyCustody": "unimplemented",
+  "pathnameEpochs": "unimplemented",
+  "installedImports": "unqualified"
+}
