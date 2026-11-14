@@ -102,7 +102,14 @@ static int descriptors(pid_t pid) {
     require(dir != NULL, "fd inventory");
     int leaked = 0, stdio = 0;
     struct dirent *entry;
-    while ((entry = readdir(dir))) {
+    int read_error;
+    for (;;) {
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) {
+            read_error = errno;
+            break;
+        }
         if (entry->d_name[0] == '.') continue;
         int fd = atoi(entry->d_name);
         snprintf(path, sizeof(path), "/proc/%d/fd/%d", pid, fd);
@@ -122,6 +129,8 @@ static int descriptors(pid_t pid) {
         }
     }
     closedir(dir);
+    errno = read_error;
+    require(read_error == 0, "fd inventory complete");
     require(stdio == 7, "complete stdio inventory");
     return leaked;
 }
