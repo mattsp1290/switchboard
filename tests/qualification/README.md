@@ -2,7 +2,7 @@
 
 Run `npm run verify:package` to execute these tests against the installed tarball.
 The verifier copies this directory into a clean consumer. These files are not shipped.
-`contracts` registers the uncertainty and sessions groups through one factory argument.
+`contracts` registers the uncertainty, sessions, interaction, and events groups through one factory argument.
 To qualify another controlled driver, supply an immediate or asynchronous factory with the same methods.
 
 The factory returns immutable `samples`, `connect(recordIntent)`, `controls`, and idempotent `dispose()`.
@@ -13,4 +13,12 @@ The simulated host owns fixed grants and in-memory command admission across reco
 Completion gates expose `entered`, `release()`, and `completed`; connection close does not release native work.
 Counters distinguish dispatch attempts, accepted fixture commands, native lookups, and transport closes.
 Accepted commands do not prove a real external tool effect.
+Continuation checks preserve native result, effect, and delivery as independent facts.
+Pending approval choices and tool targets must match exactly and are consumed once at acceptance.
+Event checks use explicit callback entry, release, and exit gates instead of timing sleeps.
+Overflow and disposal detach observers immediately; active callbacks retain their observer leases until they settle.
+Observer failure and transport close leave accepted native work held until its completion gate is released.
+Reconnect starts a fresh event stream with no replay.
+Two deliberately broken drivers perform a real recovery send or replace real acknowledgement loss with certainty.
+Each must fail its named contract assertion and then close every acquired connection through real fixture disposal.
 These tests qualify the fixture and reusable assertions, not native engines, auth routes, platforms, real protocols, or crash-durable host admission.

@@ -98,6 +98,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
   }
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
+  assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
   process.stdout.write(runtimeOutput);
   const consumerConfig = {
     compilerOptions: {

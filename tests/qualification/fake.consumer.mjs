@@ -82,21 +82,51 @@ function extraSendFactory(tracker) {
   };
 }
 
-test('qualification rejects recovery dispatch', { timeout: 10_000 }, async (t) => {
+function falseCertaintyFactory(tracker) {
+  const real = createFakeFixture();
+  tracker.fixture = real;
+  return {
+    ...real,
+    async dispose() {
+      await real.dispose();
+      tracker.disposed = true;
+    },
+    connect(recordIntent) {
+      const driver = real.connect(recordIntent);
+      tracker.connections.push(driver);
+      return {
+        ...driver,
+        async submit(request, signal) {
+          const result = await driver.submit(request, signal);
+          return result.kind === 'ok' && result.value.observation.kind === 'outcome-unknown'
+            ? { kind: 'ok', value: { ...result.value, observation: { kind: 'accepted' } } } : result;
+        },
+      };
+    },
+  };
+}
+
+async function rejectsDriver(factory, invariant, expectedConnections, signal) {
   const tracker = { connections: [], disposed: false };
-  await assert.rejects(contracts.uncertainty(() => extraSendFactory(tracker), t.signal), (error) => {
+  await assert.rejects(contracts.uncertainty(() => factory(tracker), signal), (error) => {
     assert.equal(error.code, 'ERR_ASSERTION');
-    assert.match(error.message, /^reconciliation cannot dispatch(?=\n|$)/);
+    assert.match(error.message, new RegExp(`^${RegExp.escape(invariant)}(?=\\n|$)`));
     return true;
   });
   assert.equal(tracker.disposed, true);
-  assert.equal(tracker.connections.length, 2);
-  assert.equal(tracker.fixture.controls.counts().transportCloses, 2);
+  assert.equal(tracker.connections.length, expectedConnections);
+  assert.equal(tracker.fixture.controls.counts().transportCloses, expectedConnections);
   for (const connection of tracker.connections) {
     assert.deepEqual(connection.events.subscribe(() => {}), { kind: 'error', error: { code: 'closed' } });
     assert.deepEqual(await connection.submit({ session: tracker.fixture.samples.a,
-      hostOperationId: 'after-cleanup' }, t.signal), { kind: 'error', error: { code: 'closed' } });
+      hostOperationId: 'after-cleanup' }, signal), { kind: 'error', error: { code: 'closed' } });
   }
   await tracker.fixture.dispose();
-  assert.equal(tracker.fixture.controls.counts().transportCloses, 2);
-});
+  assert.equal(tracker.fixture.controls.counts().transportCloses, expectedConnections);
+}
+
+test('qualification rejects recovery dispatch', { timeout: 10_000 }, (t) =>
+  rejectsDriver(extraSendFactory, 'reconciliation cannot dispatch', 2, t.signal));
+
+test('qualification rejects false certainty', { timeout: 10_000 }, (t) =>
+  rejectsDriver(falseCertaintyFactory, 'lost acknowledgement must remain outcome-unknown', 1, t.signal));
