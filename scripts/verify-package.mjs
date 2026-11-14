@@ -104,8 +104,18 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects effect-derived delivery$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
   assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
+  for (const name of [
+    'Crew reconstructs persisted command ownership',
+    'AgentUI keeps view and command ownership separate',
+    'host controls reject missing intent bytes without native entry',
+    'host controls reject unsafe resubmission',
+    'host controls reject command closure with a view',
+    'host controls reject approval validation delegated to the backend',
+  ]) {
+    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - ${RegExp.escape(name)}$`, 'm'));
+  }
   process.stdout.write(runtimeOutput);
-  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs'];
+  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs', 'qualification/host-consumers.mjs'];
   const consumerConfig = {
     compilerOptions: {
       target: 'ES2022',
