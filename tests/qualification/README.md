@@ -35,13 +35,17 @@ Its qualification imports resolve in the installed consumer layout created by th
 The host writes complete native session references and separate host correlation before native entry.
 Configured grants and host correlation are copied before caller mutation and execution.
 Saved unknown outcomes select lookup-only recovery. Intent-only records block fresh admission.
+Only `outcome-unknown` advances the journal. Accepted, conclusive, and post-intent aborted results leave blocking intent records and require investigation.
+Conclusive lookups leave the saved unknown unchanged, so later calls repeat the lookup.
 Malformed records, wrong bindings, and different command identities reject before backend work.
 The file proves sequential reconstruction from bytes, not atomic writes, concurrent admission, or process-crash durability.
 
 The AgentUI-like schedule overlaps two views on separate connections while an independent command owner holds work.
+If `openAgentView` throws during subscription, the caller retains the connection and must close it.
 Closing the old view leaves the replacement observing and the command owner available for reconciliation and replies.
 Private pending approval targets, associated tool IDs, and native choices survive client mutations.
-Host request IDs cannot substitute for native approval IDs, and invalid replies never call command submission.
+Host request IDs cannot substitute for native approval IDs. Malformed or mismatched replies never call command submission.
+Single-use enforcement for replayed or overlapping replies remains with the backend.
 Capability distinctions and reasons are declared presentation inputs, not reports from the fake backend.
 Broken-host controls fail the shared named assertions for missing intent bytes, duplicate sends, mistaken command closes,
 and invalid approval replies forwarded to command submission even when the backend rejects them.

@@ -55,10 +55,10 @@ export function createCrewActivity(options) {
     if (!existsSync(journalFile)) return undefined;
     /** @type {unknown} */
     const saved = JSON.parse(readFileSync(journalFile, 'utf8'));
-    if (!isRecord(saved) || !isRecord(saved.correlation)
-      || saved.correlation.threadId !== correlation.threadId
+    if (!isRecord(saved) || !isRecord(saved.correlation)) throw new Error('Invalid host journal.');
+    if (saved.correlation.threadId !== correlation.threadId
       || saved.correlation.runId !== correlation.runId
-      || saved.correlation.requestId !== correlation.requestId) throw new Error('Invalid host journal.');
+      || saved.correlation.requestId !== correlation.requestId) throw new Error('Foreign host correlation.');
     if (saved.kind === 'intent') return { kind: 'intent', identity: identity(saved.identity), correlation };
     if (saved.kind !== 'unknown' || !isRecord(saved.snapshot)
       || !isRecord(saved.snapshot.observation) || saved.snapshot.observation.kind !== 'outcome-unknown') {
@@ -93,7 +93,7 @@ export function createCrewActivity(options) {
       if (snapshot.observation.kind === 'outcome-unknown') save({ kind: 'unknown', snapshot, correlation });
       return snapshot;
     },
-    close: connection.close,
+    close: () => connection.close(),
   };
 }
 
@@ -120,8 +120,9 @@ export function openAgentView(options) {
     },
     async close() {
       subscription.dispose();
-      await subscription.ended;
-      return connection.close();
+      const ended = await subscription.ended;
+      const closed = await connection.close();
+      return closed.kind === 'ok' ? { kind: 'ok', value: ended } : closed;
     },
   };
 }

@@ -95,14 +95,17 @@ async function crewScenario(signal, wrapOwner = (owner) => owner, firstOwner = c
     const intentOnly = { kind: 'intent', identity: saved.snapshot.identity, correlation };
     const wrongBinding = structuredClone(saved);
     wrongBinding.snapshot.identity.target.reference.binding.account = 'other-account';
+    const wrongSession = structuredClone(saved);
+    wrongSession.snapshot.identity.target.reference.opaque = fixture.samples.b.opaque;
     const wrongCommand = structuredClone(saved);
     wrongCommand.snapshot.identity.hostOperationId = 'other-command';
     const wrongCorrelation = structuredClone(saved);
     wrongCorrelation.correlation.requestId = 'other-request';
     const malformed = { ...saved, snapshot: { ...saved.snapshot, observation: { kind: 'accepted' } } };
     for (const [record, expected] of [[intentOnly, /Intent requires investigation/],
-      [wrongBinding, /binding-mismatch/], [wrongCommand, /Wrong command identity/],
-      [wrongCorrelation, /Invalid host journal/], [malformed, /Invalid host journal/],
+      [wrongBinding, /binding-mismatch/], [wrongSession, /Outside host grant/],
+      [wrongCommand, /Wrong command identity/],
+      [wrongCorrelation, /Foreign host correlation/], [malformed, /Invalid host journal/],
       [null, /Invalid host journal/]]) {
       writeFileSync(journalFile, JSON.stringify(record));
       const before = fixture.controls.counts();
@@ -115,6 +118,8 @@ async function crewScenario(signal, wrapOwner = (owner) => owner, firstOwner = c
     assert.deepEqual(fixture.controls.counts(), before);
     writeFileSync(journalFile, JSON.stringify(saved));
     await assert.rejects(reconstructed.execute({ ...retry, hostOperationId: 'other-command' }, signal), /Wrong command identity/);
+    assert.deepEqual(fixture.controls.counts(), before);
+    await assert.rejects(reconstructed.execute({ ...retry, session: fixture.samples.b }, signal), /Outside host grant/);
     assert.deepEqual(fixture.controls.counts(), before);
     ok(await reconstructed.close());
   } finally {
@@ -153,7 +158,7 @@ async function agentUIScenario(signal, wrapView = (view) => view) {
     } };
     fixture.controls.emit(1);
     await wait(Promise.all([aSeen.promise, bSeen.get(1).promise]), signal);
-    ok(await a.close());
+    assert.deepEqual(await a.close(), { kind: 'ok', value: 'disposed' });
     bInput.onProgress = () => { throw new Error('Mutated client callback.'); };
     const bCount = bValues.length;
     fixture.controls.emit(2);
@@ -207,6 +212,25 @@ test('Crew reconstructs persisted command ownership', { timeout: 5000 }, async (
 
 test('AgentUI keeps view and command ownership separate', { timeout: 5000 }, async ({ signal }) => {
   await agentUIScenario(signal);
+});
+
+test('host admission rechecks the journal before native entry', { timeout: 5000 }, async ({ signal }) => {
+  const directory = mkdtempSync(join(tmpdir(), 'switchboard-crew-'));
+  const journalFile = join(directory, 'command.json');
+  const fixture = createFakeFixture();
+  try {
+    const owner = createCrewActivity({ ...crewOptions(fixture, journalFile), connect: (recordIntent) =>
+      fixture.connect((identity) => {
+        writeFileSync(journalFile, JSON.stringify({ kind: 'intent', identity, correlation }));
+        return recordIntent(identity);
+      }) });
+    const snapshot = await owner.execute({ session: fixture.samples.a, hostOperationId }, signal);
+    assert.deepEqual(snapshot.observation, { kind: 'not-dispatched', reason: 'intent-failed' });
+    assert.deepEqual(fixture.controls.counts(),
+      { dispatchAttempts: 0, acceptedEffects: 0, lookupCalls: 0, transportCloses: 0 });
+  } finally {
+    try { await fixture.dispose(); } finally { rmSync(directory, { recursive: true, force: true }); }
+  }
 });
 
 test('host controls reject missing intent bytes without native entry', { timeout: 5000 }, async ({ signal }) => {
