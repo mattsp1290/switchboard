@@ -1,0 +1,22 @@
+{
+  "status": "VERIFIED_INERT_HOST_CAPTURE",
+  "scope": "Host capture and intercepted observer behavior only. Native, Node confinement and SDK gates remain open.",
+  "sourceSha256": "5f97b2f33837961a1ed436012321bc6c67ea6ecbffdb693baf797c05d2b0b3bf",
+  "tests": {
+    "python3.14.5": 48,
+    "python3.13.12": 48
+  },
+  "regression": {
+    "before": "OSError not raised",
+    "beforeCommit": "d3a571a921cabeda47eea325d1f24f5481343c6f",
+    "after": "OSError EOVERFLOW",
+    "checkFalseRefuses": true
+  },
+  "originalNodeReproduction": {
+    "emittedBytes": 17825792,
+    "retainedBytes": 16777216,
+    "limitBytes": 16777216,
+    "nodeSha256": "ba7073582822078d8c90bca3facacc46690bc5366fab4b815aeef9148cd6e854"
+  },
+  "nativeObserved": false
+}
