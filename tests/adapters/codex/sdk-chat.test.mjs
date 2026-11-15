@@ -48,7 +48,7 @@ test('native SDK streams message snapshots and resumes with the same subscriptio
   assert.equal(args[args.indexOf('--model') + 1], 'gpt-6.1-sol');
   for (const setting of ['forced_login_method="chatgpt"', 'model_provider="openai"', 'approval_policy="never"',
     'openai_base_url="https://chatgpt.com/backend-api/codex"', 'web_search="disabled"', 'features.shell_tool=false',
-    'mcp_servers={"fixture.one"={enabled=false,command="switchboard-disabled-mcp"}}']) assert(args.includes(setting), setting);
+    'mcp_servers={"fixture.one"={enabled=false,command="switchboard-disabled-mcp"},"fixture.http"={enabled=false,url="http://127.0.0.1:9/disabled"}}']) assert(args.includes(setting), setting);
   for (const name of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'NODE_OPTIONS']) assert(!inherited.includes(name));
   assert.equal(args[args.indexOf('--sandbox') + 1], 'read-only');
 });
@@ -172,22 +172,47 @@ test('an early native exit during a large stdin write cannot crash the host', as
   assert.equal(stdout.trim(), 'caught');
 });
 
-test('the pinned native CLI accepts disabled MCP entries without their original credentials', async t => {
+test('the pinned native CLI accepts disabled stdio and HTTP MCP entries without copying their credentials', async t => {
   const { dir, open } = await fixture(t);
   const runtime = open();
   assert.equal((await (await runtime.start({ text: 'one', onEvent() {} })).finished).outcome, 'completed');
   const { args } = JSON.parse(await readFile(join(dir, 'args.json'), 'utf8'));
   const override = args.find(arg => arg.startsWith('mcp_servers='));
-  await writeFile(join(dir, 'config.toml'), '[mcp_servers."fixture.one"]\ncommand="unused-original-command"\n');
+  for (const secret of ['original-command-secret', 'original-env-secret', 'original-url-secret', 'original-header-secret']) {
+    assert(!args.some(arg => arg.includes(secret)), secret);
+  }
+  await writeFile(join(dir, 'config.toml'), `
+[mcp_servers."fixture.one"]
+command="original-command-secret"
+env={SECRET="original-env-secret"}
+[mcp_servers."fixture.http"]
+url="https://original-url-secret.invalid"
+http_headers={Authorization="original-header-secret"}
+`);
   const cli = fileURLToPath(new URL('../../../node_modules/@openai/codex/bin/codex.js', import.meta.url));
   const { stdout } = await promisify(execFile)(process.execPath, [cli, 'mcp', 'list', '--json', '-c', override], {
     env: { HOME: dir, CODEX_HOME: dir, PATH: process.env.PATH }, timeout: 10000,
   });
   const servers = JSON.parse(stdout);
-  assert.equal(servers.length, 1);
-  assert.equal(servers[0].name, 'fixture.one');
-  assert.equal(servers[0].enabled, false);
-  assert.equal(servers[0].transport.command, 'switchboard-disabled-mcp');
+  assert.equal(servers.length, 2);
+  const stdio = servers.find(server => server.name === 'fixture.one');
+  const http = servers.find(server => server.name === 'fixture.http');
+  assert.equal(stdio.enabled, false);
+  assert.equal(stdio.transport.type, 'stdio');
+  assert.equal(stdio.transport.command, 'switchboard-disabled-mcp');
+  assert.equal(http.enabled, false);
+  assert.equal(http.transport.type, 'streamable_http');
+  assert.equal(http.transport.url, 'http://127.0.0.1:9/disabled');
+});
+
+test('missing, invalid and unknown MCP transport types reject before SDK dispatch', async t => {
+  const { account, dir, open } = await fixture(t);
+  const runtime = open();
+  for (const transport of [undefined, null, 'stdio', {}, { type: null }, { type: 'http' }]) {
+    await account({ mcpServers: [{ name: 'fixture.one', transport }] });
+    await assert.rejects(runtime.start({ text: 'one', onEvent() {} }), { message: 'Codex operation failed.' });
+    await assert.rejects(readFile(join(dir, 'args.json')), { code: 'ENOENT' });
+  }
 });
 
 test('a readiness deadline terminates an uncooperative CLI without shutdown', { timeout: 15000 }, async t => {

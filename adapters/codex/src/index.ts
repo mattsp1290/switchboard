@@ -78,14 +78,23 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
   }
 
   async function disableMcpServers(signal: AbortSignal): Promise<string> {
-    // Disabled servers still require a valid transport. Use an inert command without copying credentials.
+    // Native config merges retain transport fields, so disabled entries must keep their transport kind.
     const { stdout } = await runCli(['mcp', 'list', '--json'], signal, 1024 * 1024);
     const servers: unknown = JSON.parse(stdout);
     if (!Array.isArray(servers) || servers.length > 512) throw failure();
     const disabled = servers.map((server: unknown) => {
       if (!server || typeof server !== 'object' || !('name' in server)
-        || typeof server.name !== 'string' || !server.name || server.name.length > 256) throw failure();
-      return JSON.stringify(server.name) + '={enabled=false,command="switchboard-disabled-mcp"}';
+        || typeof server.name !== 'string' || !server.name || server.name.length > 256 || !('transport' in server)) throw failure();
+      const transport = server.transport;
+      if (!transport || typeof transport !== 'object' || !('type' in transport)) throw failure();
+      switch (transport.type) {
+        case 'stdio':
+          return JSON.stringify(server.name) + '={enabled=false,command="switchboard-disabled-mcp"}';
+        case 'streamable_http':
+          return JSON.stringify(server.name) + '={enabled=false,url="http://127.0.0.1:9/disabled"}';
+        default:
+          throw failure();
+      }
     });
     return 'mcp_servers={' + disabled.join(',') + '}';
   }

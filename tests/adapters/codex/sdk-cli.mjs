@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 const dir = process.env.CODEX_HOME;
 const args = process.argv.slice(2);
-const { version, login, id, preflight, exitBeforeInput } = JSON.parse(readFileSync(join(dir, 'account.json'), 'utf8'));
+const { version, login, id, preflight, exitBeforeInput, mcpServers } = JSON.parse(readFileSync(join(dir, 'account.json'), 'utf8'));
 if (preflight === args[0]) {
   process.on('SIGTERM', () => {});
   writeFileSync(join(dir, 'pid'), String(process.pid));
@@ -15,7 +15,10 @@ if (args[0] === '--version') {
 } else if (args[0] === 'login') {
   console.error(login);
 } else if (args[0] === 'mcp') {
-  console.log(JSON.stringify([{ name: 'fixture.one', enabled: true }]));
+  console.log(JSON.stringify(mcpServers ?? [
+    { name: 'fixture.one', enabled: true, transport: { type: 'stdio', command: 'original-command-secret', env: { SECRET: 'original-env-secret' } } },
+    { name: 'fixture.http', enabled: true, transport: { type: 'streamable_http', url: 'https://original-url-secret.invalid', http_headers: { Authorization: 'original-header-secret' } } },
+  ]));
 } else {
   if (exitBeforeInput) process.exit(2);
   const text = readFileSync(0, 'utf8');
