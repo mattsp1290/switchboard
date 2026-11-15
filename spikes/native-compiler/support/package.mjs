@@ -112,6 +112,11 @@ const nativeNames = ['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk', '@ma
 
 export function assertCoreIsolation(project, closure = [], closurePolicy) {
   const require = createRequire(join(project, 'package.json'));
+  for (const file of closure) {
+    const normalized = file.replaceAll('\\', '/');
+    assert(!normalized.includes('/@opentelemetry/'), 'Core compiler reference includes telemetry.');
+    assert(!normalized.includes('/switchboard/dist/observability/'), 'Core compiler reference includes observability.');
+  }
   for (const name of nativeNames) {
     assert(!closure.some((file) => file.replaceAll('\\', '/').includes(`/node_modules/${name}/`)), `Native compiler reference: ${name}`);
     assert.throws(() => require.resolve(name), { code: 'MODULE_NOT_FOUND' }, `Native dependency resolves: ${name}`);

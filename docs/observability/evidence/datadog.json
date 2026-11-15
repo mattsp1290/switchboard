@@ -1,0 +1,608 @@
+{
+  "lane": "datadog",
+  "status": "passed",
+  "startedAt": "2026-11-15T06:27:48.994Z",
+  "endpoint": "http://127.0.0.1:14318/v1/traces",
+  "site": "us3.datadoghq.com",
+  "scenarios": [
+    {
+      "id": "success-none",
+      "service": "switchboard-observability-fe07ae4dfe8c4be2",
+      "runId": "1d7c0d75-2720-48eb-91e2-ab86b0ea8bfc",
+      "startedAt": "2026-11-15T06:27:36.501Z",
+      "endedAt": "2026-11-15T06:27:36.541Z",
+      "requests": 2,
+      "toolExecutions": 1,
+      "roots": [
+        {
+          "traceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "spanId": "fd1aa65ae0a6a0fc"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "spanId": "c33456b8c1267555",
+          "parentSpanId": "fd1aa65ae0a6a0fc",
+          "requestId": "1d7c0d75-2720-48eb-91e2-ab86b0ea8bfc-model-1-1",
+          "outcome": "success",
+          "usage": {
+            "inputTokens": 5,
+            "outputTokens": 3
+          }
+        },
+        {
+          "kind": "tool",
+          "traceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "spanId": "f1ce53e7e2fd57a4",
+          "parentSpanId": "fd1aa65ae0a6a0fc",
+          "requestId": "1d7c0d75-2720-48eb-91e2-ab86b0ea8bfc-tool-1",
+          "outcome": "success"
+        },
+        {
+          "kind": "model",
+          "traceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "spanId": "fb8847d18c114b2a",
+          "parentSpanId": "fd1aa65ae0a6a0fc",
+          "requestId": "1d7c0d75-2720-48eb-91e2-ab86b0ea8bfc-model-1-2",
+          "outcome": "success",
+          "usage": {
+            "inputTokens": 2,
+            "outputTokens": 1
+          }
+        },
+        {
+          "kind": "agent",
+          "traceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "spanId": "fd1aa65ae0a6a0fc",
+          "requestId": "1d7c0d75-2720-48eb-91e2-ab86b0ea8bfc-agent-1",
+          "outcome": "success"
+        }
+      ],
+      "expected": {
+        "agentCount": 1,
+        "modelCount": 2,
+        "toolCount": 1,
+        "inputTokens": 7,
+        "outputTokens": 4,
+        "outcome": "success"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "otelSpanId": "c33456b8c1267555",
+          "backendTraceId": "c0f4619e613f509b8bf19fdc7cff4630",
+          "backendSpanId": "14065962887699395925",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "otelSpanId": "f1ce53e7e2fd57a4",
+          "backendTraceId": "c0f4619e613f509b8bf19fdc7cff4630",
+          "backendSpanId": "17423956263753832356",
+          "kind": "tool",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "otelSpanId": "fb8847d18c114b2a",
+          "backendTraceId": "c0f4619e613f509b8bf19fdc7cff4630",
+          "backendSpanId": "18124815665676241706",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "390f5249ca14f2273788c589a8ed3aaa",
+          "otelSpanId": "fd1aa65ae0a6a0fc",
+          "backendTraceId": "c0f4619e613f509b8bf19fdc7cff4630",
+          "backendSpanId": "18238072550236528892",
+          "kind": "agent",
+          "outcome": "success"
+        }
+      ],
+      "observedCount": 4,
+      "modelUsage": {
+        "calls": 2,
+        "inputTokens": 7,
+        "outputTokens": 4,
+        "missingUsage": 0
+      }
+    },
+    {
+      "id": "success-sanitized",
+      "service": "switchboard-observability-72d7edd5418f4a64",
+      "runId": "b74e662f-38a3-45c5-9742-0205d7e49c2e",
+      "startedAt": "2026-11-15T06:27:36.546Z",
+      "endedAt": "2026-11-15T06:27:36.578Z",
+      "requests": 2,
+      "toolExecutions": 1,
+      "roots": [
+        {
+          "traceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "spanId": "3f0bc691c16004e4"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "spanId": "a31a2281bf609a9f",
+          "parentSpanId": "3f0bc691c16004e4",
+          "requestId": "b74e662f-38a3-45c5-9742-0205d7e49c2e-model-1-1",
+          "outcome": "success",
+          "usage": {
+            "inputTokens": 5,
+            "outputTokens": 3
+          }
+        },
+        {
+          "kind": "tool",
+          "traceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "spanId": "e1ce11fb455c6e37",
+          "parentSpanId": "3f0bc691c16004e4",
+          "requestId": "b74e662f-38a3-45c5-9742-0205d7e49c2e-tool-1",
+          "outcome": "success"
+        },
+        {
+          "kind": "model",
+          "traceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "spanId": "f1e228aa0e2be975",
+          "parentSpanId": "3f0bc691c16004e4",
+          "requestId": "b74e662f-38a3-45c5-9742-0205d7e49c2e-model-1-2",
+          "outcome": "success",
+          "usage": {
+            "inputTokens": 2,
+            "outputTokens": 1
+          }
+        },
+        {
+          "kind": "agent",
+          "traceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "spanId": "3f0bc691c16004e4",
+          "requestId": "b74e662f-38a3-45c5-9742-0205d7e49c2e-agent-1",
+          "outcome": "success"
+        }
+      ],
+      "expected": {
+        "agentCount": 1,
+        "modelCount": 2,
+        "toolCount": 1,
+        "inputTokens": 7,
+        "outputTokens": 4,
+        "outcome": "success"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "otelSpanId": "a31a2281bf609a9f",
+          "backendTraceId": "ef94b7c74a2a5f43ac3810379d68cf6b",
+          "backendSpanId": "11752744118233635487",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "otelSpanId": "e1ce11fb455c6e37",
+          "backendTraceId": "ef94b7c74a2a5f43ac3810379d68cf6b",
+          "backendSpanId": "16270962274634329655",
+          "kind": "tool",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "otelSpanId": "f1e228aa0e2be975",
+          "backendTraceId": "ef94b7c74a2a5f43ac3810379d68cf6b",
+          "backendSpanId": "17429538218724551029",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "ae8ac0a153962078b025a49a53d5ed60",
+          "otelSpanId": "3f0bc691c16004e4",
+          "backendTraceId": "ef94b7c74a2a5f43ac3810379d68cf6b",
+          "backendSpanId": "4542942978450130148",
+          "kind": "agent",
+          "outcome": "success"
+        }
+      ],
+      "observedCount": 4,
+      "modelUsage": {
+        "calls": 2,
+        "inputTokens": 7,
+        "outputTokens": 4,
+        "missingUsage": 0
+      }
+    },
+    {
+      "id": "missing-usage",
+      "service": "switchboard-observability-0e1a80debed94df7",
+      "runId": "4f7a7a47-b964-42c4-9d10-fbcbbc5c4f7a",
+      "startedAt": "2026-11-15T06:27:36.581Z",
+      "endedAt": "2026-11-15T06:27:36.597Z",
+      "requests": 1,
+      "toolExecutions": 0,
+      "roots": [
+        {
+          "traceId": "fdc790468821772dd870b75bab3bd5f6",
+          "spanId": "3dae3d84e346b3a1"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "fdc790468821772dd870b75bab3bd5f6",
+          "spanId": "5190be454a94e560",
+          "parentSpanId": "3dae3d84e346b3a1",
+          "requestId": "4f7a7a47-b964-42c4-9d10-fbcbbc5c4f7a-model-1-1",
+          "outcome": "success"
+        },
+        {
+          "kind": "agent",
+          "traceId": "fdc790468821772dd870b75bab3bd5f6",
+          "spanId": "3dae3d84e346b3a1",
+          "requestId": "4f7a7a47-b964-42c4-9d10-fbcbbc5c4f7a-agent-1",
+          "outcome": "success"
+        }
+      ],
+      "expected": {
+        "agentCount": 1,
+        "modelCount": 1,
+        "toolCount": 0,
+        "outcome": "success"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "fdc790468821772dd870b75bab3bd5f6",
+          "otelSpanId": "5190be454a94e560",
+          "backendTraceId": "59748f238dc25c65b6752a6f8deb850d",
+          "backendSpanId": "5877406718531790176",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "fdc790468821772dd870b75bab3bd5f6",
+          "otelSpanId": "3dae3d84e346b3a1",
+          "backendTraceId": "59748f238dc25c65b6752a6f8deb850d",
+          "backendSpanId": "4444557523219297185",
+          "kind": "agent",
+          "outcome": "success"
+        }
+      ],
+      "observedCount": 2,
+      "modelUsage": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "missingUsage": 1
+      }
+    },
+    {
+      "id": "http-error",
+      "service": "switchboard-observability-e8d4deec25894902",
+      "runId": "e32e687b-2eee-44dc-95c6-4e0a66f5efee",
+      "startedAt": "2026-11-15T06:27:36.599Z",
+      "endedAt": "2026-11-15T06:27:36.599Z",
+      "requests": 1,
+      "toolExecutions": 0,
+      "roots": [
+        {
+          "traceId": "8963290335e48ee3d31e1adf43f45f4a",
+          "spanId": "c586f1bdcd578084"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "8963290335e48ee3d31e1adf43f45f4a",
+          "spanId": "21ae61621b0b14f2",
+          "parentSpanId": "c586f1bdcd578084",
+          "requestId": "e32e687b-2eee-44dc-95c6-4e0a66f5efee-model-1-1",
+          "outcome": "error"
+        },
+        {
+          "kind": "agent",
+          "traceId": "8963290335e48ee3d31e1adf43f45f4a",
+          "spanId": "c586f1bdcd578084",
+          "requestId": "e32e687b-2eee-44dc-95c6-4e0a66f5efee-agent-1",
+          "outcome": "error"
+        }
+      ],
+      "expected": {
+        "agentCount": 1,
+        "modelCount": 1,
+        "toolCount": 0,
+        "outcome": "error"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "8963290335e48ee3d31e1adf43f45f4a",
+          "otelSpanId": "21ae61621b0b14f2",
+          "backendTraceId": "7886d1c21d3756d482e3312ac8be3025",
+          "backendSpanId": "2426984323187676402",
+          "kind": "model",
+          "outcome": "error"
+        },
+        {
+          "otelTraceId": "8963290335e48ee3d31e1adf43f45f4a",
+          "otelSpanId": "c586f1bdcd578084",
+          "backendTraceId": "7886d1c21d3756d482e3312ac8be3025",
+          "backendSpanId": "14233329469847208068",
+          "kind": "agent",
+          "outcome": "error"
+        }
+      ],
+      "observedCount": 2,
+      "modelUsage": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "missingUsage": 1
+      }
+    },
+    {
+      "id": "disconnect",
+      "service": "switchboard-observability-0347ac6c7f7c4546",
+      "runId": "4006843c-223c-43cd-ae87-9981b9d208a2",
+      "startedAt": "2026-11-15T06:27:36.601Z",
+      "endedAt": "2026-11-15T06:27:36.612Z",
+      "requests": 1,
+      "toolExecutions": 0,
+      "roots": [
+        {
+          "traceId": "d56a49062648fd1fbecf7c9b10b31d10",
+          "spanId": "2aab4c207ca3149a"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "d56a49062648fd1fbecf7c9b10b31d10",
+          "spanId": "e61598902e4f49b1",
+          "parentSpanId": "2aab4c207ca3149a",
+          "requestId": "4006843c-223c-43cd-ae87-9981b9d208a2-model-1-1",
+          "outcome": "outcome-unknown"
+        },
+        {
+          "kind": "agent",
+          "traceId": "d56a49062648fd1fbecf7c9b10b31d10",
+          "spanId": "2aab4c207ca3149a",
+          "requestId": "4006843c-223c-43cd-ae87-9981b9d208a2-agent-1",
+          "outcome": "outcome-unknown"
+        }
+      ],
+      "expected": {
+        "agentCount": 1,
+        "modelCount": 1,
+        "toolCount": 0,
+        "outcome": "outcome-unknown"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "d56a49062648fd1fbecf7c9b10b31d10",
+          "otelSpanId": "e61598902e4f49b1",
+          "backendTraceId": "a9f2b3ee25b75fafb013379fb09e1518",
+          "backendSpanId": "16579325348254009777",
+          "kind": "model",
+          "outcome": "outcome-unknown"
+        },
+        {
+          "otelTraceId": "d56a49062648fd1fbecf7c9b10b31d10",
+          "otelSpanId": "2aab4c207ca3149a",
+          "backendTraceId": "a9f2b3ee25b75fafb013379fb09e1518",
+          "backendSpanId": "3074634873024222362",
+          "kind": "agent",
+          "outcome": "outcome-unknown"
+        }
+      ],
+      "observedCount": 2,
+      "modelUsage": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "missingUsage": 1
+      }
+    },
+    {
+      "id": "cancelled",
+      "service": "switchboard-observability-03dc7cbd2db64d78",
+      "runId": "d24f3045-dcb0-4ad9-96fd-7c937efcd5b8",
+      "startedAt": "2026-11-15T06:27:36.614Z",
+      "endedAt": "2026-11-15T06:27:36.615Z",
+      "requests": 1,
+      "toolExecutions": 0,
+      "roots": [
+        {
+          "traceId": "ee626cbd282bbfc4fe3214708770c8a2",
+          "spanId": "94ed84b92403793d"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "ee626cbd282bbfc4fe3214708770c8a2",
+          "spanId": "8a39c1e67f596ee4",
+          "parentSpanId": "94ed84b92403793d",
+          "requestId": "d24f3045-dcb0-4ad9-96fd-7c937efcd5b8-model-1-1",
+          "outcome": "cancelled"
+        },
+        {
+          "kind": "agent",
+          "traceId": "ee626cbd282bbfc4fe3214708770c8a2",
+          "spanId": "94ed84b92403793d",
+          "requestId": "d24f3045-dcb0-4ad9-96fd-7c937efcd5b8-agent-1",
+          "outcome": "cancelled"
+        }
+      ],
+      "expected": {
+        "agentCount": 1,
+        "modelCount": 1,
+        "toolCount": 0,
+        "outcome": "cancelled"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "ee626cbd282bbfc4fe3214708770c8a2",
+          "otelSpanId": "8a39c1e67f596ee4",
+          "backendTraceId": "2644c1a1422e5c00ad1c5ccd7e0998b2",
+          "backendSpanId": "9960205246629768932",
+          "kind": "model",
+          "outcome": "cancelled"
+        },
+        {
+          "otelTraceId": "ee626cbd282bbfc4fe3214708770c8a2",
+          "otelSpanId": "94ed84b92403793d",
+          "backendTraceId": "2644c1a1422e5c00ad1c5ccd7e0998b2",
+          "backendSpanId": "10731379417801783613",
+          "kind": "agent",
+          "outcome": "cancelled"
+        }
+      ],
+      "observedCount": 2,
+      "modelUsage": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "missingUsage": 1
+      }
+    },
+    {
+      "id": "parallel",
+      "service": "switchboard-observability-89c81b9732a24165",
+      "runId": "83822831-dee2-40ac-a262-d43b5ea85871",
+      "startedAt": "2026-11-15T06:27:36.617Z",
+      "endedAt": "2026-11-15T06:27:36.634Z",
+      "requests": 2,
+      "toolExecutions": 0,
+      "roots": [
+        {
+          "traceId": "291ee8f6d4d9f10c8ac470ee79a82c4f",
+          "spanId": "29ef53b97bdfd85a"
+        },
+        {
+          "traceId": "e4ebe57e48bf9c3bd45b72f0abb5826e",
+          "spanId": "ea426a00b1b161c4"
+        }
+      ],
+      "spans": [
+        {
+          "kind": "model",
+          "traceId": "291ee8f6d4d9f10c8ac470ee79a82c4f",
+          "spanId": "304ef78665c67c58",
+          "parentSpanId": "29ef53b97bdfd85a",
+          "requestId": "83822831-dee2-40ac-a262-d43b5ea85871-model-1-1",
+          "outcome": "success",
+          "usage": {
+            "inputTokens": 1,
+            "outputTokens": 1
+          }
+        },
+        {
+          "kind": "agent",
+          "traceId": "291ee8f6d4d9f10c8ac470ee79a82c4f",
+          "spanId": "29ef53b97bdfd85a",
+          "requestId": "83822831-dee2-40ac-a262-d43b5ea85871-agent-1",
+          "outcome": "success"
+        },
+        {
+          "kind": "model",
+          "traceId": "e4ebe57e48bf9c3bd45b72f0abb5826e",
+          "spanId": "29ae90ac50f7cda5",
+          "parentSpanId": "ea426a00b1b161c4",
+          "requestId": "83822831-dee2-40ac-a262-d43b5ea85871-model-2-1",
+          "outcome": "success",
+          "usage": {
+            "inputTokens": 1,
+            "outputTokens": 1
+          }
+        },
+        {
+          "kind": "agent",
+          "traceId": "e4ebe57e48bf9c3bd45b72f0abb5826e",
+          "spanId": "ea426a00b1b161c4",
+          "requestId": "83822831-dee2-40ac-a262-d43b5ea85871-agent-2",
+          "outcome": "success"
+        }
+      ],
+      "expected": {
+        "agentCount": 2,
+        "modelCount": 2,
+        "toolCount": 0,
+        "inputTokens": 2,
+        "outputTokens": 2,
+        "outcome": "success"
+      },
+      "privacy": "passed",
+      "associations": [
+        {
+          "otelTraceId": "291ee8f6d4d9f10c8ac470ee79a82c4f",
+          "otelSpanId": "304ef78665c67c58",
+          "backendTraceId": "b7a7ca3fec9a56dea3df452ff6b51d2e",
+          "backendSpanId": "3480991718609157208",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "291ee8f6d4d9f10c8ac470ee79a82c4f",
+          "otelSpanId": "29ef53b97bdfd85a",
+          "backendTraceId": "b7a7ca3fec9a56dea3df452ff6b51d2e",
+          "backendSpanId": "3021725931101214810",
+          "kind": "agent",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "e4ebe57e48bf9c3bd45b72f0abb5826e",
+          "otelSpanId": "29ae90ac50f7cda5",
+          "backendTraceId": "28e8d60be52b5d8fa71873bdb5ff81d6",
+          "backendSpanId": "3003497071269891493",
+          "kind": "model",
+          "outcome": "success"
+        },
+        {
+          "otelTraceId": "e4ebe57e48bf9c3bd45b72f0abb5826e",
+          "otelSpanId": "ea426a00b1b161c4",
+          "backendTraceId": "28e8d60be52b5d8fa71873bdb5ff81d6",
+          "backendSpanId": "16880170904551776708",
+          "kind": "agent",
+          "outcome": "success"
+        }
+      ],
+      "observedCount": 4,
+      "modelUsage": {
+        "calls": 2,
+        "inputTokens": 2,
+        "outputTokens": 2,
+        "missingUsage": 0
+      }
+    }
+  ],
+  "cleanup": "shared agent preserved",
+  "pupVersion": "pup 2.0.1",
+  "agentVersion": "Agent 7.76.3 - Commit: fa64a680ae - Serialization version: v5.0.179 - Go version: go1.25.7",
+  "fixtureReport": "/home/punk1290/git/switchboard/.audit/llm-observability/fixture.json",
+  "tarballSha256": "efc91adbadfd56fdf87fbeeb423ec5fc7ebebc75765b910d09b2218e00bd83f7",
+  "sdk": {
+    "api": "1.9.0",
+    "sdk": "2.12.0",
+    "exporter": "0.223.0"
+  },
+  "rawPrivacy": "passed",
+  "usageEvidence": "llm_info token fields; detailed metrics normalize absent usage to zero and are not usage observations",
+  "indexingCounts": {
+    "success-none": 4,
+    "success-sanitized": 4,
+    "missing-usage": 2,
+    "http-error": 2,
+    "disconnect": 2,
+    "cancelled": 2,
+    "parallel": 4
+  },
+  "endedAt": "2026-11-15T06:32:24.612Z"
+}

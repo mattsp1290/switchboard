@@ -1,0 +1,18 @@
+{
+  "observedAt": "2026-11-15T06:27:33.364079+00:00",
+  "services": {
+    "datadog-agent.service": "active",
+    "datadog-agent-trace.service": "active"
+  },
+  "receiver": "http://127.0.0.1:14318/v1/traces",
+  "loopbackOnly": true,
+  "emptyOtlpStatus": 200,
+  "agentVersion": "Agent 7.76.3 - Commit: fa64a680ae - Serialization version: v5.0.179 - Go version: go1.25.7",
+  "pupVersion": "pup 2.0.1",
+  "sharedAgentState": "preserved; temporary receiver retained for development",
+  "lotel": {
+    "commit": "8b7023e08d317cf079b7a63f93d1f17e67a0083d",
+    "go": "go version go1.26.0 linux/arm64",
+    "qualificationReport": ".audit/llm-observability/lotel.json"
+  }
+}

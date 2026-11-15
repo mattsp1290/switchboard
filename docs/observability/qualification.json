@@ -1,0 +1,45 @@
+{
+  "status": "verified",
+  "verifiedAt": "2026-11-15T06:34:12.787823+00:00",
+  "tarballSha256": "efc91adbadfd56fdf87fbeeb423ec5fc7ebebc75765b910d09b2218e00bd83f7",
+  "sourceDigest": "d6c59543e187219f78051bf6df5f45f35496c813299c51b8ed25306596ff4dba",
+  "profile": "GenAI semantic conventions v1.37.0",
+  "checks": {
+    "install": "npm ci passed",
+    "lint": "npm run lint passed",
+    "types": "npm run check passed",
+    "repositoryTests": 120,
+    "installedObservabilityTests": 34,
+    "negativeTypeFixtures": 16,
+    "compiler": "passed",
+    "agui": "passed",
+    "backendScenariosEach": 7,
+    "identicalSpansEach": 20
+  },
+  "successfulPair": {
+    "modelCalls": 2,
+    "inputTokens": 7,
+    "outputTokens": 4,
+    "policies": [
+      "none",
+      "sanitized"
+    ]
+  },
+  "missingUsage": "absent in original OTel and backend usage observations; Datadog detailed metrics expose normalized zero defaults",
+  "privacy": "raw exports and full stored content passed",
+  "cleanup": {
+    "lotel": "owned collector stopped",
+    "datadog": "shared agent preserved",
+    "temporaryReceiver": "retained for development; operator rollback documented in validation.md",
+    "temporaryTools": "preflight lotel source/binary and known installed host-test consumer removed"
+  },
+  "limits": [
+    "explicit host observations only",
+    "native adapters remain unqualified"
+  ],
+  "reports": [
+    "evidence/lotel.json",
+    "evidence/datadog.json",
+    "evidence/prerequisites.json"
+  ]
+}
