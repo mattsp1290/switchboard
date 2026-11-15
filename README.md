@@ -3,7 +3,9 @@
 Switchboard is a Node-hosted TypeScript library for native agent interfaces and adapters.
 This foundation contains one private ESM package, `@mattsp1290/switchboard@0.0.0`.
 Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
-The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output. Claude, Codex, and Pi adapters remain unqualified.
+The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output.
+The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go with `glm-5.3`.
+Claude and Codex adapters remain unqualified. The Pi entry has local SDK tests and requires separate live provider qualification.
 
 Use Node 24.22.3 and npm 11.19.1. The package supports Node `>=24.22.3 <25`.
 Development dependencies pin TypeScript 7.0.2, Oxlint 1.93.0, and `@types/node` 24.19.2. There are no runtime dependencies.
@@ -23,7 +25,9 @@ The package test runs `verify:package`, which rebuilds, packs, and installs the 
 It checks public contract types, installed runtime helpers, blocked private imports, and package contents.
 The `tests/core/*.test.ts` fixtures compile against the installed tarball and are never executed.
 The `tests/core/*.consumer.mjs` fixtures run with `node --test` inside that installed consumer.
-Source and consumer compilation use ES2022 and Node declarations without DOM libraries.
+Core source and consumer compilation use ES2022 and Node declarations without DOM libraries.
+The isolated Pi source project uses ES2024 and skips vendor declaration checks for Pi 1.5.2.
+Core compilation keeps vendor declaration checks enabled.
 The script removes its temporary files on success or failure.
 Run `npm run build` to compile separately. The build removes `dist` before compilation. `npm run clean` removes the local build.
 
@@ -57,7 +61,52 @@ The source is `src/testkit/types.ts`.
 The groups cover uncertainty, sessions, interaction, and events with separate result, effect, and delivery assertions.
 These controlled checks do not qualify native engines, credentials, or durable host admission.
 
-Native tools and credentials are unnecessary for this foundation check.
+The `@mattsp1290/switchboard/pi` entry requires both exact optional peers, `@earendil-works/pi-ai@1.5.2` and `@earendil-works/pi-coding-agent@1.5.2`.
+Its public declarations do not import SDK types. The root entry does not load the SDK.
+
+```js
+import { createPiRuntime } from '@mattsp1290/switchboard/pi';
+
+const runtime = await createPiRuntime({
+	cwd: process.cwd(),
+	sessionDirectory: '/absolute/path/to/app-owned-sessions',
+	apiKey: process.env.OPENCODE_API_KEY,
+	provider: 'opencode-go',
+	model: 'glm-5.3',
+});
+const session = await runtime.open();
+let answer = '';
+const accepted = await session.prompt('Hello', event => {
+	if (event.kind === 'text') answer = event.text;
+});
+await accepted.finished;
+process.stdout.write(answer);
+await runtime.close();
+```
+
+Text events contain the complete assistant text so far. Replace the displayed text for each event.
+`prompt()` resolves after Pi reports that its run started and persists the native user message in its journal.
+This SDK admission lets hosts save the session reference before the first provider token. It does not wait for a provider acknowledgement.
+`accepted.finished` resolves after the native run drains, with a completed, interrupted, or failed outcome.
+Native `stop` and `length` stop reasons both count as completed.
+`abort()` waits for the active run to stop. `close()` stops the run, disposes the session, and releases its writer reservation.
+A runtime supports at most 32 open sessions. Each session accepts one prompt at a time.
+Pi creates the journal lazily when it records the first user or assistant message.
+Save `session.id` and the opaque `session.sessionFile` basename after the first `prompt()` resolves.
+An unprompted session has no file and cannot be resumed. Open a new session for an empty chat.
+A first prompt stopped during preflight still records its user message and can be resumed after it drains.
+Resume with `runtime.open({ sessionFile })` after the previous session handle closes.
+Resume uses the same canonical `cwd` and session directory. Relative paths follow Node's process-working-directory rules; hosts should supply absolute paths.
+A missing or invalid file fails without creating a replacement session.
+The runtime reserves each canonical session path within the host process. The host must own its session directory across processes.
+Credentials stay in memory. Startup uses bundled model definitions and reads no user credentials, project instructions, skills, prompts, or extensions.
+Tools, catalog network refresh, cache warming, compaction, and retries are disabled.
+Provider failures expose a generic failed outcome. Native error diagnostics are replaced with generic text before journal persistence.
+Importing `./pi` with missing SDK peers rejects with Node's `ERR_MODULE_NOT_FOUND`.
+Only the declared exact peer versions are supported; forcing incompatible peers bypasses this contract.
+The local tests replace provider HTTP responses and do not qualify a live subscription.
+
+Native tools and credentials are unnecessary for the foundation checks.
 No native integration or direct or LiteLLM route is qualified by this package check.
 
 [Architecture boundaries](docs/architecture/boundaries.md) records host responsibilities, source ownership, and native prerequisite evidence.

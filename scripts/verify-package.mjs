@@ -58,9 +58,20 @@ try {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
     './agui': { types: './dist/agui/index.d.ts', import: './dist/agui/index.js' },
     './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
+    './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
   });
-  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4' });
-  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true } });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true } });
+  for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/pi/index.d.ts'), 'utf8'), /@earendil-works/);
+  writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
+const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+declare const runtime: PiRuntime;
+const session = await runtime.open();
+const accepted = await session.prompt('hello', (event: PiEvent) => { if (event.kind === 'text') event.text.toUpperCase(); });
+const terminal: PiTerminal = await accepted.finished;
+void [options, terminal];
+`);
   assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
   assert.equal(installedManifest.private, true);
   assert.equal(Object.keys(installedManifest.dependencies ?? {}).length, 0);
@@ -78,6 +89,7 @@ const switchboard = await import('${manifest.name}');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
+await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
 for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
@@ -135,11 +147,41 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   assert(!coreTypes.includes('/testkit/'), 'Root declarations do not reference the testkit.');
   assert(!coreTypes.includes('/agui/'), 'Root declarations do not reference the integration.');
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
+  assert(!coreTypes.includes('/dist/pi/'), 'Root declarations do not reference the Pi adapter.');
+  assert(!coreTypes.includes('/@earendil-works/'), 'Root declarations do not reference the Pi SDK.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
     allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
     allowedFiles: checkedFixtures.map(file => join(consumer, file)),
   });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
+  writeFileSync(join(consumer, 'pi-types.json'), JSON.stringify({ ...consumerConfig, files: ['pi-types.test.ts'] }));
+  const piTypes = run(process.execPath, [compiler, '-p', 'pi-types.json', '--listFilesOnly'], consumer);
+  assert(!piTypes.includes('/@earendil-works/'), 'Pi declarations are usable without native SDK declarations.');
+  run(process.execPath, [compiler, '-p', 'pi-types.json'], consumer);
+
+  const piConsumer = join(temporary, 'pi');
+  mkdirSync(piConsumer);
+  writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
+    `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
+  ], piConsumer));
+  writeFileSync(join(piConsumer, 'runtime.mjs'), `
+import assert from 'node:assert/strict';
+const pi = await import('${manifest.name}/pi');
+assert.equal(typeof pi.createPiRuntime, 'function');
+globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
+const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
+const runtime = await pi.createPiRuntime(options);
+try {
+  const session = await runtime.open();
+  assert.equal(typeof session.id, 'string');
+  assert.match(session.sessionFile, /\\.jsonl$/);
+} finally { await runtime.close(); }
+`);
+  run(process.execPath, ['runtime.mjs'], piConsumer);
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });
