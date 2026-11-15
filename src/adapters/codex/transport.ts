@@ -19,12 +19,13 @@ export type EndReason = WireFault
   | 'caller-close' | 'eof' | 'transport-error' | 'process-exit' | 'listen-error'
   | 'handler-overflow' | 'duplicate-request' | 'handler-error' | 'invalid-handler-reply'
   | 'handler-timeout' | 'observation-overflow' | 'observation-error'
-  | 'observation-timeout' | 'reply-overflow' | 'write-error' | 'write-timeout';
+  | 'observation-timeout' | 'write-error' | 'write-timeout';
 export interface CloseReport {
   readonly reason: EndReason;
   readonly diagnostics: Uint8Array;
   readonly detachFailed: boolean;
   readonly unsettled: { readonly handlers: number; readonly observer: boolean; readonly write: boolean };
+  readonly discarded: { readonly observations: number; readonly requests: number };
 }
 export interface ChannelSink {
   readonly data: (bytes: Uint8Array) => void;
@@ -76,7 +77,8 @@ type HandlerLease = {
 type WriteEntry = { readonly bytes: Uint8Array; readonly owner: Caller | { readonly kind: 'reply'; readonly handler: HandlerLease } };
 type Registration = { readonly kind: 'installing' } | { readonly kind: 'attached'; readonly detach: () => void }
   | { readonly kind: 'detached'; readonly failed: boolean };
-type Phase = { readonly kind: 'open' } | { readonly kind: 'closed'; readonly reason: EndReason; readonly unsettled: CloseReport['unsettled'] };
+type Phase = { readonly kind: 'open' } | { readonly kind: 'closed'; readonly reason: EndReason;
+  readonly unsettled: CloseReport['unsettled']; readonly discarded: CloseReport['discarded'] };
 
 export function openCodexTransport(options: TransportOptions): CodexTransport {
   const { channel, onRequest, onObservation } = options;
@@ -84,7 +86,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   const { maxFrameBytes, maxChunkBytes, maxDiagnosticBytes, maxPending, maxHandlers, maxWrites,
     observationCapacity, handlerTimeoutMs, observationTimeoutMs, writeTimeoutMs } = bounds;
   const counts = [maxFrameBytes, maxChunkBytes, maxDiagnosticBytes, maxPending, maxHandlers, maxWrites,
-    observationCapacity, maxWrites * (maxFrameBytes + 1), observationCapacity * maxFrameBytes];
+    observationCapacity, (maxWrites + maxHandlers) * (maxFrameBytes + 1), observationCapacity * maxFrameBytes];
   if (counts.some((value) => !Number.isSafeInteger(value) || value <= 0)
     || maxFrameBytes >= constants.MAX_LENGTH || maxChunkBytes > constants.MAX_LENGTH
     || maxDiagnosticBytes > constants.MAX_LENGTH
@@ -104,6 +106,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   let active: WriteEntry | undefined;
   let pumpScheduled = false;
   let observerActive = false;
+  let queuedObservations = 0;
   let writeTimer: ReturnType<typeof setTimeout> | undefined;
   let observerTimer: ReturnType<typeof setTimeout> | undefined;
   let diagnostics: Uint8Array = new Uint8Array();
@@ -120,7 +123,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       try { detach(); } catch { registration = { kind: 'detached', failed: true }; }
     }
     settleReport(Object.freeze({ reason: phase.reason, diagnostics: diagnostics.slice(),
-      detachFailed: registration.failed, unsettled: phase.unsettled }));
+      detachFailed: registration.failed, unsettled: phase.unsettled, discarded: phase.discarded }));
   }
   function failWait(owner: Caller, reason: 'closed' | 'aborted'): void {
     if (owner.wait.phase === 'settled') return;
@@ -134,6 +137,9 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     phase = { kind: 'closed', reason, unsettled: Object.freeze({
       handlers: [...handlers.values()].filter((handler) => handler.phase === 'callback').length,
       observer: observerActive, write: active !== undefined,
+    }), discarded: Object.freeze({
+      observations: queuedObservations,
+      requests: [...handlers.values()].filter((handler) => handler.phase === 'scheduled').length,
     }) };
     reader.close();
     for (const owner of pending.values()) failWait(owner, 'closed');
@@ -171,7 +177,9 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   function refusal(signal: AbortSignal, request: boolean): SendFailure | undefined {
     if (phase.kind === 'closed') return { kind: 'not-sent', reason: 'closed' };
     if (signal.aborted) return { kind: 'not-sent', reason: 'aborted' };
-    if (queue.length + Number(active !== undefined) >= maxWrites || (request && pending.size >= maxPending)) {
+    const callerWrites = queue.reduce((count, entry) => count + Number(entry.owner.kind !== 'reply'),
+      Number(active !== undefined && active.owner.kind !== 'reply'));
+    if (callerWrites >= maxWrites || (request && pending.size >= maxPending)) {
       return { kind: 'not-sent', reason: 'capacity' };
     }
     if (request && sequence >= Number.MAX_SAFE_INTEGER) return { kind: 'not-sent', reason: 'id-exhausted' };
@@ -261,7 +269,6 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     } catch { bytes = undefined; }
     if (isClosed()) { handlers.delete(handler.id); return; }
     if (!bytes) { finish('invalid-handler-reply'); return; }
-    if (queue.length + Number(active !== undefined) >= maxWrites) { finish('reply-overflow'); return; }
     queue.push({ bytes, owner: { kind: 'reply', handler } });
     schedulePump();
   }
@@ -286,11 +293,13 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     }
     const observation: Observation = envelope.kind === 'notification'
       ? { kind: 'notification', ...envelope.notification } : { kind: 'unmatched-reply', envelope: envelope.envelope };
+    queuedObservations++;
     const result = events.publish(observation);
     if (result.kind === 'closed' || result.disconnected || result.enqueued !== 1) finish('observation-overflow');
   }
   events.subscribe(async (observation) => {
     if (phase.kind === 'closed') return;
+    queuedObservations--;
     observerActive = true;
     observerTimer = setTimeout(() => finish('observation-timeout'), observationTimeoutMs);
     try { await onObservation(observation, observerController.signal); }

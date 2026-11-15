@@ -144,15 +144,25 @@ test('observation-overflow-terminal', async (t) => {
   await checkpoint();
   assert.deepEqual([f.reports[0]?.reason, f.reports[0]?.unsettled.observer, f.observations.length],
     ['observation-overflow', true, 1], 'observation-overflow-terminal');
+  assert.deepEqual(f.reports[0].discarded, { observations: 2, requests: 0 });
   held.resolve();
+  await checkpoint();
+  assert.deepEqual(f.reports[0].discarded, { observations: 2, requests: 0 });
+  assert.ok(Object.isFrozen(f.reports[0].discarded));
+  const scheduled = fixture(t, { bounds: { observationCapacity: 2 } });
+  scheduled.bytes(Buffer.concat(['first', 'queued', 'overflow'].map((method) => line({ method }))));
+  await checkpoint();
+  assert.deepEqual(scheduled.reports[0].discarded, { observations: 3, requests: 0 });
+  assert.equal(scheduled.observations.length, 0);
 });
 
-for (const entered of [false, true]) test(entered ? 'cancel-entered-uncertain' : 'cancel-queued-not-sent', async (t) => {
+for (const send of ['request', 'notify']) for (const entered of [false, true])
+test(`${send} ${entered ? 'cancel-entered-uncertain' : 'cancel-queued-not-sent'}`, async (t) => {
   const held = gate();
   const f = fixture(t, { write: () => held.promise });
   if (!entered) f.transport.notify({ method: 'blocker' }, signal());
   const controller = new AbortController();
-  const result = track(f.transport.request({ method: 'target' }, controller.signal));
+  const result = track(f.transport[send]({ method: 'target' }, controller.signal));
   await checkpoint();
   if (entered) {
     assert.equal(f.writes[0].method, 'target');
@@ -168,6 +178,7 @@ for (const entered of [false, true]) test(entered ? 'cancel-entered-uncertain' :
   held.resolve();
   await checkpoint();
   assert.equal(f.writes.filter((value) => value.method === 'target').length, Number(entered), name);
+  assert.deepEqual(result, [{ kind: entered ? 'uncertain' : 'not-sent', reason: 'aborted' }], name);
 });
 
 test('late-response-keeps-correlation', async (t) => {
@@ -311,15 +322,33 @@ for (const stage of ['callback', 'queued-reply', 'active-reply']) test(`duplicat
   held.resolve({ kind: 'result', value: null });
 });
 
-test('required reply overflow terminates instead of silently discarding the reply', async (t) => {
+test('required replies retain output capacity under caller saturation', async (t) => {
   const held = gate();
-  const f = fixture(t, { bounds: { maxWrites: 1 }, write: () => held.promise });
+  const f = fixture(t, { bounds: { maxWrites: 1 }, write: (current) => current.writes.length === 1 ? held.promise : undefined });
   f.transport.notify({ method: 'blocker' }, signal());
   await checkpoint();
   f.input({ id: 4, method: 'server' });
   await checkpoint();
-  assert.deepEqual([f.reports[0]?.reason, f.requests.length, f.writes.length], ['reply-overflow', 1, 1]);
+  assert.deepEqual(await f.transport.notify({ method: 'excess' }, signal()), { kind: 'not-sent', reason: 'capacity' });
+  assert.deepEqual([f.reports.length, f.requests.length, f.writes.length], [0, 1, 1]);
   held.resolve();
+  await checkpoint();
+  assert.deepEqual(f.writes.map((value) => value.id ?? value.method), ['blocker', 4]);
+});
+
+test('approvals and correlated replies progress while earlier observations await delivery', async (t) => {
+  const held = gate();
+  const f = fixture(t, { observation: () => held.promise });
+  const result = track(f.transport.request({ method: 'caller' }, signal()));
+  await checkpoint();
+  f.bytes(Buffer.concat([line({ method: 'first' }), line({ method: 'queued' }),
+    line({ id: 'approval', method: 'approval' }), line({ id: f.writes[0].id, result: null })]));
+  await checkpoint();
+  assert.deepEqual([f.requests.length, result[0]?.kind, f.observations.map((value) => value.method)], [1, 'reply', ['first']]);
+  assert.deepEqual(f.writes[1], { id: 'approval', result: null });
+  held.resolve();
+  await checkpoint();
+  assert.deepEqual(f.observations.map((value) => value.method), ['first', 'queued']);
 });
 
 for (const stage of ['scheduled', 'callback', 'active-reply']) test(`handler capacity retains ${stage} lease`, async (t) => {
@@ -334,6 +363,7 @@ for (const stage of ['scheduled', 'callback', 'active-reply']) test(`handler cap
   await checkpoint();
   assert.equal(f.reports[0]?.reason, 'handler-overflow');
   assert.equal(f.requests.length, stage === 'scheduled' ? 0 : 1);
+  assert.deepEqual(f.reports[0].discarded, { observations: 0, requests: Number(stage === 'scheduled') });
   held.resolve({ kind: 'result', value: null });
 });
 
@@ -364,19 +394,22 @@ for (const reply of [null, { kind: 'result', value: undefined }, { kind: 'result
 for (const operation of ['handler', 'observer', 'write']) test(`${operation} deadline retains the actual unsettled operation`, async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const held = gate();
+  let seen;
   const f = fixture(t, { bounds: { [`${operation === 'observer' ? 'observation' : operation}TimeoutMs`]: 10 },
-    request: (_, __, current) => { current.mark('handler-entered'); return held.promise; },
-    observation: (_, __, current) => { current.mark('observer-entered'); return held.promise; },
-    write: () => held.promise,
+    request: (_, deliverySignal, current) => { seen = deliverySignal; current.mark('handler-entered'); return held.promise; },
+    observation: (_, deliverySignal, current) => { seen = deliverySignal; current.mark('observer-entered'); return held.promise; },
+    write: (_, deliverySignal) => { seen = deliverySignal; return held.promise; },
   });
   if (operation === 'handler') f.input({ id: 1, method: 'held' });
   if (operation === 'observer') f.input({ method: 'held' });
   if (operation === 'write') f.transport.notify({ method: 'held' }, signal());
   await checkpoint();
   assert.ok(f.witnesses.includes(operation === 'write' ? 'writer-entered' : `${operation}-entered`));
+  assert.equal(seen.aborted, false);
   t.mock.timers.tick(10);
   await checkpoint();
   const snapshot = f.reports[0];
+  assert.equal(seen.aborted, true, `${operation}-signal-aborted`);
   assert.equal(snapshot?.reason, `${operation === 'observer' ? 'observation' : operation}-timeout`);
   assert.deepEqual(snapshot.unsettled, { handlers: Number(operation === 'handler'), observer: operation === 'observer', write: operation === 'write' });
   held.reject(new Error('late private rejection'));
@@ -410,6 +443,7 @@ test('listen-time delivery and EOF detach the acquired registration once', async
   } });
   await checkpoint();
   assert.deepEqual([f.reports[0]?.reason, f.detaches, f.observations.length], ['eof', 1, 0]);
+  assert.deepEqual(f.reports[0].discarded, { observations: 1, requests: 0 });
   assert.equal(f.transport.close(), f.transport.ended);
   const data = fixture(t, { listen: (current) => current.input({ id: 1, method: 'server' }) });
   await checkpoint();
