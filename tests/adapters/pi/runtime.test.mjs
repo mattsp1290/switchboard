@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { access, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { registerHooks } from 'node:module';
 import { basename, join } from 'node:path';
@@ -412,5 +412,26 @@ test('case aliases never admit a second writer for one native journal', async ()
     const reopened = await second.open({ sessionFile: session.sessionFile });
     assert.equal(reopened.id, session.id);
     assert.equal((await prompt(reopened, 'Reopened writer continues')).terminal.outcome, 'completed');
+  });
+});
+
+
+test('admission rejects an unwritable follow-up journal instead of trusting the old file', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, runtime, requests }) => {
+    const current = await runtime();
+    const session = await current.open();
+    await prompt(session, 'Saved first prompt');
+    const path = join(directory, 'sessions', session.sessionFile);
+    await chmod(path, 0o400);
+    try {
+      await assert.rejects(session.prompt('Unwritten follow-up must not be admitted', () => {}), /Pi operation failed/);
+      await session.abort();
+      assert.equal(requests.length, 1);
+      assert(!(await readFile(path, 'utf8')).includes('Unwritten follow-up'));
+    } finally { await chmod(path, 0o600); }
+    await session.close();
+    const reopened = await current.open({ sessionFile: session.sessionFile });
+    assert.equal((await prompt(reopened, 'Continue original history')).terminal.outcome, 'completed');
+    assert.equal(requests.at(-1).messages.filter(message => message.role === 'user').length, 2);
   });
 });

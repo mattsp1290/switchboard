@@ -118,7 +118,10 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           // Pi 1.5.2 appends the shared user message synchronously after notifying public listeners.
           queueMicrotask(() => {
             if (!started || admissionState.current !== 'pending') return;
-            if (!existsSync(file)) { stop(); rejectAdmission(); void native.abort().catch(() => {}); return; }
+            const leaf = native.sessionManager.getLeafEntry();
+            if (!existsSync(file) || leaf?.type !== 'message' || leaf.message !== event.message) {
+              stop(); rejectAdmission(); void native.abort().catch(() => {}); return;
+            }
             admissionState.current = 'admitted';
             admission.resolve({ finished: completion.promise });
           });
