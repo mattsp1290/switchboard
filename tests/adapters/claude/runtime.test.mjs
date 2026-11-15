@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { createClaudeRuntime } from '../../../dist/claude/index.js';
+import { createClaudeRuntime } from '../../../adapters/claude/src/index.ts';
 
 const id = '12345678-1234-1234-1234-123456789abc';
 async function fixture(config, run) {
@@ -91,4 +91,49 @@ test('independent sessions can run at the same time', async () => fixture({mode:
 test('informational system frames after a result preserve the native outcome', async () => fixture({mode:'post-result-system'}, async runtime => {
   const turn = await runtime.start({text:'hello',onEvent() {}});
   assert.equal((await turn.finished).outcome, 'completed');
+}));
+
+
+test('lost active transcripts fail the turn and cannot be resumed in this runtime', async () => fixture({mode:'writes-lost'}, async runtime => {
+  const events = [];
+  const turn = await runtime.start({text:'hello',onEvent:event => events.push(event)});
+  assert.equal((await turn.finished).outcome, 'failed');
+  assert.deepEqual(events.at(-1), {kind:'ended',outcome:'failed'});
+  assert(!JSON.stringify(events).includes('secret diagnostic'));
+  await assert.rejects(runtime.start({text:'again',threadId:id,onEvent() {}}), /Claude operation failed/);
+}));
+
+test('unrelated transcript and configuration losses preserve completion', async () => {
+  for (const mode of ['writes-lost-other', 'writes-lost-config']) await fixture({mode}, async runtime => {
+    const turn = await runtime.start({text:'hello',onEvent() {}});
+    assert.equal((await turn.finished).outcome, 'completed');
+  });
+});
+
+test('child excludes seeded ambient credentials and routing settings', async () => {
+  const names = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_OAUTH_TOKEN', 'NODE_OPTIONS', 'OPENAI_API_KEY', 'ARBITRARY_SECRET'];
+  const previous = new Map(names.map(name => [name, process.env[name]]));
+  try {
+    for (const name of names) process.env[name] = 'sentinel-secret';
+    await fixture({}, async (runtime, dir) => {
+      const turn = await runtime.start({text:'hello',onEvent() {}});
+      await turn.finished;
+      const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+      for (const name of names) assert.equal(observed.env[name], undefined, name);
+      assert(!observed.args.some(arg => arg.includes('fixture-key')));
+    });
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  }
+});
+
+
+test('stop reaps a child that ignores SIGTERM and keeps stdout open', {timeout: 5000}, async () => fixture({mode:'stubborn'}, async (runtime, dir) => {
+  const turn = await runtime.start({text:'hello',onEvent() {}});
+  const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+  await turn.abort();
+  assert.equal((await turn.finished).outcome, 'interrupted');
+  assert.throws(() => process.kill(observed.pid, 0), {code:'ESRCH'});
 }));

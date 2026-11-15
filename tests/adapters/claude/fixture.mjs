@@ -3,6 +3,7 @@ import readline from 'node:readline';
 import { readFileSync, writeFileSync } from 'node:fs';
 const config = JSON.parse(readFileSync('fixture.json', 'utf8'));
 writeFileSync('observed.json', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
+if (config.mode === 'stubborn') process.on('SIGTERM', () => {});
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const id = config.id ?? '12345678-1234-1234-1234-123456789abc';
 let sent = false;
@@ -14,10 +15,10 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   send({type:'system',subtype:'init',session_id:id,model:`claude-${config.model ?? 'sonnet'}-4-6`,apiKeySource:'ANTHROPIC_API_KEY',tools:[],mcp_servers:[]});
   if (config.mode === 'init-only') continue;
   if (config.mode === 'missing') { send({type:'result',subtype:'error_during_execution',is_error:true,session_id:id}); continue; }
-  if (config.mode === 'stream' || config.mode === 'stream-hold') {
+  if (config.mode === 'stream' || config.mode === 'stream-hold' || config.mode === 'stubborn') {
     const stream = event => send({type:'stream_event',session_id:id,parent_tool_use_id:null,event});
     stream({type:'message_start',message:{id:'stream-1',model:'claude-sonnet-4-6'}});
-    if (config.mode === 'stream-hold') continue;
+    if (config.mode === 'stream-hold' || config.mode === 'stubborn') continue;
     stream({type:'content_block_start',index:0,content_block:{type:'text',text:''}});
     stream({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'hello'}});
     stream({type:'content_block_start',index:1,content_block:{type:'text',text:''}});
@@ -34,5 +35,6 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (config.mode === 'hold') continue;
   send({type:'assistant',session_id:id,parent_tool_use_id:null,message:{id:'message-1',model:'claude-sonnet-4-6',content:[{type:'text',text:' world'}]}});
   send({type:'result',subtype:'success',is_error:config.mode === 'result-error',session_id:id});
+  if (config.mode?.startsWith('writes-lost')) send({type:'system',subtype:'session_writes_lost',session_id:id,error_code:'ENOSPC',lost:config.mode === 'writes-lost-config' ? ['global_config'] : ['transcript'],transcript_session_ids:config.mode === 'writes-lost-other' ? ['87654321-4321-4321-4321-cba987654321'] : [id],diagnostic:'secret diagnostic'});
   if (config.mode === 'post-result-system') send({type:'system',subtype:'status',status:null,session_id:id});
 }

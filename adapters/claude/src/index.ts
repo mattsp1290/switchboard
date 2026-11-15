@@ -46,6 +46,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
     if (value) env[name] = value;
   }
   const active = new Map<AbortController, Promise<ClaudeTerminal>>();
+  const lostSessions = new Set<string>();
   let closed = false;
   async function checkReady(): Promise<void> {
     if (closed) throw failure();
@@ -60,7 +61,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
     const { text, threadId: requested, onEvent } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
       || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
-      || (requested !== undefined && (!uuid.test(requested) || writers.has(requested)))) return Promise.reject(failure());
+      || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved) writers.add(reserved);
     const controller = new AbortController();
@@ -115,6 +116,12 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         const snapshots = new Map<string, string>();
         for await (const message of native) {
           if (controller.signal.aborted) continue;
+          if (message.type === 'system' && message.subtype === 'session_writes_lost'
+            && session && message.lost.includes('transcript') && message.transcript_session_ids?.includes(session.id)) {
+            lostSessions.add(session.id);
+            fault = true;
+            continue;
+          }
           if (terminal) {
             if (message.type === 'system' && message.subtype !== 'init') continue;
             throw failure();
