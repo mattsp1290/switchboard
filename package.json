@@ -27,6 +27,10 @@
     "./codex": {
       "types": "./dist/codex/index.d.ts",
       "import": "./dist/codex/index.js"
+    },
+    "./claude": {
+      "types": "./dist/claude/index.d.ts",
+      "import": "./dist/claude/index.js"
     }
   },
   "files": [
@@ -42,9 +46,9 @@
   "packageManager": "npm@11.19.1",
   "scripts": {
     "clean": "node --input-type=module -e 'import { rmSync } from \"node:fs\"; rmSync(\"dist\", { recursive: true, force: true });'",
-    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex",
+    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex && npm run build:claude",
     "lint": "oxlint --deny-warnings .",
-    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex",
+    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude",
     "test": "node --test \"tests/**/*.test.mjs\"",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:compiler": "node spikes/native-compiler/support/run.mjs \"$npm_execpath\"",
@@ -52,22 +56,29 @@
     "build:pi": "tsc -p adapters/pi/tsconfig.json",
     "check:pi": "tsc -p adapters/pi/tsconfig.json --noEmit",
     "build:codex": "tsc -p adapters/codex/tsconfig.json",
-    "check:codex": "tsc -p adapters/codex/tsconfig.json --noEmit"
+    "check:codex": "tsc -p adapters/codex/tsconfig.json --noEmit",
+    "build:claude": "tsc -p adapters/claude/tsconfig.json",
+    "check:claude": "tsc -p adapters/claude/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@ag-ui/core": "1.0.4",
+    "@anthropic-ai/claude-agent-sdk": "0.3.323",
+    "@anthropic-ai/sdk": "1.8.0",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@openai/codex-sdk": "0.169.0",
     "@types/node": "24.19.2",
     "oxlint": "1.93.0",
     "typescript": "7.0.2",
-    "@openai/codex-sdk": "0.169.0"
+    "zod": "4.6.7"
   },
   "peerDependencies": {
     "@ag-ui/core": "1.0.4",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
-    "@openai/codex-sdk": "0.169.0"
+    "@openai/codex-sdk": "0.169.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.323"
   },
   "peerDependenciesMeta": {
     "@ag-ui/core": {
@@ -80,6 +91,9 @@
       "optional": true
     },
     "@openai/codex-sdk": {
+      "optional": true
+    },
+    "@anthropic-ai/claude-agent-sdk": {
       "optional": true
     }
   }

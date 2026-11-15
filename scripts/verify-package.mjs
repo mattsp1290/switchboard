@@ -60,9 +60,12 @@ try {
     './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
     './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
     './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
+    './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
   });
-  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0' });
-  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true } });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true } });
+  assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert(!existsSync(join(consumer, 'node_modules/@openai/codex-sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
   for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
@@ -94,6 +97,7 @@ assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
 await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
 await assert.rejects(import('${manifest.name}/codex'), { code: 'ERR_MODULE_NOT_FOUND' });
+await assert.rejects(import('${manifest.name}/claude'), { code: 'ERR_MODULE_NOT_FOUND' });
 for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
@@ -153,6 +157,7 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
   assert(!coreTypes.includes('/dist/pi/'), 'Root declarations do not reference the Pi adapter.');
   assert(!coreTypes.includes('/@earendil-works/'), 'Root declarations do not reference the Pi SDK.');
+  assert(!coreTypes.includes('/dist/claude/') && !coreTypes.includes('/@anthropic-ai/'), 'Root declarations do not reference the Claude adapter or SDK.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
     allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
     allowedFiles: checkedFixtures.map(file => join(consumer, file)),
