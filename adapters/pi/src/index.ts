@@ -58,7 +58,7 @@ function resumeManager(directory: string, file: string, cwd: string): SessionMan
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(file) || basename(file) !== file) throw failure();
   const path = join(directory, file);
   const entry = lstatSync(path);
-  if (!entry.isFile() || entry.size === 0 || realpathSync(path) !== path) throw failure();
+  if (!entry.isFile() || entry.size === 0 || realpathSync.native(path) !== path) throw failure();
   const descriptor = openSync(path, 'r');
   let firstLine: string;
   try {

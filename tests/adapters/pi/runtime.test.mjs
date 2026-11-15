@@ -343,3 +343,21 @@ test('opening cleanup releases a drained writer when native dispose throws', { t
     assert.equal((await next.open({ sessionFile: session.sessionFile })).id, session.id);
   });
 });
+
+
+test('case aliases never admit a second writer for one native journal', async () => {
+  await fixture(async ({ runtime }) => {
+    const first = await runtime();
+    const second = await runtime();
+    const session = await first.open();
+    await prompt(session, 'Original turn');
+    const alias = session.sessionFile.replace(/[A-Za-z]/, character => character === character.toUpperCase() ? character.toLowerCase() : character.toUpperCase());
+    assert.notEqual(alias, session.sessionFile);
+    await assert.rejects(second.open({ sessionFile: alias }), /Pi operation failed/);
+    assert.equal((await prompt(session, 'Original writer continues')).terminal.outcome, 'completed');
+    await session.close();
+    const reopened = await second.open({ sessionFile: session.sessionFile });
+    assert.equal(reopened.id, session.id);
+    assert.equal((await prompt(reopened, 'Reopened writer continues')).terminal.outcome, 'completed');
+  });
+});
