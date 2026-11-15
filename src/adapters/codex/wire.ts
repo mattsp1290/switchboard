@@ -31,7 +31,7 @@ function isObject(value: unknown): value is RawEnvelope {
 }
 function isId(value: unknown): value is RequestId {
   return (typeof value === 'string' && value.length > 0)
-    || (typeof value === 'number' && Number.isSafeInteger(value));
+    || (typeof value === 'number' && Number.isSafeInteger(value) && !Object.is(value, -0));
 }
 function parseEnvelope(value: unknown): Envelope | undefined {
   if (!isObject(value)) return undefined;
