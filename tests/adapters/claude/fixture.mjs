@@ -34,4 +34,5 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (config.mode === 'hold') continue;
   send({type:'assistant',session_id:id,parent_tool_use_id:null,message:{id:'message-1',model:'claude-sonnet-4-6',content:[{type:'text',text:' world'}]}});
   send({type:'result',subtype:'success',is_error:config.mode === 'result-error',session_id:id});
+  if (config.mode === 'post-result-system') send({type:'system',subtype:'status',status:null,session_id:id});
 }

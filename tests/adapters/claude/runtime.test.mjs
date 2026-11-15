@@ -86,3 +86,9 @@ test('independent sessions can run at the same time', async () => fixture({mode:
   assert.equal((await one.finished).outcome, 'interrupted');
   assert.equal((await two.finished).outcome, 'interrupted');
 })));
+
+
+test('informational system frames after a result preserve the native outcome', async () => fixture({mode:'post-result-system'}, async runtime => {
+  const turn = await runtime.start({text:'hello',onEvent() {}});
+  assert.equal((await turn.finished).outcome, 'completed');
+}));

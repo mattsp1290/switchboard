@@ -115,7 +115,10 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         const snapshots = new Map<string, string>();
         for await (const message of native) {
           if (controller.signal.aborted) continue;
-          if (terminal) throw failure();
+          if (terminal) {
+            if (message.type === 'system' && message.subtype !== 'init') continue;
+            throw failure();
+          }
           if (message.type === 'system' && message.subtype === 'init') {
             if (session || !uuid.test(message.session_id) || (requested && message.session_id !== requested)
               || (!requested && writers.has(message.session_id)) || message.apiKeySource !== 'ANTHROPIC_API_KEY'
