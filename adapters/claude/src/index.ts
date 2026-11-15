@@ -31,7 +31,7 @@ export interface ClaudeRuntime {
 }
 
 const failure = () => new Error('Claude operation failed.');
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const writers = new Set<string>();
 
 export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntime {
@@ -69,14 +69,17 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
     let admitted = false;
     let fault = false;
     let stopping = false;
-    controller.signal.addEventListener('abort', () => { if (!fault) stopping = true; });
+    let native: ReturnType<typeof query> | undefined;
+    controller.signal.addEventListener('abort', () => {
+      if (!fault) stopping = true;
+      native?.close();
+    });
     let child: ChildProcess | undefined;
     let exited: Promise<void> | undefined;
     const timeout = setTimeout(() => { fault = true; controller.abort(); }, 30_000);
     async function consume(): Promise<ClaudeTerminal> {
       let outcome: ClaudeTerminal['outcome'] = 'failed';
       let terminal: ClaudeTerminal['outcome'] | undefined;
-      let native: ReturnType<typeof query> | undefined;
       try {
         await checkReady();
         controller.signal.throwIfAborted();
@@ -107,7 +110,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
           admitted = true;
           clearTimeout(timeout);
           admission.resolve({ threadId: session.id, model: session.model, finished,
-            async abort() { stopping = true; controller.abort(); native?.close(); await finished; } });
+            async abort() { stopping = true; controller.abort(); await finished; } });
         }
         function publish(id: string, snapshot: string): void {
           if (Buffer.byteLength(snapshot) > 4 * 1024 * 1024) throw failure();

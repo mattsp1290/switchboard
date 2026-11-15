@@ -3,7 +3,10 @@ import readline from 'node:readline';
 import { readFileSync, writeFileSync } from 'node:fs';
 const config = JSON.parse(readFileSync('fixture.json', 'utf8'));
 writeFileSync('observed.json', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
-if (config.mode === 'stubborn') process.on('SIGTERM', () => {});
+if (config.mode === 'stubborn' || config.mode === 'stubborn-init') {
+  process.on('SIGTERM', () => {});
+  setInterval(() => {}, 1000);
+}
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const id = config.id ?? '12345678-1234-1234-1234-123456789abc';
 let sent = false;
@@ -13,7 +16,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   sent = true;
   send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response: {} } });
   send({type:'system',subtype:'init',session_id:id,model:`claude-${config.model ?? 'sonnet'}-4-6`,apiKeySource:'ANTHROPIC_API_KEY',tools:[],mcp_servers:[]});
-  if (config.mode === 'init-only') continue;
+  if (config.mode === 'init-only' || config.mode === 'stubborn-init') continue;
   if (config.mode === 'missing') { send({type:'result',subtype:'error_during_execution',is_error:true,session_id:id}); continue; }
   if (config.mode === 'stream' || config.mode === 'stream-hold' || config.mode === 'stubborn') {
     const stream = event => send({type:'stream_event',session_id:id,parent_tool_use_id:null,event});

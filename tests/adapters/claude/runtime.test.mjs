@@ -137,3 +137,25 @@ test('stop reaps a child that ignores SIGTERM and keeps stdout open', {timeout: 
   assert.equal((await turn.finished).outcome, 'interrupted');
   assert.throws(() => process.kill(observed.pid, 0), {code:'ESRCH'});
 }));
+
+
+test('case variants cannot bypass the same-session writer guard', async () => fixture({mode:'stream-hold'}, async (runtime, dir) => {
+  const turn = await runtime.start({text:'hello',onEvent() {}});
+  const before = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+  await assert.rejects(runtime.start({text:'again',threadId:id.toUpperCase(),onEvent() {}}), /Claude operation failed/);
+  assert.equal(JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8')).pid, before.pid);
+  await turn.abort();
+}));
+
+for (const mode of ['stubborn', 'stubborn-init']) {
+  test(`runtime shutdown reaps ${mode} children`, {timeout:5000}, async () => fixture({mode}, async (runtime, dir) => {
+    const started = runtime.start({text:'hello',onEvent() {}});
+    const rejected = started.catch(() => null);
+    if (mode === 'stubborn') await started;
+    else await new Promise(resolveDelay => setTimeout(resolveDelay,150));
+    const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+    await runtime.close();
+    await rejected;
+    assert.throws(() => process.kill(observed.pid,0), {code:'ESRCH'});
+  }));
+}
