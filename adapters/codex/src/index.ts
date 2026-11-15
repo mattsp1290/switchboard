@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { isAbsolute, resolve } from 'node:path';
+import { accessSync, constants } from 'node:fs';
+import { delimiter, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import { withSdkProcess } from './process.js';
@@ -49,35 +50,42 @@ function nativeEnvironment(codexHome: string | undefined): Record<string, string
 
 export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
   if (options.model !== 'gpt-6.1-sol' || !isAbsolute(options.cwd)
-    || (options.codexHome !== undefined && !isAbsolute(options.codexHome))) throw failure();
+    || (options.codexHome !== undefined && !isAbsolute(options.codexHome))
+    || (options.codexPathOverride !== undefined && !isAbsolute(options.codexPathOverride))) throw failure();
   const cwd = resolve(options.cwd);
-  const executable = options.codexPathOverride ?? 'codex';
   const env = nativeEnvironment(options.codexHome);
-  async function checkReady(signal?: AbortSignal): Promise<void> {
+  const executable = options.codexPathOverride ?? (env.PATH === undefined ? [] : env.PATH.split(delimiter)).map(dir => resolve(dir, 'codex')).find(path => {
+    try { accessSync(path, constants.X_OK); return true; } catch { return false; }
+  });
+  async function runCli(args: string[], signal: AbortSignal, maxBuffer: number) {
+    if (!executable) throw failure();
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+    return withSdkProcess(deadline, () => run(executable, args, {
+      env, cwd, signal: deadline, maxBuffer, encoding: 'utf8',
+    }));
+  }
+  async function verifyReady(signal: AbortSignal): Promise<void> {
     if (closed) throw failure();
-    const check = { env, cwd, signal, timeout: 10_000, maxBuffer: 16_384, encoding: 'utf8' } as const;
     try {
-      const version = await run(executable, ['--version'], check);
+      const version = await runCli(['--version'], signal, 16_384);
       if (version.stdout.trim() !== 'codex-cli 0.169.0') throw failure();
     } catch { throw new Error('Install Codex CLI 0.169.0 to use Codex chat.'); }
     // Enforcing a mismatched forced_login_method in exec can log the user out.
     try {
-      const login = await run(executable, ['login', 'status'], check);
+      const login = await runCli(['login', 'status'], signal, 16_384);
       if (login.stderr.trim() !== 'Logged in using ChatGPT') throw failure();
     } catch { throw new Error('Sign in with ChatGPT using codex login to use Codex chat.'); }
   }
 
   async function disableMcpServers(signal: AbortSignal): Promise<string> {
-    // An empty CLI config table merges with the user's servers. Disable each server by name.
-    const { stdout } = await run(executable, ['mcp', 'list', '--json'], {
-      env, cwd, signal, timeout: 10_000, maxBuffer: 1024 * 1024, encoding: 'utf8',
-    });
+    // Disabled servers still require a valid transport. Use an inert command without copying credentials.
+    const { stdout } = await runCli(['mcp', 'list', '--json'], signal, 1024 * 1024);
     const servers: unknown = JSON.parse(stdout);
     if (!Array.isArray(servers) || servers.length > 512) throw failure();
     const disabled = servers.map((server: unknown) => {
       if (!server || typeof server !== 'object' || !('name' in server)
         || typeof server.name !== 'string' || !server.name || server.name.length > 256) throw failure();
-      return JSON.stringify(server.name) + '={enabled=false}';
+      return JSON.stringify(server.name) + '={enabled=false,command="switchboard-disabled-mcp"}';
     });
     return 'mcp_servers={' + disabled.join(',') + '}';
   }
@@ -88,7 +96,15 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
     webSearchMode: 'disabled', skipGitRepoCheck: true,
   };
   const active = new Map<AbortController, Promise<CodexTerminal>>();
+  const checks = new Map<AbortController, Promise<void>>();
   let closed = false;
+
+  function checkReady(): Promise<void> {
+    const controller = new AbortController();
+    const pending = verifyReady(controller.signal).finally(() => checks.delete(controller));
+    checks.set(controller, pending);
+    return pending;
+  }
 
   function start(request: CodexRequest): Promise<CodexTurn> {
     const { threadId: requested, text, onEvent } = request;
@@ -104,8 +120,10 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
 
     async function consume(): Promise<CodexTerminal> {
       let outcome: CodexTerminal['outcome'] = 'failed';
+      let terminal: CodexTerminal['outcome'] | undefined;
       try {
-        await checkReady(controller.signal);
+        if (!executable) throw failure();
+        await verifyReady(controller.signal);
         controller.signal.throwIfAborted();
         const sdk = new Codex({
           codexPathOverride: executable, env, configOverrides: [await disableMcpServers(controller.signal)],
@@ -113,14 +131,13 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
             forced_login_method: 'chatgpt', model_provider: 'openai',
             chatgpt_base_url: 'https://chatgpt.com/backend-api', openai_base_url: 'https://chatgpt.com/backend-api/codex',
             project_doc_max_bytes: 0,
-            features: { shell_tool: false, unified_exec: false, apps: false, plugins: false, hooks: false,
+            features: { shell_tool: false, apps: false, plugins: false, hooks: false,
               js_repl: false, image_generation: false, multi_agent_v2: false, skip_host_skill_discovery: true },
           },
         });
         const thread = requested === undefined ? sdk.startThread(threadOptions) : sdk.resumeThread(requested, threadOptions);
         const { events } = await thread.runStreamed(text, { signal: controller.signal });
         let observedId: string | undefined;
-        let terminal: CodexTerminal['outcome'] | undefined;
         await withSdkProcess(controller.signal, async () => {
           for await (const event of events) {
             if (controller.signal.aborted) continue;
@@ -158,7 +175,6 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
                   terminal = 'completed';
                   break;
                 case 'turn.failed':
-                case 'error':
                   terminal = 'failed';
                   break;
               }
@@ -173,7 +189,8 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
         outcome = 'failed';
       } finally {
         if (streamFault) outcome = 'failed';
-        else if (controller.signal.aborted && outcome !== 'completed') outcome = 'interrupted';
+        else if (terminal !== undefined) outcome = terminal;
+        else if (controller.signal.aborted) outcome = 'interrupted';
         if (reserved !== undefined) writers.delete(reserved);
         active.delete(controller);
       }
@@ -191,8 +208,10 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
 
   return { checkReady, start, async close() {
     closed = true;
+    const readiness = [...checks.entries()];
+    for (const [controller] of readiness) controller.abort();
     const pending = [...active.entries()];
     for (const [controller] of pending) controller.abort();
-    await Promise.all(pending.map(([, finished]) => finished));
+    await Promise.allSettled([...pending.map(([, finished]) => finished), ...readiness.map(([, ready]) => ready)]);
   } };
 }
