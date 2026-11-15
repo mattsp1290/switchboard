@@ -1,20 +1,33 @@
 {
   "status": "verified",
-  "verifiedAt": "2026-11-15T06:34:12.787823+00:00",
-  "tarballSha256": "efc91adbadfd56fdf87fbeeb423ec5fc7ebebc75765b910d09b2218e00bd83f7",
-  "sourceDigest": "d6c59543e187219f78051bf6df5f45f35496c813299c51b8ed25306596ff4dba",
+  "verifiedAt": "2026-11-15T15:35:50.785573+00:00",
+  "tarballSha256": "675957f5550d34fa8ed43de6ec16693725917c0930a013304904c2fd5ce046c5",
+  "sourceDigest": "ab7514e7cc61d534f1f070be2aa0a93eea3a0c14c6569d75a79c1764477cb25d",
   "profile": "GenAI semantic conventions v1.37.0",
   "checks": {
     "install": "npm ci passed",
     "lint": "npm run lint passed",
     "types": "npm run check passed",
-    "repositoryTests": 120,
-    "installedObservabilityTests": 34,
+    "repositoryTests": 180,
+    "installedObservabilityTests": 37,
     "negativeTypeFixtures": 16,
     "compiler": "passed",
     "agui": "passed",
     "backendScenariosEach": 7,
-    "identicalSpansEach": 20
+    "identicalSpansEach": 20,
+    "installedObservabilityBreakdown": {
+      "recording": 19,
+      "host": 18
+    },
+    "pythonStabilityTests": 56,
+    "repositoryTestsEnvironment": {
+      "image": "ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
+      "node": "24.22.3",
+      "npm": "11.19.1",
+      "datadogAutoInjection": false,
+      "nodeOptions": "",
+      "reason": "CI-equivalent isolated environment. Host Datadog injection causes the same three native JavaScript and three Python failures on main; no native source or shared agent settings changed."
+    }
   },
   "successfulPair": {
     "modelCalls": 2,
@@ -31,7 +44,7 @@
     "lotel": "owned collector stopped",
     "datadog": "shared agent preserved",
     "temporaryReceiver": "retained for development; operator rollback documented in validation.md",
-    "temporaryTools": "preflight lotel source/binary and known installed host-test consumer removed"
+    "temporaryTools": "Runner-owned installed backend consumer and collector temporary directory removed after confirmed collector removal."
   },
   "limits": [
     "explicit host observations only",
@@ -41,5 +54,27 @@
     "evidence/lotel.json",
     "evidence/datadog.json",
     "evidence/prerequisites.json"
-  ]
+  ],
+  "revisionContext": {
+    "branch": "codex/llm-observability",
+    "reviewedHead": "881b36a4022dc536a7a9bc31f397d88fd60f9281",
+    "baseRef": "main",
+    "baseSha": "c26cdfe3576100b9a23e9108ae207f2202a5026d",
+    "workingTree": "Includes the three accepted Important review fixes; the source digest identifies the qualified producer before the fix commit."
+  },
+  "backendRuns": {
+    "lotel": {
+      "startedAt": "2026-11-15T15:27:22.593Z",
+      "endedAt": "2026-11-15T15:27:35.530Z"
+    },
+    "datadog": {
+      "startedAt": "2026-11-15T15:28:37.503Z",
+      "endedAt": "2026-11-15T15:32:17.076Z"
+    }
+  },
+  "prerequisitesEvidence": {
+    "report": "evidence/prerequisites.json",
+    "observedAt": "2026-11-15T06:27:33.364079+00:00",
+    "scope": "Historical receiver/tool prerequisite check; fresh backend reports record the current acceptance runs."
+  }
 }

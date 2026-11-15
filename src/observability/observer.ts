@@ -119,14 +119,20 @@ export function createGenAiObserver(options: ObserverOptions): GenAiObserver {
     try {
       entry.span = config.tracer.startSpan(observation.name, {
         kind: observation.kind === 'tool' ? SpanKind.INTERNAL : SpanKind.CLIENT,
+        attributes: observation.attributes,
       }, parent);
       counts.started++;
       if (revoked(entry)) {
-        if (!endOwned(entry)) return failure('telemetry-failure');
-        return failure('closed');
+        let failed = false;
+        try {
+          entry.span.setAttribute('switchboard.outcome', 'outcome-unknown');
+        } catch {
+          failed = true;
+        } finally {
+          if (!endOwned(entry)) failed = true;
+        }
+        return failure(failed ? 'telemetry-failure' : 'closed');
       }
-      entry.span.setAttributes(observation.attributes);
-      if (revoked(entry)) return failure('closed');
       const spanContext = safeSpanContext(entry.span);
       if (!spanContext) throw new Error();
       if (revoked(entry)) return failure('closed');

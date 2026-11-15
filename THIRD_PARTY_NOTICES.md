@@ -23,3 +23,13 @@ The development-only files `tests/observability/fixtures/gen-ai-input-messages.j
 Their exact source URLs and SHA-256 digests are recorded in `docs/observability/qualification-pin.json`.
 The Apache-2.0 license is preserved in `tests/observability/fixtures/UPSTREAM-LICENSE`.
 These schema fixtures do not ship in the package tarball.
+
+# lotel collector qualification fixture
+
+`scripts/support/lotel-collector.yaml` contains the exact `DefaultConfig` value from
+lotel commit `8b7023e08d317cf079b7a63f93d1f17e67a0083d`, including its managed header.
+The immutable source URL and SHA-256 digest are recorded in
+`docs/observability/qualification-pin.json`; the qualification runner checks the digest
+before acquiring a container. The upstream MIT license, including its copyright notice,
+is preserved in `scripts/support/lotel-LICENSE`. The collector fixture and its license
+are development-only and do not ship in the package tarball.

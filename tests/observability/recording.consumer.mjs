@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createTraceState, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
-import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { BasicTracerProvider, InMemorySpanExporter, SamplingDecision, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { createGenAiObserver, instrumentationScope } from '@mattsp1290/switchboard/observability';
 
@@ -82,6 +82,71 @@ test('observability terminal outcomes remain separate from backend error status'
     assert.equal(span.attributes['error.type'], index === 1 ? 'rate-limit' : undefined);
     assert.deepEqual(span.events, []);
   }
+});
+
+test('observability supplies private validated metadata to real SDK sampling and onStart', async t => {
+  const sampled = [];
+  const started = [];
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider({
+    sampler: {
+      shouldSample(_parent, _traceId, _name, _kind, attributes) {
+        sampled.push({ ...attributes });
+        return { decision: attributes['gen_ai.operation.name'] === 'chat' &&
+          attributes['gen_ai.provider.name'] === 'openai' && attributes['gen_ai.request.model'] === 'requested'
+          ? SamplingDecision.RECORD_AND_SAMPLED : SamplingDecision.NOT_RECORD };
+      },
+      toString: () => 'ChatMetadataSampler',
+    },
+    spanProcessors: [{ onStart: span => started.push({ ...span.attributes }), onEnd() {},
+      forceFlush: async () => {}, shutdown: async () => {} }, new SimpleSpanProcessor(exporter)],
+  });
+  const observer = observerWith(provider.getTracer('sampling'), { includeConversationId: true });
+  t.after(async () => { observer.close(); await provider.shutdown(); });
+  const correlation = { runId: 'run-1', requestId: 'request-1', conversationId: 'conversation-1' };
+  unwrap(unwrap(observer.start({ ...model, inputMessages: input(canary) }, ROOT_CONTEXT, correlation)).finish(success));
+  unwrap(unwrap(observer.start(agent, ROOT_CONTEXT, correlation)).finish(success));
+  await provider.forceFlush();
+  assert.deepEqual(sampled.map(attributes => attributes['gen_ai.operation.name']), ['chat', 'invoke_agent']);
+  assert.equal(sampled[0]['gen_ai.provider.name'], 'openai');
+  assert.equal(sampled[0]['gen_ai.request.model'], 'requested');
+  assert.equal(sampled[0]['switchboard.run_id'], correlation.runId);
+  assert.equal(sampled[0]['switchboard.request_id'], correlation.requestId);
+  assert.equal(sampled[0]['gen_ai.conversation.id'], correlation.conversationId);
+  assert.deepEqual(started, [sampled[0]]);
+  assert.equal(spans(exporter).length, 1);
+  assert.equal(spans(exporter)[0].attributes['gen_ai.operation.name'], 'chat');
+  assert(!JSON.stringify({ sampled, started }).includes(canary));
+  assert.equal(sampled[0]['gen_ai.input.messages'], undefined);
+  assert(!serialized(exporter).includes(canary));
+});
+
+test('observability closes a real SDK span acquired after onStart revokes its reservation', async t => {
+  const exporter = new InMemorySpanExporter();
+  let observer;
+  let ended = 0;
+  const provider = new BasicTracerProvider({ spanProcessors: [{
+    onStart: () => observer.close(), onEnd: () => { ended++; },
+    forceFlush: async () => {}, shutdown: async () => {},
+  }, new SimpleSpanProcessor(exporter)] });
+  observer = observerWith(provider.getTracer('reentrant-close'));
+  t.after(async () => { observer.close(); await provider.shutdown(); });
+  rejected(observer.start(model, ROOT_CONTEXT, { runId: 'run-1' }), 'closed');
+  observer.close();
+  await provider.forceFlush();
+  assert.equal(ended, 1);
+  assert.equal(spans(exporter).length, 1);
+  const [span] = spans(exporter);
+  assert.equal(span.attributes['gen_ai.operation.name'], 'chat');
+  assert.equal(span.attributes['gen_ai.provider.name'], 'openai');
+  assert.equal(span.attributes['gen_ai.request.model'], 'requested');
+  assert.equal(span.attributes['switchboard.run_id'], 'run-1');
+  assert.equal(span.attributes['switchboard.outcome'], 'outcome-unknown');
+  assert.equal(span.status.code, SpanStatusCode.UNSET);
+  assert.equal(observer.diagnostics().started, 1);
+  assert.equal(observer.diagnostics().finished, 1);
+  assert.equal(observer.diagnostics().activeSpans, 0);
+  assert.equal(observer.diagnostics().telemetryFailures, 0);
 });
 
 test('observability bounds and close release ownership without SDK shutdown', t => {
@@ -226,7 +291,7 @@ function observerWith(tracer, extra = {}) {
 const explode = () => { throw new Error(canary); };
 
 test('observability isolates SDK creation and partial initialization faults', () => {
-  for (const hooks of [{ start: explode }, { set: explode }, { context: explode }, { set: explode, end: explode }]) {
+  for (const hooks of [{ start: explode }, { context: explode }, { context: explode, end: explode }]) {
     const { tracer, calls } = faultTracer(hooks);
     const observer = observerWith(tracer);
     for (let repeat = 0; repeat < 2; repeat++) {
@@ -268,7 +333,7 @@ test('observability setter and end faults cannot retain capacity or escape finis
 });
 
 test('observability reserves capacity before sanitizers and revokes reentrant starts on close', () => {
-  for (const closeAt of ['sanitize', 'start', 'set', 'context']) {
+  for (const closeAt of ['sanitize', 'start', 'context']) {
     const hooks = {};
     const { tracer, calls } = faultTracer(hooks);
     let observer;
@@ -283,6 +348,22 @@ test('observability reserves capacity before sanitizers and revokes reentrant st
     assert.equal(calls.start, closeAt === 'sanitize' ? 0 : 1);
     assert.equal(calls.end, closeAt === 'sanitize' ? 0 : 1);
     assert.equal(observer.diagnostics().activeSpans, 0);
+  }
+});
+
+test('observability releases acquisition-time close exactly once even when terminal setters or end throw', () => {
+  for (const faults of [{ set: explode }, { end: explode }, { set: explode, end: explode }]) {
+    let observer;
+    const { tracer, calls } = faultTracer({ ...faults, start: () => observer.close() });
+    observer = observerWith(tracer);
+    rejected(observer.start(model, ROOT_CONTEXT), 'telemetry-failure');
+    observer.close();
+    assert.equal(calls.end, 1);
+    assert.equal(calls.setters, 1);
+    assert.equal(observer.diagnostics().started, 1);
+    assert.equal(observer.diagnostics().finished, 1);
+    assert.equal(observer.diagnostics().activeSpans, 0);
+    assert.equal(observer.diagnostics().telemetryFailures, 1);
   }
 });
 

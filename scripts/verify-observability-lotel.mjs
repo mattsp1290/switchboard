@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
-import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { artifactSourceDigest, assertPrivacy, collectorImage, command, delay, evidenceFor, expectedSpanCount, installedFixture, jsonCommand, lotelCommit, safeFailure, writeReport } from './support/observability-backends.mjs';
@@ -97,25 +98,30 @@ try {
     await mkdir(dataDirectory, { recursive: true });
     await chmod(dataDirectory, 0o777);
   }
+  const collectorConfig = join(temporary, '.lotel', 'collector-config.yaml');
+  const { lotel: pin } = JSON.parse(await readFile(new URL('../docs/observability/qualification-pin.json', import.meta.url), 'utf8'));
+  assert.equal(pin.commit, lotelCommit, 'collector configuration must use the reviewed lotel commit');
+  assert.equal(pin.collectorImage, collectorImage, 'collector image must match the reviewed configuration');
+  const configBytes = await readFile(new URL('./support/lotel-collector.yaml', import.meta.url));
+  const configDigest = createHash('sha256').update(configBytes).digest('hex');
+  assert.equal(configDigest, pin.collectorConfig.sha256, 'collector configuration differs from the reviewed upstream default');
+  await writeFile(collectorConfig, configBytes);
+  report.collectorConfiguration = { ...pin.collectorConfig };
   cleanupConfirmed = false;
-  try { await command(lotel, ['start', '--wait'], options); }
-  finally {
-    try {
-      const state = JSON.parse(await readFile(join(temporary, '.lotel', 'collector.state'), 'utf8'));
-      ownedContainer = state.container_id;
-      cleanupConfirmed = false;
-    } catch {
-      try {
-        const containers = await jsonCommand('docker', ['inspect', 'lotel-collector']);
-        if (containers[0]?.Mounts?.some((mount) => mount.Source === join(temporary, '.lotel', 'data'))) { ownedContainer = containers[0].Id; cleanupConfirmed = false; }
-      } catch {}
-      if (!ownedContainer) {
-        try { cleanupConfirmed = (await command('docker', ['ps', '-a', '--filter', 'name=^/lotel-collector$', '--format', '{{.ID}}'])) === ''; } catch {}
-      }
+  ownedContainer = await command('docker', ['create', '--name', 'lotel-collector',
+    '-p', '4317:4317', '-p', '4318:4318', '-p', '13133:13133',
+    '-v', `${join(temporary, '.lotel', 'data')}:/data`,
+    '-v', `${collectorConfig}:/etc/otelcol-contrib/config.yaml:ro`, collectorImage]);
+  assert.match(ownedContainer, /^[a-f0-9]{64}$/, 'Docker create must return the full owned container ID');
+  await command('docker', ['start', ownedContainer]);
+  const healthDeadline = Date.now() + 30_000;
+  for (;;) {
+    try { await command(lotel, ['health'], options); break; }
+    catch (error) {
+      if (Date.now() >= healthDeadline) throw error;
+      await delay(500);
     }
   }
-  assert(ownedContainer, 'collector did not persist an owned container identity');
-  await command(lotel, ['health'], options);
   report.collector = { id: ownedContainer, ownership: 'created' };
   report.cleanup = 'pending';
   const destinations = [{ kind: 'lotel', url: 'http://127.0.0.1:4318/v1/traces' }];
@@ -192,7 +198,7 @@ finally {
   if (ownedContainer) {
     try {
       const actual = await command('docker', ['inspect', '--format', '{{.Id}}', 'lotel-collector']);
-      assert(actual === ownedContainer || actual.startsWith(ownedContainer), 'collector identity changed; preserving replacement');
+      assert.equal(actual, ownedContainer, 'collector identity changed; preserving replacement');
       if (report.status === 'failed') {
         try { report.collectorDiagnostics = (await command('docker', ['logs', '--tail', '12', ownedContainer], { includeStderr: true })).slice(0, 3000); } catch (error) { report.collectorDiagnostics = safeFailure(error); }
       }

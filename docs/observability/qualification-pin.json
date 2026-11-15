@@ -16,7 +16,13 @@
   "lotel": {
     "repository": "https://github.com/mattsp1290/lotel",
     "commit": "8b7023e08d317cf079b7a63f93d1f17e67a0083d",
-    "collectorImage": "otel/opentelemetry-collector-contrib:0.165.0"
+    "collectorImage": "otel/opentelemetry-collector-contrib:0.165.0",
+    "collectorConfig": {
+      "source": "https://raw.githubusercontent.com/mattsp1290/lotel/8b7023e08d317cf079b7a63f93d1f17e67a0083d/internal/config/config.go",
+      "symbol": "DefaultConfig",
+      "file": "scripts/support/lotel-collector.yaml",
+      "sha256": "64e64e247be4579d9896966081951d2ae3e07b98e007f016d9ab3c76d9ffc2bd"
+    }
   },
   "packages": {
     "@opentelemetry/api": "1.9.0",
