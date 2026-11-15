@@ -7,6 +7,29 @@ The private core package has no mandatory runtime dependencies.
 The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
 The optional `./testkit` entry supplies controlled qualification scenarios without an AG-UI peer.
 
+## GenAI observations
+
+`src/observability/index.ts` supplies the optional `./observability` entry with the exact optional peer `@opentelemetry/api@1.9.0`.
+The root and testkit entries do not load OpenTelemetry or the observability entry.
+The library borrows a tracer and explicit parent contexts. The host owns provider configuration, sampling, exporters, credentials, deadlines, and shutdown.
+
+Agent, model-request, and tool descriptors represent independently observed boundaries. Agent or dispatch phases do not establish a model request.
+A text chunk is not a model call. Aggregated run usage does not establish per-request usage.
+An unavailable native boundary remains unobserved. This entry does not qualify any native adapter.
+
+Each observer owns a bounded set of live recording handles. Handles contain safe span contexts; the mutable SDK span remains private.
+Success leaves OpenTelemetry status UNSET. Confirmed errors set ERROR with a fixed category.
+Cancellation and uncertainty carry explicit outcomes without asserting a provider error or native cancellation.
+Closing the observer ends open spans as uncertain and cannot dispatch, retry, or cancel work.
+Telemetry exceptions produce fixed diagnostics and do not escape into native execution.
+
+The GenAI profile is pinned to semantic conventions v1.37.0. No arbitrary attribute bag, native handle, exception, or tool payload is accepted.
+Default policy does not traverse message content. Explicit sanitized text passes bounded exact parsing before and after the host sanitizer.
+The host chooses safe public identifiers and sanitizer rules. Library validation establishes the allowed data paths, rather than proving arbitrary strings are non-secret.
+Datadog metadata adaptation belongs in the host exporter. A distinct export view preserves outcome and safe correlation without changing lotel spans.
+
+[Usage](../observability/usage.md) and [destination verification](../observability/validation.md) describe host setup and deterministic qualification.
+
 ## Host ownership
 
 Crew, AgentUI, or another consumer owns authorization policy, credential resolution, and durable command intent and outcomes.

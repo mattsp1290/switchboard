@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
+import { verifyObservability } from './verify-observability.mjs';
 import { run, runNpm, testEnvironment } from './support/exec.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
@@ -61,9 +62,10 @@ try {
     './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
     './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
+    './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
   });
-  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323' });
-  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true } });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@opentelemetry/api': '1.9.0' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
   assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert(!existsSync(join(consumer, 'node_modules/@openai/codex-sdk')));
@@ -79,6 +81,7 @@ const terminal: PiTerminal = await accepted.finished;
 void [options, terminal];
 `);
   assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
+  assert(!existsSync(join(consumer, 'node_modules/@opentelemetry')), 'Core consumer has no telemetry installed.');
   assert.equal(installedManifest.private, true);
   assert.equal(Object.keys(installedManifest.dependencies ?? {}).length, 0);
 
@@ -86,13 +89,17 @@ void [options, terminal];
 import assert from 'node:assert/strict';
 import { createRequire, registerHooks } from 'node:module';
 const testkitPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/testkit/')).href)};
+const observabilityPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/observability/')).href)};
 registerHooks({ resolve(specifier, context, nextResolve) {
   const resolved = nextResolve(specifier, context);
   assert(!resolved.url.startsWith(testkitPrefix), 'Core cannot import the testkit.');
+  assert(!resolved.url.startsWith(observabilityPrefix), 'Core cannot import observability.');
+  assert(!resolved.url.includes('/@opentelemetry/'), 'Core cannot import telemetry.');
   return resolved;
 } });
 const switchboard = await import('${manifest.name}');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
+assert.throws(() => createRequire(import.meta.url).resolve('@opentelemetry/api'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
 await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
@@ -158,6 +165,8 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   assert(!coreTypes.includes('/dist/pi/'), 'Root declarations do not reference the Pi adapter.');
   assert(!coreTypes.includes('/@earendil-works/'), 'Root declarations do not reference the Pi SDK.');
   assert(!coreTypes.includes('/dist/claude/') && !coreTypes.includes('/@anthropic-ai/'), 'Root declarations do not reference the Claude adapter or SDK.');
+  assert(!coreTypes.includes('/observability/'), 'Root declarations do not reference observability.');
+  assert(!coreTypes.includes('/@opentelemetry/'), 'Root declarations do not reference telemetry.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
     allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
     allowedFiles: checkedFixtures.map(file => join(consumer, file)),
@@ -215,6 +224,8 @@ try {
   run(process.execPath, ['runtime.mjs'], codexConsumer);
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
+    compilerOptions: consumerConfig.compilerOptions });
+  verifyObservability({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });
 
   const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;

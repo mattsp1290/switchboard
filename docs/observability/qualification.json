@@ -1,0 +1,81 @@
+{
+  "status": "verified",
+  "verifiedAt": "2026-11-15T16:01:26.196137+00:00",
+  "tarballSha256": "675957f5550d34fa8ed43de6ec16693725917c0930a013304904c2fd5ce046c5",
+  "profile": "GenAI semantic conventions v1.37.0",
+  "checks": {
+    "install": "npm ci passed",
+    "lint": "npm run lint passed",
+    "types": "npm run check passed",
+    "repositoryTests": 185,
+    "installedObservabilityTests": 37,
+    "negativeTypeFixtures": 16,
+    "compiler": "passed",
+    "agui": "passed",
+    "backendScenariosEach": 7,
+    "identicalSpansEach": 20,
+    "installedObservabilityBreakdown": {
+      "recording": 19,
+      "host": 18
+    },
+    "pythonStabilityTests": 56,
+    "repositoryTestsEnvironment": {
+      "image": "ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
+      "node": "24.22.3",
+      "npm": "11.19.1",
+      "datadogAutoInjection": false,
+      "nodeOptions": "",
+      "reason": "CI-equivalent isolated environment. Host Datadog injection causes the same three native JavaScript and three Python failures on main; no native source or shared agent settings changed."
+    }
+  },
+  "successfulPair": {
+    "modelCalls": 2,
+    "inputTokens": 7,
+    "outputTokens": 4,
+    "policies": [
+      "none",
+      "sanitized"
+    ]
+  },
+  "missingUsage": "absent in original OTel and backend usage observations; Datadog detailed metrics expose normalized zero defaults",
+  "privacy": "raw exports and full stored content passed",
+  "cleanup": {
+    "lotel": "owned collector stopped",
+    "datadog": "shared agent preserved",
+    "temporaryReceiver": "retained for development; operator rollback documented in validation.md",
+    "temporaryTools": "Runner-owned installed backend consumer and collector temporary directory removed after confirmed collector removal."
+  },
+  "limits": [
+    "explicit host observations only",
+    "native adapters remain unqualified"
+  ],
+  "reports": [
+    "evidence/lotel.json",
+    "evidence/datadog.json",
+    "evidence/prerequisites.json"
+  ],
+  "revisionContext": {
+    "branch": "codex/llm-observability",
+    "reviewedHead": "d66b3a7653f0669557fd92f0d80965b749dd864a",
+    "baseRef": "main",
+    "baseSha": "c26cdfe3576100b9a23e9108ae207f2202a5026d",
+    "workingTree": "Includes the accepted Important T1 artifact/producer identity fix on top of the three standard-review fixes. tarballSha256 and producerDigest identify the qualified built artifact and staged producer bytes before the T1 fix commit."
+  },
+  "backendRuns": {
+    "lotel": {
+      "startedAt": "2026-11-15T15:54:26.220Z",
+      "endedAt": "2026-11-15T15:54:40.080Z"
+    },
+    "datadog": {
+      "startedAt": "2026-11-15T15:54:40.361Z",
+      "endedAt": "2026-11-15T15:59:19.352Z"
+    }
+  },
+  "prerequisitesEvidence": {
+    "report": "evidence/prerequisites.json",
+    "observedAt": "2026-11-15T06:27:33.364079+00:00",
+    "scope": "Historical receiver/tool prerequisite check; fresh backend reports record the current acceptance runs."
+  },
+  "producerDigest": "634f37cc9eb8f0ec883dae252c49df8b2fb2e5ebf8d2a5d28cf4335d194005ff",
+  "identityGuarantee": "The query-only handoff rebuilds and packs the current package and requires its actual tarball SHA-256 and the separately staged producer recipe/modules digest to match the originating fixture and passed lotel report. The fixture consumes the exact tarball and staged producer bytes recorded by those identities."
+}

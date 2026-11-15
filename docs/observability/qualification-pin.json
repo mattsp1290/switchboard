@@ -1,0 +1,42 @@
+{
+  "semanticConventions": {
+    "version": "1.37.0",
+    "source": "https://github.com/open-telemetry/semantic-conventions/tree/v1.37.0/docs/gen-ai",
+    "schemas": {
+      "gen-ai-input-messages.json": {
+        "source": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/v1.37.0/docs/gen-ai/gen-ai-input-messages.json",
+        "sha256": "ea8840ce42bbbbf067840db2404931ac78b8993ede3ca9d6730829ff89d6921e"
+      },
+      "gen-ai-output-messages.json": {
+        "source": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/v1.37.0/docs/gen-ai/gen-ai-output-messages.json",
+        "sha256": "589490c7cd7f201a29f70ad66df0b27cd8965ce4a48ceb7ace8a050056562af5"
+      }
+    }
+  },
+  "lotel": {
+    "repository": "https://github.com/mattsp1290/lotel",
+    "commit": "8b7023e08d317cf079b7a63f93d1f17e67a0083d",
+    "collectorImage": "otel/opentelemetry-collector-contrib:0.165.0",
+    "collectorConfig": {
+      "source": "https://raw.githubusercontent.com/mattsp1290/lotel/8b7023e08d317cf079b7a63f93d1f17e67a0083d/internal/config/config.go",
+      "symbol": "DefaultConfig",
+      "file": "scripts/support/lotel-collector.yaml",
+      "sha256": "64e64e247be4579d9896966081951d2ae3e07b98e007f016d9ab3c76d9ffc2bd"
+    }
+  },
+  "packages": {
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-trace-base": "2.12.0",
+    "@opentelemetry/sdk-trace-node": "2.12.0",
+    "ajv": "8.20.0"
+  },
+  "toolchain": {
+    "node": "24.22.3",
+    "npm": "11.19.1",
+    "pup": "2.0.1",
+    "datadogAgent": "7.76.3"
+  },
+  "datadogMapping": "https://docs.datadoghq.com/llm_observability/instrument/otel_instrumentation/"
+}

@@ -6,6 +6,7 @@ Its root module exports adapter contracts, native session envelopes, validation 
 The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output.
 The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go with `glm-5.3`.
 Claude and Codex adapters remain unqualified. The Pi entry has local SDK tests and requires separate live provider qualification.
+The optional `./observability` entry records observed agent, model-request, and tool boundaries as OpenTelemetry GenAI spans.
 
 Use Node 24.22.3 and npm 11.19.1. The package supports Node `>=24.22.3 <25`.
 Development dependencies pin TypeScript 7.0.2, Oxlint 1.93.0, and `@types/node` 24.19.2. There are no runtime dependencies.
@@ -42,6 +43,13 @@ Three canonical chunk kinds normalize to explicit stream events. Input and capab
 
 The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
 The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
+The separate `@mattsp1290/switchboard/observability` entry requires the exact optional peer `@opentelemetry/api@1.9.0`.
+It borrows a tracer and explicit parent contexts. The host owns SDK setup, exporters, and shutdown.
+Content stays off by default. Model usage comes from individually observed requests.
+Native dispatch phases, RPC requests, and AG-UI chunks do not establish those boundaries.
+See [record observed agent work](docs/observability/usage.md) and [validate telemetry destinations](docs/observability/validation.md).
+Installed package tests exercise the API and a real loopback HTTP provider without backend credentials.
+Separate lotel and Datadog verification commands require their documented backends.
 The optional `@mattsp1290/switchboard/testkit` entry exports reusable controlled qualification groups and a reference fake.
 It requires no AG-UI peer and registers no tests on import. The root module does not load it.
 Register its groups in your test runner and provide the runner's bounded cancellation signal.

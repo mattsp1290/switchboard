@@ -16,3 +16,20 @@ The complete upstream license and notice are preserved in `licenses/codex-APACHE
 The qualifier uses `spikes/codex-native/protocol-bindings.mjs` for its generated tree. Only validated module specifiers change.
 Its result records deterministic SHA-256 hashes of sorted `[path, source]` pairs before and after transformation.
 Native generator parity compares the pinned `0.169.0` binary's `generate-ts` output against the committed leaf. It does not compare against the linked blob. The existing native CI job must establish that parity. A mismatch records both hashes and raw generated source bounded to 512 JSON-encoded UTF-8 bytes, then fails without header normalization.
+
+# OpenTelemetry GenAI schema fixtures
+
+The development-only files `tests/observability/fixtures/gen-ai-input-messages.json` and `gen-ai-output-messages.json` are copied from OpenTelemetry semantic conventions v1.37.0.
+Their exact source URLs and SHA-256 digests are recorded in `docs/observability/qualification-pin.json`.
+The Apache-2.0 license is preserved in `tests/observability/fixtures/UPSTREAM-LICENSE`.
+These schema fixtures do not ship in the package tarball.
+
+# lotel collector qualification fixture
+
+`scripts/support/lotel-collector.yaml` contains the exact `DefaultConfig` value from
+lotel commit `8b7023e08d317cf079b7a63f93d1f17e67a0083d`, including its managed header.
+The immutable source URL and SHA-256 digest are recorded in
+`docs/observability/qualification-pin.json`; the qualification runner checks the digest
+before acquiring a container. The upstream MIT license, including its copyright notice,
+is preserved in `scripts/support/lotel-LICENSE`. The collector fixture and its license
+are development-only and do not ship in the package tarball.
