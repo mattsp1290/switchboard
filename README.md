@@ -95,12 +95,14 @@ Save `session.id` and the opaque `session.sessionFile` basename after the first 
 An unprompted session has no file and cannot be resumed. Open a new session for an empty chat.
 A first prompt stopped during preflight still records its user message and can be resumed after it drains.
 Resume with `runtime.open({ sessionFile })` after the previous session handle closes.
+Resume uses the same canonical `cwd` and session directory. Relative paths follow Node's process-working-directory rules; hosts should supply absolute paths.
 A missing or invalid file fails without creating a replacement session.
 The runtime reserves each canonical session path within the host process. The host must own its session directory across processes.
 Credentials stay in memory. Startup uses bundled model definitions and reads no user credentials, project instructions, skills, prompts, or extensions.
 Tools, catalog network refresh, cache warming, compaction, and retries are disabled.
 Provider failures expose a generic failed outcome. Native error diagnostics are replaced with generic text before journal persistence.
-Importing `./pi` without its exact optional SDK peers rejects with Node's `ERR_MODULE_NOT_FOUND`.
+Importing `./pi` with missing SDK peers rejects with Node's `ERR_MODULE_NOT_FOUND`.
+Only the declared exact peer versions are supported; forcing incompatible peers bypasses this contract.
 The local tests replace provider HTTP responses and do not qualify a live subscription.
 
 Native tools and credentials are unnecessary for the foundation checks.
