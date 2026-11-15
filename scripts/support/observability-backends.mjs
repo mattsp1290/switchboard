@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,25 +35,36 @@ export async function writeReport(lane, report) {
 }
 export async function installedFixture(destinations) {
   const directory = await mkdtemp(join(tmpdir(), 'switchboard-observability-consumer-'));
+  try {
+    const { tarball, ...identity } = await prepareProducerArtifact(directory);
+    const outputPath = join(directory, 'result.json');
+    await command(process.execPath, [join(directory, 'observability-producer.mjs'), tarball, JSON.stringify(destinations), outputPath], { cwd: directory, timeout: 240_000 });
+    const data = JSON.parse(await readFile(outputPath, 'utf8'));
+    return { ...data, ...identity };
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+const producerModules = ['observability-producer.mjs', 'observability-fixture.mjs', 'datadog-exporter.mjs', 'observability-backend-consumer.mjs'];
+export async function prepareProducerArtifact(directory, projectRoot = root) {
   const npm = process.env.npm_execpath;
   const npmFile = npm ? process.execPath : 'npm';
   const npmArgs = npm ? [npm] : [];
+  await command(npmFile, [...npmArgs, 'run', 'build'], { cwd: projectRoot, timeout: 120_000 });
+  const packs = await jsonCommand(npmFile, [...npmArgs, 'pack', '--json', '--pack-destination', directory], { cwd: projectRoot, timeout: 120_000 });
+  const tarball = join(directory, packs[0].filename);
+  const tarballSha256 = createHash('sha256').update(await readFile(tarball)).digest('hex');
+  const digest = createHash('sha256');
+  for (const filename of producerModules) {
+    const bytes = await readFile(join(projectRoot, 'scripts', 'support', filename));
+    await writeFile(join(directory, filename), bytes);
+    digest.update(filename).update('\0').update(bytes).update('\0');
+  }
+  return { tarball, tarballSha256, producerDigest: digest.digest('hex') };
+}
+export async function currentProducerIdentity(projectRoot = root) {
+  const directory = await mkdtemp(join(tmpdir(), 'switchboard-observability-identity-'));
   try {
-    await command(npmFile, [...npmArgs, 'run', 'build'], { timeout: 120_000 });
-    const packs = await jsonCommand(npmFile, [...npmArgs, 'pack', '--json', '--pack-destination', directory], { timeout: 120_000 });
-    const tarball = join(directory, packs[0].filename);
-    const tarballSha256 = createHash('sha256').update(await readFile(tarball)).digest('hex');
-    await writeFile(join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-    await command(npmFile, [...npmArgs, 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional', tarball,
-      '@opentelemetry/api@1.9.0', '@opentelemetry/resources@2.12.0', '@opentelemetry/sdk-trace-node@2.12.0',
-      '@opentelemetry/sdk-trace-base@2.12.0', '@opentelemetry/exporter-trace-otlp-proto@0.223.0'], { cwd: directory, timeout: 120_000 });
-    for (const filename of ['observability-fixture.mjs', 'datadog-exporter.mjs', 'observability-backend-consumer.mjs']) {
-      await cp(join(root, 'scripts', 'support', filename), join(directory, filename));
-    }
-    const outputPath = join(directory, 'result.json');
-    await command(process.execPath, [join(directory, 'observability-backend-consumer.mjs'), JSON.stringify(destinations), outputPath], { cwd: directory, timeout: 120_000 });
-    const data = JSON.parse(await readFile(outputPath, 'utf8'));
-    return { ...data, tarballSha256 };
+    const { tarballSha256, producerDigest } = await prepareProducerArtifact(directory, projectRoot);
+    return { tarballSha256, producerDigest };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
 export function assertPrivacy(value, privacy, contentPolicy) {
@@ -79,22 +90,9 @@ export function matchesOtelId(returnedId, expectedHex) {
   const decimalMatch = /^\d+$/.test(returnedId) && BigInt(returnedId) === BigInt(`0x${expectedHex}`);
   return hexMatch || decimalMatch;
 }
-export async function artifactSourceDigest() {
-  const files = ['package.json', 'package-lock.json', 'scripts/support/observability-fixture.mjs', 'scripts/support/datadog-exporter.mjs', 'scripts/support/observability-backend-consumer.mjs'];
-  async function collect(directory) {
-    for (const entry of await readdir(join(root, directory), { withFileTypes: true })) {
-      const path = `${directory}/${entry.name}`;
-      if (entry.isDirectory()) await collect(path);
-      else files.push(path);
-    }
-  }
-  await collect('src');
-  const digest = createHash('sha256');
-  for (const file of files.sort()) digest.update(file).update('\0').update(await readFile(join(root, file))).update('\0');
-  return digest.digest('hex');
-}
 export function validateFixtureHandoff(fixture, contracts = fixtureScenarios) {
   assert(/^[0-9a-f]{64}$/.test(fixture.tarballSha256), 'fixture artifact digest malformed');
+  assert(/^[0-9a-f]{64}$/.test(fixture.producerDigest), 'fixture producer digest malformed');
   assert(Array.isArray(fixture.scenarios) && fixture.scenarios.length === contracts.length, 'fixture handoff requires every scenario');
   for (const field of ['id', 'service', 'runId']) {
     assert.equal(new Set(fixture.scenarios.map((scenario) => scenario[field])).size, contracts.length, `fixture ${field} must be unique`);
@@ -130,12 +128,14 @@ export function validateFixtureHandoff(fixture, contracts = fixtureScenarios) {
     }
   }
 }
-export function validateFixtureOrigin(fixture, lotelReport, sourceDigest) {
+export function validateFixtureOrigin(fixture, lotelReport, current) {
   assert.equal(lotelReport.status, 'passed', 'originating lotel qualification must pass');
   assert(/^[0-9a-f]{64}$/.test(fixture.tarballSha256), 'fixture artifact digest malformed');
   assert.equal(fixture.tarballSha256, lotelReport.tarballSha256, 'both backends must qualify the same tarball');
-  assert.equal(fixture.sourceDigest, sourceDigest, 'fixture source changed; export the current installed artifact again');
-  assert.equal(lotelReport.sourceDigest, sourceDigest, 'originating lotel report describes stale sources');
+  assert.equal(fixture.tarballSha256, current.tarballSha256, 'packed artifact changed; export a new fixture');
+  assert(/^[0-9a-f]{64}$/.test(fixture.producerDigest), 'fixture producer digest malformed');
+  assert.equal(fixture.producerDigest, current.producerDigest, 'fixture producer changed; export a new fixture');
+  assert.equal(lotelReport.producerDigest, current.producerDigest, 'originating lotel report describes a different producer');
   assert.equal(lotelReport.scenarios?.length, fixture.scenarios.length, 'originating lotel report requires every scenario');
   for (const contract of fixture.scenarios) {
     const scenario = contract;

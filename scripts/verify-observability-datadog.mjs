@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fixtureCanaries, fixtureScenarios } from './support/observability-fixture.mjs';
-import { artifactSourceDigest, assertPrivacy, command, delay, evidenceFor, expectedSpanCount, installedFixture, jsonCommand, matchesOtelId, safeFailure, validateBackendTraceTrees, validateFixtureHandoff, validateFixtureOrigin, writeReport } from './support/observability-backends.mjs';
+import { assertPrivacy, command, currentProducerIdentity, delay, evidenceFor, expectedSpanCount, installedFixture, jsonCommand, matchesOtelId, safeFailure, validateBackendTraceTrees, validateFixtureHandoff, validateFixtureOrigin, writeReport } from './support/observability-backends.mjs';
 
 const report = { lane: 'datadog', status: 'failed', startedAt: new Date().toISOString(), endpoint: 'http://127.0.0.1:14318/v1/traces', site: 'us3.datadoghq.com', scenarios: [], cleanup: 'shared agent preserved' };
 const pup = process.env.PUP_BIN ?? 'pup';
@@ -149,13 +149,14 @@ try {
   if (process.env.OBSERVABILITY_FIXTURE_REPORT) {
     const origin = JSON.parse(await readFile(join(dirname(resolve(process.env.OBSERVABILITY_FIXTURE_REPORT)), 'lotel.json'), 'utf8'));
     validateFixtureHandoff(fixture, fixtureScenarios);
-    validateFixtureOrigin(fixture, origin, await artifactSourceDigest());
+    validateFixtureOrigin(fixture, origin, await currentProducerIdentity());
     assert.equal(fixture.rawPrivacy, 'passed', 'fixture handoff must include raw export privacy proof');
     assert(fixture.destinations?.some((destination) => destination.kind === 'datadog' && destination.url === report.endpoint), 'fixture handoff must prove export to the local Datadog receiver');
     fixture.privacy = { secrets: [fixtureCanaries.secretInput, fixtureCanaries.secretOutput], content: [fixtureCanaries.approvedInput, fixtureCanaries.approvedOutput] };
     report.fixtureReport = process.env.OBSERVABILITY_FIXTURE_REPORT;
   }
   report.tarballSha256 = fixture.tarballSha256;
+  report.producerDigest = fixture.producerDigest;
   report.sdk = fixture.sdk;
   report.rawPrivacy = 'passed';
   report.usageEvidence = 'llm_info token fields; detailed metrics normalize absent usage to zero and are not usage observations';

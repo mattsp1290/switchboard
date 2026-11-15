@@ -4,13 +4,14 @@ import { matchesOtelId, validateBackendTraceTrees, validateFixtureHandoff, valid
 import { fixtureScenarios } from '../scripts/support/observability-fixture.mjs';
 
 const digest = 'a'.repeat(64);
-const sourceDigest = 'b'.repeat(64);
+const producerDigest = 'b'.repeat(64);
+const currentIdentity = { tarballSha256: digest, producerDigest };
 
 function fixtureEvidence() {
   let identity = 1;
   const nextId = (length) => (identity++).toString(16).padStart(length, '0');
   return {
-    tarballSha256: digest, sourceDigest,
+    ...currentIdentity,
     scenarios: fixtureScenarios.map((contract, index) => {
       const roots = Array.from({ length: contract.expected.agentCount }, () => ({ traceId: nextId(32), spanId: nextId(16) }));
       const spans = roots.map((root) => ({ ...root, kind: 'agent', requestId: nextId(16), outcome: contract.expected.outcome }));
@@ -67,13 +68,15 @@ test('backend handoff rejects altered HTTP counts, policies, usage expectations,
 test('reused backend evidence must match a passed origin and current implementation', () => {
   const fixture = fixtureEvidence();
   const origin = { ...structuredClone(fixture), status: 'passed' };
-  assert.doesNotThrow(() => validateFixtureOrigin(fixture, origin, sourceDigest));
-  assert.throws(() => validateFixtureOrigin(fixture, { ...origin, status: 'failed' }, sourceDigest), /must pass/);
-  assert.throws(() => validateFixtureOrigin(fixture, origin, 'c'.repeat(64)), /source changed/);
-  assert.throws(() => validateFixtureOrigin(fixture, { ...origin, tarballSha256: 'd'.repeat(64) }, sourceDigest), /same tarball/);
+  assert.doesNotThrow(() => validateFixtureOrigin(fixture, origin, currentIdentity));
+  assert.throws(() => validateFixtureOrigin(fixture, { ...origin, status: 'failed' }, currentIdentity), /must pass/);
+  assert.throws(() => validateFixtureOrigin(fixture, origin, { ...currentIdentity, tarballSha256: 'c'.repeat(64) }), /packed artifact changed/);
+  assert.throws(() => validateFixtureOrigin(fixture, origin, { ...currentIdentity, producerDigest: 'c'.repeat(64) }), /producer changed/);
+  assert.throws(() => validateFixtureOrigin(fixture, { ...origin, producerDigest: 'c'.repeat(64) }, currentIdentity), /different producer/);
+  assert.throws(() => validateFixtureOrigin(fixture, { ...origin, tarballSha256: 'd'.repeat(64) }, currentIdentity), /same tarball/);
   const changed = structuredClone(fixture);
   changed.scenarios[0].spans[0].requestId = 'different';
-  assert.throws(() => validateFixtureOrigin(changed, origin, sourceDigest), /differ/);
+  assert.throws(() => validateFixtureOrigin(changed, origin, currentIdentity), /differ/);
 });
 
 test('backend IDs match both lossless decimal and digit-only hexadecimal representations', () => {

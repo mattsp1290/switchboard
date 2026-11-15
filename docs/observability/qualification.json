@@ -1,14 +1,13 @@
 {
   "status": "verified",
-  "verifiedAt": "2026-11-15T15:35:50.785573+00:00",
+  "verifiedAt": "2026-11-15T16:01:26.196137+00:00",
   "tarballSha256": "675957f5550d34fa8ed43de6ec16693725917c0930a013304904c2fd5ce046c5",
-  "sourceDigest": "ab7514e7cc61d534f1f070be2aa0a93eea3a0c14c6569d75a79c1764477cb25d",
   "profile": "GenAI semantic conventions v1.37.0",
   "checks": {
     "install": "npm ci passed",
     "lint": "npm run lint passed",
     "types": "npm run check passed",
-    "repositoryTests": 180,
+    "repositoryTests": 185,
     "installedObservabilityTests": 37,
     "negativeTypeFixtures": 16,
     "compiler": "passed",
@@ -57,24 +56,26 @@
   ],
   "revisionContext": {
     "branch": "codex/llm-observability",
-    "reviewedHead": "881b36a4022dc536a7a9bc31f397d88fd60f9281",
+    "reviewedHead": "d66b3a7653f0669557fd92f0d80965b749dd864a",
     "baseRef": "main",
     "baseSha": "c26cdfe3576100b9a23e9108ae207f2202a5026d",
-    "workingTree": "Includes the three accepted Important review fixes; the source digest identifies the qualified producer before the fix commit."
+    "workingTree": "Includes the accepted Important T1 artifact/producer identity fix on top of the three standard-review fixes. tarballSha256 and producerDigest identify the qualified built artifact and staged producer bytes before the T1 fix commit."
   },
   "backendRuns": {
     "lotel": {
-      "startedAt": "2026-11-15T15:27:22.593Z",
-      "endedAt": "2026-11-15T15:27:35.530Z"
+      "startedAt": "2026-11-15T15:54:26.220Z",
+      "endedAt": "2026-11-15T15:54:40.080Z"
     },
     "datadog": {
-      "startedAt": "2026-11-15T15:28:37.503Z",
-      "endedAt": "2026-11-15T15:32:17.076Z"
+      "startedAt": "2026-11-15T15:54:40.361Z",
+      "endedAt": "2026-11-15T15:59:19.352Z"
     }
   },
   "prerequisitesEvidence": {
     "report": "evidence/prerequisites.json",
     "observedAt": "2026-11-15T06:27:33.364079+00:00",
     "scope": "Historical receiver/tool prerequisite check; fresh backend reports record the current acceptance runs."
-  }
+  },
+  "producerDigest": "634f37cc9eb8f0ec883dae252c49df8b2fb2e5ebf8d2a5d28cf4335d194005ff",
+  "identityGuarantee": "The query-only handoff rebuilds and packs the current package and requires its actual tarball SHA-256 and the separately staged producer recipe/modules digest to match the originating fixture and passed lotel report. The fixture consumes the exact tarball and staged producer bytes recorded by those identities."
 }

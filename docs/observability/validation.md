@@ -72,7 +72,9 @@ OBSERVABILITY_FIXTURE_REPORT=.audit/llm-observability/fixture.json \
   npm run verify:observability:datadog
 ```
 
-The second command queries existing observations and makes no model requests. It requires all seven scenarios, a passed originating lotel report, the same artifact hash, and unchanged implementation sources. Export a new fixture after changing those sources.
+The second command rebuilds and packs the current package locally, then queries existing observations without rerunning the HTTP fixture or exporting new spans. It requires all seven scenarios and a passed originating lotel report. The current package's `tarballSha256` and the staged producer recipe/modules' `producerDigest` must match both reports. Export a new fixture when either identity changes.
+
+The export command installs the exact tarball it hashes and executes the staged producer files it fingerprints. The same file list supplies staging and fingerprinting, including the dependency-installation recipe. The package build and pack determine which compiler settings, adapter sources, and other inputs affect the artifact; qualification does not approximate that input graph. Generated reports are outside the producer fingerprint.
 
 The runner refuses an existing collector even when healthy. This conservative ownership policy requires a free Docker daemon for the lotel lane.
 

@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { artifactSourceDigest, assertPrivacy, collectorImage, command, delay, evidenceFor, expectedSpanCount, installedFixture, jsonCommand, lotelCommit, safeFailure, writeReport } from './support/observability-backends.mjs';
+import { assertPrivacy, collectorImage, command, delay, evidenceFor, expectedSpanCount, installedFixture, jsonCommand, lotelCommit, safeFailure, writeReport } from './support/observability-backends.mjs';
 
 const report = { lane: 'lotel', status: 'failed', lotelCommit, collectorImage, startedAt: new Date().toISOString(), scenarios: [], cleanup: 'not-started' };
 let ownedContainer;
@@ -126,11 +126,9 @@ try {
   report.cleanup = 'pending';
   const destinations = [{ kind: 'lotel', url: 'http://127.0.0.1:4318/v1/traces' }];
   if (process.env.DATADOG_ENDPOINT) destinations.push({ kind: 'datadog', url: process.env.DATADOG_ENDPOINT });
-  const sourceDigest = await artifactSourceDigest();
   const fixture = await installedFixture(destinations);
-  assert.equal(await artifactSourceDigest(), sourceDigest, 'artifact sources changed during fixture export');
-  report.sourceDigest = sourceDigest;
-  report.fixtureReport = await writeReport('fixture', { sourceDigest, tarballSha256: fixture.tarballSha256, sdk: fixture.sdk, rawPrivacy: 'passed', destinations: destinations.map(({kind, url}) => ({kind, url})), scenarios: fixture.scenarios.map((scenario) => ({ ...evidenceFor(scenario), contentPolicy: scenario.contentPolicy })) });
+  report.producerDigest = fixture.producerDigest;
+  report.fixtureReport = await writeReport('fixture', { producerDigest: fixture.producerDigest, tarballSha256: fixture.tarballSha256, sdk: fixture.sdk, rawPrivacy: 'passed', destinations: destinations.map(({kind, url}) => ({kind, url})), scenarios: fixture.scenarios.map((scenario) => ({ ...evidenceFor(scenario), contentPolicy: scenario.contentPolicy })) });
   report.tarballSha256 = fixture.tarballSha256;
   report.sdk = fixture.sdk;
   const deadline = Date.now() + 30_000;
