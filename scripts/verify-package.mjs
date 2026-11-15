@@ -89,6 +89,7 @@ const switchboard = await import('${manifest.name}');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
+await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
 for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
@@ -157,6 +158,30 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   const piTypes = run(process.execPath, [compiler, '-p', 'pi-types.json', '--listFilesOnly'], consumer);
   assert(!piTypes.includes('/@earendil-works/'), 'Pi declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'pi-types.json'], consumer);
+
+  const piConsumer = join(temporary, 'pi');
+  mkdirSync(piConsumer);
+  writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
+    `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
+  ], piConsumer));
+  writeFileSync(join(piConsumer, 'runtime.mjs'), `
+import assert from 'node:assert/strict';
+const pi = await import('${manifest.name}/pi');
+assert.equal(typeof pi.createPiRuntime, 'function');
+globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
+const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
+const runtime = await pi.createPiRuntime(options);
+try {
+  const session = await runtime.open();
+  assert.equal(typeof session.id, 'string');
+  assert.match(session.sessionFile, /\\.jsonl$/);
+} finally { await runtime.close(); }
+`);
+  run(process.execPath, ['runtime.mjs'], piConsumer);
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });

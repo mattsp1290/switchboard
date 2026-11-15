@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { InMemoryCredentialStore, InMemoryModelsStore } from '@earendil-works/pi-ai';
@@ -59,8 +59,16 @@ function resumeManager(directory: string, file: string, cwd: string): SessionMan
   const path = join(directory, file);
   const entry = lstatSync(path);
   if (!entry.isFile() || entry.size === 0 || realpathSync(path) !== path) throw failure();
-  const firstLine = readFileSync(path, 'utf8').split('\n', 1)[0];
-  const header: unknown = JSON.parse(firstLine ?? '');
+  const descriptor = openSync(path, 'r');
+  let firstLine: string;
+  try {
+    const prefix = Buffer.alloc(64 * 1024);
+    const bytes = readSync(descriptor, prefix, 0, prefix.length, 0);
+    const newline = prefix.indexOf(10, 0);
+    if (newline < 0 || newline >= bytes) throw failure();
+    firstLine = prefix.toString('utf8', 0, newline);
+  } finally { closeSync(descriptor); }
+  const header: unknown = JSON.parse(firstLine);
   if (typeof header !== 'object' || header === null || !('type' in header) || header.type !== 'session'
     || !('id' in header) || typeof header.id !== 'string' || !header.id
     || !('cwd' in header) || header.cwd !== cwd) throw failure();
@@ -101,6 +109,10 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       const before = native.messages.length;
       const unsubscribe = native.subscribe(event => {
         if ((event.type === 'message_update' || event.type === 'message_end') && event.message.role === 'assistant') {
+          if (event.type === 'message_end' && event.message.errorMessage !== undefined) {
+            // Pi 1.5.2 notifies public listeners before appendMessage, so redact the shared message before journaling.
+            event.message.errorMessage = 'Pi operation failed.';
+          }
           const text = event.message.content.filter(part => part.type === 'text').map(part => part.text).join('');
           if (text !== latestText) { latestText = text; emit({ kind: 'text', text }); }
         }
@@ -122,13 +134,13 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           outcome = terminalOutcome(last?.role === 'assistant' ? last.stopReason : undefined, stopped && started);
           if (callbackFailed) outcome = 'failed';
         } catch {
-          outcome = stopped ? 'interrupted' : 'failed';
+          outcome = stopped && started ? 'interrupted' : 'failed';
           try { await native.abort(); await native.waitForIdle(); } catch { outcome = 'failed'; }
         } finally {
           unsubscribe();
           if (!started) admission.reject(failure());
           const terminal: PiTerminal = { kind: 'ended', outcome };
-          emit(terminal);
+          if (started) emit(terminal);
           running = undefined;
           completion.resolve(callbackFailed ? { kind: 'ended', outcome: 'failed' } : terminal);
         }
@@ -139,8 +151,8 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
     close() {
       closing ??= (async () => {
         await abort();
-        try { native.dispose(); } catch { throw failure(); }
-        release();
+        try { await native.waitForIdle(); } catch { throw failure(); }
+        try { native.dispose(); } catch { throw failure(); } finally { release(); }
       })();
       return closing;
     },
@@ -209,9 +221,11 @@ export async function createPiRuntime(options: PiRuntimeOptions): Promise<PiRunt
             return handle;
           } catch {
             if (native) {
-              try { await native.abort(); await native.waitForIdle(); native.dispose(); } catch { throw failure(); }
+              try { await native.abort(); await native.waitForIdle(); } catch { throw failure(); }
             }
-            if (path && reserved) writers.delete(path);
+            try { native?.dispose(); } catch { throw failure(); } finally {
+              if (path && reserved) writers.delete(path);
+            }
             throw failure();
           }
         })();
@@ -222,9 +236,13 @@ export async function createPiRuntime(options: PiRuntimeOptions): Promise<PiRunt
       close() {
         closing ??= (async () => {
           await Promise.allSettled([...opening]);
-          await Promise.all([...sessions].map(session => session.close()));
-          await models.settleCredentialWrites();
-          await credentials.delete(options.provider);
+          try {
+            try {
+              const results = await Promise.allSettled([...sessions].map(session => session.close()));
+              await models.settleCredentialWrites();
+              if (results.some(result => result.status === 'rejected')) throw failure();
+            } finally { await credentials.delete(options.provider); }
+          } catch { throw failure(); }
         })();
         return closing;
       },

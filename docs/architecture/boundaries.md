@@ -44,7 +44,7 @@ The following directories describe source ownership. Core contracts live in `src
 | `src/core/` | Public runtime contracts, native session references, and bounded event delivery | No native SDK or AG-UI dependency |
 | `src/adapters/claude/` | Claude native integration | May import core and Claude dependencies |
 | `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
-| `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
+| `adapters/pi/src/` | Pi native integration (`./pi` entry) | May import Pi SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/pi/tsconfig.json` |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
 | `src/testkit/` | Controlled qualification scenarios and reference fake for tests | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
 
@@ -342,7 +342,9 @@ The helper checks correspondence, not native authority. It never dispatches duri
 ## Native prerequisites and checked evidence
 
 Node 24.22.3 with npm 11.19.1 is the selected foundation toolchain.
-TypeScript 7.0.2 compiles the package with strict NodeNext settings, ES2022 libraries, and Node declarations.
+TypeScript 7.0.2 compiles the core with strict NodeNext settings, ES2022 libraries, and Node declarations.
+The isolated Pi project uses ES2024 and `skipLibCheck: true` because Pi 1.5.2 declarations fail TS1543.
+Root and installed consumer compilation retain `skipLibCheck: false`, and the package gate checks that Pi public declarations do not load SDK declarations.
 TypeScript consumers need `@types/node` as a development dependency for public `AbortSignal` contracts.
 The package and installed consumer checks use pinned `@types/node` 24.19.2 without DOM libraries.
 The supported Node range stays within this selected major until other versions receive validation.

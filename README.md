@@ -87,15 +87,20 @@ await runtime.close();
 Text events contain the complete assistant text so far. Replace the displayed text for each event.
 `prompt()` resolves after Pi reports that its run started. This is SDK admission, not a provider acknowledgement.
 `accepted.finished` resolves after the native run drains, with a completed, interrupted, or failed outcome.
+Native `stop` and `length` stop reasons both count as completed.
 `abort()` waits for the active run to stop. `close()` stops the run, disposes the session, and releases its writer reservation.
 A runtime supports at most 32 open sessions. Each session accepts one prompt at a time.
-Save `session.id` and the opaque `session.sessionFile` basename before prompting.
+Pi creates the journal lazily when it records the first user or assistant message.
+Save `session.id` and the opaque `session.sessionFile` basename after the first `accepted.finished` resolves.
+An unprompted session has no file and cannot be resumed. Open a new session for an empty chat.
+A first prompt stopped during preflight still records its user message and can be resumed after it drains.
 Resume with `runtime.open({ sessionFile })` after the previous session handle closes.
 A missing or invalid file fails without creating a replacement session.
 The runtime reserves each canonical session path within the host process. The host must own its session directory across processes.
 Credentials stay in memory. Startup uses bundled model definitions and reads no user credentials, project instructions, skills, prompts, or extensions.
 Tools, catalog network refresh, cache warming, compaction, and retries are disabled.
-Provider failures expose a generic failed outcome without native diagnostic text.
+Provider failures expose a generic failed outcome. Native error diagnostics are replaced with generic text before journal persistence.
+Importing `./pi` without its exact optional SDK peers rejects with Node's `ERR_MODULE_NOT_FOUND`.
 The local tests replace provider HTTP responses and do not qualify a live subscription.
 
 Native tools and credentials are unnecessary for the foundation checks.

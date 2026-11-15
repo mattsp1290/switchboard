@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { registerHooks } from 'node:module';
 import { basename, join } from 'node:path';
 import test from 'node:test';
+import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
+import { AgentSession } from '@earendil-works/pi-coding-agent';
 import { terminalOutcome } from '../../../adapters/pi/src/terminal.ts';
 
 const source = new URL('../../../adapters/pi/src/index.ts', import.meta.url).href;
@@ -90,6 +92,31 @@ test('Pi SDK streams text, follows up, persists and resumes without config disco
   });
 });
 
+test('unprompted sessions leave no journal and cannot be resumed', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, runtime }) => {
+    const current = await runtime();
+    const session = await current.open();
+    await session.close();
+    await assert.rejects(access(join(directory, 'sessions', session.sessionFile)), { code: 'ENOENT' });
+    await assert.rejects(current.open({ sessionFile: session.sessionFile }), /Pi operation failed/);
+  });
+});
+
+test('the first prompt stopped during preflight records a resumable user message', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, runtime, requests }) => {
+    const current = await runtime();
+    const session = await current.open();
+    const pending = session.prompt('Stop the first prompt', () => {});
+    await session.abort();
+    assert.equal((await (await pending).finished).outcome, 'interrupted');
+    await session.close();
+    const entries = (await readFile(join(directory, 'sessions', session.sessionFile), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert(entries.some(entry => entry.type === 'message' && entry.message.role === 'user'));
+    assert.equal(requests.length, 0);
+    assert.equal((await current.open({ sessionFile: session.sessionFile })).id, session.id);
+  });
+});
+
 test('writer reservation survives rejected duplicate opens and releases after close', { timeout: 10_000 }, async () => {
   await fixture(async ({ runtime }) => {
     const first = await runtime();
@@ -109,9 +136,10 @@ test('resume rejects missing, empty, malformed, traversing and symlink session f
     const current = await runtime();
     await writeFile(join(directory, 'sessions', 'empty.jsonl'), '');
     await writeFile(join(directory, 'sessions', 'bad.jsonl'), '{}\n');
+    await writeFile(join(directory, 'sessions', 'oversized.jsonl'), ' '.repeat(64 * 1024) + '\n');
     await writeFile(join(directory, 'outside.jsonl'), '{"type":"session","id":"x"}\n');
     await symlink(join(directory, 'outside.jsonl'), join(directory, 'sessions', 'link.jsonl'));
-    for (const sessionFile of ['missing.jsonl', 'empty.jsonl', 'bad.jsonl', '../outside.jsonl', 'link.jsonl']) {
+    for (const sessionFile of ['missing.jsonl', 'empty.jsonl', 'bad.jsonl', 'oversized.jsonl', '../outside.jsonl', 'link.jsonl']) {
       await assert.rejects(current.open({ sessionFile }), /Pi operation failed/);
     }
   });
@@ -143,11 +171,13 @@ test('native admission resolves before the streamed answer and Stop drains owner
 });
 
 test('provider errors become failed terminals without retries or credential text', { timeout: 10_000 }, async () => {
-  await fixture(async ({ runtime, requests, respond }) => {
+  await fixture(async ({ directory, runtime, requests, respond }) => {
     respond(() => new Response(JSON.stringify({ error: { message: key } }), { status: 401, headers: { 'content-type': 'application/json' } }));
     const current = await runtime();
-    const result = await prompt(await current.open());
+    const session = await current.open();
+    const result = await prompt(session);
     assert.equal(result.terminal.outcome, 'failed');
+    assert(!(await readFile(join(directory, 'sessions', session.sessionFile), 'utf8')).includes(key), 'Provider diagnostics must not persist credentials.');
     assert(!JSON.stringify(result).includes(key));
     assert.equal(requests.length, 1);
   });
@@ -228,4 +258,88 @@ test('native terminal facts win over an abort intent during delayed cleanup', ()
   assert.equal(terminalOutcome('aborted', false), 'interrupted');
   assert.equal(terminalOutcome(undefined, true), 'interrupted');
   assert.equal(terminalOutcome(undefined, false), 'failed');
+});
+
+
+test('rejected native admission emits no terminal or private diagnostics', { timeout: 10_000 }, async t => {
+  await fixture(async ({ runtime }) => {
+    const current = await runtime();
+    const session = await current.open();
+    t.mock.method(AgentSession.prototype, 'prompt', async () => { throw new Error(key); });
+    const events = [];
+    await assert.rejects(session.prompt('Rejected', event => events.push(event)), /^Error: Pi operation failed\.$/);
+    assert.deepEqual(events, []);
+  });
+});
+
+test('runtime close releases drained writers and scrubs credentials even when native dispose throws', { timeout: 10_000 }, async t => {
+  await fixture(async ({ options, runtime }) => {
+    const current = await createPiRuntime(options);
+    const one = await current.open();
+    const two = await current.open();
+    await prompt(one);
+    await prompt(two);
+    const disposed = [];
+    const deleted = [];
+    const realDispose = AgentSession.prototype.dispose;
+    const realDelete = InMemoryCredentialStore.prototype.delete;
+    t.mock.method(AgentSession.prototype, 'dispose', function () {
+      realDispose.call(this);
+      disposed.push(this.sessionId);
+      if (disposed.length === 1) throw new Error(key);
+    });
+    t.mock.method(InMemoryCredentialStore.prototype, 'delete', async function (provider) {
+      await realDelete.call(this, provider);
+      deleted.push(await this.read(provider));
+    });
+    try {
+      await assert.rejects(current.close(), /^Error: Pi operation failed\.$/);
+      assert.deepEqual(disposed.sort(), [one.id, two.id].sort(), 'Every session must be disposed despite a sibling failure.');
+      assert.deepEqual(deleted, [undefined], 'The runtime credential is removed even when close rejects.');
+      const next = await runtime();
+      assert.equal((await next.open({ sessionFile: one.sessionFile })).id, one.id);
+      assert.equal((await next.open({ sessionFile: two.sessionFile })).id, two.id);
+    } finally { await current.close().catch(() => {}); }
+  });
+});
+
+test('failed native drain retains the writer reservation', { timeout: 10_000 }, async t => {
+  await fixture(async ({ options, runtime }) => {
+    const current = await createPiRuntime(options);
+    const session = await current.open();
+    await prompt(session);
+    const realWait = AgentSession.prototype.waitForIdle;
+    t.mock.method(AgentSession.prototype, 'waitForIdle', async function () {
+      if (this.sessionId === session.id) throw new Error(key);
+      return realWait.call(this);
+    });
+    try {
+      await assert.rejects(current.close(), /^Error: Pi operation failed\.$/);
+      const next = await runtime();
+      await assert.rejects(next.open({ sessionFile: session.sessionFile }), /Pi operation failed/);
+    } finally { await current.close().catch(() => {}); }
+  });
+});
+
+test('opening cleanup releases a drained writer when native dispose throws', { timeout: 10_000 }, async t => {
+  await fixture(async ({ runtime }) => {
+    const first = await runtime();
+    const session = await first.open();
+    await prompt(session);
+    await session.close();
+    const realDispose = AgentSession.prototype.dispose;
+    let thrown = false;
+    t.mock.method(AgentSession.prototype, 'dispose', function () {
+      realDispose.call(this);
+      if (!thrown) { thrown = true; throw new Error(key); }
+    });
+    const closing = await runtime();
+    const pending = closing.open({ sessionFile: session.sessionFile });
+    const rejected = assert.rejects(pending, /^Error: Pi operation failed\.$/);
+    await closing.close();
+    await rejected;
+    assert(thrown);
+    const next = await runtime();
+    assert.equal((await next.open({ sessionFile: session.sessionFile })).id, session.id);
+  });
 });
