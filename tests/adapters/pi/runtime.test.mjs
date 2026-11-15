@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { access, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { registerHooks } from 'node:module';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
-import { AgentSession } from '@earendil-works/pi-coding-agent';
+import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
 import { terminalOutcome } from '../../../adapters/pi/src/terminal.ts';
 
 const source = new URL('../../../adapters/pi/src/index.ts', import.meta.url).href;
@@ -170,6 +171,31 @@ test('native admission resolves before the streamed answer and Stop drains owner
   });
 });
 
+test('native admission persists the first user message before any provider frame', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, runtime, respond }) => {
+    const requestStarted = Promise.withResolvers();
+    respond(init => {
+      const body = new ReadableStream({ start(controller) {
+        init.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true });
+      } });
+      requestStarted.resolve();
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+    });
+    const current = await runtime();
+    const session = await current.open();
+    const events = [];
+    const accepted = await session.prompt('Persist before the first token', event => events.push(event));
+    const entries = readFileSync(join(directory, 'sessions', session.sessionFile), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert(entries.some(entry => entry.type === 'message' && entry.message.role === 'user'
+      && entry.message.content.some(part => part.type === 'text' && part.text === 'Persist before the first token')));
+    await requestStarted.promise;
+    assert.deepEqual(events, []);
+    await session.abort();
+    assert.deepEqual(await accepted.finished, { kind: 'ended', outcome: 'interrupted' });
+    assert.deepEqual(events, [{ kind: 'ended', outcome: 'interrupted' }]);
+  });
+});
+
 test('provider errors become failed terminals without retries or credential text', { timeout: 10_000 }, async () => {
   await fixture(async ({ directory, runtime, requests, respond }) => {
     respond(() => new Response(JSON.stringify({ error: { message: key } }), { status: 401, headers: { 'content-type': 'application/json' } }));
@@ -269,6 +295,33 @@ test('rejected native admission emits no terminal or private diagnostics', { tim
     const events = [];
     await assert.rejects(session.prompt('Rejected', event => events.push(event)), /^Error: Pi operation failed\.$/);
     assert.deepEqual(events, []);
+  });
+});
+
+test('started native preflight without a persisted user message rejects admission', { timeout: 10_000 }, async t => {
+  await fixture(async ({ runtime }) => {
+    const current = await runtime();
+    const session = await current.open();
+    t.mock.method(AgentSession.prototype, 'prompt', async (_text, options) => {
+      options.preflightResult('started');
+      throw new Error(key);
+    });
+    const events = [];
+    await assert.rejects(session.prompt('Rejected', event => events.push(event)), /^Error: Pi operation failed\.$/);
+    assert.deepEqual(events, []);
+  });
+});
+
+test('missing native journal rejects admission and drains without observer terminals', { timeout: 10_000 }, async t => {
+  await fixture(async ({ runtime, requests }) => {
+    const current = await runtime();
+    const session = await current.open();
+    t.mock.method(SessionManager.prototype, 'appendMessage', () => 'unpersisted');
+    const events = [];
+    await assert.rejects(session.prompt('Rejected', event => events.push(event)), /^Error: Pi operation failed\.$/);
+    await session.abort();
+    assert.deepEqual(events, []);
+    assert.equal(requests.length, 0);
   });
 });
 

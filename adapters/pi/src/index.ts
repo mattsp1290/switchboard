@@ -1,4 +1,4 @@
-import { closeSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { InMemoryCredentialStore, InMemoryModelsStore } from '@earendil-works/pi-ai';
@@ -98,6 +98,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       const admission = Promise.withResolvers<PiPrompt>();
       const completion = Promise.withResolvers<PiTerminal>();
       let started = false;
+      const admissionState: { current: 'pending' | 'admitted' | 'rejected' } = { current: 'pending' };
       let stopped = false;
       let callbackFailed = false;
       let latestText = '';
@@ -105,9 +106,23 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
         try { onEvent(event); } catch { callbackFailed = true; stopped = true; void native.abort().catch(() => {}); }
       };
       const stop = () => { stopped = true; };
+      const rejectAdmission = () => {
+        if (admissionState.current !== 'pending') return;
+        admissionState.current = 'rejected';
+        admission.reject(failure());
+      };
       running = { finished: completion.promise, stop };
       const before = native.messages.length;
       const unsubscribe = native.subscribe(event => {
+        if (event.type === 'message_end' && event.message.role === 'user') {
+          // Pi 1.5.2 appends the shared user message synchronously after notifying public listeners.
+          queueMicrotask(() => {
+            if (!started || admissionState.current !== 'pending') return;
+            if (!existsSync(file)) { stop(); rejectAdmission(); void native.abort().catch(() => {}); return; }
+            admissionState.current = 'admitted';
+            admission.resolve({ finished: completion.promise });
+          });
+        }
         if ((event.type === 'message_update' || event.type === 'message_end') && event.message.role === 'assistant') {
           if (event.type === 'message_end' && event.message.errorMessage !== undefined) {
             // Pi 1.5.2 notifies public listeners before appendMessage, so redact the shared message before journaling.
@@ -123,9 +138,8 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           await native.prompt(text, {
             expandPromptTemplates: false,
             preflightResult(disposition) {
-              if (disposition !== 'started') { stop(); admission.reject(failure()); void native.abort().catch(() => {}); return; }
+              if (disposition !== 'started') { stop(); rejectAdmission(); void native.abort().catch(() => {}); return; }
               started = true;
-              admission.resolve({ finished: completion.promise });
               if (stopped) void native.abort().catch(() => {});
             },
           });
@@ -138,9 +152,9 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           try { await native.abort(); await native.waitForIdle(); } catch { outcome = 'failed'; }
         } finally {
           unsubscribe();
-          if (!started) admission.reject(failure());
+          rejectAdmission();
           const terminal: PiTerminal = { kind: 'ended', outcome };
-          if (started) emit(terminal);
+          if (admissionState.current === 'admitted') emit(terminal);
           running = undefined;
           completion.resolve(callbackFailed ? { kind: 'ended', outcome: 'failed' } : terminal);
         }

@@ -85,13 +85,14 @@ await runtime.close();
 ```
 
 Text events contain the complete assistant text so far. Replace the displayed text for each event.
-`prompt()` resolves after Pi reports that its run started. This is SDK admission, not a provider acknowledgement.
+`prompt()` resolves after Pi reports that its run started and persists the native user message in its journal.
+This SDK admission lets hosts save the session reference before the first provider token. It does not wait for a provider acknowledgement.
 `accepted.finished` resolves after the native run drains, with a completed, interrupted, or failed outcome.
 Native `stop` and `length` stop reasons both count as completed.
 `abort()` waits for the active run to stop. `close()` stops the run, disposes the session, and releases its writer reservation.
 A runtime supports at most 32 open sessions. Each session accepts one prompt at a time.
 Pi creates the journal lazily when it records the first user or assistant message.
-Save `session.id` and the opaque `session.sessionFile` basename after the first `accepted.finished` resolves.
+Save `session.id` and the opaque `session.sessionFile` basename after the first `prompt()` resolves.
 An unprompted session has no file and cannot be resumed. Open a new session for an empty chat.
 A first prompt stopped during preflight still records its user message and can be resumed after it drains.
 Resume with `runtime.open({ sessionFile })` after the previous session handle closes.
