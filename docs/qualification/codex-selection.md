@@ -14,6 +14,8 @@ A consumer exception closes the reader and propagates unchanged. Reentrant push 
 The codec owns only framing storage. The qualifier retains shutdown, final drain, failure identity, progress, and refusal of server requests.
 This does not qualify transport correlation, approval handling, a native adapter, or live provider routes.
 
+Numeric routing IDs must be safe integers other than negative zero, while numeric `0` and string `"0"` remain valid and distinct.
+
 ## Evidence and pins
 
 The [native pins](../../spikes/codex-native/pins.json) identify the official Linux arm64 and x64 archives by SHA512 and the Node image by OCI digest. The [native qualification](codex-native-api.md) records actual app-server execution against a synthetic loopback Responses service, independently of the SDK. The [discovery qualification](codex-discovery.md) records read-only-source discovery and inspection. Neither establishes a real provider or LiteLLM support claim. These standalone app-server fixtures use synthetic immutable roots. Global native SDK import confinement remains unqualified.

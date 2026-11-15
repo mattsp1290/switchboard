@@ -28,6 +28,60 @@ test('wire preserves every raw envelope branch, unknown fields, ID zero and null
   assert.deepEqual(envelopes[2].envelope.reply, { kind: 'result', value: null });
   assert.deepEqual(envelopes[3].envelope.reply.error, { code: -32000, message: '', data: { detail: true } });
 });
+test('wire rejects signed-zero IDs before delivery and closes after one fault', () => {
+  for (const json of [
+    '{"id":-0,"method":"server/request","params":{}}',
+    '{"id":-0e0,"method":"server/request","params":{}}',
+    '{"id":-0,"result":null}',
+    '{"id":-0e0,"result":null}',
+    '{"id":-0,"error":{"code":-32000,"message":"failed"}}',
+    '{"id":-0e0,"error":{"code":-32000,"message":"failed"}}',
+  ]) {
+    const { reader, envelopes, faults } = capture();
+    reader.push(Buffer.from(`${json}\n{"method":"late"}\n`));
+    reader.push(jsonLine({ id: 1, method: 'later' }));
+    reader.end();
+    reader.end();
+    assert.deepEqual(faults, ['invalid-envelope'], json);
+    assert.deepEqual(envelopes, [], json);
+  }
+});
+test('wire round trips zero, string zero and ordinary numeric IDs without changing raw fields', () => {
+  for (const id of [0, '0', -7, 7, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER]) {
+    for (const value of [
+      { id, method: 'server/request', params: { future: true }, extension: ['retained'] },
+      { id, result: null, extension: ['retained'] },
+      { id, error: { code: -32000, message: 'failed', future: true }, extension: ['retained'] },
+    ]) {
+      const bytes = encodeEnvelope(value, 256);
+      assert.notEqual(bytes, undefined);
+      const { reader, envelopes, faults } = capture();
+      reader.push(bytes);
+      reader.end();
+      assert.deepEqual(faults, []);
+      assert.equal(envelopes.length, 1);
+      const envelope = envelopes[0].request ?? envelopes[0].envelope;
+      assert.equal(envelope.id, id);
+      assert.deepEqual(envelope.raw, value);
+    }
+  }
+});
+test('wire preserves signed zero outside routing IDs', () => {
+  const { reader, envelopes, faults } = capture();
+  reader.push(Buffer.from('{"id":0,"method":"x","params":{"value":-0},"extension":-0}\n'));
+  reader.end();
+  assert.deepEqual(faults, []);
+  assert.equal(envelopes.length, 1);
+  assert.deepEqual(envelopes[0].request.raw,
+    { id: 0, method: 'x', params: { value: -0 }, extension: -0 });
+});
+test('wire refuses outgoing signed-zero IDs for requests and both reply shapes', () => {
+  for (const value of [
+    { id: -0, method: 'server/request', params: {} },
+    { id: -0, result: null },
+    { id: -0, error: { code: -32000, message: 'failed' } },
+  ]) assert.equal(encodeEnvelope(value, 256), undefined);
+});
 test('wire rejects malformed envelope shapes and incompatible routing fields', () => {
   const invalid = [null, [], 1, '', true, {}, { params: {} }, { result: null },
     ...[null, '', false, {}, [], 0.5, Number.MAX_SAFE_INTEGER + 1].map((id) => ({ id, result: null })),
