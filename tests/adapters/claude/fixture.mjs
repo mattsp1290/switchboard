@@ -3,7 +3,7 @@ import readline from 'node:readline';
 import { readFileSync, writeFileSync } from 'node:fs';
 const config = JSON.parse(readFileSync('fixture.json', 'utf8'));
 writeFileSync('observed.json', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
-if (config.mode === 'stubborn' || config.mode === 'stubborn-init') {
+if (config.mode === 'stubborn' || config.mode === 'stubborn-init' || config.mode?.endsWith('-hold')) {
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
 }
@@ -37,7 +37,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   send({type:'assistant',session_id:id,parent_tool_use_id:null,message:{id:'message-1',model:'claude-sonnet-4-6',content:[{type:'text',text:'hello'}]}});
   if (config.mode === 'hold') continue;
   send({type:'assistant',session_id:id,parent_tool_use_id:null,message:{id:'message-1',model:'claude-sonnet-4-6',content:[{type:'text',text:' world'}]}});
-  send({type:'result',subtype:'success',is_error:config.mode === 'result-error',session_id:id});
+  if (config.mode !== 'writes-lost-before-hold') send({type:'result',subtype:'success',is_error:config.mode === 'result-error',session_id:id});
   if (config.mode?.startsWith('writes-lost')) send({type:'system',subtype:'session_writes_lost',session_id:id,error_code:'ENOSPC',lost:config.mode === 'writes-lost-config' ? ['global_config'] : ['transcript'],transcript_session_ids:config.mode === 'writes-lost-other' ? ['87654321-4321-4321-4321-cba987654321'] : [id],diagnostic:'secret diagnostic'});
+  if (config.mode?.endsWith('-hold')) writeFileSync('loss-emitted', '');
   if (config.mode === 'post-result-system') send({type:'system',subtype:'status',status:null,session_id:id});
 }

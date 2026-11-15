@@ -159,3 +159,19 @@ for (const mode of ['stubborn', 'stubborn-init']) {
     assert.throws(() => process.kill(observed.pid,0), {code:'ESRCH'});
   }));
 }
+
+
+for (const mode of ['writes-lost-before-hold', 'writes-lost-after-hold']) {
+  test(`Stop preserves transcript loss for ${mode}`, {timeout:5000}, async () => fixture({mode}, async (runtime, dir) => {
+    const turn = await runtime.start({text:'hello',onEvent() {}});
+    const until = Date.now() + 1000;
+    while (true) {
+      try { await readFile(resolve(dir,'loss-emitted')); break; }
+      catch (error) { if (error.code !== 'ENOENT' || Date.now() > until) throw error; }
+      await new Promise(resolveDelay => setTimeout(resolveDelay,10));
+    }
+    await new Promise(resolveDelay => setTimeout(resolveDelay,100));
+    await turn.abort();
+    assert.equal((await turn.finished).outcome,'failed');
+  }));
+}

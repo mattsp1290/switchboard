@@ -110,7 +110,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
           admitted = true;
           clearTimeout(timeout);
           admission.resolve({ threadId: session.id, model: session.model, finished,
-            async abort() { stopping = true; controller.abort(); await finished; } });
+            async abort() { controller.abort(); await finished; } });
         }
         function publish(id: string, snapshot: string): void {
           if (Buffer.byteLength(snapshot) > 4 * 1024 * 1024) throw failure();
@@ -178,7 +178,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
           }
         }
         outcome = terminal ?? 'failed';
-      } catch { fault = !stopping; }
+      } catch { if (!stopping) fault = true; }
       finally {
         clearTimeout(timeout);
         native?.close();
