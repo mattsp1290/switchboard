@@ -59,9 +59,12 @@ try {
     './agui': { types: './dist/agui/index.d.ts', import: './dist/agui/index.js' },
     './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
     './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
+    './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
   });
-  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2' });
-  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true } });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true } });
+  assert(!existsSync(join(consumer, 'node_modules/@openai/codex-sdk')));
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
   for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
   assert.doesNotMatch(readFileSync(join(installed, 'dist/pi/index.d.ts'), 'utf8'), /@earendil-works/);
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
@@ -90,6 +93,7 @@ assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { cod
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
 await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
+await assert.rejects(import('${manifest.name}/codex'), { code: 'ERR_MODULE_NOT_FOUND' });
 for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
@@ -182,6 +186,28 @@ try {
 } finally { await runtime.close(); }
 `);
   run(process.execPath, ['runtime.mjs'], piConsumer);
+
+  const codexConsumer = join(temporary, 'codex');
+  mkdirSync(codexConsumer);
+  writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
+  ], codexConsumer));
+  const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
+  writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
+  writeFileSync(join(codexConsumer, 'runtime.mjs'), `
+import { strict as assert } from 'node:assert';
+import { createCodexRuntime } from '${manifest.name}/codex';
+const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
+  codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
+try {
+  const turn = await runtime.start({ text: 'packaged', onEvent() {} });
+  assert.equal(turn.threadId, '${fixtureId}');
+  assert.equal((await turn.finished).outcome, 'completed');
+} finally { await runtime.close(); }
+`);
+  run(process.execPath, ['runtime.mjs'], codexConsumer);
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });

@@ -23,6 +23,10 @@
     "./pi": {
       "types": "./dist/pi/index.d.ts",
       "import": "./dist/pi/index.js"
+    },
+    "./codex": {
+      "types": "./dist/codex/index.d.ts",
+      "import": "./dist/codex/index.js"
     }
   },
   "files": [
@@ -38,15 +42,17 @@
   "packageManager": "npm@11.19.1",
   "scripts": {
     "clean": "node --input-type=module -e 'import { rmSync } from \"node:fs\"; rmSync(\"dist\", { recursive: true, force: true });'",
-    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi",
+    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex",
     "lint": "oxlint --deny-warnings .",
-    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi",
+    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex",
     "test": "node --test \"tests/**/*.test.mjs\"",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:compiler": "node spikes/native-compiler/support/run.mjs \"$npm_execpath\"",
     "verify:agui": "node scripts/verify-agui-matrix.mjs",
     "build:pi": "tsc -p adapters/pi/tsconfig.json",
-    "check:pi": "tsc -p adapters/pi/tsconfig.json --noEmit"
+    "check:pi": "tsc -p adapters/pi/tsconfig.json --noEmit",
+    "build:codex": "tsc -p adapters/codex/tsconfig.json",
+    "check:codex": "tsc -p adapters/codex/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@ag-ui/core": "1.0.4",
@@ -54,12 +60,14 @@
     "@earendil-works/pi-coding-agent": "1.5.2",
     "@types/node": "24.19.2",
     "oxlint": "1.93.0",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "@openai/codex-sdk": "0.169.0"
   },
   "peerDependencies": {
     "@ag-ui/core": "1.0.4",
     "@earendil-works/pi-ai": "1.5.2",
-    "@earendil-works/pi-coding-agent": "1.5.2"
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@openai/codex-sdk": "0.169.0"
   },
   "peerDependenciesMeta": {
     "@ag-ui/core": {
@@ -69,6 +77,9 @@
       "optional": true
     },
     "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@openai/codex-sdk": {
       "optional": true
     }
   }
