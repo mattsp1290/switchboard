@@ -178,6 +178,30 @@ These checks prove that consumer's representation and handling. Core supplies no
 Native fatal process and transport faults, cleanup failure, access-denied classification, resource release, and adapter budget enforcement still need adapter runtime qualification.
 Native discovery and resume remain adapter qualification obligations.
 
+## Private Codex transport
+
+`openCodexTransport` borrows one channel registration and detaches it once. The host owns channel and native-process shutdown.
+`detach` can run synchronously inside channel callbacks or an active, unsettled `write`.
+Requests, notifications, and required server replies share one bounded FIFO and one active writer. A scheduled pump leaves reader delivery before writing.
+The shared wire reader owns frame and chunk byte bounds. No second input queue exists. Adapter handlers and observers enter outside reader delivery.
+Handler entry and correlated reply delivery can precede queued observations. Adapters correlate native identifiers independently of observation order.
+Client waits and server ID leases have separate bounds. Server IDs remain leased until their required reply write actually settles.
+Caller signals own wait deadlines. Queued cancellation means `not-sent`; cancellation after write entry means `uncertain`.
+`written` proves local write settlement. A correlated `reply` preserves native data but proves neither native acceptance nor safe replay.
+Handler, observer, and writer deadlines close local transport ownership. Noncooperative actual operations remain leased until they settle.
+Request callbacks awaiting human decisions retain their lease. `handlerTimeoutMs` therefore bounds approval latency for the whole session.
+The first terminal reason, diagnostic tail, detach failure, and unsettled-operation snapshot form one stable close report.
+The report also counts parsed observations that never entered the observer and scheduled requests that never entered their callback, including the overflow-triggering observation.
+Bytes after the first terminal are ignored and excluded from discard counts. Host channels forward remaining stdout and stderr before signalling `process-exit` or `eof`.
+Close shuts the reader before abort signals or detach can reenter. Pending waits settle promptly without waiting for borrowed operations to stop.
+Caller output overflow refuses that caller. Each server lease reserves one reply slot. Observation overflow closes with explicit discard counts.
+Frame bytes, chunk bytes, diagnostic tail bytes, pending calls, server leases, writes, observations, and three callback deadlines are explicit bounds.
+Retained serialized bytes are bounded by one reader frame, the caller and reply output slots, and the diagnostic tail.
+Observation slots bound parsed objects whose source frames obey the frame bound. Parsed objects have separate heap costs.
+Trusted outgoing serialization and consumer-retained data are outside those memory bounds. Timers cannot preempt synchronous JavaScript.
+Raw envelopes and diagnostic bytes stay private. The adapter owns method decoding, unsupported replies, admitted extensions, and redaction. Trusted request callbacks can return `RpcReply.error` without closing the session; an actual throw or rejection closes with `handler-error` and sends no reply.
+This private component does not spawn native processes, qualify routes, infer approvals, retry work, or establish complete adapter readiness.
+
 ## Event delivery
 
 `createEventStream<T>` returns an `EventStream<T>` with `publish`, `subscribe`, and `close`.
