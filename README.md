@@ -43,7 +43,7 @@ Three canonical chunk kinds normalize to explicit stream events. Input and capab
 
 The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
 The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
-Repository development and the installed-consumer check (`npm run verify:package`) use the immutable core archive from owned [AG-UI PR 49](https://github.com/mattsp1290/ag-ui/pull/49).
+Repository development and the installed-consumer checks in `npm run verify:package` use the immutable core archive from owned [AG-UI PR 49](https://github.com/mattsp1290/ag-ui/pull/49).
 That archive is byte-identical to registry `@ag-ui/core@1.0.4`, so hosts satisfy the peer with the registry release.
 The [fork reuse record](docs/qualification/ag-ui-fork-reuse.md) pins its delivery and separates core adoption from native adapter qualification.
 The separate `@mattsp1290/switchboard/observability` entry requires the exact optional peer `@opentelemetry/api@1.9.0`.

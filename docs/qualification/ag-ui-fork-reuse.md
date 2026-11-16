@@ -2,7 +2,7 @@
 
 Switchboard must consume the owned [combined SDK PR 49](https://github.com/mattsp1290/ag-ui/pull/49) without losing its native requirements.
 The [fork manifest](../protocol/ag-ui-fork.json) records immutable source and core archive identities.
-Development and the installed projection consumer select the delivered core archive.
+Development and the installed projection and observability consumers select the delivered core archive.
 Codex and Pi native adapter use remains unqualified.
 
 ## Source identity
@@ -68,10 +68,11 @@ Its delivery at [AgentUI commit 661216e](https://github.com/mattsp1290/agentui/c
 The delivery merged to AgentUI `main` through [AgentUI PR 5](https://github.com/mattsp1290/agentui/pull/5). Its immutable identity does not by itself approve later AgentUI changes.
 `switchboard-193h` owns Switchboard's installed core adoption from this delivery.
 
-The development dependency and installed integration consumer use the exact `coreArtifact.url` from the fork manifest.
+The development dependency and the installed projection and observability consumers use the exact `coreArtifact.url` from the fork manifest.
+`scripts/support/agui-fork.mjs` owns that contract and every lockfile assertion.
 The archive has 193,883 bytes and is byte-identical to the historical canonical core artifact.
 Its SHA-256 and npm integrity stay separate from the source tree and file hashes.
-The installed check requires one AG-UI core package with that URL, version, and integrity, with no nested or registry fallback.
+Each installed check requires one AG-UI core package with that URL, version, and integrity, with no nested or registry fallback.
 `npm test` runs `verify:package`, which also checks that the archive identity matches the canonical core artifact and the lockfile root and entry select it.
 Run `npm ci` and `npm run verify:package` with the selected toolchain to verify the actual dependency and projection behavior.
 Every `npm ci` fetches the archive from `raw.githubusercontent.com`, so public `mattsp1290/agentui` must keep commit `661216e` reachable from `main`.

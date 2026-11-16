@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -12,14 +12,21 @@ const canonical = JSON.parse(await readFile(new URL('../docs/protocol/ag-ui-pin.
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
 env.GIT_NO_REPLACE_OBJECTS = '1';
 const options = { env, timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 };
-const gitArgs = (args) => ['--no-replace-objects', '-C', repository, ...args];
-const git = (...args) => execFileSync('git', gitArgs(args), options);
+const gitRun = (...args) => {
+  const result = spawnSync('git', ['--no-replace-objects', '-C', repository, ...args], options);
+  assert.ifError(result.error);
+  return result;
+};
+const git = (...args) => {
+  const result = gitRun(...args);
+  assert.equal(result.status, 0, result.stderr?.toString());
+  return result.stdout;
+};
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const commit = (value) => {
   assert.match(value, /^[a-f0-9]{40}$/, 'Expected an immutable Git commit');
-  const result = spawnSync('git', gitArgs(['rev-parse', '--verify', '--quiet', `${value}^{commit}`]), options);
-  assert.ifError(result.error);
+  const result = gitRun('rev-parse', '--verify', '--quiet', `${value}^{commit}`);
   if (result.status !== 0) {
     assert.fail(`Commit ${value} is absent from ${repository}; fetch the combined, included, and observed commits listed in the fork manifest first.`);
   }
@@ -27,8 +34,7 @@ const commit = (value) => {
   return value;
 };
 const ancestor = (value) => {
-  const result = spawnSync('git', gitArgs(['merge-base', '--is-ancestor', commit(value), pin.sourceCommit]), options);
-  assert.ifError(result.error);
+  const result = gitRun('merge-base', '--is-ancestor', commit(value), pin.sourceCommit);
   assert([0, 1].includes(result.status), result.stderr?.toString());
   return result.status === 0;
 };
