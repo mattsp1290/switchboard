@@ -3,7 +3,10 @@
 Switchboard is a Node-hosted TypeScript library for native agent interfaces and adapters.
 This foundation contains one private ESM package, `@mattsp1290/switchboard@0.0.0`.
 Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
-The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output. Claude, Codex, and Pi adapters remain unqualified.
+The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output.
+The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go with `glm-5.3`.
+Claude and Codex adapters remain unqualified. The Pi entry has local SDK tests and requires separate live provider qualification.
+The optional `./observability` entry records observed agent, model-request, and tool boundaries as OpenTelemetry GenAI spans.
 
 Use Node 24.22.3 and npm 11.19.1. The package supports Node `>=24.22.3 <25`.
 Development dependencies pin TypeScript 7.0.2, Oxlint 1.93.0, and `@types/node` 24.19.2. There are no runtime dependencies.
@@ -23,7 +26,9 @@ The package test runs `verify:package`, which rebuilds, packs, and installs the 
 It checks public contract types, installed runtime helpers, blocked private imports, and package contents.
 The `tests/core/*.test.ts` fixtures compile against the installed tarball and are never executed.
 The `tests/core/*.consumer.mjs` fixtures run with `node --test` inside that installed consumer.
-Source and consumer compilation use ES2022 and Node declarations without DOM libraries.
+Core source and consumer compilation use ES2022 and Node declarations without DOM libraries.
+The isolated Pi source project uses ES2024 and skips vendor declaration checks for Pi 1.5.2.
+Core compilation keeps vendor declaration checks enabled.
 The script removes its temporary files on success or failure.
 Run `npm run build` to compile separately. The build removes `dist` before compilation. `npm run clean` removes the local build.
 
@@ -40,7 +45,78 @@ The intended import is `import type { AdapterRegistration, Capability } from '@m
 The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
 Development and the installed AG-UI consumer use the immutable core archive from owned [AG-UI PR 49](https://github.com/mattsp1290/ag-ui/pull/49).
 The [fork reuse record](docs/qualification/ag-ui-fork-reuse.md) pins its delivery and separates core adoption from native adapter qualification.
-Native tools and credentials are unnecessary for this foundation check.
+The separate `@mattsp1290/switchboard/observability` entry requires the exact optional peer `@opentelemetry/api@1.9.0`.
+It borrows a tracer and explicit parent contexts. The host owns SDK setup, exporters, and shutdown.
+Content stays off by default. Model usage comes from individually observed requests.
+Native dispatch phases, RPC requests, and AG-UI chunks do not establish those boundaries.
+See [record observed agent work](docs/observability/usage.md) and [validate telemetry destinations](docs/observability/validation.md).
+Installed package tests exercise the API and a real loopback HTTP provider without backend credentials.
+Separate lotel and Datadog verification commands require their documented backends.
+The optional `@mattsp1290/switchboard/testkit` entry exports reusable controlled qualification groups and a reference fake.
+It requires no AG-UI peer and registers no tests on import. The root module does not load it.
+Register its groups in your test runner and provide the runner's bounded cancellation signal.
+
+```js
+import test from 'node:test';
+import { contracts, createFakeFixture } from '@mattsp1290/switchboard/testkit';
+
+for (const [name, contract] of Object.entries(contracts)) {
+	test(name, { timeout: 10_000 }, (t) => contract(createFakeFixture, t.signal));
+}
+```
+
+Fixture obligations are documented on `QualificationFixture`, `QualificationConnection`, and `QualificationFactory`
+in the shipped [testkit declarations](dist/testkit/types.d.ts).
+The source is `src/testkit/types.ts`.
+The groups cover uncertainty, sessions, interaction, and events with separate result, effect, and delivery assertions.
+These controlled checks do not qualify native engines, credentials, or durable host admission.
+
+The `@mattsp1290/switchboard/pi` entry requires both exact optional peers, `@earendil-works/pi-ai@1.5.2` and `@earendil-works/pi-coding-agent@1.5.2`.
+Its public declarations do not import SDK types. The root entry does not load the SDK.
+
+```js
+import { createPiRuntime } from '@mattsp1290/switchboard/pi';
+
+const runtime = await createPiRuntime({
+	cwd: process.cwd(),
+	sessionDirectory: '/absolute/path/to/app-owned-sessions',
+	apiKey: process.env.OPENCODE_API_KEY,
+	provider: 'opencode-go',
+	model: 'glm-5.3',
+});
+const session = await runtime.open();
+let answer = '';
+const accepted = await session.prompt('Hello', event => {
+	if (event.kind === 'text') answer = event.text;
+});
+await accepted.finished;
+process.stdout.write(answer);
+await runtime.close();
+```
+
+Text events contain the complete assistant text so far. Replace the displayed text for each event.
+`prompt()` resolves after Pi reports that its run started and persists the native user message in its journal.
+This SDK admission lets hosts save the session reference before the first provider token. It does not wait for a provider acknowledgement.
+`accepted.finished` resolves after the native run drains, with a completed, interrupted, or failed outcome.
+Native `stop` and `length` stop reasons both count as completed.
+`abort()` waits for the active run to stop. `close()` stops the run, disposes the session, and releases its writer reservation.
+A runtime supports at most 32 open sessions. Each session accepts one prompt at a time.
+Pi creates the journal lazily when it records the first user or assistant message.
+Save `session.id` and the opaque `session.sessionFile` basename after the first `prompt()` resolves.
+An unprompted session has no file and cannot be resumed. Open a new session for an empty chat.
+A first prompt stopped during preflight still records its user message and can be resumed after it drains.
+Resume with `runtime.open({ sessionFile })` after the previous session handle closes.
+Resume uses the same canonical `cwd` and session directory. Relative paths follow Node's process-working-directory rules; hosts should supply absolute paths.
+A missing or invalid file fails without creating a replacement session.
+The runtime reserves each canonical session path within the host process. The host must own its session directory across processes.
+Credentials stay in memory. Startup uses bundled model definitions and reads no user credentials, project instructions, skills, prompts, or extensions.
+Tools, catalog network refresh, cache warming, compaction, and retries are disabled.
+Provider failures expose a generic failed outcome. Native error diagnostics are replaced with generic text before journal persistence.
+Importing `./pi` with missing SDK peers rejects with Node's `ERR_MODULE_NOT_FOUND`.
+Only the declared exact peer versions are supported; forcing incompatible peers bypasses this contract.
+The local tests replace provider HTTP responses and do not qualify a live subscription.
+
+Native tools and credentials are unnecessary for the foundation checks.
 No native integration or direct or LiteLLM route is qualified by this package check.
 
 [Architecture boundaries](docs/architecture/boundaries.md) records host responsibilities, source ownership, and native prerequisite evidence.
@@ -67,3 +143,23 @@ Publication returns immediately and reports overflowing observers as disconnecte
 Payloads are borrowed references. The host owns payload immutability, payload size limits, and durable replay.
 `EventObserver<T>` exposes subscription through a compile-time API restriction. It is not an authorization boundary.
 Disposal and close never cancel native work. See [event delivery boundaries](docs/architecture/boundaries.md#event-delivery) for terminal outcomes and admission rules.
+
+## ChatGPT subscription chat
+
+Install the optional peer `@openai/codex-sdk@0.169.0` and make Codex CLI 0.169.0 available on PATH. Sign in with ChatGPT using `codex login`. Import `createCodexRuntime` from `@mattsp1290/switchboard/codex`. Supply an absolute working directory and `model: 'gpt-6.1-sol'`. Supply an absolute `codexPathOverride` for another path to the pinned CLI or `codexHome` for a separate native account and history directory.
+
+Call `await runtime.checkReady()` before opening the chat. Call `await runtime.start({ text, onEvent })` to submit a message. This resolves at the SDK's native turn-start event. Persist the returned `threadId` against the authorized conversation. To continue after a restart, pass that same ID and the new message to `runtime.start`. The SDK owns native history. Hosts own admission across processes and must never resubmit a prompt after an uncertain dispatch.
+
+The callback receives text snapshots per native message item followed by one terminal event. CLI 0.169.0 emits completed assistant items and may send several in one turn. `turn.finished` resolves after the SDK child exits. Use `turn.abort()` to stop the turn or `runtime.close()` to stop this runtime's pending work. Stop and shutdown await the direct CLI child for SDK turns and readiness checks in the pinned Node runtime. Custom launchers must forward termination to their own children.
+
+The child uses the existing ChatGPT login and official OpenAI provider endpoint. The adapter omits inherited provider credentials, sets `shell_tool=false`, disables web search, apps and plugins, requests read-only sandboxing, and disables MCP servers listed by the CLI at dispatch. Other native tools may remain available and their events are not exposed by this text API. Native configuration and account changes during dispatch remain under host control. This entry point supports text. Rich tool calls, interactive approvals, external session discovery and proxy routes belong to the separate native app-server adapter.
+
+### Claude text adapter
+
+`@mattsp1290/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. Create a runtime with an absolute working directory, an absolute private session directory, an Anthropic API key, and the `opus` or `sonnet` model alias. Call `checkReady()` to check local paths, then `start({ text, threadId?, onEvent })`. The returned turn exposes the native session ID, resolved model, a `finished` promise, and `abort()`. Call `close()` when the runtime is no longer needed.
+
+Sessions use the native SDK's persisted session data inside the specified directory. Keep that directory private and retain it to resume a session. Resuming uses the exact native ID and never falls back to a new conversation. A turn is admitted only after a native response starts or an assistant response arrives. Initialization alone does not establish that the prompt was accepted. Admission times out after 30 seconds. Each runtime permits up to 32 simultaneous turns, and concurrent writes to the same session are rejected within the process. These limits do not coordinate separate operating-system processes. The adapter disables tools and configured settings, uses a private Claude configuration directory, and supplies only an explicit child environment. It does not impose an overall response deadline after admission.
+
+Claude `start()` rejection can occur after the native process received the prompt, so hosts should treat it as uncertain and avoid automatic retries. If the SDK reports lost transcript writes for the active session, the turn fails and that runtime rejects further attempts to resume the session. This knowledge is held only in memory and does not survive a new runtime or process. A failed turn does not identify the cause.
+
+Stop is available on admitted turns. Before admission, `start()` has no per-request cancellation handle and its 30-second deadline bounds the wait. `close()` cancels all pending work owned by that runtime. Session IDs must use canonical lowercase UUIDs.

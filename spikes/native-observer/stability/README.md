@@ -24,6 +24,20 @@ Cleanup makes up to three removal attempts and requires the pinned CLI's exact a
 An uncertain create or build never acknowledged, observed or removed remains owned in `cleanup.json` after bounded reconciliation.
 Run `python3 spikes/native-observer/stability/test_cleanup.py` for nine inert container/image timeout and daemon-failure cases.
 
+Host command capture retains at most 16 MiB per stream and reads at most one further byte to prove overflow.
+An exact-limit stream requires EOF. Overflow or a capture error raises `OSError(EOVERFLOW)`, including with `check=False`.
+One original timeout covers both pipe EOF and direct-child exit. A descendant holding a writer can cause timeout.
+Failure kills and waits for the direct child, closes both readers, and retains bounded named partial files when storage permits.
+This does not promise a finite spawn or kill-to-reap duration or establish descendant death.
+Receipts separate actual `overflow` from general `captureRefused` and mark incomplete capture.
+Per-stream retained-prefix hashes and observed-byte counts describe only bytes retained or read, never unknown total output.
+Timeout retains raw partial bytes and the original exception even if evidence storage fails, with an attached error note.
+Normal text decoding, binary bytes, and checked nonzero logging retain their existing behavior.
+The bound applies per stream and invocation. The accumulated command ledger and temporary conversion copies add memory use.
+Run `python3 -B -m unittest discover -s spikes/native-observer/stability -p 'test_*.py'` for inert host verification.
+CI runs these standard-library tests. They do not qualify Docker, native probes, Node, or SDK behavior.
+`CAPTURE_RESULT.json` records the inert host checks and the original excessive-output regression.
+
 The profile remains default-deny with the existing capabilities, network-none, read-only root, and resource limits.
 Its added `fstatfs`, `statx`, and `futex` calls are runtime launch prerequisites, demonstrated by recorded failures and a trusted `/bin/true` control.
 The pinned runc applies seccomp before its procfs FIFO reopen, which uses [filesystem and mount identity checks](https://github.com/cyphar/filepath-securejoin/tree/v0.5.2/pathrs-lite/internal).
@@ -148,3 +162,20 @@ Fresh parent runs passed all 165 notice controls in each caller, all three prere
 `RAW_EVIDENCE_RESULT.json` binds both runs and independent absence of all fourteen containers and both scratch images.
 All 165 native notice controls, three prerequisite cases, nine raw cases, source and binary identity, actual init, import, resource, flush, finalizer, and 36-instruction checks remain required.
 All 72 birth cases, full lifetime, epochs, imports, compiler, SDK, adapter, and live gates remain open. Full stability remains `INCONCLUSIVE`.
+
+## FD inventory source-costing experiment
+
+The current FD repair and its complete proof driver are SOURCE ONLY and UNRUN. `nativeObserved=false`.
+No current result hash or independent absence hash is available. Historical results above do not qualify this source.
+The loop clears errno before every read, saves the terminating errno through one close, and refuses through the existing failure owner.
+The driver selects eight controls in each caller family. It covers EIO before entries and after stdio, EINTR before inherited FD 9, and EBADF after FD 9.
+Clean controls plant stale EIO after successful open or entries, with both normal and inherited policy and zero or EACCES after actual close.
+Natural entry order remains authoritative. Missing before-9 order, injection, contamination, wrapper coverage, or complete evidence refuses the entire run.
+Prerequisite read errors require actual incomplete-notice refusal and supervisor exit 90. They have no root receipt.
+The existing owner retains streams, command indices, live-init identity and inventory, hold exit, verified removal, and final cleanup.
+Only the final checked save can publish `FD_INVENTORY_CONTROLS_OBSERVED`. Overall stability stays `INCONCLUSIVE`.
+After separate exact-source execution admission, the commands are `python3 -B spikes/native-observer/stability/repro_fd_inventory_eio.py` and `python3 -B spikes/native-observer/stability/run.py`.
+The first retains all nine raw modes, 165 notice controls, 36 instructions, and sixteen inventory controls. The second retains the three prerequisite modes.
+The inert verification command is `python3 -B -m unittest discover -s spikes/native-observer/stability -p 'test_*.py'`.
+The original 48 host tests remain unchanged. New tests challenge literal evidence, actual collection, original main, cleanup, hashing, callbacks, and restoration.
+Native qualification still requires actual function-pointer wrapper coverage, complete current-source run hashes, and independently observed resource absence.

@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
+import { verifyObservability } from './verify-observability.mjs';
+import { run, runNpm, testEnvironment } from './support/exec.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
@@ -14,16 +17,6 @@ assert.equal(manifest.devDependencies['@ag-ui/core'], coreArtifact.url, 'Develop
 const developmentLock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
 assert.equal(developmentLock.packages['node_modules/@ag-ui/core'].resolved, coreArtifact.url);
 assert.equal(developmentLock.packages['node_modules/@ag-ui/core'].integrity, coreArtifact.integrity);
-const npm = process.env.npm_execpath;
-assert(npm, 'Run this check with npm run verify:package.');
-
-function run(command, args, cwd = root, env = process.env) {
-  return execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
-}
-
-function runNpm(args, cwd = root) {
-  return run(process.execPath, [npm, ...args], cwd);
-}
 
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
@@ -47,8 +40,11 @@ try {
     'README.md',
     ...buildFiles,
     'docs/architecture/boundaries.md',
+    'licenses/codex-APACHE-2.0.txt',
+    'licenses/codex-NOTICE.txt',
+    'THIRD_PARTY_NOTICES.md',
     'package.json',
-  ].sort(), 'The package contains only its public build, manifest, license, and README.');
+  ].sort(), 'The package contains only its public build, manifest, architecture boundary, licenses, notices, and README.');
   assert.equal(pack.name, manifest.name);
   assert.equal(pack.version, manifest.version);
 
@@ -60,25 +56,61 @@ try {
 
   const installed = join(consumer, 'node_modules', ...manifest.name.split('/'));
   assert.equal(readFileSync(join(installed, 'LICENSE'), 'utf8'), readFileSync(join(root, 'LICENSE'), 'utf8'));
+  for (const file of ['licenses/codex-APACHE-2.0.txt', 'licenses/codex-NOTICE.txt', 'THIRD_PARTY_NOTICES.md']) {
+    assert.deepEqual(readFileSync(join(installed, file)), readFileSync(join(root, file)), `Installed ${file} preserves exact source bytes.`);
+  }
   const installedManifest = JSON.parse(readFileSync(join(installed, 'package.json'), 'utf8'));
   assert.deepEqual(installedManifest.exports, {
     '.': { types: './dist/index.d.ts', import: './dist/index.js' },
     './agui': { types: './dist/agui/index.d.ts', import: './dist/agui/index.js' },
+    './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
+    './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
+    './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
+    './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
+    './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
   });
-  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4' });
-  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true } });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@opentelemetry/api': '1.9.0' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
+  assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
+  assert(!existsSync(join(consumer, 'node_modules/@openai/codex-sdk')));
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
+  for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/pi/index.d.ts'), 'utf8'), /@earendil-works/);
+  writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
+const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+declare const runtime: PiRuntime;
+const session = await runtime.open();
+const accepted = await session.prompt('hello', (event: PiEvent) => { if (event.kind === 'text') event.text.toUpperCase(); });
+const terminal: PiTerminal = await accepted.finished;
+void [options, terminal];
+`);
   assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
+  assert(!existsSync(join(consumer, 'node_modules/@opentelemetry')), 'Core consumer has no telemetry installed.');
   assert.equal(installedManifest.private, true);
   assert.equal(Object.keys(installedManifest.dependencies ?? {}).length, 0);
 
   writeFileSync(join(consumer, 'runtime.mjs'), `
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import * as switchboard from '${manifest.name}';
+import { createRequire, registerHooks } from 'node:module';
+const testkitPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/testkit/')).href)};
+const observabilityPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/observability/')).href)};
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  assert(!resolved.url.startsWith(testkitPrefix), 'Core cannot import the testkit.');
+  assert(!resolved.url.startsWith(observabilityPrefix), 'Core cannot import observability.');
+  assert(!resolved.url.includes('/@opentelemetry/'), 'Core cannot import telemetry.');
+  return resolved;
+} });
+const switchboard = await import('${manifest.name}');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
+assert.throws(() => createRequire(import.meta.url).resolve('@opentelemetry/api'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
 assert.equal(typeof switchboard.createEventStream, 'function');
-for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]))}) {
+await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
+await assert.rejects(import('${manifest.name}/codex'), { code: 'ERR_MODULE_NOT_FOUND' });
+await assert.rejects(import('${manifest.name}/claude'), { code: 'ERR_MODULE_NOT_FOUND' });
+for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
 `);
@@ -92,25 +124,24 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   for (const file of [...typeFixtures, ...runtimeFixtures]) {
     copyFileSync(join(root, 'tests/core', file), join(consumer, file));
   }
-  cpSync(join(root, 'tests/qualification'), join(consumer, 'qualification'), { recursive: true });
-  const qualificationFixtures = readdirSync(join(consumer, 'qualification')).filter((file) => file.endsWith('.consumer.mjs'))
-    .sort().map((file) => `qualification/${file}`);
-  assert(qualificationFixtures.length > 0, 'Installed qualification consumers exist.');
-  const runtimeEnvironment = { ...process.env };
-  delete runtimeEnvironment.NODE_TEST_CONTEXT;
-  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures, ...qualificationFixtures], consumer, runtimeEnvironment);
+  mkdirSync(join(consumer, 'qualification'));
+  copyFileSync(join(root, 'tests/qualification/host-consumers.mjs'), join(consumer, 'qualification/host-consumers.mjs'));
+  const runtimeEnvironment = testEnvironment();
+  const runtimeOutput = run(process.execPath, ['--test', '--test-reporter=tap', ...runtimeFixtures], consumer, runtimeEnvironment);
   assert.match(runtimeOutput, /^# tests [1-9]\d*$/m, 'Installed runtime helper tests execute.');
-  const { contracts } = await import(new URL('../tests/qualification/harness/contracts.mjs', import.meta.url));
-  for (const name of Object.keys(contracts)) {
-    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - fake qualification: ${RegExp.escape(name)}$`, 'm'));
+  for (const name of [
+    'Crew reconstructs persisted command ownership',
+    'AgentUI keeps view and command ownership separate',
+    'host admission rechecks the journal before native entry',
+    'host controls reject missing intent bytes without native entry',
+    'host controls reject unsafe resubmission',
+    'host controls reject command closure with a view',
+    'host controls reject approval validation delegated to the backend',
+  ]) {
+    assert.match(runtimeOutput, new RegExp(`^ok \\d+ - ${RegExp.escape(name)}$`, 'm'));
   }
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects recovery dispatch$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects false certainty$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects effect-derived delivery$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification rejects ignored subscription abort$/m);
-  assert.match(runtimeOutput, /^ok \d+ - qualification isolates rejected continuation inputs$/m);
   process.stdout.write(runtimeOutput);
-  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs'];
+  const checkedFixtures = [...typeFixtures, 'session-discovery.consumer.mjs', 'qualification/host-consumers.mjs'];
   const consumerConfig = {
     compilerOptions: {
       target: 'ES2022',
@@ -133,13 +164,74 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
   const compilerManifest = JSON.parse(readFileSync(join(root, 'node_modules/typescript/package.json'), 'utf8'));
   const compiler = join(root, 'node_modules/typescript', compilerManifest.bin.tsc);
   const coreTypes = run(process.execPath, [compiler, '-p', 'tsconfig.json', '--listFilesOnly'], consumer);
+  assert(!coreTypes.includes('/testkit/'), 'Root declarations do not reference the testkit.');
   assert(!coreTypes.includes('/agui/'), 'Root declarations do not reference the integration.');
   assert(!coreTypes.includes('/@ag-ui/'), 'Root declarations do not reference the SDK.');
+  assert(!coreTypes.includes('/dist/pi/'), 'Root declarations do not reference the Pi adapter.');
+  assert(!coreTypes.includes('/@earendil-works/'), 'Root declarations do not reference the Pi SDK.');
+  assert(!coreTypes.includes('/dist/claude/') && !coreTypes.includes('/@anthropic-ai/'), 'Root declarations do not reference the Claude adapter or SDK.');
+  assert(!coreTypes.includes('/observability/'), 'Root declarations do not reference observability.');
+  assert(!coreTypes.includes('/@opentelemetry/'), 'Root declarations do not reference telemetry.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
     allowedRoots: [...compilerLibraryRoots(root), ...nodeDeclarationRoots(consumer), installed],
     allowedFiles: checkedFixtures.map(file => join(consumer, file)),
   });
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], consumer);
+  writeFileSync(join(consumer, 'pi-types.json'), JSON.stringify({ ...consumerConfig, files: ['pi-types.test.ts'] }));
+  const piTypes = run(process.execPath, [compiler, '-p', 'pi-types.json', '--listFilesOnly'], consumer);
+  assert(!piTypes.includes('/@earendil-works/'), 'Pi declarations are usable without native SDK declarations.');
+  run(process.execPath, [compiler, '-p', 'pi-types.json'], consumer);
+
+  const piConsumer = join(temporary, 'pi');
+  mkdirSync(piConsumer);
+  writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
+    `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
+  ], piConsumer));
+  writeFileSync(join(piConsumer, 'runtime.mjs'), `
+import assert from 'node:assert/strict';
+const pi = await import('${manifest.name}/pi');
+assert.equal(typeof pi.createPiRuntime, 'function');
+globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
+const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
+const runtime = await pi.createPiRuntime(options);
+try {
+  const session = await runtime.open();
+  assert.equal(typeof session.id, 'string');
+  assert.match(session.sessionFile, /\\.jsonl$/);
+} finally { await runtime.close(); }
+`);
+  run(process.execPath, ['runtime.mjs'], piConsumer);
+
+  const codexConsumer = join(temporary, 'codex');
+  mkdirSync(codexConsumer);
+  writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+  process.stdout.write(runNpm([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+    `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
+  ], codexConsumer));
+  const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
+  writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
+  writeFileSync(join(codexConsumer, 'runtime.mjs'), `
+import { strict as assert } from 'node:assert';
+import { createCodexRuntime } from '${manifest.name}/codex';
+const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
+  codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
+try {
+  const turn = await runtime.start({ text: 'packaged', onEvent() {} });
+  assert.equal(turn.threadId, '${fixtureId}');
+  assert.equal((await turn.finished).outcome, 'completed');
+} finally { await runtime.close(); }
+`);
+  run(process.execPath, ['runtime.mjs'], codexConsumer);
+
+  verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
+    compilerOptions: consumerConfig.compilerOptions });
+  verifyObservability({ consumer, tarball: join(artifacts, pack.filename), compiler,
+    compilerOptions: consumerConfig.compilerOptions });
 
   const discoveryImports = `import type { SessionDiscoveryDiagnostic, SessionDiscoveryPage, SessionReference, SessionInspection, DispatchTarget } from '${manifest.name}'; import { fileDiagnostic, observedPage, sessionReference } from './sessions.test.js';`;
   const discoveryInvalidCases = [
@@ -177,6 +269,7 @@ for (const subpath of ${JSON.stringify(buildFiles.flatMap((path) => [path, path.
     ['page-diagnostics-push', "observedPage.diagnostics.push(fileDiagnostic);", 2339],
   ].map(([name, source, code]) => [`session-discovery-${name}`, `${discoveryImports} ${source}`, code]);
   const invalidCases = [
+    ...testkitInvalidCases(manifest.name),
     ...discoveryInvalidCases,
     ['unnarrowed-capability', 'catalog.api;', 2339],
     ['unsupported-api', "if (catalog.kind === 'unsupported') catalog.api;", 2339],

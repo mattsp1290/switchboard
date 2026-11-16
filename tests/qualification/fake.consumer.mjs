@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getEventListeners } from 'node:events';
-import { contracts } from './harness/contracts.mjs';
-import { createFakeFixture } from './harness/fake.mjs';
+import { contracts, createFakeFixture } from '@mattsp1290/switchboard/testkit';
 
 for (const [name, contract] of Object.entries(contracts)) {
   test(`fake qualification: ${name}`, { timeout: 10_000 }, (t) => contract(createFakeFixture, t.signal));
@@ -55,107 +54,94 @@ for (const [name, contract] of Object.entries(contracts)) {
   });
 }
 
-function extraSendFactory(tracker) {
+function tracked(tracker, wrap) {
   const real = createFakeFixture();
-  tracker.fixture = real;
+  tracker.fixtures.push(real);
   return {
     ...real,
-    async dispose() {
-      await real.dispose();
-      tracker.disposed = true;
-    },
+    async dispose() { await real.dispose(); tracker.disposed++; },
     connect(recordIntent) {
       const driver = real.connect(recordIntent);
       tracker.connections.push(driver);
-      return {
-        ...driver,
-        recover(saved) {
-          const recovery = driver.recover(saved);
-          return { reconcile: async (signal) => {
-            const observed = await recovery.reconcile(signal);
-            await driver.submit({ session: saved.identity.target.reference,
-              hostOperationId: 'illegal-recovery-resend' }, signal);
-            return observed;
-          } };
-        },
-      };
+      return wrap(driver);
     },
   };
 }
 
-function falseCertaintyFactory(tracker) {
-  const real = createFakeFixture();
-  tracker.fixture = real;
-  return {
-    ...real,
-    async dispose() {
-      await real.dispose();
-      tracker.disposed = true;
-    },
-    connect(recordIntent) {
-      const driver = real.connect(recordIntent);
-      tracker.connections.push(driver);
-      return {
-        ...driver,
-        async submit(request, signal) {
-          const result = await driver.submit(request, signal);
-          return result.kind === 'ok' && result.value.observation.kind === 'outcome-unknown'
-            ? { kind: 'ok', value: { ...result.value, observation: { kind: 'accepted' } } } : result;
-        },
-      };
-    },
-  };
+function transportCloses(tracker) {
+  return tracker.fixtures.reduce((total, fixture) => total + fixture.controls.counts().transportCloses, 0);
 }
 
-async function rejectsDriver(factory, invariant, expectedConnections, signal, contract = contracts.uncertainty) {
-  const tracker = { connections: [], disposed: false };
-  await assert.rejects(contract(() => factory(tracker), signal), (error) => {
-    assert.equal(error.code, 'ERR_ASSERTION');
-    assert.match(error.message, new RegExp(`^${RegExp.escape(invariant)}(?=\\n|$)`));
-    return true;
-  });
-  assert.equal(tracker.disposed, true);
-  assert.equal(tracker.connections.length, expectedConnections);
-  assert.equal(tracker.fixture.controls.counts().transportCloses, expectedConnections);
-  for (const connection of tracker.connections) {
-    assert.deepEqual(connection.events.subscribe(() => {}), { kind: 'error', error: { code: 'closed' } });
-    assert.deepEqual(await connection.submit({ session: tracker.fixture.samples.a,
-      hostOperationId: 'after-cleanup' }, signal), { kind: 'error', error: { code: 'closed' } });
-  }
-  await tracker.fixture.dispose();
-  assert.equal(tracker.fixture.controls.counts().transportCloses, expectedConnections);
-}
-
-test('qualification rejects recovery dispatch', { timeout: 10_000 }, (t) =>
-  rejectsDriver(extraSendFactory, 'reconciliation cannot dispatch', 2, t.signal));
-
-test('qualification rejects false certainty', { timeout: 10_000 }, (t) =>
-  rejectsDriver(falseCertaintyFactory, 'lost acknowledgement must remain outcome-unknown', 1, t.signal));
-
-function derivedDeliveryFactory(tracker) {
-  const real = createFakeFixture();
-  tracker.fixture = real;
+function extraSendFactory(driver) {
   return {
-    ...real,
-    async dispose() { await real.dispose(); tracker.disposed = true; },
-    connect(recordIntent) {
-      const driver = real.connect(recordIntent);
-      tracker.connections.push(driver);
-      return { ...driver, submit(request, signal) {
-        if (/^tool-\d+$/.test(request.hostOperationId)) {
-          const outcome = request.continuation.outcome;
-          outcome.delivery = outcome.effect.kind === 'known'
-            ? { kind: 'confirmed', evidence: outcome.effect.evidence } : { kind: 'unknown' };
-        }
-        return driver.submit(request, signal);
+    ...driver,
+    recover(saved) {
+      const recovery = driver.recover(saved);
+      return { reconcile: async (signal) => {
+        const observed = await recovery.reconcile(signal);
+        await driver.submit({ session: saved.identity.target.reference,
+          hostOperationId: 'illegal-recovery-resend' }, signal);
+        return observed;
       } };
     },
   };
 }
 
+function falseCertaintyFactory(driver) {
+  return {
+    ...driver,
+    async submit(request, signal) {
+      const result = await driver.submit(request, signal);
+      return result.kind === 'ok' && result.value.observation.kind === 'outcome-unknown'
+        ? { kind: 'ok', value: { ...result.value, observation: { kind: 'accepted' } } } : result;
+    },
+  };
+}
+
+async function rejectsDriver(wrap, invariant, signal, contract = contracts.uncertainty) {
+  const tracker = { fixtures: [], connections: [], disposed: 0 };
+  await assert.rejects(contract(() => tracked(tracker, wrap), signal), (error) => {
+    assert.equal(error.code, 'ERR_ASSERTION');
+    assert.match(error.message, new RegExp(`^${RegExp.escape(invariant)}(?=\\n|$)`));
+    return true;
+  });
+  assert(tracker.fixtures.length > 0);
+  assert.equal(tracker.disposed, tracker.fixtures.length);
+  assert(tracker.connections.length > 0);
+  assert.equal(transportCloses(tracker), tracker.connections.length);
+  for (const connection of tracker.connections) {
+    assert.deepEqual(connection.events.subscribe(() => {}), { kind: 'error', error: { code: 'closed' } });
+    assert.deepEqual(await connection.submit({ session: tracker.fixtures[0].samples.a,
+      hostOperationId: 'after-cleanup' }, signal), { kind: 'error', error: { code: 'closed' } });
+  }
+  for (const fixture of tracker.fixtures) await fixture.dispose();
+  assert.equal(transportCloses(tracker), tracker.connections.length);
+}
+
+test('qualification rejects recovery dispatch', { timeout: 10_000 }, (t) =>
+  rejectsDriver(extraSendFactory, 'reconciliation cannot dispatch', t.signal));
+
+test('qualification rejects false certainty', { timeout: 10_000 }, (t) =>
+  rejectsDriver(falseCertaintyFactory, 'lost acknowledgement must remain outcome-unknown', t.signal));
+
+test('qualification rejects async close promise replacement', { timeout: 10_000 }, (t) =>
+  rejectsDriver((driver) => ({ ...driver, async close() { return driver.close(); } }),
+    'close() must return the same promise', t.signal, contracts.events));
+
+function derivedDeliveryFactory(driver) {
+  return { ...driver, submit(request, signal) {
+    if (/^tool-\d+$/.test(request.hostOperationId)) {
+      const outcome = request.continuation.outcome;
+      outcome.delivery = outcome.effect.kind === 'known'
+        ? { kind: 'confirmed', evidence: outcome.effect.evidence } : { kind: 'unknown' };
+    }
+    return driver.submit(request, signal);
+  } };
+}
+
 test('qualification rejects effect-derived delivery', { timeout: 10_000 }, (t) =>
   rejectsDriver(derivedDeliveryFactory, 'native result, effect and delivery remain independent',
-    1, t.signal, contracts.interaction));
+    t.signal, contracts.interaction));
 
 test('qualification isolates rejected continuation inputs', { timeout: 10_000 }, async (t) => {
   const real = createFakeFixture();

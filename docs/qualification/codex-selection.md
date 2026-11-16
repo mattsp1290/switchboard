@@ -5,6 +5,17 @@ Use a thin adapter around its public protocol and preserve the native agent loop
 Inventory-driven path inspection and retained unidentified-file diagnostics resolve the exact unknown-omission selection blocker.
 Completed adapters, broader discovery coverage, and live journeys remain downstream requirements. Selection does not qualify their support.
 
+The discovery qualifier uses a private shared wire codec for UTF-8 JSONL and envelope validation.
+Each frame is bounded to 1,048,576 bytes excluding LF and including CR; each input chunk is bounded to 2,097,151 bytes.
+The client's separate cumulative stdout refusal at 2 MiB and 128-request limit remain in place.
+Malformed, truncated, oversized, or routing-incompatible input, including a reply carrying both result and error, stops the owned child. Duplicate JSON member names follow JSON.parse last-wins and are not detected. Unknown payload members remain available to method decoders.
+Outgoing serialization must preserve routing kind, method, ID, and the result/error branch. Serialization work inside caller payloads is outside the codec's storage bound.
+A consumer exception closes the reader and propagates unchanged. Reentrant push closes the reader and throws; callback close and end remain allowed.
+The codec owns only framing storage. The qualifier retains shutdown, final drain, failure identity, progress, and refusal of server requests.
+This does not qualify transport correlation, approval handling, a native adapter, or live provider routes.
+
+Numeric routing IDs must be safe integers other than negative zero, while numeric `0` and string `"0"` remain valid and distinct.
+
 ## Evidence and pins
 
 The [native pins](../../spikes/codex-native/pins.json) identify the official Linux arm64 and x64 archives by SHA512 and the Node image by OCI digest. The [native qualification](codex-native-api.md) records actual app-server execution against a synthetic loopback Responses service, independently of the SDK. The [discovery qualification](codex-discovery.md) records read-only-source discovery and inspection. Neither establishes a real provider or LiteLLM support claim. These standalone app-server fixtures use synthetic immutable roots. Global native SDK import confinement remains unqualified.
@@ -34,7 +45,7 @@ Inventory entry and byte totals are specific to each execution. The parent repor
 
 | Requirement | Supported API and measured evidence | Selection status and restriction |
 | --- | --- | --- |
-| Public protocol and bindings | Native `initialize`, `thread/start`, `turn/start`, list/read/resume, `getConversationSummary({ rolloutPath })`, and `turn/interrupt` run. All 784 generated public TypeScript files compile after 1,766 verified relative import-specifier rewrites. | Selected for implementation. Qualify the generator's `.js` and `/index.js` transform as part of binding consumption. Raw generated imports are not directly NodeNext-ready. |
+| Public protocol and bindings | Native `initialize`, `thread/start`, `turn/start`, list/read/resume, `getConversationSummary({ rolloutPath })`, and `turn/interrupt` run. Historical qualification compiled all 784 generated public TypeScript files after 1,766 verified relative import-specifier rewrites. | Selected for implementation. The qualifier now consumes a shared validated transform. The exact RequestId leaf and upstream notices are retained with [immutable provenance](../../THIRD_PARTY_NOTICES.md). Fresh native CI must establish generator byte parity and strict consumer compilation at this head. Raw generated imports are not directly NodeNext-ready. |
 | Indexed and unindexed external discovery | Native-created immutable history is mounted read-only. Supported `sqlite_home` and `log_dir` redirect backfill and logs to private directories. Both cases return compatible native IDs. Source hashes match through startup, listing/inspection, shutdown, and the host container lifecycle. | Source-write and compatible-unindexed questions resolved for the confined synthetic roots. Auxiliary writes are bounded and intentional. Production stable-root admission remains a host obligation. |
 | Filters, accounts, and bounds | Explicit source/provider/exact-cwd/archive/account parameters and bounded cursors run. A separate root and symlinks contribute no IDs. | Queries select after native reads. They do not authorize root access or resume. API-key auth sees both synthetic accounts; unattributed history is shared. Pagination does not bound startup backfill bytes. |
 | Known-target inspection | Public `thread/read` with `includeTurns:true` returns the valid ID. Corrupt-known returns `-32603` with metadata-read/empty-rollout failure. A distinct valid UUID known absent from the fixture returns `-32600`, `thread not loaded`. | A read-only known-target failure is distinguishable in this fixture. The valid paginated thread returns `turns:[]` and a hydration deprecation notice. No full-history hydration claim follows. Never classify every `-32603` as corruption or every `thread not loaded` as universal absence. |
@@ -103,5 +114,6 @@ The original downstream tasks retain their acceptance requirements:
 - `bzn9`, `e2oc`, and `q5wd` own packed exports/dependency/license checks, separate native macOS evidence, and final release reconciliation. Global native SDK import confinement remains unqualified.
 
 All three engines, direct operation, LiteLLM, native features, external-session discovery/resume, and no-blind-retry remain required by the original plan.
+The app-server adapter must also meet the [native process requirements](../architecture/boundaries.md#adapter-contracts).
 The exact API-selection blocker is resolved. Unqualified downstream behavior still blocks its corresponding support or release claim.
 Oversized downstream work must be split without dropping an acceptance journey.

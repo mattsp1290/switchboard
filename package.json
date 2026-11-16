@@ -15,11 +15,34 @@
     "./agui": {
       "types": "./dist/agui/index.d.ts",
       "import": "./dist/agui/index.js"
+    },
+    "./testkit": {
+      "types": "./dist/testkit/index.d.ts",
+      "import": "./dist/testkit/index.js"
+    },
+    "./pi": {
+      "types": "./dist/pi/index.d.ts",
+      "import": "./dist/pi/index.js"
+    },
+    "./codex": {
+      "types": "./dist/codex/index.d.ts",
+      "import": "./dist/codex/index.js"
+    },
+    "./claude": {
+      "types": "./dist/claude/index.d.ts",
+      "import": "./dist/claude/index.js"
+    },
+    "./observability": {
+      "types": "./dist/observability/index.d.ts",
+      "import": "./dist/observability/index.js"
     }
   },
   "files": [
     "dist",
-    "docs/architecture/boundaries.md"
+    "docs/architecture/boundaries.md",
+    "licenses/codex-APACHE-2.0.txt",
+    "licenses/codex-NOTICE.txt",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=24.22.3 <25"
@@ -27,25 +50,66 @@
   "packageManager": "npm@11.19.1",
   "scripts": {
     "clean": "node --input-type=module -e 'import { rmSync } from \"node:fs\"; rmSync(\"dist\", { recursive: true, force: true });'",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex && npm run build:claude",
     "lint": "oxlint --deny-warnings .",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude",
     "test": "node --test \"tests/**/*.test.mjs\"",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:compiler": "node spikes/native-compiler/support/run.mjs \"$npm_execpath\"",
-    "verify:agui": "node scripts/verify-agui-matrix.mjs"
+    "verify:agui": "node scripts/verify-agui-matrix.mjs",
+    "build:pi": "tsc -p adapters/pi/tsconfig.json",
+    "check:pi": "tsc -p adapters/pi/tsconfig.json --noEmit",
+    "build:codex": "tsc -p adapters/codex/tsconfig.json",
+    "check:codex": "tsc -p adapters/codex/tsconfig.json --noEmit",
+    "build:claude": "tsc -p adapters/claude/tsconfig.json",
+    "check:claude": "tsc -p adapters/claude/tsconfig.json --noEmit",
+    "verify:observability:lotel": "node scripts/verify-observability-lotel.mjs",
+    "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
   },
   "devDependencies": {
     "@ag-ui/core": "https://raw.githubusercontent.com/mattsp1290/agentui/661216eab627be33067951ffad7a1691127a80fe/vendor/ag-ui/ed2c1d5b63299d3f08676a1418cc2640bbe55fd1/ag-ui-core-1.0.4.tgz",
+    "@anthropic-ai/claude-agent-sdk": "0.3.323",
+    "@anthropic-ai/sdk": "1.8.0",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@openai/codex-sdk": "0.169.0",
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-trace-base": "2.12.0",
+    "@opentelemetry/sdk-trace-node": "2.12.0",
     "@types/node": "24.19.2",
+    "ajv": "8.20.0",
     "oxlint": "1.93.0",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "zod": "4.6.7"
   },
   "peerDependencies": {
-    "@ag-ui/core": "1.0.4"
+    "@ag-ui/core": "1.0.4",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@openai/codex-sdk": "0.169.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.323",
+    "@opentelemetry/api": "1.9.0"
   },
   "peerDependenciesMeta": {
     "@ag-ui/core": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@openai/codex-sdk": {
+      "optional": true
+    },
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
       "optional": true
     }
   }

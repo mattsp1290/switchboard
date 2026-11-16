@@ -6,9 +6,13 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, admittedPath, fingerprint, requestBudget } from './inventory.mjs';
 import { ownedContainer } from './lifecycle.mjs';
+import { assertSelectedBinding, selectedRequestIdSha256, transformBindings } from './protocol-bindings.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pins = JSON.parse(readFileSync(join(here, 'pins.json'), 'utf8'));
+const selectedBinding = readFileSync(join(here, '../../src/adapters/codex/protocol/RequestId.ts'), 'utf8');
+assert.equal(createHash('sha256').update(selectedBinding).digest('hex'),
+  selectedRequestIdSha256, 'Selected RequestId integrity before native entry');
 assert.equal(process.versions.node, pins.node);
 const [archive, architecture = process.arch] = process.argv.slice(2);
 assert(archive, 'Usage: node spikes/codex-native/qualify.mjs <official-codex.tgz> [arm64|x64]');
@@ -29,6 +33,8 @@ let result;
 const run = (command, args, options = {}) => execFileSync(command, args, { timeout: 45000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', ...options });
 try {
   const binary = join(work, 'codex');
+  const codecRoot = join(work, 'codec');
+  const wireCodec = join(codecRoot, 'adapters/codex/wire.js');
   const fd = openSync(binary, 'wx');
   try { run('tar', ['-xOf', resolve(archive), `package/vendor/${pin.target}/bin/codex`], { stdio: ['ignore', fd, 'pipe'] }); }
   finally { closeSync(fd); }
@@ -38,6 +44,8 @@ try {
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
     if (script === 'discovery.mjs') {
       for (const helper of ['inventory.mjs', 'client.mjs', 'account-reads.mjs', 'history-copy.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
+      mounts.push('--mount', `type=bind,source=${wireCodec},target=/dist/adapters/codex/wire.js,readonly`,
+        '--mount', `type=bind,source=${resolve(here, '../../package.json')},target=/dist/package.json,readonly`);
     }
     try {
       return ownedContainer(run, ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
@@ -52,21 +60,14 @@ try {
   };
   assert.equal(docker(['/opt/codex', '--version']).trim(), `codex-cli ${pins.native}`);
   const generated = JSON.parse(docker(['node', '/opt/fixture.mjs'], 'bindings.mjs'));
-  let transformedImports = 0;
-  for (const [file, source] of Object.entries(generated)) {
-    assert(/^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.ts$/.test(file));
+  const selectedBindingIdentity = assertSelectedBinding(generated['RequestId.ts'], selectedBinding);
+  const binding = transformBindings(generated);
+  for (const [file, source] of Object.entries(binding.files)) {
     const target = join(work, 'generated', file);
     mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, source.replace(/(\bfrom\s+")(\.\.?\/[^"\n]+)(")/g, (_, start, specifier, end) => {
-      assert(!/\.[a-z]+$/i.test(specifier), 'Expected generated extensionless module import');
-      const module = posix.join(posix.dirname(file), specifier);
-      const suffix = Object.hasOwn(generated, `${module}.ts`) ? '.js' : '/index.js';
-      assert(Object.hasOwn(generated, suffix === '.js' ? `${module}.ts` : `${module}/index.ts`));
-      transformedImports++;
-      return `${start}${specifier}${suffix}${end}`;
-    }));
+    writeFileSync(target, source);
   }
-  assert(transformedImports > 0);
+  assert(binding.transformedImports > 0);
   copyFileSync(join(here, 'consumer.ts'), join(work, 'consumer.ts'));
   writeFileSync(join(work, 'tsconfig.json'), JSON.stringify({ compilerOptions: {
     target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', lib: ['ES2022'], types: ['node'],
@@ -77,6 +78,12 @@ try {
   const behavior = JSON.parse(docker(['node', '/opt/fixture.mjs'], 'probe.mjs'));
   assert.equal(behavior.node, pins.node);
   assert.equal(behavior.architecture, architecture);
+  const sourceHash = () => createHash('sha256').update(readFileSync(resolve(here, '../../src/adapters/codex/wire.ts'))).digest('hex');
+  const sourceSha256Before = sourceHash();
+  run(process.execPath, [join(here, '../../node_modules/typescript/bin/tsc'), '-p', resolve(here, '../../tsconfig.json'), '--outDir', codecRoot]);
+  const sourceSha256After = sourceHash();
+  assert.equal(sourceSha256After, sourceSha256Before, 'Wire source unchanged during compilation');
+  const compiledSha256 = createHash('sha256').update(readFileSync(wireCodec)).digest('hex');
   const prepared = JSON.parse(docker(['node', '/opt/fixture.mjs', 'prepare'], 'discovery.mjs'));
   const recordsFile = join(work, 'records.json');
   writeFileSync(recordsFile, JSON.stringify(prepared.records));
@@ -199,7 +206,9 @@ try {
     assert.deepEqual(fingerprint(accountSource, accountInventory), accountHashes, 'All originals preserved over container lifetime');
   }
   result = { native: pins.native, image: pins.image, platform: pin.platform,
-    archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports,
+    wireCodec: { sourceSha256Before, sourceSha256After, compiledSha256 },
+    archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,
+    bindingIdentity: { ...selectedBindingIdentity, sourceSha256: binding.sourceSha256, consumedSha256: binding.consumedSha256 },
     strictNodeNextNoDOM: 'passed', behavior, boundary, discovery, accounts, accountPreparationRequests: accountPrepared.fixtureRequests };
 } finally {
   if (cleanupUncertain) console.error(JSON.stringify({ cleanupUncertain, container: name, retainedWork: work }));

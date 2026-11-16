@@ -5,6 +5,30 @@ The foundation supplies public adapter contracts, session envelope validation, b
 Native adapters and native session discovery remain future work.
 The private core package has no mandatory runtime dependencies.
 The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
+The optional `./testkit` entry supplies controlled qualification scenarios without an AG-UI peer.
+
+## GenAI observations
+
+`src/observability/index.ts` supplies the optional `./observability` entry with the exact optional peer `@opentelemetry/api@1.9.0`.
+The root and testkit entries do not load OpenTelemetry or the observability entry.
+The library borrows a tracer and explicit parent contexts. The host owns provider configuration, sampling, exporters, credentials, deadlines, and shutdown.
+
+Agent, model-request, and tool descriptors represent independently observed boundaries. Agent or dispatch phases do not establish a model request.
+A text chunk is not a model call. Aggregated run usage does not establish per-request usage.
+An unavailable native boundary remains unobserved. This entry does not qualify any native adapter.
+
+Each observer owns a bounded set of live recording handles. Handles contain safe span contexts; the mutable SDK span remains private.
+Success leaves OpenTelemetry status UNSET. Confirmed errors set ERROR with a fixed category.
+Cancellation and uncertainty carry explicit outcomes without asserting a provider error or native cancellation.
+Closing the observer ends open spans as uncertain and cannot dispatch, retry, or cancel work.
+Telemetry exceptions produce fixed diagnostics and do not escape into native execution.
+
+The GenAI profile is pinned to semantic conventions v1.37.0. No arbitrary attribute bag, native handle, exception, or tool payload is accepted.
+Default policy does not traverse message content. Explicit sanitized text passes bounded exact parsing before and after the host sanitizer.
+The host chooses safe public identifiers and sanitizer rules. Library validation establishes the allowed data paths, rather than proving arbitrary strings are non-secret.
+Datadog metadata adaptation belongs in the host exporter. A distinct export view preserves outcome and safe correlation without changing lotel spans.
+
+[Usage](../observability/usage.md) and [destination verification](../observability/validation.md) describe host setup and deterministic qualification.
 
 ## Host ownership
 
@@ -27,6 +51,8 @@ Future adapters must scope credentials per adapter and session, preserve native 
 
 `src/index.ts` exports core contracts and helpers without importing AG-UI.
 `src/agui/index.ts` supplies the explicit `./agui` entry with pinned protocol metadata.
+`src/testkit/index.ts` supplies the optional `./testkit` entry with controlled qualification groups and a reference fake.
+The root entry never loads the testkit. These checks do not qualify native engines, credentials, or durable host admission.
 `createAguiProjection` maps observed lifecycle, text, tool, content, step and reasoning facts through one bounded per-run actor.
 Its frozen `aguiProtocol` descriptor identifies basic, value, message snapshot, terminal payload, reasoning and subagent lifecycle support with no planned output categories.
 The exact 98-definition disposition audit requires actual installed output for every implemented event and all five child terminal variants.
@@ -41,8 +67,15 @@ The following directories describe source ownership. Core contracts live in `src
 | `src/core/` | Public runtime contracts, native session references, and bounded event delivery | No native SDK or AG-UI dependency |
 | `src/adapters/claude/` | Claude native integration | May import core and Claude dependencies |
 | `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
-| `src/adapters/pi/` | Pi native integration | May import core and Pi dependencies |
+| `adapters/pi/src/` | Pi native integration (`./pi` entry) | May import Pi SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/pi/tsconfig.json` |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
+| `src/testkit/` | Controlled qualification scenarios and reference fake for tests | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
+
+AgentUI keeps its separately qualified production core while adopting a newer testkit as a development dependency under an npm alias.
+The aliased testkit must use its own artifact's public core at runtime and in declarations, even when an older canonical core is installed.
+Production pruning must remove the development alias while retaining the qualified core.
+The package gate checks the standalone alias; AgentUI's consumer qualification checks coexistence and pruning against its pinned production artifact.
+Relative public-barrel imports keep this identity within the aliased artifact.
 
 Native adapters need their own explicit entry points when implemented.
 AG-UI imports only the SDK main entry. Optional Zod and SDK schemas are not integration runtime dependencies.
@@ -85,6 +118,20 @@ The adapter rejects new operations once closing starts and releases its owned re
 A cleanup failure returns a redacted error and does not establish that every resource terminated.
 Closing does not confirm native cancellation, roll back tool effects, delete session history, or establish safe retry.
 The later domain contracts own active-work cancellation and reconciliation.
+
+Future adapters that start a native process, directly or through a native SDK, must accept a host-supplied executable path or spawn function.
+When the host supplies either, the adapter starts the native process only through it. A host launcher or remote transport can then wrap that process.
+When the host supplies the environment, the adapter copies nothing from its own environment.
+When the host supplies native configuration, the adapter passes it through and adds none from ambient locations.
+When the host supplies the environment or native configuration, any credential the adapter adds comes only from scoped authentication.
+Such adapters must state in their options whether the adapter or the host owns the native process, as for borrowed clients.
+That statement names who stops the native process and its descendants on `close`, and on any cancellation that stops it.
+Future adapters must work when the host confines the native process, or the process that loads a native SDK, to granted network endpoints and filesystem paths.
+When host configuration shows that confinement prevents a feature, the adapter reports it as `unavailable` with a reason.
+A denial first seen during an operation is an operation error.
+The adapter must not fall back to an unconfined launch, or to network or filesystem access the host did not grant.
+An input the host omits keeps the adapter's documented default.
+These are requirements on future adapters. Core defines no launcher, environment, configuration, or process ownership option.
 
 The installed consumer checks prove public typing and package boundaries.
 They do not verify cleanup idempotence, resource release, native identity validation, or native integration behavior.
@@ -153,6 +200,30 @@ The installed controlled consumer accumulates observations, handles a rejected o
 These checks prove that consumer's representation and handling. Core supplies no production discovery accumulator or native event arbitration.
 Native fatal process and transport faults, cleanup failure, access-denied classification, resource release, and adapter budget enforcement still need adapter runtime qualification.
 Native discovery and resume remain adapter qualification obligations.
+
+## Private Codex transport
+
+`openCodexTransport` borrows one channel registration and detaches it once. The host owns channel and native-process shutdown.
+`detach` can run synchronously inside channel callbacks or an active, unsettled `write`.
+Requests, notifications, and required server replies share one bounded FIFO and one active writer. A scheduled pump leaves reader delivery before writing.
+The shared wire reader owns frame and chunk byte bounds. No second input queue exists. Adapter handlers and observers enter outside reader delivery.
+Handler entry and correlated reply delivery can precede queued observations. Adapters correlate native identifiers independently of observation order.
+Client waits and server ID leases have separate bounds. Server IDs remain leased until their required reply write actually settles.
+Caller signals own wait deadlines. Queued cancellation means `not-sent`; cancellation after write entry means `uncertain`.
+`written` proves local write settlement. A correlated `reply` preserves native data but proves neither native acceptance nor safe replay.
+Handler, observer, and writer deadlines close local transport ownership. Noncooperative actual operations remain leased until they settle.
+Request callbacks awaiting human decisions retain their lease. `handlerTimeoutMs` therefore bounds approval latency for the whole session.
+The first terminal reason, diagnostic tail, detach failure, and unsettled-operation snapshot form one stable close report.
+The report also counts parsed observations that never entered the observer and scheduled requests that never entered their callback, including the overflow-triggering observation.
+Bytes after the first terminal are ignored and excluded from discard counts. Host channels forward remaining stdout and stderr before signalling `process-exit` or `eof`.
+Close shuts the reader before abort signals or detach can reenter. Pending waits settle promptly without waiting for borrowed operations to stop.
+Caller output overflow refuses that caller. Each server lease reserves one reply slot. Observation overflow closes with explicit discard counts.
+Frame bytes, chunk bytes, diagnostic tail bytes, pending calls, server leases, writes, observations, and three callback deadlines are explicit bounds.
+Retained serialized bytes are bounded by one reader frame, the caller and reply output slots, and the diagnostic tail.
+Observation slots bound parsed objects whose source frames obey the frame bound. Parsed objects have separate heap costs.
+Trusted outgoing serialization and consumer-retained data are outside those memory bounds. Timers cannot preempt synchronous JavaScript.
+Raw envelopes and diagnostic bytes stay private. The adapter owns method decoding, unsupported replies, admitted extensions, and redaction. Trusted request callbacks can return `RpcReply.error` without closing the session; an actual throw or rejection closes with `handler-error` and sends no reply.
+This private component does not spawn native processes, qualify routes, infer approvals, retry work, or establish complete adapter readiness.
 
 ## Event delivery
 
@@ -294,7 +365,9 @@ The helper checks correspondence, not native authority. It never dispatches duri
 ## Native prerequisites and checked evidence
 
 Node 24.22.3 with npm 11.19.1 is the selected foundation toolchain.
-TypeScript 7.0.2 compiles the package with strict NodeNext settings, ES2022 libraries, and Node declarations.
+TypeScript 7.0.2 compiles the core with strict NodeNext settings, ES2022 libraries, and Node declarations.
+The isolated Pi project uses ES2024 and `skipLibCheck: true` because Pi 1.5.2 declarations fail TS1543.
+Root and installed consumer compilation retain `skipLibCheck: false`, and the package gate checks that Pi public declarations do not load SDK declarations.
 TypeScript consumers need `@types/node` as a development dependency for public `AbortSignal` contracts.
 The package and installed consumer checks use pinned `@types/node` 24.19.2 without DOM libraries.
 The supported Node range stays within this selected major until other versions receive validation.

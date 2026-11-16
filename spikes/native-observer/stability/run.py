@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import errno
 import hashlib
 import json
 import os
 import re
+import selectors
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,6 +24,7 @@ containers = {}
 images = {}
 tag = None
 stage = 'identities'
+CAPTURE_LIMIT = 16 * 1024 * 1024
 
 
 def digest(path):
@@ -32,24 +35,136 @@ def save(name, data):
     (OUT / name).write_text(json.dumps(data, indent=2) + '\n')
 
 
+def _capture(args, timeout, binary):
+    streams = {name: dict(prefix=bytearray(), observed=0, eof=False, pipe=None, nonblocking=False)
+               for name in ('stdout', 'stderr')}
+    selector, failure, secondary = None, None, []
+
+    def read(stream):
+        budget = CAPTURE_LIMIT + 1 - stream['observed']
+        if stream['eof'] or not budget or not stream['nonblocking']:
+            return
+        try:
+            data = os.read(stream['pipe'].fileno(), min(65536, budget))
+        except BlockingIOError:
+            return
+        stream['observed'] += len(data)
+        stream['prefix'].extend(data[:CAPTURE_LIMIT - len(stream['prefix'])])
+        if not data:
+            stream['eof'] = True
+
+    proc = subprocess.Popen(args, env=ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=not binary)
+    try:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        selector = selectors.DefaultSelector()
+        for name, stream in streams.items():
+            stream['pipe'] = getattr(proc, name)
+            os.set_blocking(stream['pipe'].fileno(), False)
+            stream['nonblocking'] = True
+            selector.register(stream['pipe'], selectors.EVENT_READ, stream)
+
+        while selector.get_map():
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise subprocess.TimeoutExpired(args, timeout)
+            for key, events in selector.select(remaining):
+                read(key.data)
+                if key.data['eof']:
+                    selector.unregister(key.fileobj)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(args, timeout)
+            if any(stream['observed'] > CAPTURE_LIMIT for stream in streams.values()):
+                raise OSError(errno.EOVERFLOW, 'command capture limit exceeded')
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise subprocess.TimeoutExpired(args, timeout)
+        proc.wait(timeout=remaining)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(args, timeout)
+    except BaseException as error:
+        failure = error
+    finally:
+        if failure is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            except BaseException as error:
+                secondary.append(error)
+            for stream in streams.values():
+                try:
+                    read(stream)
+                except BaseException as error:
+                    secondary.append(error)
+        for name, stream in streams.items():
+            try:
+                getattr(proc, name).close()
+            except BaseException as error:
+                secondary.append(error)
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException as error:
+                secondary.append(error)
+        try:
+            proc.wait()
+        except BaseException as error:
+            secondary.append(error)
+    if failure is None and secondary:
+        failure = secondary.pop(0)
+    if failure is not None and isinstance(failure, Exception) and not isinstance(failure, subprocess.TimeoutExpired):
+        cause = failure
+        failure = OSError(errno.EOVERFLOW, f'command capture refused: {cause}')
+        failure.__cause__ = cause
+    capture = dict(limitBytes=CAPTURE_LIMIT, complete=failure is None, incomplete=failure is not None,
+                   overflow=any(s['observed'] > CAPTURE_LIMIT for s in streams.values()))
+    for name, stream in streams.items():
+        raw = bytes(stream['prefix'])
+        capture[name] = dict(retainedBytes=len(raw), retainedSha256=hashlib.sha256(raw).hexdigest(),
+                             observedBytes=stream['observed'], eof=stream['eof'])
+    stdout, stderr = (bytes(streams[name]['prefix']) for name in ('stdout', 'stderr'))
+    if failure is not None:
+        for error in secondary:
+            failure.add_note(f'capture cleanup error: {error!r}')
+        failure.output, failure.stderr, failure.capture = stdout, stderr, capture
+        if isinstance(failure, subprocess.TimeoutExpired):
+            failure.cmd, failure.timeout = args, timeout
+        else:
+            capture['reason'] = str(failure)
+        raise failure
+    if not binary:
+        stdout, stderr = (raw.decode(getattr(proc, name).encoding, getattr(proc, name).errors)
+                          .replace('\r\n', '\n').replace('\r', '\n')
+                          for name, raw in (('stdout', stdout), ('stderr', stderr)))
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr), capture
+
+
 def run(args, timeout=15, check=True, binary=False):
     try:
-        result = subprocess.run(args, env=ENV, capture_output=True, text=not binary, timeout=timeout)
-    except subprocess.TimeoutExpired as error:
+        result, capture = _capture(args, timeout, binary)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        if not hasattr(error, 'capture'):
+            raise
         stdout, stderr = error.output or b'', error.stderr or b''
         partial = {stream: f'command-{len(commands)}.{stream}.partial' for stream in ['stdout', 'stderr']}
-        (OUT / partial['stdout']).write_bytes(stdout)
-        (OUT / partial['stderr']).write_bytes(stderr)
-        commands.append(dict(args=args, code=None, timedOut=True, timeout=timeout,
-                             partialFiles=partial,
-                             stdout={'sha256': hashlib.sha256(stdout).hexdigest(), 'bytes': len(stdout)}
-                             if binary else stdout.decode(errors='replace'),
-                             stderr=stderr.decode(errors='replace')))
-        save('commands.json', commands)
+        try:
+            commands.append(dict(args=args, code=None, timedOut=isinstance(error, subprocess.TimeoutExpired),
+                                 timeout=timeout, captureRefused=not isinstance(error, subprocess.TimeoutExpired),
+                                 overflow=error.capture['overflow'], incomplete=True, capture=error.capture,
+                                 partialFiles=partial,
+                                 stdout={'prefixSha256': hashlib.sha256(stdout).hexdigest(), 'retainedBytes': len(stdout)}
+                                 if binary else stdout.decode(errors='replace'), stderr=stderr.decode(errors='replace')))
+            (OUT / partial['stdout']).write_bytes(stdout)
+            (OUT / partial['stderr']).write_bytes(stderr)
+            save('commands.json', commands)
+        except OSError as evidence_error:
+            if not isinstance(error, subprocess.TimeoutExpired):
+                raise
+            error.add_note(f'command evidence error: {evidence_error!r}')
         raise
     output = {'sha256': hashlib.sha256(result.stdout).hexdigest(), 'bytes': len(result.stdout)} if binary else result.stdout
     commands.append(dict(args=args, code=result.returncode, stdout=output,
-                         stderr=result.stderr.decode() if binary else result.stderr))
+                         stderr=result.stderr.decode() if binary else result.stderr, capture=capture))
     save('commands.json', commands)
     if check and result.returncode:
         raise RuntimeError(commands[-1])
@@ -154,7 +269,7 @@ def check_notice(mode, evidence):
     return match[1]
 
 
-def main(raw=False):
+def main(raw=False, compile_args=()):
     global tag, stage
     assert digest(DOCKER) == 'd79e988b423edbe34460a2e4d86ecc841997f16c5e2a2ee5263f679d0c483a84'
     assert digest(ZIG) == '9fb480d3398506f5e2bef77f175766a8de0ee191dbdfbfb0c117a1150f141c91'
@@ -176,7 +291,7 @@ def main(raw=False):
     stage = 'build'
     binary = OUT / 'prerequisite'
     run([ZIG, 'cc', '-target', 'aarch64-linux-musl', '-static', '-O2', '-Wall', '-Wextra', '-Werror',
-         str(HERE / 'prerequisite.c'), '-o', str(binary)], timeout=60)
+         str(HERE / 'prerequisite.c'), '-o', str(binary), *compile_args], timeout=60)
     hashes = {path.name: digest(path) for path in [binary, *sorted(
         path for path in HERE.iterdir() if path.suffix in ('.c', '.py', '.json', '.md'))]}
     if raw:
@@ -222,9 +337,8 @@ def main(raw=False):
         for mode in MODES:
             stage = mode
             cases.append(collect(create('raw-' + mode), mode, init_hash))
-        save('result.json', {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': cases,
-                             'stability': 'INCONCLUSIVE', 'scope': 'Single raw target only.'})
-        return
+        return {'status': 'SUPPORTED_SINGLE_TARGET_ADMISSION', 'cases': cases,
+                'stability': 'INCONCLUSIVE', 'scope': 'Single raw target only.'}
     cases = []
     for mode in ['normal', 'inherited', 'death']:
         stage = mode
@@ -255,24 +369,27 @@ def main(raw=False):
         remove(cid)
         cases.append({'mode': mode, 'cleanup': 'target absent with live init before removal',
                       'initReaping': 'inferred from orphan disappearance' if mode == 'death' else 'tracer waitpid observed'})
-    save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'observed', 'cases': cases,
-                         'reason': 'Finite stability mechanism is not implemented.'})
+    return {'status': 'INCONCLUSIVE', 'prerequisites': 'observed', 'cases': cases,
+            'reason': 'Finite stability mechanism is not implemented.'}
 
 
-def execute(raw=False):
+def execute(raw=False, suite=None, finalize=None):
     OUT.mkdir(parents=True)
     (OUT / 'docker-config').mkdir()
     save('commands.json', commands)
+    result = {'status': 'INCONCLUSIVE'}
+    pending = OUT / 'result.pending'
+    save('result.json', result)
     try:
-        main(raw)
-    except Exception as error:
-        save('result.json', {'status': 'INCONCLUSIVE', 'prerequisites': 'unavailable',
-                             'stage': stage, 'error': str(error),
-                             'nativeCleanup': 'unverified; inspect retained evidence'})
-    finally:
-        cleanup()
+        try:
+            result = (suite or main)(raw)
+        except Exception as error:
+            result.update(status='INCONCLUSIVE', prerequisites='unavailable',
+                          stage=stage, error=str(error),
+                          nativeCleanup='unverified; inspect retained evidence')
+        finally:
+            cleanup()
         report = json.loads((OUT / 'cleanup.json').read_text())
-        result = json.loads((OUT / 'result.json').read_text())
         if report['errors'] or report['containers'] or report['image']:
             result.update(status='INCONCLUSIVE', cleanup='unresolved ownership')
         result.update(commandsSha256=digest(OUT / 'commands.json'),
@@ -283,10 +400,26 @@ def execute(raw=False):
             except Exception as error:
                 result.update(status='INCONCLUSIVE', noticeIdentity=str(error))
             result['noticeControlsSha256'] = digest(OUT / 'notice-controls.json')
-        save('result.json', result)
+        save('result.json', dict(result, status='INCONCLUSIVE'))
+        refused = any(key in result for key in ('error', 'noticeIdentity', 'cleanup', 'nativeCleanup', 'refusal'))
+        if finalize is not None:
+            result = finalize(result)
+        if refused:
+            result['status'] = 'INCONCLUSIVE'
+        save(pending.name, result)
+        pending.replace(OUT / 'result.json')
         print(OUT)
         print((OUT / 'result.json').read_text())
         print((OUT / 'cleanup.json').read_text())
+    except BaseException as error:
+        result.update(status='INCONCLUSIVE', refusal=str(error))
+        try:
+            pending.unlink(missing_ok=True)
+        finally:
+            save('result.json', result)
+        if not isinstance(error, Exception):
+            raise
+    return result
 
 
 if __name__ == '__main__':
