@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
-import { admittedPath, resultPath, requestBudget } from './inventory.mjs';
+import { admittedPath, evidenceOf, exportOf, observeSource, resultPath, requestBudget, selectorFor, verifySource } from './inventory.mjs';
 import { accountReads, accountLogin, accountProfile, accountRouting } from './account-reads.mjs';
 import { nativeClient } from './client.mjs';
 import { historyCopies } from './history-copy.mjs';
@@ -53,11 +54,15 @@ if (routingServer) Object.assign(config, accountProfile(`http://127.0.0.1:${rout
 const clients = [];
 const evidence = { mode };
 if (mode === 'account-reads') evidence.accounts = { hypothesis: 'H1', status: 'inconclusive', requesters: [] };
+const progressLimit = 512 * 1024;
+const overflow = `${JSON.stringify({ progressOverflow: { limit: progressLimit, disposition: 'later progress omitted' } })}\n`;
 let progressBytes = 0;
 function retainProgress(observation) {
+  if (evidence.progressTruncated) return;
   const line = `${JSON.stringify(observation)}\n`;
   const bytes = Buffer.byteLength(line);
-  if (progressBytes + bytes > 512 * 1024) { evidence.progressTruncated = true; return; }
+  // The one-time marker's bytes stay reserved, so overflow is always observable within the budget.
+  if (progressBytes + bytes > progressLimit - overflow.length) { evidence.progressTruncated = true; process.stderr.write(overflow); return; }
   progressBytes += bytes;
   process.stderr.write(line);
 }
@@ -77,24 +82,6 @@ async function connect(overrides = {}) {
   await client.call('initialize', { clientInfo: { name: 'switchboard_discovery_fixture', version: '0' }, capabilities: { experimentalApi: true } });
   client.initialized();
   return client;
-}
-function filesUnder(directory) {
-  if (!existsSync(directory)) return [];
-  if (!lstatSync(directory).isDirectory()) return [];
-  const files = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.isDirectory()) files.push(...filesUnder(`${directory}/${entry.name}`).map((file) => `${entry.name}/${file}`));
-    else files.push(entry.name);
-  }
-  return files.sort();
-}
-function sourceFiles() {
-  return readdirSync(root).filter((file) => (file === 'sessions' && lstatSync(`${root}/${file}`).isFile()) || (accountMode ? file.includes('.sqlite') || file.startsWith('thread_history') : /\.sqlite(?:-(?:wal|shm))?$/.test(file)))
-    .concat(['sessions', 'archived_sessions'].flatMap((dir) => filesUnder(`${root}/${dir}`).map((file) => `${dir}/${file}`))).sort();
-}
-function snapshot(files) {
-  return Object.fromEntries(files.map((file) => [file, lstatSync(`${root}/${file}`).isSymbolicLink()
-    ? `symlink:${readlinkSync(`${root}/${file}`)}` : createHash('sha256').update(readFileSync(`${root}/${file}`)).digest('hex')]));
 }
 const sources = ['cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview', 'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther', 'unknown'];
 const params = { limit: 1, sourceKinds: sources, modelProviders: ['fixture'], cwd: '/tmp/project', archived: false,
@@ -235,26 +222,31 @@ try {
       } : {}) });
     }
     await client.stop();
-    const files = sourceFiles();
+    const capture = observeSource(root, selectorFor(mode), { fs, stage: 'creator capture' });
+    const files = [...capture.entries.keys()].filter((file) => capture.entries.get(file).kind === 'file');
     for (const record of records) assert(files.includes(record.path), 'Native persisted its returned fixture path');
     assert(files.some((file) => file.startsWith('state_')));
     assert(files.some((file) => file.startsWith('thread_history_')));
-    output = { records, files: Object.fromEntries(files.map((file) => [file, readFileSync(`${root}/${file}`).toString('base64')])) };
+    // The host reads this output through an 8 MiB buffer; 256 KiB stays reserved for records and the envelope.
+    output = { records, files: exportOf(capture, 8 * 1024 * 1024 - 256 * 1024) };
   } else {
     const records = JSON.parse(readFileSync('/opt/records.json', 'utf8'));
     const authorized = records.filter((record) => record.name !== 'unauthorized');
-    const protectedFiles = sourceFiles();
-    const before = snapshot(protectedFiles);
-    evidence.sourceHashes = before;
     evidence.preservation = [];
+    const baseline = observeSource(root, selectorFor(mode), { fs });
+    evidence.source = evidenceOf(baseline);
+    retainProgress({ sourceBaseline: { selector: baseline.selection.label, digest: baseline.digest, counters: baseline.counters } });
     verifySources = (stage) => {
-      assert.deepEqual(sourceFiles(), protectedFiles, `Source file set preserved at ${stage}`);
-      assert.deepEqual(snapshot(protectedFiles), before, `Source bytes preserved at ${stage}`);
+      let checkpoint;
+      try { checkpoint = verifySource(baseline, stage); }
+      catch (error) { evidence.sourceRefusal ??= error.evidence; throw error; }
       evidence.preservation.push(stage);
-      retainProgress({ sourcePreservation: stage, hashes: before });
+      evidence.source.rootChanges = checkpoint.rootChanges;
+      const { addedCount, removedCount } = checkpoint.rootChanges;
+      retainProgress({ sourcePreservation: stage, digest: baseline.digest, counters: checkpoint.counters, rootChanges: { addedCount, removedCount } });
     };
     verifySources('before startup');
-    if (mode === 'account-reads') copyHistory = historyCopies(root, JSON.parse(readFileSync('/opt/inventory.json', 'utf8')), verifySources, evidence);
+    if (mode === 'account-reads') copyHistory = historyCopies(root, JSON.parse(readFileSync('/opt/inventory.json', 'utf8')), verifySources, evidence, baseline);
     assert.throws(() => writeFileSync(`${root}/sessions/write-probe`, 'fixture'), (error) => ['EROFS', 'ENOTDIR'].includes(error.code));
     const suffix = mode === 'account-reads' ? '-accountA' : '';
     const client = await connect({ sqlite_home: `/tmp/private-index${suffix}`, log_dir: `/tmp/private-logs${suffix}` });
@@ -263,7 +255,7 @@ try {
     assert.equal(resolved.config.sqlite_home, `/tmp/private-index${suffix}`);
     const expected = (names) => records.filter((record) => names.includes(record.name)).map((record) => record.id).sort();
     const ids = (items) => items.map((item) => item.id).sort();
-    const report = Object.assign(evidence, { sourceFiles: protectedFiles.length, sqliteHome: resolved.config.sqlite_home });
+    const report = Object.assign(evidence, { sourceFiles: [...baseline.entries.values()].filter((entry) => entry.kind === 'file').length, sqliteHome: resolved.config.sqlite_home });
     if (['indexed', 'unindexed', 'malformed'].includes(mode)) report.pathInspection = await pathObservations(client, records);
     if (mode === 'account-reads') {
       await accountReads({ connect, initialClient: client, accountLogin, records, root, params, verifySources, report: evidence.accounts,
@@ -341,11 +333,11 @@ try {
     }
     verifySources('after drained shutdown');
     assert.equal(inference, 0);
-    evidence.preservationSummary = 'read-only history and every original SQLite file unchanged at startup, listing, shutdown';
     evidence.inferenceRequests = inference;
   }
 } catch (error) {
   if (evidence.pathInspection?.enumeration === 'in-progress') evidence.pathInspection.enumeration = 'failed';
+  if (error.evidence) evidence.sourceRefusal ??= error.evidence;
   evidence.failure = { message: error.message, stack: error.stack };
   process.exitCode = 1;
 } finally {
@@ -359,6 +351,7 @@ try {
   evidence.inferenceRequests = inference;
   output.fixtureRequests = requests;
   if (evidence.progressTruncated) { evidence.failure = { message: 'Required bounded progress was truncated' }; process.exitCode = 1; }
+  if (evidence.source?.entriesOmitted) { evidence.failure = { message: 'Required bounded source evidence was omitted' }; process.exitCode = 1; }
   if (!mode.startsWith('prepare') && inference !== 0) {
     evidence.failure = { message: 'Inference observed during inspection or shutdown' };
     process.exitCode = 1;
@@ -368,5 +361,12 @@ try {
     await new Promise((resolve) => owned.close(resolve));
   }
 }
-if (mode === 'account-reads' && !process.exitCode) evidence.accounts.status = 'negative-public-read-result';
+// The only promotion site: every checkpoint through final shutdown passed and nothing failed, overflowed or was omitted.
+if (!mode.startsWith('prepare') && !process.exitCode && !evidence.progressTruncated && !evidence.source?.entriesOmitted
+  && evidence.preservation?.at(-1) === 'after final shutdown attempts') {
+  const { addedCount = 0, removedCount = 0 } = evidence.source.rootChanges ?? {};
+  evidence.preservationSummary = 'selected history, directories and SQLite files unchanged in metadata and bytes at every checkpoint through final shutdown attempts'
+    + (addedCount + removedCount ? `; ${addedCount} added and ${removedCount} removed unselected root entries recorded, not protected` : '');
+  if (mode === 'account-reads') evidence.accounts.status = 'negative-public-read-result';
+}
 console.log(JSON.stringify(output));
