@@ -8,16 +8,26 @@ assert.equal(process.argv.length, 3, 'Usage: node scripts/verify-agui-fork-sourc
 const repository = resolve(process.argv[2]);
 const pin = JSON.parse(await readFile(new URL('../docs/protocol/ag-ui-fork.json', import.meta.url), 'utf8'));
 const canonical = JSON.parse(await readFile(new URL('../docs/protocol/ag-ui-pin.json', import.meta.url), 'utf8'));
-const options = { timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 };
-const git = (...args) => execFileSync('git', ['-C', repository, ...args], options);
+// Ambient GIT_* variables (GIT_DIR, GIT_OBJECT_DIRECTORY, ...) and replace refs could substitute other objects.
+const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
+env.GIT_NO_REPLACE_OBJECTS = '1';
+const options = { env, timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 };
+const gitArgs = (args) => ['--no-replace-objects', '-C', repository, ...args];
+const git = (...args) => execFileSync('git', gitArgs(args), options);
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const commit = (value) => {
   assert.match(value, /^[a-f0-9]{40}$/, 'Expected an immutable Git commit');
-  assert.equal(git('rev-parse', `${value}^{commit}`).toString().trim(), value);
+  const result = spawnSync('git', gitArgs(['rev-parse', '--verify', '--quiet', `${value}^{commit}`]), options);
+  assert.ifError(result.error);
+  if (result.status !== 0) {
+    assert.fail(`Commit ${value} is absent from ${repository}; fetch the combined, included, and observed commits listed in the fork manifest first.`);
+  }
+  assert.equal(result.stdout.toString().trim(), value);
   return value;
 };
 const ancestor = (value) => {
-  const result = spawnSync('git', ['-C', repository, 'merge-base', '--is-ancestor', commit(value), pin.sourceCommit], options);
+  const result = spawnSync('git', gitArgs(['merge-base', '--is-ancestor', commit(value), pin.sourceCommit]), options);
   assert.ifError(result.error);
   assert([0, 1].includes(result.status), result.stderr?.toString());
   return result.status === 0;
@@ -36,18 +46,22 @@ for (const [path, digest] of Object.entries(pin.files)) {
   assert.equal(sha(bytes), digest, `Fork SHA-256 ${path}`);
   files.set(path, bytes);
 }
+const pinned = (path) => {
+  assert(files.has(path), `Pinned file missing from the fork manifest: ${path}`);
+  return files.get(path);
+};
 for (const path of ['spec/1.0/schema.json', 'spec/1.0/fixtures/MANIFEST.txt', 'LICENSE']) {
-  assert.equal(sha(files.get(path)), canonical.upstreamFiles[path], `Historical canonical parity ${path}`);
+  assert.equal(sha(pinned(path)), canonical.upstreamFiles[path], `Historical canonical parity ${path}`);
 }
 for (const expected of pin.packages) {
-  const manifest = JSON.parse(files.get(`${expected.path}/package.json`));
+  const manifest = JSON.parse(pinned(`${expected.path}/package.json`));
   assert.equal(manifest.name, expected.name, 'Source package name');
   assert.equal(manifest.version, expected.version, `Source version ${expected.name}`);
   assert.equal(manifest.license, 'MIT', `Source license ${expected.name}`);
-  const entry = files.get(`${expected.path}/src/index.ts`).toString();
+  const entry = pinned(`${expected.path}/src/index.ts`).toString();
   for (const name of expected.publicExports) {
-    assert.match(entry, new RegExp(`export[^;]*\\b${name}\\b`, 's'), `Public source export ${expected.name} ${name}`);
+    assert.match(entry, new RegExp(`^export\\b[^;]*\\b${escape(name)}\\b`, 'ms'), `Public source export ${expected.name} ${name}`);
   }
 }
 process.stdout.write(`Verified source only at ${pin.sourceCommit}.\n`);
-process.stdout.write('Package installation, runtime adoption, native behavior and live routes remain unqualified.\n');
+process.stdout.write('This check does not install packages. Run npm run verify:package for installed core adoption; native behavior and live routes remain unqualified.\n');

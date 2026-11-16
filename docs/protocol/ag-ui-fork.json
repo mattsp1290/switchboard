@@ -7,6 +7,7 @@
   "artifactAcquisitionIssue": "agentui-wtdo",
   "sourceBranches": [
     {
+      "pullRequestRepository": "https://github.com/ag-ui-protocol/ag-ui",
       "pullRequest": 3360,
       "branch": "codex/codex-sdk-integration",
       "includedCommit": "cdeb18106f7061b351460248a1f67c746ef9ce27",
@@ -14,6 +15,7 @@
       "observedCommitIncluded": true
     },
     {
+      "pullRequestRepository": "https://github.com/ag-ui-protocol/ag-ui",
       "pullRequest": 3357,
       "branch": "codex/pi-typescript-integration",
       "includedCommit": "ddc3279ad40b16b1e124c23738caf2eb1bc419b8",

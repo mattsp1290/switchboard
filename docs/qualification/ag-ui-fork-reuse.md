@@ -28,7 +28,7 @@ The verifier does not resolve moving refs or fetch new commits.
 
 ## Reproduce source verification
 
-Run the local Git-object check with an AG-UI repository containing the pinned commits.
+Run the local Git-object check with an AG-UI repository containing the combined, included, and observed commits listed in the fork manifest.
 
 ```sh
 node scripts/verify-agui-fork-source.mjs /absolute/path/to/ag-ui
@@ -65,14 +65,16 @@ These gaps remain qualification requirements, rather than permission to reduce n
 
 `agentui-wtdo` owns portable delivery and qualification of the six frozen fork archives.
 Its delivery at [AgentUI commit 661216e](https://github.com/mattsp1290/agentui/commit/661216eab627be33067951ffad7a1691127a80fe) supplies Switchboard's core archive.
-The delivery's review remains pending. Its immutable identity does not imply approval of that AgentUI change.
+The delivery merged to AgentUI `main` through [AgentUI PR 5](https://github.com/mattsp1290/agentui/pull/5). Its immutable identity does not by itself approve later AgentUI changes.
 `switchboard-193h` owns Switchboard's installed core adoption from this delivery.
 
 The development dependency and installed integration consumer use the exact `coreArtifact.url` from the fork manifest.
 The archive has 193,883 bytes and is byte-identical to the historical canonical core artifact.
 Its SHA-256 and npm integrity stay separate from the source tree and file hashes.
 The installed check requires one AG-UI core package with that URL, version, and integrity, with no nested or registry fallback.
+`npm test` runs `verify:package`, which also checks that the archive identity matches the canonical core artifact and the lockfile root and entry select it.
 Run `npm ci` and `npm run verify:package` with the selected toolchain to verify the actual dependency and projection behavior.
+Every `npm ci` fetches the archive from `raw.githubusercontent.com`, so public `mattsp1290/agentui` must keep commit `661216e` reachable from `main`.
 The source-only check above cannot establish that installed result.
 The optional peer remains `@ag-ui/core@1.0.4`; the root package has no mandatory runtime dependency.
 No unused Codex or Pi dependency is added.

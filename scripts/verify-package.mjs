@@ -12,11 +12,36 @@ import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-com
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const { coreArtifact } = JSON.parse(readFileSync(join(root, 'docs/protocol/ag-ui-fork.json'), 'utf8'));
+const fork = JSON.parse(readFileSync(join(root, 'docs/protocol/ag-ui-fork.json'), 'utf8'));
+const { coreArtifact } = fork;
+const canonicalCore = JSON.parse(readFileSync(join(root, 'docs/protocol/ag-ui-pin.json'), 'utf8')).artifacts
+  .find((artifact) => artifact.package === coreArtifact.package && artifact.version === coreArtifact.version);
+assert(canonicalCore, 'The canonical pin records the fork core package and version.');
+assert.equal(coreArtifact.sha256, canonicalCore.sha256, 'Fork core archive is byte-identical to the canonical core artifact.');
+assert.equal(coreArtifact.integrity, canonicalCore.integrity, 'Fork core archive integrity matches the canonical core artifact.');
+assert.equal(coreArtifact.version, manifest.peerDependencies['@ag-ui/core'], 'Fork core archive version matches the optional peer.');
+assert(Number.isInteger(coreArtifact.bytes) && coreArtifact.bytes > 0, 'Fork core archive records its byte length.');
+assert.match(coreArtifact.deliveryCommit, /^[a-f0-9]{40}$/, 'Fork core archive delivery is an immutable commit.');
+const deliveryRaw = coreArtifact.deliveryRepository.replace(/^https:\/\/github\.com\//, 'https://raw.githubusercontent.com/');
+assert.equal(
+  coreArtifact.url,
+  `${deliveryRaw}/${coreArtifact.deliveryCommit}/vendor/ag-ui/${fork.sourceCommit}/ag-ui-core-${coreArtifact.version}.tgz`,
+  'Fork core archive URL is pinned to the delivery commit and fork source.',
+);
 assert.equal(manifest.devDependencies['@ag-ui/core'], coreArtifact.url, 'Development uses the frozen fork core archive.');
+
+// Each lockfile must hold exactly one AG-UI package: the fork core archive, with no nested or registry copy.
+function assertForkCoreLock(lock, label) {
+  const aguiPackages = Object.entries(lock.packages).filter(([path]) => /(?:^|\/)node_modules\/@ag-ui\//.test(path));
+  assert.deepEqual(aguiPackages.map(([path]) => path), ['node_modules/@ag-ui/core'], `${label} installs only one fork AG-UI core package.`);
+  const [[, core]] = aguiPackages;
+  assert.equal(core.version, coreArtifact.version, `${label} fork core version.`);
+  assert.equal(core.resolved, coreArtifact.url, `${label} resolves the frozen fork archive without registry fallback.`);
+  assert.equal(core.integrity, coreArtifact.integrity, `${label} pins the fork archive integrity.`);
+}
 const developmentLock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
-assert.equal(developmentLock.packages['node_modules/@ag-ui/core'].resolved, coreArtifact.url);
-assert.equal(developmentLock.packages['node_modules/@ag-ui/core'].integrity, coreArtifact.integrity);
+assert.equal(developmentLock.packages[''].devDependencies['@ag-ui/core'], coreArtifact.url, 'Development lock root selects the fork core archive.');
+assertForkCoreLock(developmentLock, 'Development lock');
 
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
@@ -376,14 +401,7 @@ try {
     coreArtifact.url,
     `@types/node@${manifest.devDependencies['@types/node']}`,
   ], integration));
-  const integrationLock = JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8'));
-  const aguiPackages = Object.entries(integrationLock.packages)
-    .filter(([path]) => /(?:^|\/)node_modules\/@ag-ui\//.test(path));
-  assert.deepEqual(aguiPackages.map(([path]) => path), ['node_modules/@ag-ui/core'], 'Only one fork AG-UI core package is installed.');
-  const [[, installedCore]] = aguiPackages;
-  assert.equal(installedCore.version, coreArtifact.version);
-  assert.equal(installedCore.resolved, coreArtifact.url, 'Installed consumer uses the frozen fork archive without registry fallback.');
-  assert.equal(installedCore.integrity, coreArtifact.integrity, 'Installed fork archive integrity.');
+  assertForkCoreLock(JSON.parse(readFileSync(join(integration, 'package-lock.json'), 'utf8')), 'Installed consumer');
   assert(!existsSync(join(integration, 'node_modules/zod')), 'Integration consumer has no optional Zod installed.');
   const aguiFixtures = readdirSync(join(root, 'tests/agui')).filter((file) => file.endsWith('.ts')).sort();
   const aguiTests = aguiFixtures.filter((file) => file.endsWith('.test.ts'));

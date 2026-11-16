@@ -118,6 +118,8 @@ const run = (command, args, options = {}) => {
   return result.stdout;
 };
 try {
+  // The SDK parity matrix installs the registry tarball pinned in ag-ui-pin.json. verify-package.mjs asserts that the
+  // fork core archive in ag-ui-fork.json has the same sha256 and integrity, so these results cover both deliveries.
   for (const artifact of pin.artifacts) {
     const bytes = await pinned(artifact.file, artifact.url, artifact.sha256);
     if (artifact.integrity) assert.equal(`sha512-${sha(bytes, 'sha512', 'base64')}`, artifact.integrity);
