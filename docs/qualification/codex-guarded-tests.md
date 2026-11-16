@@ -2,7 +2,7 @@
 
 `npm run test:codex-guarded` runs the three Codex spike suites in `tests/spikes/` under a test-hygiene guard:
 `codex-account.test.mjs` (4 tests), `codex-history.test.mjs` (3) and `codex-lifecycle.test.mjs` (13).
-It exists so these 20 tests cannot reach a contributor's processes, network or credentials by accident.
+It exists so these 20 tests cannot start or signal a contributor's processes or open network connections by accident.
 It is the first step on the Codex adapter path.
 
 ```sh
@@ -26,7 +26,7 @@ Two preloads load before the entry:
 
 - [`tripwire.mjs`](../../scripts/support/codex-guard/tripwire.mjs) refuses every bare package specifier before resolution.
   It is independent of the guard, so a missing guard still loads no package.
-- [`guard.mjs`](../../scripts/support/codex-guard/guard.mjs) replaces subprocess, network, socket/listener, DNS, worker,
+- [`guard.mjs`](../../scripts/support/codex-guard/guard.mjs) replaces subprocess, other-process signals, network, socket/listener, DNS, worker,
   inspector, loader-thread and native-addon entry points with refusers, and checks each slot by identity before arming.
   Its resolve and load hooks admit only the run's exact file closure and builtin allowlist from
   [`plan.mjs`](../../scripts/support/codex-guard/plan.mjs). Query re-imports such as `discovery.mjs?cold=…` are admitted by path.
@@ -52,10 +52,10 @@ A per-test inactivity deadline of 30 seconds, a per-run total, a command total, 
 the channel and line length kill the child with `SIGKILL`. The owned temporary root is removed only after every child is
 confirmed terminated. A child that is not confirmed gone, or a failed removal, fails the command and names the retained root.
 
-Before the suites, 19 inert controls from [`control.mjs`](../../tests/fixtures/codex-guard/control.mjs) must each fail
+Before the suites, 20 inert controls from [`control.mjs`](../../tests/fixtures/codex-guard/control.mjs) must each fail
 with exactly their expected failure codes, or pass when they should. They cover guard ordering and event identity,
 missing, substituted, duplicate, failed, skipped, nested and unstarted tests, early `process.exit(0)`, a nonzero exit code,
-a throwing `after()` hook, a crash, a hang, an output flood, caught and exit-phase refusals, builtin aliases, excluded and
+a throwing `after()` hook, a crash, a hang, an output flood, signalling another process, caught and exit-phase refusals, builtin aliases, excluded and
 short-circuited files, bare packages with and without the guard, and a sabotaged guard slot. If any control misbehaves,
 the suites do not run. [`codex-guard.test.mjs`](../../tests/codex-guard.test.mjs) unit-tests the verdict rules.
 
@@ -67,6 +67,8 @@ with `refusal: file …` or `closure-unused`, and the closure must be updated in
 ## Not claimed
 
 - No filesystem confinement. The suites keep their real owned-temporary filesystem use, and the guard never patches `fs`.
+- The builtin allowlist applies to `import` and `require`. `process.getBuiltinModule` bypasses it, so a guest can still reach
+  unrefused parts of other builtins (for example `vm`) that way; the denied entry points it returns are the guard's refusers.
 - No protection against a hostile guest, which could forge channel records. The threat model is accidental effects.
 - No SDK, native Codex or provider qualification. Nothing here exercises those paths.
 - POSIX only: the channel is file descriptor 3 and termination is confirmed with `kill(pid, 0)`.

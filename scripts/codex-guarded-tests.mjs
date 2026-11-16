@@ -31,7 +31,9 @@ function preflight() {
   for (const spec of SUITES) {
     if (!isFile(spec.entry)) continue;
     const source = readFileSync(spec.entry, 'utf8');
-    for (const name of ORACLE[spec.name]) if (!source.includes(`test('${name}'`)) problems.push(`${spec.name} has no test('${name}'`);
+    for (const name of ORACLE[spec.name]) {
+      if (!['\'', '"', '`'].some((quote) => source.includes(`test(${quote}${name}${quote}`))) problems.push(`${spec.name} has no test('${name}'`);
+    }
   }
   if (problems.length) throw new UsageError(problems.join('\n  '));
 }
@@ -78,7 +80,6 @@ async function runChild(spec, root, index, signal) {
   const total = setTimeout(() => stop('deadline'), spec.deadlines.totalMs);
   const onAbort = () => stop('aborted');
   signal.addEventListener('abort', onAbort, { once: true });
-  if (signal.aborted) onAbort();
 
   let pending = '';
   let channelBytes = 0;
@@ -91,7 +92,7 @@ async function runChild(spec, root, index, signal) {
     }
   };
   child.stdio[3].setEncoding('utf8').on('data', (chunk) => {
-    channelBytes += chunk.length;
+    channelBytes += Buffer.byteLength(chunk);
     pending += chunk;
     for (let at = pending.indexOf('\n'); at >= 0; at = pending.indexOf('\n')) {
       const line = pending.slice(0, at);
@@ -104,7 +105,7 @@ async function runChild(spec, root, index, signal) {
   for (const name of /** @type {const} */ (['stdout', 'stderr'])) {
     let bytes = 0;
     child[name].setEncoding('utf8').on('data', (chunk) => {
-      bytes += chunk.length;
+      bytes += Buffer.byteLength(chunk);
       tails[name] = (tails[name] + chunk).slice(-CAPS.tail);
       if (bytes > CAPS[name]) stop('output-overflow');
     });
@@ -112,8 +113,9 @@ async function runChild(spec, root, index, signal) {
 
   const ended = await new Promise((resolve) => {
     child.once('close', (code, signalName) => resolve({ code, signal: signalName, closed: true }));
-    child.once('error', () => { if (child.pid === undefined) resolve({ code: null, signal: null, closed: false }); });
+    child.on('error', () => { if (child.pid === undefined) resolve({ code: null, signal: null, closed: false }); });
     giveUp = () => setTimeout(() => resolve({ code: child.exitCode, signal: child.signalCode, closed: false }), 5000).unref();
+    if (signal.aborted) onAbort();
   });
   clearTimeout(perTest);
   clearTimeout(total);
@@ -132,6 +134,7 @@ function describe(record, failures) {
   const lines = failures.slice(0, 40).map((failure) => `  ${failure.code}: ${failure.detail}`);
   if (failures.length > 40) lines.push(`  ... ${failures.length - 40} more`);
   lines.push(`  evidence: pid ${record.outcome.pid}, ${record.events.length} channel records, stdout tail ${record.tails.stdout.length} B, stderr tail ${record.tails.stderr.length} B`);
+  if (record.tails.stdout) lines.push('  stdout tail:', indent(record.tails.stdout));
   if (record.tails.stderr) lines.push('  stderr tail:', indent(record.tails.stderr));
   return lines.join('\n');
 }
@@ -170,6 +173,7 @@ async function main() {
       console.log(`codex-guarded: ${CONTROLS.length} inert controls behaved as expected`);
       const suites = [];
       for (const spec of SUITES) {
+        if (abort.signal.aborted) { failures.push(`${spec.name}: not run, command aborted`); continue; }
         const record = await runChild(spec, root, records.length, abort.signal);
         records.push(record);
         suites.push(record);

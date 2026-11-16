@@ -61,6 +61,10 @@ const MODES = {
     pair();
     after(() => ignore(() => spawn('false')));
   },
+  'kill-other': () => pair(() => {
+    assert.equal(process.kill.name, 'guardedKill', 'process.kill must be the guard wrapper before it is called');
+    assert.throws(() => process.kill(process.ppid, 0), { message: /^codex guard refused call process\.kill$/ });
+  }),
   'late-refusal': () => {
     const connect = guarded('net', 'connect');
     const execFileSync = guarded('child_process', 'execFileSync');

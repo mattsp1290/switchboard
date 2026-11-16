@@ -105,6 +105,7 @@ export const CONTROLS = Object.freeze([
   control('hang', { expect: ['deadline', ...KILLED], deadlines: { perTestMs: 1000, totalMs: 4000 } }),
   control('flood', { expect: ['output-overflow', ...KILLED] }),
   control('after-refusal', { expect: ['refusal'], refusals: ['call child_process.spawn'] }),
+  control('kill-other', { expect: ['refusal'], refusals: ['call process.kill'] }),
   control('late-refusal', { expect: ['refusal'], refusals: ['call net.connect', 'call child_process.execFileSync'] }),
   control('alias', { expect: ['refusal'], refusals: ['builtin node:child_process', 'builtin node:child_process',
     'builtin node:net', 'builtin node:net'] }),
@@ -129,6 +130,7 @@ export function runSpec(name) {
 function suite(name, files) {
   const entry = `${REPO}/tests/spikes/codex-${name}.test.mjs`;
   return Object.freeze({ name, entry, args: [], files: [entry, ...files.map((file) => `${REPO}/${file}`)],
+    // Lifecycle's TERM/KILL test spends about 18 s in real timers, so 30 s keeps CI margin; do not lower it.
     builtins: BUILTINS, tests: ORACLE[name], preloads: 'full', deadlines: { perTestMs: 30_000, totalMs: 90_000 } });
 }
 

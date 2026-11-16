@@ -34,6 +34,7 @@ const ROWS = [
   ['armed by another pid', [armed({ pid: 7 }), ...loads(), ...passes(), summary(), exit()], closed(), ['armed-mismatch']],
   ['armed on another runtime', [armed({ node: 'v24.0.0' }), ...loads(), ...passes(), summary(), exit()], closed(), ['armed-mismatch']],
   ['armed for another run', [armed({ run: 'history' }), ...loads(), ...passes(), summary(), exit()], closed(), ['armed-mismatch']],
+  ['two armed records', [armed(), armed(), ...loads(), ...passes(), summary(), exit()], closed(), ['armed-mismatch']],
   ['armed after the entry loaded', [...loads(), armed(), ...passes(), summary(), exit()], closed(), ['armed-mismatch']],
   ['a product module loaded before the entry', [armed(), ...loads([...account.files].reverse()), ...passes(), summary(), exit()], closed(), ['entry-order']],
   ['a closure file never loaded', [armed(), ...loads(account.files.slice(0, -1)), ...passes(), summary(), exit()], closed(), ['closure-unused']],
@@ -62,6 +63,8 @@ const ROWS = [
   ['a nonzero process exit despite clean records', body(...passes(), summary(), exit()), closed({ code: 1 }), ['exit-nonzero']],
   ['a child not confirmed gone', body(...passes(), summary(), exit()), closed({ terminated: false }), ['not-terminated']],
   ['an owner deadline', body(...passes(), summary(), exit()), closed({ breach: 'deadline' }), ['deadline']],
+  ['a channel overflow', body(...passes(), summary(), exit()), closed({ breach: 'channel-overflow' }), ['channel-overflow']],
+  ['a command abort', body(...passes(), summary(), exit()), closed({ breach: 'aborted' }), ['aborted']],
   ['a canary failure before arming', [{ kind: 'canary-failed', labels: ['child_process.spawn'] }], closed({ code: 1 }),
     ['canary-failed', 'closure-unused', 'entry-order', 'exit-nonzero', 'exit-record-missing', 'missing-test', 'not-armed', 'summary-missing']],
 ];

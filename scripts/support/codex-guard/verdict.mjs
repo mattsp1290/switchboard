@@ -99,7 +99,7 @@ export function reduceRun(spec, events, outcome) {
   const refusals = valid.filter((event) => event.kind === 'refusal').map((event) => event.label);
   for (const label of refusals) fail('refusal', label);
 
-  reduceTests(spec, valid, fail);
+  const passed = reduceTests(spec, valid, fail);
 
   const summaries = valid.filter((event) => event.kind === 'summary');
   if (summaries.length === 0) fail('summary-missing', 'no test summary');
@@ -120,10 +120,13 @@ export function reduceRun(spec, events, outcome) {
     if (exit.code !== 0) fail('exit-nonzero', `exit record code ${exit.code}`);
   }
 
-  return failures.length ? { ok: false, pid: outcome.pid, failures, refusals } : { ok: true, pid: outcome.pid, passed: [...spec.tests] };
+  return failures.length ? { ok: false, pid: outcome.pid, failures, refusals } : { ok: true, pid: outcome.pid, passed };
 }
 
-/** @param {import('./plan.mjs').RunSpec} spec @param {readonly ChannelEvent[]} events @param {(code: FailureCode, detail: string) => void} fail */
+/**
+ * @param {import('./plan.mjs').RunSpec} spec @param {readonly ChannelEvent[]} events @param {(code: FailureCode, detail: string) => void} fail
+ * @returns {string[]} observed passing names, in completion order
+ */
 function reduceTests(spec, events, fail) {
   const started = new Set();
   const completed = new Set();
@@ -146,6 +149,7 @@ function reduceTests(spec, events, fail) {
     else passed.add(name);
   }
   for (const name of spec.tests) if (!passed.has(name)) fail('missing-test', name);
+  return [...passed];
 }
 
 /**

@@ -45,6 +45,7 @@ void process.stdout;
 void process.stderr;
 const require = createRequire(import.meta.url);
 const builtin = (name) => process.getBuiltinModule(name);
+const resolvers = (name) => Object.keys(require(`node:${name}`)).filter((key) => /^(lookup|resolve|reverse|Resolver$)/.test(key));
 const DENIED = {
   child_process: ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'],
   net: ['connect', 'createConnection', 'createServer'],
@@ -53,7 +54,8 @@ const DENIED = {
   https: ['request', 'get', 'createServer'],
   http2: ['connect', 'createServer', 'createSecureServer'],
   dgram: ['createSocket'],
-  dns: ['lookup', 'lookupService', 'resolve'],
+  dns: resolvers('dns'),
+  'dns/promises': resolvers('dns/promises'),
   worker_threads: ['Worker'],
   cluster: ['fork'],
   inspector: ['open'],
@@ -70,6 +72,12 @@ for (const [name, type, key] of PROTOTYPES) {
 for (const key of ['dlopen', 'binding', '_linkedBinding', 'execve']) {
   if (key in process) patch(`process.${key}`, process, key, () => Reflect.get(globalThis.process, key));
 }
+// Signalling the run's own pid stays allowed; any other process is out of bounds.
+const kill = process.kill;
+install('process.kill', process, 'kill', function guardedKill(pid, signal) {
+  if (Number(pid) !== process.pid) refuse('call', 'process.kill');
+  return Reflect.apply(kill, process, [pid, signal]);
+}, () => Reflect.get(globalThis.process, 'kill'));
 for (const key of ['fetch', 'WebSocket', 'EventSource']) {
   patch(`globalThis.${key}`, globalThis, key, () => Object.getOwnPropertyDescriptor(globalThis, key)?.value);
 }
