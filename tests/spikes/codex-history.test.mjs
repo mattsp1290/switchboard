@@ -304,12 +304,13 @@ const observe = (root, selection = SELECTORS.ordinary, options = {}) => observeS
 const tracked = (overrides = {}) => {
   const open = new Set();
   const dirs = new Set();
-  const calls = { opened: [], read: 0, lstat: new Set(), opendir: [] };
+  const paths = new Map();
+  const calls = { opened: [], read: [], lstat: new Set(), opendir: [] };
   const fs = { ...real, ...overrides,
     lstatSync: (path) => { calls.lstat.add(path); return (overrides.lstatSync ?? real.lstatSync)(path); },
-    openSync: (...args) => { calls.opened.push(args[0]); const fd = real.openSync(...args); open.add(fd); return fd; },
+    openSync: (...args) => { calls.opened.push(args[0]); const fd = real.openSync(...args); open.add(fd); paths.set(fd, args[0]); return fd; },
     closeSync: (fd) => { open.delete(fd); real.closeSync(fd); },
-    readSync: (...args) => { calls.read++; return (overrides.readSync ?? real.readSync)(...args); },
+    readSync: (...args) => { calls.read.push(paths.get(args[0])); return (overrides.readSync ?? real.readSync)(...args); },
     opendirSync: (path) => {
       calls.opendir.push(path);
       const directory = real.opendirSync(path);
@@ -437,7 +438,9 @@ test('bounded observation refuses special files, entry, depth, byte and deadline
   assert.equal(refusal(() => observe(aggregate)).reason, 'aggregate byte budget exceeded');
   const late = refusal(() => observe(tree(t), SELECTORS.ordinary, { overrides: { milliseconds: -1 } }));
   assert.deepEqual([late.reason, late.cause, late.termination], ['deadline exceeded', 'policy', 'refused']);
-  assert.equal(over.calls.read, 0, 'an oversized file is refused before any read or allocation');
+  // Directory order is filesystem-defined (ext4 hashes it), so the small fixture files may be read first.
+  assert(over.calls.opened.some((path) => path.endsWith('over.jsonl')), 'the oversized file is opened and measured');
+  assert(!over.calls.read.some((path) => path.endsWith('over.jsonl')), 'an oversized file is refused before any read or allocation');
   for (const fs of [special, many, deep, over]) assert(fs.closed());
 });
 test('bounded observation closes every descriptor and directory on each refusal', (t) => {

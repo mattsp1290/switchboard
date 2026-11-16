@@ -23,7 +23,7 @@
     "spikes/codex-native/qualify.mjs": "018fa3bd0fe62e08cf1cf3ce15275448a380af137c69edec1d4e28af25cbe314",
     "spikes/codex-native/account-reads.mjs": "c0365173d8f2f9709eada3ea3e540d1c0de148288f10d1bcd5dd8df4da6be654",
     "spikes/codex-native/client.mjs": "4788e280f1d502074ca961690911e448440d755996ce389b099f08e046812b9e",
-    "tests/spikes/codex-history.test.mjs": "cc6ac6637da0efc734285f4660abba41566a90784124c392522ade558ae6cc1c",
+    "tests/spikes/codex-history.test.mjs": "7a60c51877a8cda3d3a10929a4fb0a4e71199bb24ff010fbb6851938339cb56b",
     "tests/spikes/codex-history-boundary.mjs": "4511869a49db212a4033c86d13f26267b16b10fc5651af8e74ae3874dcee4a63",
     "tests/spikes/codex-discovery-boundary.mjs": "99803e129df0895a3641cfe5a629d5e41fd281d41a003c0cfc5fe424e82d947d",
     "scripts/support/codex-guard/plan.mjs": "18673e286c23977555dd29c8b08651cf72629617e000140d5a6dac72455d3314"
