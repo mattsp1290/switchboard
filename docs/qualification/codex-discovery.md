@@ -30,6 +30,76 @@ The host must authorize the entire mounted history root and its account contents
 
 The fixture namespace is immutable during each run. This proof does not solve races with another writer replacing files between host admission and a production mount. Root authorization, stable namespace admission, and subsequent native-ID resume authorization remain host responsibilities.
 
+## Bounded source observation
+
+This section states the current guarantee. Its evidence is guarded inert tests only; no native run has exercised this
+source, and none of the historical native records below certifies it.
+
+One observer in [inventory.mjs](../../spikes/codex-native/inventory.mjs) replaces the leaf-and-hash checks at every consumer:
+host admission and the host container lifetime in `qualify.mjs`, every reader checkpoint in `discovery.mjs`, the H1 cold
+copies, and the `prepare` and `prepare-accounts` export. It records kind, device, inode, size, mode, link count, modification
+and change times for every selected entry, directories and absent trees included, the exact bytes of every selected regular
+file, and the raw target bytes of a permitted symlink. A reader takes one baseline before startup and re-walks it at every
+existing checkpoint; the creator takes one capture after native shutdown and exports from it.
+
+| Modes | Selected root names | Trees | Symlinks |
+| --- | --- | --- | --- |
+| `prepare`, `indexed`, `unindexed`, `malformed`, `inaccessible` | `*.sqlite`, `*.sqlite-wal`, `*.sqlite-shm` | `sessions`, `archived_sessions` | refuse |
+| `symlink` | same as above | same | kind and raw target recorded, never followed or descended |
+| `prepare-accounts`, `account-reads` (H1) | any name containing `.sqlite` or starting with `thread_history` | same | refuse |
+| host admission | every entry under the source | — | refuse |
+| host container lifetime | every entry under the source | — | kind and raw target recorded |
+
+A tree that is a regular file, such as the inaccessible `sessions` control, is a selected file. An absent tree is recorded as
+missing, so creating it later is a change. Ordinary hardlinks stay allowed: each path is its own entry and its link count is
+compared. The ordinary rule is not widened to the H1 rule, so a rollback journal or another `.sqlite` suffix is outside
+ordinary selection.
+
+Root additions follow the storage boundary above. `/root/.codex` is a writable auxiliary home where native startup writes
+helper files on purpose, and only the trees and original SQLite files are protected. Unselected root names are therefore
+counted against the entry budget and recorded as added or removed evidence (`source.rootChanges`, the last passed checkpoint against the baseline, at
+most 16 names each), and the preservation summary names them, but they do not refuse. Any added or removed root name that matches the mode's selector refuses, and
+so does any change inside a selected tree, including an empty directory.
+
+Each observation keeps the existing limits: 128 examined directory entries, the root's own children included; depth eight; 8 MiB per
+file and 8 MiB of actual returned file and link-target bytes in aggregate; and one second. Directory and symlink sizes are
+reported separately as metadata and are not budgeted. Enumeration is incremental. The entry, depth, kind and deadline limits refuse
+before the next `lstat`, open or directory open; the byte limits refuse after the descriptor opens and before any
+read or allocation, and every descriptor and directory closes on every path. A file is opened with
+`O_NOFOLLOW` and `O_NONBLOCK`. Its descriptor must match the path's kind, device and inode. It is then read in 64 KiB chunks
+up to its descriptor size, and a 1-byte probe must find end of file. Descriptor metadata must be unchanged after the read,
+and path metadata unchanged after the entry. A checkpoint compares each chunk directly against the retained baseline bytes;
+the digest is evidence only and is never compared.
+
+A refusal reports the first difference only, not a full diff: the stage, the cause (a policy limit or a change), the
+reason, the token, the field with before and after values, the counters, and the last 16 visited tokens. The first refusal
+in a run is latched as `sourceRefusal`, so a later drained-shutdown checkpoint cannot overwrite its stage. An initial
+observation refusal happens before any native spawn. The H1 cold copies refuse before the affected requester spawns. The
+24 MiB aggregate copy budget is still charged from `history-copy.mjs`'s own path `lstat` sizes. The observer compares
+path and descriptor on identity only, so that budget control stays reachable.
+
+The preservation summary and the H1 `negative-public-read-result` are set in one place, last. Both require exit code zero,
+no progress overflow, no omitted source evidence, and `after final shutdown attempts` as the last passed checkpoint.
+Progress keeps its 512 KiB budget and reserves one `progressOverflow` marker line, written once. Checkpoint progress
+lines are constant-size. Final-output source entries are bounded at 128 KiB before they are built, and an omission refuses before startup. The creator export refuses
+above 7.75 MiB of encoded JSON before any base64 string exists, reserving 256 KiB of the host's 8 MiB output buffer
+for records. A refusal,
+progress overflow, export refusal, timeout, missing final output or host parse failure exits nonzero or throws on the host,
+and none of them promotes preservation or H1 success.
+
+This is not an atomic snapshot. It gives no protection against a hostile ancestor, makes no claim about atime, and does not
+bound a single blocking system call; the deadline is checked cooperatively between calls. It makes no claim about client
+stderr, listener ownership or forced shutdown.
+
+[codex-history.test.mjs](../../tests/spikes/codex-history.test.mjs) drives the actual discovery entry through inert
+boundaries. It includes the reproduced defects, which passed on `2f96265` and now refuse: an empty directory added inside
+a protected tree, and a selected file replaced by the same bytes at a new inode. It also covers the root-addition,
+selector, metadata, read, limit and closure controls, all under the [guarded runner](codex-guarded-tests.md).
+[source-observation-result.json](../../spikes/codex-native/source-observation-result.json) records that inert evidence
+and the SHA-256 of the exact sources it ran against, and marks native evidence `not-run`. Native and Docker gates have not
+run for this source. The historical native records in `account-reads-result.json` and
+`qualification-lifecycle-result.json` are unchanged and describe earlier sources only.
+
 ## Observed behavior
 
 | Case | Native assertion |
@@ -54,7 +124,7 @@ The known-target reads run only in the malformed variant, inside the same read-o
 
 ## Bounds and remaining adapter requirements
 
-Every container retains the existing network-disabled, read-only root filesystem, 128-process, two-CPU, 768 MiB memory, 128 MiB `/tmp`, and 64 MiB `/root` limits. The container deadline is 40 seconds and the host deadline is 45 seconds. Each protocol wait has a six-second deadline. The discovery client bounds requests to 128, stdout to 2 MiB, and pagination to eight pages with cursors below 512 characters. The host output limit is 8 MiB. Fixture admission limits source entries to 128 and source bytes to less than 8 MiB. Only the digest-verified executable, fixture code, manifest, and synthetic data enter the container.
+Every container retains the existing network-disabled, read-only root filesystem, 128-process, two-CPU, 768 MiB memory, 128 MiB `/tmp`, and 64 MiB `/root` limits. The container deadline is 40 seconds and the host deadline is 45 seconds. Each protocol wait has a six-second deadline. The discovery client bounds requests to 128, stdout to 2 MiB, and pagination to eight pages with cursors below 512 characters. The host output limit is 8 MiB. Host admission and every container checkpoint use the [bounded source observation](#bounded-source-observation) limits, and the creator export is capped at 7.75 MiB of encoded JSON before encoding. Only the digest-verified executable, fixture code, manifest, and synthetic data enter the container.
 
 These are process and fixture bounds. They are not native per-file read bounds. Pinned source shows that initialization recursively collects rollout paths and loads rollout items for metadata backfill before `thread/list`. The scanner has a 10,000-file traversal cap and bounded record lookahead on some listing paths. Neither limit bounds initialization, JSONL line bytes, total rollout bytes, compressed expansion, or total directory enumeration. A general production byte budget requires separately qualified host admission over the authorized stable root. Oversized or unreadable roots must produce an explicit incomplete or inaccessible outcome before native execution.
 
@@ -87,11 +157,11 @@ The local evidence separates file observations from native identities. It retain
 
 The indexed, unindexed, and malformed containers perform these path requests. They have no outside-root data mount. Only the older symlink characterization mounts synthetic `/unauthorized` material and deliberately bypasses host rejection. That characterization does not prove mount-enforced exclusion. The path experiment never uses the bypass and never dispatches a path under `/unauthorized`.
 
-Admission includes directories, protected indexes, and sidecars in its accounting. It permits at most 128 entries, eight levels, 8 MiB per regular file, 8 MiB aggregate metadata sizes, and one second. It rejects symlinks, special files, unexpected devices, traversal failures, unstable metadata, and paths outside the admitted history trees. Every regular history file qualifies regardless of extension. Directory enumeration stops when the entry or time budget fails. The synthetic fixture owner freezes the namespace. These metadata checks do not establish a production snapshot or exclude a hostile ancestor replacement.
+Admission includes directories, protected indexes, and sidecars in its accounting. It permits at most 128 entries, eight levels, 8 MiB per regular file, 8 MiB of actual file bytes in aggregate, and one second. It rejects symlinks, special files, unexpected devices, traversal failures, unstable metadata, and paths outside the admitted history trees. Every regular history file qualifies regardless of extension. Directory enumeration stops when the entry or time budget fails. The synthetic fixture owner freezes the namespace. These metadata checks do not establish a production snapshot or exclude a hostile ancestor replacement.
 
 The native client retains its six-second RPC deadline, 2 MiB stdout limit, bounded stderr tail, and container resource limits. The combined discovery client allows at most 128 protocol requests. Path inspection has a separate 32-request budget. Broad listing uses at most eight pages of two records for each archive value, every pinned source kind, all providers, and `currentAccountOnly:false`. It omits cwd, search, section, project, relation, and exclusion restrictions. Exhaustion, page truncation, native failure, and repeated or invalid cursors remain distinct observations. This is ordinary listing, not an all-native-object guarantee.
 
-The host checks source file sets and hashes over the container lifecycle. The client checks them before startup, after initialization, after requests, and after stdio-drained shutdown. Unexpected failures retain bounded request and reply evidence, drained notifications where possible, and preservation checks. A separate 512 KiB progress stream preserves observations in captured container stderr if an outer deadline prevents the final report. Progress truncation is explicit. Inspection must dispatch zero inference. Synthetic fixture preparation keeps its existing loopback inference flow.
+The host checks the full source metadata and bytes over the container lifecycle. The client checks selected metadata and bytes before startup, after initialization, after requests, after stdio-drained shutdown, and after final shutdown attempts. Unexpected failures retain bounded request and reply evidence, drained notifications where possible, and preservation checks. A separate 512 KiB progress stream preserves observations in captured container stderr if an outer deadline prevents the final report. Progress truncation is explicit and emits one reserved `progressOverflow` marker. Inspection must dispatch zero inference. Synthetic fixture preparation keeps its existing loopback inference flow.
 
 The generated public binding consumer also includes the path-only request. The Linux arm64 native run retained compatible active, archived, provider-diverse, cwd-diverse, and synthetic-account identities alongside an explicit malformed unknown-ID path failure. Missing-path and directory-path requests are labeled negative controls. The auxiliary outcome remains an unclassified file observation. Host-only controls cover rejected symlinks and outside paths, distinct hardlinks, and exhausted admission and request budgets. Their dispatch count must remain zero.
 
@@ -118,9 +188,9 @@ The original behavior probe, strict bindings, and five discovery modes remain un
 ## Cold projected-history H1 candidate
 
 The complete source candidate adds synthetic A, B, API-key, and separate malformed-file targets after all five original discovery modes. Both prior native attempts remain inconclusive. The first returned a null requester account. The auth-required revision reached correct A requester correspondence and an empty saved-turn page. Parent runs of this cold-copy profile passed on Linux arm64 and emulated x64. Each passed all five original discovery modes, twelve behavior cases, strict compilation of 784 generated public binding files, three actual requester contexts and nine exact saved-turn/message associations. The initial copies totaled 1,865,808 bytes per run. Original sources stayed unchanged, inspection inference was zero, and parent independently confirmed both exact named containers and all owned work directories absent. [account-reads-result.json](../../spikes/codex-native/account-reads-result.json) records these separate outcomes and current native report and independent absence hashes.
-The host authorizes and freezes the whole synthetic source, including every original SQLite file and sidecar, within the existing 8 MiB admission bound. Before every reader spawn, including initial A, the common connection copies exactly `thread_history_1.sqlite` and each present WAL and SHM into a distinct newly created empty private SQLite directory. Absent sidecars stay absent. Unsupported history families and rollback journals refuse. Every destination file must match admitted source bytes, size, and SHA-256 without sharing an inode with any original or earlier reader copy. Failed or partial copies cannot start that reader. Three initial families remain within 24 MiB in aggregate. The metadata index stays fresh and private.
+The host authorizes and freezes the whole synthetic source, including every original SQLite file and sidecar, within the existing 8 MiB admission bound. Before every reader spawn, including initial A, the common connection copies exactly `thread_history_1.sqlite` and each present WAL and SHM into a distinct newly created empty private SQLite directory. Absent sidecars stay absent. Unsupported history families and rollback journals refuse. Every destination file must match the admitted size and SHA-256, and is compared directly against the reader baseline's retained source bytes, without sharing an inode with any original or earlier reader copy. Failed or partial copies cannot start that reader. Three initial families remain within 24 MiB in aggregate. The metadata index stays fresh and private.
 Preparation retains actual native turn-start and matching completed IDs, status, and expected user and assistant messages in the exported fixture manifest. Readers require that exact completed turn and both expected messages associated with it. This is the smallest chosen public fixture witness. Additional creator page diagnostics would observe projection availability earlier but would not repair a missing projection. No full loaded read, persistence, resume, retry, or extra inference repairs an empty page. These associations prove neither complete rollout projection nor a projection watermark.
 Each reader first establishes actual synthetic requester context through `account/read`, checks its selected `sqlite_home`, then exhausts paired visibility lists, inventory-selected path-only summaries, metadata-only known-ID reads, and bounded turn and item pages. A reads A and B reads B remain positive controls. B must omit A from current-account listing yet read A by known ID. A and B both see the API-key-created target. The API-key requester sees A and B with either filter. Creator-field, malformed path, corrupt known ID, distinct absent ID, nonempty history, unique IDs, cursor, and message-association controls remain required. Generic failures, empty pages, visibility, and expected string equality cannot classify wrong account.
-Only all controls, zero inspection inference, preserved original file sets and bytes through final drained shutdown and the host container lifetime, confirmed container absence, and removed owned work can earn the bounded `negative-public-read-result`. Failure and truncated required proof stay inconclusive. Drained SIGTERM termination proves no clean SQLite close or checkpoint. Present recovery sidecars remain part of the cold snapshot. Native writes affect disposable copies only.
+Only all controls, zero inspection inference, preserved selected source metadata and bytes through final shutdown attempts and the host container lifetime, confirmed container absence, and removed owned work can earn the bounded `negative-public-read-result`. Failure and truncated required proof stay inconclusive. Drained SIGTERM termination proves no clean SQLite close or checkpoint. Present recovery sidecars remain part of the cold snapshot. Native writes affect disposable copies only.
 The supported auth-required provider profile uses separate synthetic loopback model and routing-bootstrap origins. Both listeners share the existing HTTP30 limit. All existing RPC, time, page, path, output, progress, entry, memory, tmpfs, image, network, and compiler limits remain. The current qualified client and uncertainty-preserving container owner are unchanged. Eighteen focused inert tests intercept the actual source boundaries and start no native executable, daemon, or listener. The native observations qualify this bounded snapshot experiment only. They do not qualify native x64 hardware, macOS, production accounts, an adapter, or live providers.
 This is a snapshot-dependent experiment. It supplies no history-only reconstruction, unique creator attribution, production eligibility classifier, general discovery coverage, adapter support, or pg51 completion. Every original wrong-account, busy, old, corrupt, inaccessible, external discovery and resume, no-rewrite, all-engine, direct and LiteLLM, native-feature, host authority and durability, no blind retry, confinement, SDK, native adapter, live, macOS, and release requirement remains open.

@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 export const REPO = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/, '');
 export const NODE_VERSION = 'v24.22.3';
-export const EXPECTED_TOTAL = 20;
+export const EXPECTED_TOTAL = 34;
 export const COMMAND_DEADLINE_MS = 180_000;
 export const CAPS = Object.freeze({ stdout: 1 << 20, stderr: 1 << 20, channel: 256 << 10, line: 16 << 10, tail: 4 << 10 });
 export const PRELOADS = Object.freeze({
@@ -49,7 +49,21 @@ export const ORACLE = Object.freeze({
   history: [
     'actual discovery cold-copies the exact family before A, B, and API-key spawn',
     'actual discovery refuses incomplete, changed, aliased, unsupported, or excessive cold copies before affected spawn',
+    'actual inaccessible discovery reports preservation for a healthy source through all five checkpoints',
+    'actual inaccessible discovery refuses a byte change at the after-requests checkpoint',
+    'actual inaccessible discovery refuses an empty directory added inside a selected tree',
+    'actual inaccessible discovery records an unselected root addition without protecting it',
+    'actual inaccessible discovery refuses a selected file replaced by the same bytes at a new inode',
+    'actual discovery refuses selected root additions in ordinary and H1 modes',
+    'actual H1 discovery refuses directory and inode changes before the next requester spawn',
+    'actual discovery emits one reserved progress overflow marker, bounds source evidence and withholds preservation and H1 success',
     'actual preparation exports exact native turn witnesses and older modes bypass cold copies',
+    'bounded observation refuses file, directory, family and missing-tree additions and removals',
+    'bounded observation refuses kind, inode, mode, link, size and time changes but keeps hardlink aliases',
+    'bounded observation refuses short, growing and substituted reads and compares retained bytes directly',
+    'bounded observation refuses special files, entry, depth, byte and deadline limits before reading, opening or descending',
+    'bounded observation closes every descriptor and directory on each refusal',
+    'selectors keep ordinary and H1 root rules distinct and characterize only permitted symlinks',
   ],
   lifecycle: [
     'helper imports perform no native or daemon operation',

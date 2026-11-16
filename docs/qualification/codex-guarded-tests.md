@@ -1,8 +1,8 @@
 # Guarded Codex tests
 
 `npm run test:codex-guarded` runs the three Codex spike suites in `tests/spikes/` under a test-hygiene guard:
-`codex-account.test.mjs` (4 tests), `codex-history.test.mjs` (3) and `codex-lifecycle.test.mjs` (13).
-It exists so these 20 tests cannot start or signal a contributor's processes or open network connections by accident.
+`codex-account.test.mjs` (4 tests), `codex-history.test.mjs` (17) and `codex-lifecycle.test.mjs` (13).
+It exists so these 34 tests cannot start or signal a contributor's processes or open network connections by accident.
 It is the first step on the Codex adapter path.
 
 ```sh
@@ -47,7 +47,7 @@ private refusal count. Stdout and stderr belong to the suites and are kept only 
   and the exit record's refusal count matches the channel;
 - the exit record and the process exit are both 0, with no signal, and the child is confirmed gone.
 
-The command passes only when all three runs pass in distinct processes and their passed names equal the 20-name oracle.
+The command passes only when all three runs pass in distinct processes and their passed names equal the 34-name oracle.
 A per-test inactivity deadline of 30 seconds, a per-run total, a command total, and caps on stdout, stderr,
 the channel and line length kill the child with `SIGKILL`. The owned temporary root is removed only after every child is
 confirmed terminated. A child that is not confirmed gone, or a failed removal, fails the command and names the retained root.

@@ -20,7 +20,9 @@ export const lstatSync = (path) => {
 };
 export const mkdirSync = (path, ...options) => fs.mkdirSync(mapped(path), ...options);
 export const writeFileSync = () => { throw Object.assign(new Error('Protected original'), { code: 'EROFS' }); };
-export const readlinkSync = (path) => fs.readlinkSync(mapped(path));
+export const readlinkSync = (path, ...options) => fs.readlinkSync(mapped(path), ...options);
+export const openSync = (path, ...options) => fs.openSync(mapped(path), ...options);
+export const opendirSync = (path, ...options) => fs.opendirSync(mapped(path), ...options);
 export const copyFileSync = (source, destination, flags) => {
   state().copies.push(destination);
   const affected = destination.includes(state().affected);

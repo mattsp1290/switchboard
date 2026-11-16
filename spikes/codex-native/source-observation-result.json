@@ -1,0 +1,38 @@
+{
+  "record": "Bounded Codex source observation repair",
+  "baseline": "2f9626501f5993107c949e92e60861bb445521dd",
+  "evidence": "guarded-inert",
+  "native": {
+    "status": "not-run",
+    "detail": "No Docker, native Codex or network gate ran for these sources."
+  },
+  "failingBefore": {
+    "node": "v24.22.3",
+    "failed": [
+      "empty directory added inside a selected tree reported preservation",
+      "selected file replaced by the same bytes at a new inode reported preservation",
+      "H1: empty directory in sessions and same-byte inode swap of sessions/accountA.jsonl returned negative-public-read-result"
+    ],
+    "restated": "An unselected empty directory at the root is recorded in evidence, not refused."
+  },
+  "guarded": "PASS codex-guarded: 34/34 named tests (account 4, history 17, lifecycle 13), 0 refusals, 3 clean exits",
+  "sourceSha256": {
+    "spikes/codex-native/inventory.mjs": "843612b265c4092c425505370b8c8f5d7be55ccea0736d59f9dd31914023ef8c",
+    "spikes/codex-native/discovery.mjs": "b9f3c487a8c740c8b09eac0e34d50d248feeddfa9f0baca5328af90feed7399a",
+    "spikes/codex-native/history-copy.mjs": "4816e2131c36ea577a531ef79b632d98a47fcd974597e3f4d61bfe9c33b69810",
+    "spikes/codex-native/qualify.mjs": "018fa3bd0fe62e08cf1cf3ce15275448a380af137c69edec1d4e28af25cbe314",
+    "spikes/codex-native/account-reads.mjs": "c0365173d8f2f9709eada3ea3e540d1c0de148288f10d1bcd5dd8df4da6be654",
+    "spikes/codex-native/client.mjs": "4788e280f1d502074ca961690911e448440d755996ce389b099f08e046812b9e",
+    "tests/spikes/codex-history.test.mjs": "7a60c51877a8cda3d3a10929a4fb0a4e71199bb24ff010fbb6851938339cb56b",
+    "tests/spikes/codex-history-boundary.mjs": "4511869a49db212a4033c86d13f26267b16b10fc5651af8e74ae3874dcee4a63",
+    "tests/spikes/codex-discovery-boundary.mjs": "99803e129df0895a3641cfe5a629d5e41fd281d41a003c0cfc5fe424e82d947d",
+    "scripts/support/codex-guard/plan.mjs": "18673e286c23977555dd29c8b08651cf72629617e000140d5a6dac72455d3314"
+  },
+  "historicalNativeRecords": {
+    "files": [
+      "account-reads-result.json",
+      "qualification-lifecycle-result.json"
+    ],
+    "status": "unchanged; they describe earlier sources and certify none of these"
+  }
+}
