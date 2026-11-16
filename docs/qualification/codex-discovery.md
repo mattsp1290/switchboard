@@ -61,7 +61,7 @@ counted against the entry budget and recorded as added or removed evidence (`sou
 most 16 names each), and the preservation summary names them, but they do not refuse. Any added or removed root name that matches the mode's selector refuses, and
 so does any change inside a selected tree, including an empty directory.
 
-Each observation keeps the existing limits: 128 examined directory entries, root entries included; depth eight; 8 MiB per
+Each observation keeps the existing limits: 128 examined directory entries, the root's own children included; depth eight; 8 MiB per
 file and 8 MiB of actual returned file and link-target bytes in aggregate; and one second. Directory and symlink sizes are
 reported separately as metadata and are not budgeted. Enumeration is incremental. The entry, depth, kind and deadline limits refuse
 before the next `lstat`, open or directory open; the byte limits refuse after the descriptor opens and before any
