@@ -30,6 +30,7 @@ Core source and consumer compilation use ES2022 and Node declarations without DO
 The isolated Pi source project uses ES2024 and skips vendor declaration checks for Pi 1.5.2.
 Core compilation keeps vendor declaration checks enabled.
 The script removes its temporary files on success or failure.
+`npm run test:codex-guarded` reruns the three Codex spike suites under a guard that refuses real subprocess and network use; see [guarded Codex tests](docs/qualification/codex-guarded-tests.md).
 Run `npm run build` to compile separately. The build removes `dist` before compilation. `npm run clean` removes the local build.
 
 GitHub Actions runs the same checks on Ubuntu 24.04 with Node 24.22.3 and npm 11.19.1.
