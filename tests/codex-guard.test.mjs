@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import test from 'node:test';
 import { CONTROLS, EXPECTED_TOTAL, NODE_VERSION, ORACLE, PRELOADS, SUITES } from '../scripts/support/codex-guard/plan.mjs';
-import { judgeControl, parseRecord, reduceCommand, reduceRun } from '../scripts/support/codex-guard/verdict.mjs';
+import { failureCodes, judgeControl, parseRecord, reduceCommand, reduceRun } from '../scripts/support/codex-guard/verdict.mjs';
 
 const [account] = SUITES;
 const PID = 101;
@@ -16,10 +16,7 @@ const exit = (code = 0, refusals = 0) => ({ kind: 'exit', code, refusals });
 const closed = (fields = {}) => ({ pid: PID, code: 0, signal: null, terminated: true, breach: null, ...fields });
 const [first, second, third, fourth] = account.tests;
 const body = (...tests) => [armed(), ...loads(), ...tests];
-const codes = (events, outcome = closed()) => {
-  const verdict = reduceRun(account, events, outcome);
-  return verdict.ok ? [] : [...new Set(verdict.failures.map((failure) => failure.code))].sort();
-};
+const codes = (events, outcome = closed()) => failureCodes(reduceRun(account, events, outcome));
 
 test('a complete run with every named test, one summary and a clean exit is accepted', () => {
   assert.deepEqual(reduceRun(account, body(...passes(), summary(), exit()), closed()), { ok: true, pid: PID, passed: account.tests });
@@ -90,11 +87,11 @@ test('parseRecord accepts only nonce-tagged records of a known kind and shape', 
 test('reduceCommand needs every suite, fresh pids and exactly the flattened oracle', () => {
   const ok = (spec, pid) => ({ ok: true, pid, passed: spec.tests });
   assert.deepEqual(reduceCommand(SUITES, SUITES.map((spec, index) => ok(spec, 10 + index))), { ok: true, total: EXPECTED_TOTAL });
-  const reasons = (verdicts) => reduceCommand(SUITES, verdicts).failures.map(({ run, failure }) => `${run}:${failure.code}`);
-  assert.deepEqual(reasons([ok(SUITES[0], 1), ok(SUITES[1], 2)]), ['lifecycle:suite-missing', 'command:oracle-mismatch']);
-  assert.deepEqual(reasons(SUITES.map((spec) => ok(spec, 1))), ['command:pid-reused']);
+  const reasons = (verdicts) => reduceCommand(SUITES, verdicts).failures.map((failure) => failure.code);
+  assert.deepEqual(reasons([ok(SUITES[0], 1), ok(SUITES[1], 2)]), ['suite-missing', 'oracle-mismatch']);
+  assert.deepEqual(reasons(SUITES.map((spec) => ok(spec, 1))), ['pid-reused']);
   const failed = { ok: false, pid: 3, failures: [{ code: 'refusal', detail: 'call net.connect' }], refusals: ['call net.connect'] };
-  assert.deepEqual(reasons([ok(SUITES[0], 1), ok(SUITES[1], 2), failed]), ['lifecycle:refusal', 'command:oracle-mismatch']);
+  assert.deepEqual(reasons([ok(SUITES[0], 1), ok(SUITES[1], 2), failed]), ['oracle-mismatch']);
 });
 
 test('judgeControl compares the exact failure-code set and refusal labels', () => {

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CAPS, COMMAND_DEADLINE_MS, CONTROLS, NODE_VERSION, ORACLE, PRELOADS, SUITES } from './support/codex-guard/plan.mjs';
-import { judgeControl, parseRecord, reduceCommand, reduceRun } from './support/codex-guard/verdict.mjs';
+import { failureCodes, judgeControl, parseRecord, reduceCommand, reduceRun } from './support/codex-guard/verdict.mjs';
 
 /** @typedef {import('./support/codex-guard/plan.mjs').RunSpec} RunSpec */
 /** @typedef {import('./support/codex-guard/verdict.mjs').ChannelEvent} ChannelEvent */
@@ -69,17 +69,21 @@ async function runChild(spec, root, index, signal) {
   const tails = { stdout: '', stderr: '' };
   /** @type {ProcessOutcome['breach']} */
   let breach = null;
-  let giveUp = () => {};
+  /** @type {PromiseWithResolvers<{ code: number | null, signal: string | null, closed: boolean }>} */
+  const { promise: ended, resolve: end } = Promise.withResolvers();
+  child.once('close', (code, signalName) => end({ code, signal: signalName, closed: true }));
+  child.on('error', () => { if (child.pid === undefined) end({ code: null, signal: null, closed: false }); });
   const stop = (kind) => {
     breach ??= kind;
     child.kill('SIGKILL');
-    giveUp();
+    setTimeout(() => end({ code: child.exitCode, signal: child.signalCode, closed: false }), 5000).unref();
   };
   // Per-test inactivity starts at 'armed'; startup is bounded by the run total.
   let perTest;
   const total = setTimeout(() => stop('deadline'), spec.deadlines.totalMs);
   const onAbort = () => stop('aborted');
   signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
 
   let pending = '';
   let channelBytes = 0;
@@ -111,20 +115,15 @@ async function runChild(spec, root, index, signal) {
     });
   }
 
-  const ended = await new Promise((resolve) => {
-    child.once('close', (code, signalName) => resolve({ code, signal: signalName, closed: true }));
-    child.on('error', () => { if (child.pid === undefined) resolve({ code: null, signal: null, closed: false }); });
-    giveUp = () => setTimeout(() => resolve({ code: child.exitCode, signal: child.signalCode, closed: false }), 5000).unref();
-    if (signal.aborted) onAbort();
-  });
+  const result = await ended;
   clearTimeout(perTest);
   clearTimeout(total);
   signal.removeEventListener('abort', onAbort);
   if (pending) events.push({ kind: 'malformed', reason: 'unterminated channel record' });
   const pid = child.pid ?? -1;
-  const terminated = ended.closed && pid > 0 && !alive(pid);
+  const terminated = result.closed && pid > 0 && !alive(pid);
   return { spec, events, tails, ms: Date.now() - started,
-    outcome: { pid, code: ended.code, signal: ended.signal, terminated, breach } };
+    outcome: { pid, code: result.code, signal: result.signal, terminated, breach } };
 }
 
 const indent = (text) => text.trimEnd().split('\n').map((line) => `    ${line}`).join('\n');
@@ -164,9 +163,8 @@ async function main() {
       const record = await runChild(control.run, root, records.length, abort.signal);
       records.push(record);
       const verdict = reduceRun(control.run, record.events, record.outcome);
-      const codes = verdict.ok ? [] : [...new Set(verdict.failures.map((failure) => failure.code))].sort();
       const reason = judgeControl(control, verdict);
-      console.log(`codex-guarded: ${reason ? 'UNEXPECTED' : 'ok'} ${control.run.name} [${codes.join(', ')}] ${record.ms} ms`);
+      console.log(`codex-guarded: ${reason ? 'UNEXPECTED' : 'ok'} ${control.run.name} [${failureCodes(verdict).join(', ')}] ${record.ms} ms`);
       if (reason) failures.push(`${control.run.name}: ${reason}\n${describe(record, verdict.ok ? [] : verdict.failures)}`);
     }
     if (failures.length === 0) {
@@ -184,7 +182,7 @@ async function main() {
       verdicts.forEach((verdict, index) => {
         if (!verdict.ok) failures.push(`${suites[index].spec.name}\n${describe(suites[index], verdict.failures)}`);
       });
-      if (!command.ok) for (const { run, failure } of command.failures) if (run === 'command') failures.push(`command: ${failure.code}: ${failure.detail}`);
+      if (!command.ok) for (const failure of command.failures) failures.push(`command: ${failure.code}: ${failure.detail}`);
     }
   } finally {
     clearTimeout(deadline);

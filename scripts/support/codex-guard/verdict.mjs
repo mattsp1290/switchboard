@@ -1,5 +1,5 @@
 // Pure domain model and reducers for the guarded Codex command. No I/O: every acceptance rule lives here.
-import { EXPECTED_TOTAL, NODE_VERSION, ORACLE } from './plan.mjs';
+import { EXPECTED_TOTAL, NODE_VERSION } from './plan.mjs';
 
 /**
  * Domain events after parsing; wire field names never leave parseRecord.
@@ -32,7 +32,7 @@ import { EXPECTED_TOTAL, NODE_VERSION, ORACLE } from './plan.mjs';
 /** @typedef {{ code: FailureCode, detail: string }} Failure */
 /** @typedef {{ ok: true, pid: number, passed: readonly string[] }
  *   | { ok: false, pid: number, failures: readonly Failure[], refusals: readonly string[] }} RunVerdict */
-/** @typedef {{ ok: true, total: number } | { ok: false, failures: readonly { run: string, failure: Failure }[] }} CommandVerdict */
+/** @typedef {{ ok: true, total: number } | { ok: false, failures: readonly Failure[] }} CommandVerdict */
 
 const isString = (value) => typeof value === 'string';
 const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -152,26 +152,27 @@ function reduceTests(spec, events, fail) {
   return [...passed];
 }
 
+/** Pure. The sorted, distinct failure codes of a run verdict ([] when it passed). @param {RunVerdict} verdict @returns {FailureCode[]} */
+export function failureCodes(verdict) {
+  return verdict.ok ? [] : [...new Set(verdict.failures.map((failure) => failure.code))].sort();
+}
+
 /**
- * Pure. All suites present and ok, distinct pids (fresh processes), concatenated passed names equal the
- * flattened ORACLE, and that length equals EXPECTED_TOTAL.
+ * Pure. Cross-run checks only (per-run failures stay in each RunVerdict): every suite has a verdict, pids are
+ * distinct (fresh processes), and the observed passing names equal the suites' named tests, EXPECTED_TOTAL of them.
  * @param {readonly import('./plan.mjs').RunSpec[]} suites @param {readonly RunVerdict[]} verdicts
  * @returns {CommandVerdict}
  */
 export function reduceCommand(suites, verdicts) {
-  /** @type {{ run: string, failure: Failure }[]} */
+  /** @type {Failure[]} */
   const failures = [];
-  suites.forEach((spec, index) => {
-    const verdict = verdicts[index];
-    if (!verdict) failures.push({ run: spec.name, failure: { code: 'suite-missing', detail: 'no verdict' } });
-    else if (!verdict.ok) for (const failure of verdict.failures) failures.push({ run: spec.name, failure });
-  });
+  for (const spec of suites.slice(verdicts.length)) failures.push({ code: 'suite-missing', detail: spec.name });
   const pids = verdicts.map((verdict) => verdict.pid);
-  if (new Set(pids).size !== pids.length) failures.push({ run: 'command', failure: { code: 'pid-reused', detail: pids.join(',') } });
+  if (new Set(pids).size !== pids.length) failures.push({ code: 'pid-reused', detail: pids.join(',') });
   const passed = verdicts.flatMap((verdict) => verdict.ok ? verdict.passed : []);
-  const oracle = Object.values(ORACLE).flat();
-  if (oracle.length !== EXPECTED_TOTAL || passed.length !== EXPECTED_TOTAL || passed.some((name, index) => name !== oracle[index])) {
-    failures.push({ run: 'command', failure: { code: 'oracle-mismatch', detail: `${passed.length}/${EXPECTED_TOTAL} named tests passed` } });
+  const expected = suites.flatMap((spec) => spec.tests);
+  if (expected.length !== EXPECTED_TOTAL || passed.length !== EXPECTED_TOTAL || passed.some((name, index) => name !== expected[index])) {
+    failures.push({ code: 'oracle-mismatch', detail: `${passed.length}/${EXPECTED_TOTAL} named tests passed` });
   }
   return failures.length ? { ok: false, failures } : { ok: true, total: passed.length };
 }
@@ -181,7 +182,7 @@ export function reduceCommand(suites, verdicts) {
  * @param {import('./plan.mjs').ControlSpec} control @param {RunVerdict} verdict @returns {string | null}
  */
 export function judgeControl(control, verdict) {
-  const codes = verdict.ok ? [] : [...new Set(verdict.failures.map((failure) => failure.code))].sort();
+  const codes = failureCodes(verdict);
   const expect = [...new Set(control.expect)].sort();
   if (codes.join() !== expect.join()) return `codes [${codes.join(', ')}], expected [${expect.join(', ')}]`;
   const refusals = verdict.ok ? [] : verdict.refusals;
