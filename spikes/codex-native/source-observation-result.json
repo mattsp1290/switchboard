@@ -17,7 +17,7 @@
   },
   "guarded": "PASS codex-guarded: 34/34 named tests (account 4, history 17, lifecycle 13), 0 refusals, 3 clean exits",
   "sourceSha256": {
-    "spikes/codex-native/inventory.mjs": "957e4e6d019e4fdabe51999d7f876c83266cf2e60a64a7b682adfecc77295311",
+    "spikes/codex-native/inventory.mjs": "843612b265c4092c425505370b8c8f5d7be55ccea0736d59f9dd31914023ef8c",
     "spikes/codex-native/discovery.mjs": "b9f3c487a8c740c8b09eac0e34d50d248feeddfa9f0baca5328af90feed7399a",
     "spikes/codex-native/history-copy.mjs": "4816e2131c36ea577a531ef79b632d98a47fcd974597e3f4d61bfe9c33b69810",
     "spikes/codex-native/qualify.mjs": "018fa3bd0fe62e08cf1cf3ce15275448a380af137c69edec1d4e28af25cbe314",

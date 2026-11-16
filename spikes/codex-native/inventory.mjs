@@ -55,6 +55,8 @@ const CHUNK = 64 * 1024;
 const EVIDENCE_BYTES = 128 * 1024;
 const FIELDS = ['kind', 'device', 'inode', 'size', 'mode', 'links', 'modified', 'changed'];
 const IDENTITY = ['kind', 'device', 'inode'];
+const JSON_ESCAPE = 6; // worst-case JSON-escaped bytes per token byte (\u00XX)
+const ENTRY_METADATA = 384; // generous bound for one entry's JSON metadata fields
 const TREES = Object.freeze(['sessions', 'archived_sessions']);
 const ordinaryRoot = (name) => /\.sqlite(?:-(?:wal|shm))?$/.test(name);
 const selector = (label, root, options = {}) => Object.freeze({ label, root, trees: TREES, links: 'refuse', host: false, ...options });
@@ -68,12 +70,15 @@ export const SELECTORS = Object.freeze({
 /** @param {string} mode @returns {Selector} the only mode-to-selector map */
 export const selectorFor = (mode) => ['prepare-accounts', 'account-reads'].includes(mode) ? SELECTORS.h1
   : mode === 'symlink' ? SELECTORS.symlink : SELECTORS.ordinary;
+// Change reasons that alter which entries exist; every other change reason is a bytes or metadata change.
+const SET_CHANGES = new Set(['file added', 'directory added', 'symlink added', 'missing added', 'entry removed',
+  'appeared during enumeration', 'vanished during enumeration', 'root replaced']);
 export class SourceRefusal extends Error {
   /** @param {RefusalEvidence} evidence @param {Error} [error] the unexpected error a refusal replaced */
   constructor(evidence, error) {
     const { stage, cause, reason, token, field } = evidence;
     const scope = cause === 'policy' ? 'observation refused'
-      : /added|removed|appeared|vanished|replaced/.test(reason) || field === 'kind' ? 'file set preserved' : 'bytes preserved';
+      : SET_CHANGES.has(reason) || field === 'kind' ? 'file set preserved' : 'bytes preserved';
     super(`Source ${scope} at ${stage}: ${reason} at ${token}${field ? ` (${field})` : ''}`, error ? { cause: error } : undefined);
     this.evidence = evidence;
   }
@@ -84,12 +89,17 @@ const describe = (stat) => ({ kind: kindOf(stat), device: stat.dev, inode: stat.
 const differing = (left, right, fields = FIELDS) => fields.find((field) => left[field] !== right[field]);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-/** One bounded walk shared by every phase; sinks return a Difference and only the walk raises it, with counters. */
+/**
+ * One bounded walk shared by every phase; sinks return a Difference and only the walk raises it, with counters.
+ * File bytes go through one walker-owned scratch: `sink.file` vets the opened file, then `sink.chunk` sees each
+ * chunk as a view at its file offset.
+ */
 function walk(fs, root, selection, budget, sink, stage) {
   const deadline = Date.now() + budget.milliseconds;
   const counters = { examined: 0, entries: 0, bytes: 0, metadataBytes: 0 };
   const visited = [];
   const probe = Buffer.alloc(1);
+  const scratch = Buffer.allocUnsafe(CHUNK);
   let compared = 0;
   let current = '.';
   let rootMeta;
@@ -125,13 +135,12 @@ function walk(fs, root, selection, budget, sink, stage) {
       moved('substituted before read', token, opened, before, IDENTITY);
       if (opened.size > budget.fileBytes) limit('per-file byte budget exceeded', token, { size: opened.size });
       if (counters.bytes + opened.size > budget.bytes) limit('aggregate byte budget exceeded', token, { size: opened.size });
-      const target = sink.buffer(token, opened);
-      check(target.reason && target);
+      check(sink.file(token, opened));
       for (let offset = 0; offset < opened.size;) {
         tick(token);
-        const count = fs.readSync(fd, target.buffer, target.at(offset), Math.min(CHUNK, opened.size - offset), offset);
+        const count = fs.readSync(fd, scratch, 0, Math.min(CHUNK, opened.size - offset), offset);
         if (count === 0) raise({ reason: 'short read', token, offset });
-        check(sink.chunk(token, target.buffer, target.at(offset), count, offset));
+        check(sink.chunk(token, scratch.subarray(0, count), offset));
         offset += count;
         counters.bytes += count;
       }
@@ -212,8 +221,8 @@ export function observeSource(root, selection, { fs = nodeFs, overrides = {}, st
   const counters = walk(fs, root, selection, budget, {
     root: (meta) => { rootMeta = meta; },
     unselected: (name) => { names.add(name); },
-    buffer: (_token, opened) => { pending = Buffer.allocUnsafe(opened.size); return { buffer: pending, at: (offset) => offset }; },
-    chunk: () => undefined,
+    file: (_token, opened) => { pending = Buffer.allocUnsafe(opened.size); },
+    chunk: (_token, view, offset) => { view.copy(pending, offset); },
     entry: (token, meta, target) => {
       entries.set(token, { ...meta, ...(meta.kind === 'file' ? { bytes: pending } : {}), ...(target ? { target } : {}) });
     },
@@ -232,7 +241,6 @@ export function observeSource(root, selection, { fs = nodeFs, overrides = {}, st
 export function verifySource(baseline, stage) {
   const seen = new Set();
   const present = new Set();
-  const scratch = Buffer.allocUnsafe(CHUNK);
   let expected;
   const counters = walk(baseline.fs, baseline.root, baseline.selection, baseline.budget, {
     root: (meta) => {
@@ -240,15 +248,14 @@ export function verifySource(baseline, stage) {
       return field && { reason: 'root replaced', token: '.', field };
     },
     unselected: (name) => { present.add(name); },
-    buffer: (token, opened) => {
+    file: (token, opened) => {
       expected = baseline.entries.get(token);
       if (!expected) return { reason: 'file added', token };
       if (!expected.bytes) return { reason: 'metadata changed', token, field: 'kind', before: expected.kind, after: 'file' };
       if (opened.size !== expected.bytes.length) return { reason: 'metadata changed', token, field: 'size', before: expected.size, after: opened.size };
-      return { buffer: scratch, at: () => 0 };
     },
-    chunk: (token, buffer, start, count, offset) => buffer.subarray(start, start + count)
-      .equals(expected.bytes.subarray(offset, offset + count)) ? undefined : { reason: 'bytes changed', token, offset },
+    chunk: (token, view, offset) => view.equals(expected.bytes.subarray(offset, offset + view.length))
+      ? undefined : { reason: 'bytes changed', token, offset },
     entry: (token, meta, target) => {
       const before = baseline.entries.get(token);
       if (!before) return { reason: `${meta.kind} added`, token };
@@ -291,7 +298,7 @@ export function compareFile(fs, path, expected) {
 export function inventoryOf(baseline) {
   const entries = [...baseline.entries].filter(([, entry]) => entry.kind !== 'missing').map(([token, entry]) => ({ token,
     device: entry.device, inode: entry.inode, size: entry.size, mode: entry.mode, links: entry.links, modified: entry.modified,
-    changed: entry.changed, directory: entry.kind === 'directory', candidate: entry.kind === 'file' && /^(sessions|archived_sessions)\//.test(token) }))
+    changed: entry.changed, directory: entry.kind === 'directory', candidate: entry.kind === 'file' && TREES.some((tree) => token.startsWith(`${tree}/`)) }))
     .sort((left, right) => left.token.localeCompare(right.token));
   return { entries, bytes: baseline.counters.bytes, termination: 'exhausted', limits: baseline.budget };
 }
@@ -302,7 +309,7 @@ export const digestsOf = (baseline) => [...baseline.entries].filter(([, entry]) 
 export function evidenceOf(baseline, maxBytes = EVIDENCE_BYTES) {
   const summary = { selector: baseline.selection.label, digest: baseline.digest, termination: 'exhausted', counters: baseline.counters };
   const bound = [...baseline.entries].reduce((sum, [token, entry]) =>
-    sum + 6 * Buffer.byteLength(token) + 384 + (entry.target ? 4 * Math.ceil(entry.target.length / 3) : 0), 0);
+    sum + JSON_ESCAPE * Buffer.byteLength(token) + ENTRY_METADATA + (entry.target ? 4 * Math.ceil(entry.target.length / 3) : 0), 0);
   if (bound > maxBytes) return { ...summary, entriesOmitted: baseline.entries.size };
   return { ...summary, entries: [...baseline.entries].sort(([left], [right]) => left < right ? -1 : 1).map(([token, { bytes, target, ...meta }]) => ({ token, ...meta,
     ...(bytes ? { sha256: sha256(bytes) } : {}), ...(target ? { target: target.toString('base64') } : {}) })) };
@@ -310,7 +317,7 @@ export function evidenceOf(baseline, maxBytes = EVIDENCE_BYTES) {
 /** Creator export from one capture; the encoded size is bounded before any base64 string exists. */
 export function exportOf(capture, cap) {
   const files = [...capture.entries].filter(([, entry]) => entry.kind === 'file');
-  const encoded = files.reduce((sum, [token, entry]) => sum + 4 * Math.ceil(entry.bytes.length / 3) + 6 * Buffer.byteLength(token) + 8, 0);
+  const encoded = files.reduce((sum, [token, entry]) => sum + 4 * Math.ceil(entry.bytes.length / 3) + JSON_ESCAPE * Buffer.byteLength(token) + 8, 0);
   assert(encoded <= cap, `Prepared export cap exceeded before encoding: ${encoded} > ${cap} bytes`);
   return Object.fromEntries(files.map(([token, entry]) => [token, entry.bytes.toString('base64')]));
 }
