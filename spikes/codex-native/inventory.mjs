@@ -4,7 +4,7 @@ import * as nodeFs from 'node:fs';
 import { lstatSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
-export const limits = { entries: 128, depth: 8, fileBytes: 8 * 1024 * 1024, bytes: 8 * 1024 * 1024, milliseconds: 1000 };
+export const limits = Object.freeze({ entries: 128, depth: 8, fileBytes: 8 * 1024 * 1024, bytes: 8 * 1024 * 1024, milliseconds: 1000 });
 function contained(root, target) {
   assert(typeof target === 'string' && !target.split(/[\\/]/).includes('..'), 'Lexical traversal rejected');
   const path = resolve(root, target);
@@ -44,7 +44,7 @@ export function resultPath(root, value, entries) {
  *   modified?: number, changed?: number }} Meta   regular files take metadata from the opened descriptor
  * @typedef {Meta & { bytes?: Buffer, target?: Buffer }} Entry   exact retained file bytes, or raw symlink target bytes
  * @typedef {{ examined: number, entries: number, bytes: number, metadataBytes: number }} Counters
- *   examined: dirents read, root included; bytes: actual file and link-target bytes; metadataBytes: reported, unbudgeted
+ *   examined: dirents read, the root's own children included; bytes: actual file and link-target bytes; metadataBytes: reported, unbudgeted
  * @typedef {{ label: string, root: (name: string) => boolean, trees: readonly string[],
  *   links: 'refuse'|'characterize', host: boolean }} Selector
  * @typedef {{ reason: string, token: string, field?: string, before?: unknown, after?: unknown, offset?: number }} Difference
@@ -69,12 +69,12 @@ export const SELECTORS = Object.freeze({
 export const selectorFor = (mode) => ['prepare-accounts', 'account-reads'].includes(mode) ? SELECTORS.h1
   : mode === 'symlink' ? SELECTORS.symlink : SELECTORS.ordinary;
 export class SourceRefusal extends Error {
-  /** @param {RefusalEvidence} evidence */
-  constructor(evidence) {
+  /** @param {RefusalEvidence} evidence @param {Error} [error] the unexpected error a refusal replaced */
+  constructor(evidence, error) {
     const { stage, cause, reason, token, field } = evidence;
     const scope = cause === 'policy' ? 'observation refused'
       : /added|removed|appeared|vanished|replaced/.test(reason) || field === 'kind' ? 'file set preserved' : 'bytes preserved';
-    super(`Source ${scope} at ${stage}: ${reason} at ${token}${field ? ` (${field})` : ''}`);
+    super(`Source ${scope} at ${stage}: ${reason} at ${token}${field ? ` (${field})` : ''}`, error ? { cause: error } : undefined);
     this.evidence = evidence;
   }
 }
@@ -92,10 +92,15 @@ function walk(fs, root, selection, budget, sink, stage) {
   const probe = Buffer.alloc(1);
   let compared = 0;
   let current = '.';
-  const raise = (difference, cause = 'change') => {
-    throw new SourceRefusal({ stage, cause, ...difference, termination: 'refused', counters: { ...counters }, compared, visited: [...visited] });
+  let rootMeta;
+  const raise = (difference, cause = 'change', error) => {
+    throw new SourceRefusal({ stage, cause, ...difference, termination: 'refused', counters: { ...counters }, compared, visited: [...visited] }, error);
   };
   const limit = (reason, token, extra = {}) => raise({ reason, token, ...extra }, 'policy');
+  const moved = (reason, token, now, then, fields) => {
+    const field = differing(now, then, fields);
+    if (field) raise({ reason, token, field, before: then[field], after: now[field] });
+  };
   const check = (difference) => { if (difference) raise(difference); };
   const tick = (token) => { if (Date.now() > deadline) limit('deadline exceeded', token); };
   const lstat = (path) => {
@@ -117,8 +122,7 @@ function walk(fs, root, selection, budget, sink, stage) {
       const opened = describe(fs.fstatSync(fd));
       // Path and descriptor are compared on identity only, and compared metadata comes from the descriptor. That keeps
       // history-copy's path-lstat size seam (the 24 MiB copy-budget control) reachable; do not widen this to size.
-      const field = differing(opened, before, IDENTITY);
-      if (field) raise({ reason: 'substituted before read', token, field });
+      moved('substituted before read', token, opened, before, IDENTITY);
       if (opened.size > budget.fileBytes) limit('per-file byte budget exceeded', token, { size: opened.size });
       if (counters.bytes + opened.size > budget.bytes) limit('aggregate byte budget exceeded', token, { size: opened.size });
       const target = sink.buffer(token, opened);
@@ -132,8 +136,7 @@ function walk(fs, root, selection, budget, sink, stage) {
         counters.bytes += count;
       }
       if (fs.readSync(fd, probe, 0, 1, opened.size) !== 0) raise({ reason: 'grew during read', token });
-      const after = differing(describe(fs.fstatSync(fd)), opened);
-      if (after) raise({ reason: 'changed during read', token, field: after });
+      moved('changed during read', token, describe(fs.fstatSync(fd)), opened);
       return opened;
     } finally { fs.closeSync(fd); }
   };
@@ -164,10 +167,8 @@ function walk(fs, root, selection, budget, sink, stage) {
     if (meta.kind === 'directory') children(path, token, (name) => visit(`${token}/${name}`, depth + 1));
     current = token;
     const after = lstat(path);
-    const field = after ? differing(describe(after), describe(stat)) : 'kind';
-    if (field) raise({ reason: 'changed during observation', token, field });
+    moved('changed during observation', token, after ? describe(after) : { kind: 'missing' }, describe(stat));
   };
-  let rootMeta;
   try {
     const rootStat = lstat(root);
     if (!rootStat?.isDirectory()) limit('root is not a directory', '.');
@@ -190,7 +191,8 @@ function walk(fs, root, selection, budget, sink, stage) {
     check(sink.end());
   } catch (error) {
     if (error instanceof SourceRefusal) throw error;
-    limit(`observation failed: ${error.code ?? error.message}`, current);
+    if (error.code === 'ENOENT') raise({ reason: 'vanished during enumeration', token: current }, 'change', error);
+    raise({ reason: `observation failed: ${error.code ?? error.message}`, token: current }, 'policy', error);
   }
   return counters;
 }

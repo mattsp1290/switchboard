@@ -235,6 +235,7 @@ try {
     evidence.preservation = [];
     const baseline = observeSource(root, selectorFor(mode), { fs });
     evidence.source = evidenceOf(baseline);
+    assert(!evidence.source.entriesOmitted, 'Required bounded source evidence was omitted');
     retainProgress({ sourceBaseline: { selector: baseline.selection.label, digest: baseline.digest, counters: baseline.counters } });
     verifySources = (stage) => {
       let checkpoint;
@@ -350,10 +351,9 @@ try {
   catch (error) { evidence.preservationFailure = error.message; process.exitCode = 1; output = evidence; }
   evidence.inferenceRequests = inference;
   output.fixtureRequests = requests;
-  if (evidence.progressTruncated) { evidence.failure = { message: 'Required bounded progress was truncated' }; process.exitCode = 1; }
-  if (evidence.source?.entriesOmitted) { evidence.failure = { message: 'Required bounded source evidence was omitted' }; process.exitCode = 1; }
+  if (evidence.progressTruncated) { evidence.failure = { message: 'Required bounded progress was truncated', cause: evidence.failure }; process.exitCode = 1; }
   if (!mode.startsWith('prepare') && inference !== 0) {
-    evidence.failure = { message: 'Inference observed during inspection or shutdown' };
+    evidence.failure = { message: 'Inference observed during inspection or shutdown', cause: evidence.failure };
     process.exitCode = 1;
   }
   for (const owned of [server, routingServer].filter(Boolean)) {
@@ -367,6 +367,6 @@ if (!mode.startsWith('prepare') && !process.exitCode && !evidence.progressTrunca
   const { addedCount = 0, removedCount = 0 } = evidence.source.rootChanges ?? {};
   evidence.preservationSummary = 'selected history, directories and SQLite files unchanged in metadata and bytes at every checkpoint through final shutdown attempts'
     + (addedCount + removedCount ? `; ${addedCount} added and ${removedCount} removed unselected root entries recorded, not protected` : '');
-  if (mode === 'account-reads') evidence.accounts.status = 'negative-public-read-result';
+  if (mode === 'account-reads' && evidence.accounts.status === 'controls-passed-pending-lifecycle') evidence.accounts.status = 'negative-public-read-result';
 }
 console.log(JSON.stringify(output));

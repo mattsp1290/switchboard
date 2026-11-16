@@ -57,14 +57,15 @@ ordinary selection.
 
 Root additions follow the storage boundary above. `/root/.codex` is a writable auxiliary home where native startup writes
 helper files on purpose, and only the trees and original SQLite files are protected. Unselected root names are therefore
-counted against the entry budget and recorded as added or removed evidence (`source.rootChanges`), and the preservation
-summary names them, but they do not refuse. Any added or removed root name that matches the mode's selector refuses, and
+counted against the entry budget and recorded as added or removed evidence (`source.rootChanges`, the last passed checkpoint against the baseline, at
+most 16 names each), and the preservation summary names them, but they do not refuse. Any added or removed root name that matches the mode's selector refuses, and
 so does any change inside a selected tree, including an empty directory.
 
 Each observation keeps the existing limits: 128 examined directory entries, root entries included; depth eight; 8 MiB per
 file and 8 MiB of actual returned file and link-target bytes in aggregate; and one second. Directory and symlink sizes are
-reported separately as metadata and are not budgeted. Enumeration is incremental. Each limit refuses before the next
-`lstat`, open, directory open or allocation, and every descriptor and directory closes on every path. A file is opened with
+reported separately as metadata and are not budgeted. Enumeration is incremental. The entry, depth, kind and deadline limits refuse
+before the next `lstat`, open or directory open; the byte limits refuse after the descriptor opens and before any
+read or allocation, and every descriptor and directory closes on every path. A file is opened with
 `O_NOFOLLOW` and `O_NONBLOCK`. Its descriptor must match the path's kind, device and inode. It is then read in 64 KiB chunks
 up to its descriptor size, and a 1-byte probe must find end of file. Descriptor metadata must be unchanged after the read,
 and path metadata unchanged after the entry. A checkpoint compares each chunk directly against the retained baseline bytes;
@@ -80,7 +81,7 @@ path and descriptor on identity only, so that budget control stays reachable.
 The preservation summary and the H1 `negative-public-read-result` are set in one place, last. Both require exit code zero,
 no progress overflow, no omitted source evidence, and `after final shutdown attempts` as the last passed checkpoint.
 Progress keeps its 512 KiB budget and reserves one `progressOverflow` marker line, written once. Checkpoint progress
-lines are constant-size. Final-output source evidence is bounded at 128 KiB before it is built. The creator export refuses
+lines are constant-size. Final-output source entries are bounded at 128 KiB before they are built, and an omission refuses before startup. The creator export refuses
 above 7.75 MiB of encoded JSON before any base64 string exists, reserving 256 KiB of the host's 8 MiB output buffer
 for records. A refusal,
 progress overflow, export refusal, timeout, missing final output or host parse failure exits nonzero or throws on the host,

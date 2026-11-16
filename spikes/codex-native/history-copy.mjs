@@ -27,6 +27,7 @@ export function historyCopies(root, inventory, verifySources, report, baseline) 
     assert.equal(actual.sha256, inventory.hashes.find((entry) => entry.token === file)?.sha256, 'Admitted cold history hash');
     return [file, actual];
   }));
+  // Path metadata only: source bytes are compared directly by verifySources and compareFile.
   const generation = (file) => ({ ...describe(`${root}/${file}`), sha256: source[file].sha256 });
   const inodes = new Set(inventory.entries.filter((entry) => !entry.directory).map((entry) => identity(lstatSync(`${root}/${entry.token}`))));
   let copied = 0;

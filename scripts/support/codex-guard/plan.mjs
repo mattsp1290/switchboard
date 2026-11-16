@@ -61,7 +61,7 @@ export const ORACLE = Object.freeze({
     'bounded observation refuses file, directory, family and missing-tree additions and removals',
     'bounded observation refuses kind, inode, mode, link, size and time changes but keeps hardlink aliases',
     'bounded observation refuses short, growing and substituted reads and compares retained bytes directly',
-    'bounded observation refuses special files, entry, depth, byte and deadline limits before opening or descending',
+    'bounded observation refuses special files, entry, depth, byte and deadline limits before reading, opening or descending',
     'bounded observation closes every descriptor and directory on each refusal',
     'selectors keep ordinary and H1 root rules distinct and characterize only permitted symlinks',
   ],

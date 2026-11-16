@@ -17,16 +17,16 @@
   },
   "guarded": "PASS codex-guarded: 34/34 named tests (account 4, history 17, lifecycle 13), 0 refusals, 3 clean exits",
   "sourceSha256": {
-    "spikes/codex-native/inventory.mjs": "4eb41e1d6138a312f8625443022085b29986b57bcc2a27f17b725e74278f575d",
-    "spikes/codex-native/discovery.mjs": "7ed0a5a2e73a4b93123f9161a462c8e9134ee5292654fe66108876751ffa5754",
-    "spikes/codex-native/history-copy.mjs": "010b4799f1e2872d4ea1b0e2476d6382782a497a951fee87a681c664df6f7b46",
+    "spikes/codex-native/inventory.mjs": "957e4e6d019e4fdabe51999d7f876c83266cf2e60a64a7b682adfecc77295311",
+    "spikes/codex-native/discovery.mjs": "b9f3c487a8c740c8b09eac0e34d50d248feeddfa9f0baca5328af90feed7399a",
+    "spikes/codex-native/history-copy.mjs": "4816e2131c36ea577a531ef79b632d98a47fcd974597e3f4d61bfe9c33b69810",
     "spikes/codex-native/qualify.mjs": "018fa3bd0fe62e08cf1cf3ce15275448a380af137c69edec1d4e28af25cbe314",
     "spikes/codex-native/account-reads.mjs": "c0365173d8f2f9709eada3ea3e540d1c0de148288f10d1bcd5dd8df4da6be654",
     "spikes/codex-native/client.mjs": "4788e280f1d502074ca961690911e448440d755996ce389b099f08e046812b9e",
-    "tests/spikes/codex-history.test.mjs": "55784ffc33992d69a5e26c78277edb3d9c19699556f074f9ecc9906505dcb497",
+    "tests/spikes/codex-history.test.mjs": "cc6ac6637da0efc734285f4660abba41566a90784124c392522ade558ae6cc1c",
     "tests/spikes/codex-history-boundary.mjs": "4511869a49db212a4033c86d13f26267b16b10fc5651af8e74ae3874dcee4a63",
     "tests/spikes/codex-discovery-boundary.mjs": "99803e129df0895a3641cfe5a629d5e41fd281d41a003c0cfc5fe424e82d947d",
-    "scripts/support/codex-guard/plan.mjs": "d667732b92a0afe4d59c9965d8713b81232b1151aed6c535a0f93a1f75a336e8"
+    "scripts/support/codex-guard/plan.mjs": "18673e286c23977555dd29c8b08651cf72629617e000140d5a6dac72455d3314"
   },
   "historicalNativeRecords": {
     "files": [

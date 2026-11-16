@@ -258,6 +258,7 @@ test('actual discovery emits one reserved progress overflow marker, bounds sourc
   assert.equal(long.code, 1);
   assert.equal(long.report.source.entriesOmitted, 103, 'evidence is bounded before it is built');
   assert.equal(long.report.failure.message, 'Required bounded source evidence was omitted');
+  assert.deepEqual(long.report.preservation, [], 'refused before startup');
   assert.equal(long.report.preservationSummary, undefined);
 });
 test('actual preparation exports exact native turn witnesses and older modes bypass cold copies', async () => {
@@ -297,6 +298,7 @@ const tree = (t, build) => {
   build?.(root);
   return root;
 };
+// Unit tests pass the real fs: the module's default fs is the history boundary, which maps only /root/.codex and /tmp.
 const observe = (root, selection = SELECTORS.ordinary, options = {}) => observeSource(root, selection, { fs: real, ...options });
 // A real-fs wrapper that counts calls and tracks every open descriptor and directory handle.
 const tracked = (overrides = {}) => {
@@ -337,7 +339,6 @@ test('bounded observation refuses file, directory, family and missing-tree addit
   const wal = (root) => writeFileSync(join(root, 'state_5.sqlite-wal'), '');
   for (const [build, mutate, expected] of [
     [undefined, (root) => mkdirSync(join(root, 'sessions/added')), ['metadata changed', 'sessions']],
-    [undefined, (root) => writeFileSync(join(root, 'sessions/b.jsonl'), ''), ['metadata changed', 'sessions']],
     [undefined, (root) => mkdirSync(join(root, 'archived_sessions')), ['metadata changed', 'archived_sessions', 'kind']],
     [undefined, wal, ['file added', 'state_5.sqlite-wal']],
     [undefined, (root) => rmSync(join(root, 'state_5.sqlite')), ['entry removed', 'state_5.sqlite']],
@@ -347,6 +348,20 @@ test('bounded observation refuses file, directory, family and missing-tree addit
     const evidence = refusesAfter(t, build, mutate);
     assert.deepEqual([evidence.reason, evidence.token, ...(expected[2] ? [evidence.field] : [])], expected);
     assert.equal(evidence.cause, 'change');
+  }
+  // A file added to a small directory need not change the parent's metadata (ext4 size and nlink, coarse times).
+  const added = refusesAfter(t, undefined, (root) => writeFileSync(join(root, 'sessions/b.jsonl'), ''));
+  assert(['metadata changed:sessions', 'file added:sessions/b.jsonl'].includes(`${added.reason}:${added.token}`), JSON.stringify(added));
+  const frozen = (path) => String(path).endsWith('/sessions') ? { ...real.lstatSync(path), mtimeMs: 1, ctimeMs: 1, size: 1, nlink: 1,
+    isFile: () => false, isDirectory: () => true, isSymbolicLink: () => false } : real.lstatSync(path);
+  for (const [mutate, reason, token] of [[(root) => writeFileSync(join(root, 'sessions/b.jsonl'), ''), 'file added', 'sessions/b.jsonl'],
+    [(root) => mkdirSync(join(root, 'sessions/added')), 'directory added', 'sessions/added']]) {
+    const root = tree(t);
+    const fs = tracked({ lstatSync: frozen });
+    const baseline = observe(root, SELECTORS.ordinary, { fs: fs.fs });
+    mutate(root);
+    const evidence = refusal(() => verifySource(baseline, 'frozen parent'));
+    assert.deepEqual([evidence.reason, evidence.token], [reason, token]);
   }
 });
 test('bounded observation refuses kind, inode, mode, link, size and time changes but keeps hardlink aliases', (t) => {
@@ -402,7 +417,7 @@ test('bounded observation refuses short, growing and substituted reads and compa
   assert.throws(() => compareFile(real, join(root, 'copy'), expected), /Complete cold copy bytes/);
 });
 const CHUNK = 64 * 1024;
-test('bounded observation refuses special files, entry, depth, byte and deadline limits before opening or descending', (t) => {
+test('bounded observation refuses special files, entry, depth, byte and deadline limits before reading, opening or descending', (t) => {
   const special = tracked({ lstatSync: (path) => String(path).endsWith('a.jsonl')
     ? { ...real.lstatSync(path), isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false } : real.lstatSync(path) });
   assert.equal(refusal(() => observe(tree(t), SELECTORS.ordinary, { fs: special.fs })).reason, 'special file');
