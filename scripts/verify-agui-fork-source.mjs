@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+assert.equal(process.argv.length, 3, 'Usage: node scripts/verify-agui-fork-source.mjs /absolute/path/to/ag-ui');
+const repository = resolve(process.argv[2]);
+const pin = JSON.parse(await readFile(new URL('../docs/protocol/ag-ui-fork.json', import.meta.url), 'utf8'));
+const canonical = JSON.parse(await readFile(new URL('../docs/protocol/ag-ui-pin.json', import.meta.url), 'utf8'));
+// Ambient GIT_* variables (GIT_DIR, GIT_OBJECT_DIRECTORY, ...) and replace refs could substitute other objects.
+const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
+env.GIT_NO_REPLACE_OBJECTS = '1';
+const options = { env, timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 };
+const gitRun = (...args) => {
+  const result = spawnSync('git', ['--no-replace-objects', '-C', repository, ...args], options);
+  assert.ifError(result.error);
+  return result;
+};
+const git = (...args) => {
+  const result = gitRun(...args);
+  assert.equal(result.status, 0, result.stderr?.toString());
+  return result.stdout;
+};
+const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const commit = (value) => {
+  assert.match(value, /^[a-f0-9]{40}$/, 'Expected an immutable Git commit');
+  const result = gitRun('rev-parse', '--verify', '--quiet', `${value}^{commit}`);
+  if (result.status !== 0) {
+    assert.fail(`Commit ${value} is absent from ${repository}; fetch the combined, included, and observed commits listed in the fork manifest first.`);
+  }
+  assert.equal(result.stdout.toString().trim(), value);
+  return value;
+};
+const ancestor = (value) => {
+  const result = gitRun('merge-base', '--is-ancestor', commit(value), pin.sourceCommit);
+  assert([0, 1].includes(result.status), result.stderr?.toString());
+  return result.status === 0;
+};
+
+assert.equal(pin.qualification, 'source-only');
+commit(pin.sourceCommit);
+assert.equal(git('rev-parse', `${pin.sourceCommit}^{tree}`).toString().trim(), pin.sourceTree, 'Fork source tree');
+for (const branch of pin.sourceBranches) {
+  assert(ancestor(branch.includedCommit), `Included source PR ${branch.pullRequest}`);
+  assert.equal(ancestor(branch.observedCommit), branch.observedCommitIncluded, `Observed source PR ${branch.pullRequest} ancestry`);
+}
+const files = new Map();
+for (const [path, digest] of Object.entries(pin.files)) {
+  const bytes = git('cat-file', 'blob', `${pin.sourceCommit}:${path}`);
+  assert.equal(sha(bytes), digest, `Fork SHA-256 ${path}`);
+  files.set(path, bytes);
+}
+const pinned = (path) => {
+  assert(files.has(path), `Pinned file missing from the fork manifest: ${path}`);
+  return files.get(path);
+};
+for (const path of ['spec/1.0/schema.json', 'spec/1.0/fixtures/MANIFEST.txt', 'LICENSE']) {
+  assert.equal(sha(pinned(path)), canonical.upstreamFiles[path], `Historical canonical parity ${path}`);
+}
+for (const expected of pin.packages) {
+  const manifest = JSON.parse(pinned(`${expected.path}/package.json`));
+  assert.equal(manifest.name, expected.name, 'Source package name');
+  assert.equal(manifest.version, expected.version, `Source version ${expected.name}`);
+  assert.equal(manifest.license, 'MIT', `Source license ${expected.name}`);
+  const entry = pinned(`${expected.path}/src/index.ts`).toString();
+  for (const name of expected.publicExports) {
+    assert.match(entry, new RegExp(`^export\\b[^;]*\\b${escape(name)}\\b`, 'ms'), `Public source export ${expected.name} ${name}`);
+  }
+}
+process.stdout.write(`Verified source only at ${pin.sourceCommit}.\n`);
+process.stdout.write('This check does not install packages. Run npm run verify:package for installed core adoption; native behavior and live routes remain unqualified.\n');

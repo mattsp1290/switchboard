@@ -5,6 +5,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSyn
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, runNpm, testEnvironment } from './support/exec.mjs';
+import { assertInstalledForkCore } from './support/agui-fork.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -58,6 +59,7 @@ assert.equal(observer.diagnostics().telemetryFailures, 0);
     '@opentelemetry/resources', '@opentelemetry/exporter-trace-otlp-proto', '@ag-ui/core', '@types/node', 'ajv'];
   process.stdout.write(runNpm(['install', '--ignore-scripts', '--omit=optional', '--no-audit', '--no-fund', tarball,
     ...dependencies.map(pinned)], installed));
+  assertInstalledForkCore(installed, 'Observability SDK consumer');
   process.stdout.write(runNpm(['ls', ...dependencies], installed));
   for (const file of ['recording.consumer.mjs', 'host.consumer.mjs', 'types.test.ts']) {
     copyFileSync(join(root, 'tests/observability', file), join(installed, 'tests/observability', file));

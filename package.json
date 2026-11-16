@@ -67,7 +67,7 @@
     "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
   },
   "devDependencies": {
-    "@ag-ui/core": "1.0.4",
+    "@ag-ui/core": "https://raw.githubusercontent.com/mattsp1290/agentui/661216eab627be33067951ffad7a1691127a80fe/vendor/ag-ui/ed2c1d5b63299d3f08676a1418cc2640bbe55fd1/ag-ui-core-1.0.4.tgz",
     "@anthropic-ai/claude-agent-sdk": "0.3.323",
     "@anthropic-ai/sdk": "1.8.0",
     "@earendil-works/pi-ai": "1.5.2",

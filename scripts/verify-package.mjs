@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
 import { verifyObservability } from './verify-observability.mjs';
 import { run, runNpm, testEnvironment } from './support/exec.mjs';
+import { assertInstalledForkCore, coreArtifact } from './support/agui-fork.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
@@ -368,9 +369,10 @@ try {
   writeFileSync(join(integration, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   process.stdout.write(runNpm([
     'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-    `@ag-ui/core@${manifest.peerDependencies['@ag-ui/core']}`,
+    coreArtifact.url,
     `@types/node@${manifest.devDependencies['@types/node']}`,
   ], integration));
+  assertInstalledForkCore(integration, 'Installed projection consumer');
   assert(!existsSync(join(integration, 'node_modules/zod')), 'Integration consumer has no optional Zod installed.');
   const aguiFixtures = readdirSync(join(root, 'tests/agui')).filter((file) => file.endsWith('.ts')).sort();
   const aguiTests = aguiFixtures.filter((file) => file.endsWith('.test.ts'));
