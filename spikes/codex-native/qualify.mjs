@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, copyFileSync, createReadStream, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, copyFileSync, createReadStream, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SELECTORS, admittedPath, digestsOf, inventoryOf, observeSource, requestBudget, verifySource } from './inventory.mjs';
-import { CONTROLS as LEGACY_CONTROLS, OUTCOMES, legacyConclusion, legacySources } from './legacy-tail.mjs';
+import { CONTROLS as LEGACY_CONTROLS, OUTCOMES, legacyConclusion, legacyPin, legacySources } from './legacy-tail.mjs';
 import { ownedContainer } from './lifecycle.mjs';
 import { assertSelectedBinding, selectedRequestIdSha256, transformBindings } from './protocol-bindings.mjs';
 
@@ -206,7 +206,12 @@ try {
     const source = join(work, `legacy-${control}`);
     for (const directory of ['sessions', 'archived_sessions']) mkdirSync(join(source, directory), { recursive: true });
     const target = join(source, legacyPrepared.record.path);
-    if (legacyBytes[control]) { mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, legacyBytes[control], { flag: 'wx' }); }
+    if (legacyBytes[control]) {
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, legacyBytes[control], { flag: 'wx' });
+      // Every home carries the native export's mtime, so healthy and tail differ only in the appended bytes.
+      utimesSync(target, legacyPrepared.rolloutModifiedMs / 1000, legacyPrepared.rolloutModifiedMs / 1000);
+    }
     const held = observeSource(source, SELECTORS.host);
     assert.deepEqual(readdirSync(source).sort(), ['archived_sessions', 'sessions'], 'Only history trees, no SQLite or projection');
     const inventoryFile = join(work, `legacy-${control}-inventory.json`);
@@ -219,8 +224,10 @@ try {
   }
   const legacyTail = { creator: { ...legacyPrepared, rollout: undefined }, readers: legacyReaders, conclusion: legacyConclusion(legacyPrepared, legacyReaders) };
   assert(OUTCOMES.includes(legacyTail.conclusion.outcome));
-  const pinned = JSON.parse(readFileSync(join(here, 'legacy-tail-result.json'), 'utf8')).outcome;
-  if (pinned) assert.equal(legacyTail.conclusion.outcome, pinned, 'Recorded Legacy tail outcome');
+  // Any native run whose architecture-independent result differs from the recorded pin fails qualification.
+  legacyTail.pin = legacyPin(legacyTail.conclusion, legacyReaders, legacyPrepared.record);
+  const pinned = JSON.parse(readFileSync(join(here, 'legacy-tail-result.json'), 'utf8'));
+  if (pinned.outcome) assert.deepEqual(legacyTail.pin, { outcome: pinned.outcome, replies: pinned.replies, tailDiffersFromHealthy: pinned.tailDiffersFromHealthy });
   result = { native: pins.native, image: pins.image, platform: pin.platform,
     wireCodec: { sourceSha256Before, sourceSha256After, compiledSha256 },
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,

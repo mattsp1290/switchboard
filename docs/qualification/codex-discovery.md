@@ -197,9 +197,11 @@ This is a snapshot-dependent experiment. It supplies no history-only reconstruct
 
 ## Legacy tail-record read experiment
 
-Status: inert source only. Native evidence is pending the coordinator's arm64 run; the Linux x64 CI job runs the same
-entry point. [legacy-tail-result.json](../../spikes/codex-native/legacy-tail-result.json) records native `not-run` and no
-outcome. Once it records an outcome, `qualify.mjs` fails on any different outcome.
+Status: native observation, outcome `successful-reads-uncertified` on Linux arm64 and x64.
+[legacy-tail-result.json](../../spikes/codex-native/legacy-tail-result.json) pins the outcome and every control's
+per-step reply branch, error code and masked message, and `qualify.mjs` fails any native run that differs. Both runs are
+at `5e92b3e`, before the mtime control below: the coordinator's arm64 report (sha256 `9200ae04…e9`) and CI run
+44002471188 on x64. The coordinator reruns arm64 on the final head before merge.
 
 The question is narrow. Genuine Legacy history is created through the public experimental `historyMode: "legacy"` option on
 `thread/start`. If that history's rollout file is followed by one malformed JSON tail record, does the public read path
@@ -222,7 +224,9 @@ Each control is its own container with a fresh `/root` tmpfs home holding only `
 by host admission and checked across the container lifetime. No original SQLite or projected history is mounted.
 `/tmp/private-index` and `/tmp/private-logs` must not exist before spawn, and every reader must report the same
 `config/read` digest. The digest sorts keys and masks only the per-container ephemeral loopback port of the synthetic
-Responses server, because the first x64 run showed both varying between otherwise identical homes.
+Responses server, because the first x64 run showed both varying between otherwise identical homes. Native derives
+`updatedAt` and `recencyAt` from the rollout's file time, so the host gives every written rollout the mtime the creator
+observed on the native export. Healthy and tail then differ only in the appended bytes.
 
 | Control | Rollout bytes in the home | Requests | It proves |
 |---|---|---|---|
@@ -245,6 +249,22 @@ the healthy control answered count. A well-formed JSON-RPC error on one of them 
 `bounded-public-rejection`; bounds come from the six-second RPC deadline, clean drain and preserved source. All of them
 succeeding with the native ID gives `successful-reads-uncertified`: success does not certify that every saved record is
 valid JSON. Each compared step also records whether the tail reply equals the healthy reply or the absent-path error.
+
+### Result
+
+- **Tail.** Public reads of Legacy history whose native bytes are followed by the malformed record succeed. The path
+  summary, both `thread/read` shapes and `thread/turns/list` return the same saved turn as the healthy control: the
+  completed turn with its `userMessage` and `agentMessage`. Because they succeed, these reads fail to certify the tail's
+  syntax; nothing in the replies reports the record.
+- **Equality.** On arm64 before the mtime control, the only tail-versus-healthy differences were the file-time-derived
+  `updatedAt` and `recencyAt` of the two `thread/read` replies; on x64 the two files fell in the same second and every
+  reply was equal. The pin now requires every tail reply to equal the healthy reply.
+- **Whole file.** A rollout holding only the malformed record is reported as empty: every step returns `-32603`
+  with "failed to read session metadata … rollout at … is empty". An unparsable-only file is treated as empty.
+- **Absent controls.** `absent-id` still summarizes the native path, and every ID read returns `-32600`, `thread not
+  loaded`. `absent-path` returns `-32600` "failed to resolve rollout path … file does not exist", and its ID reads
+  return `thread not loaded`.
+- **Items.** `thread/items/list` returns `-32601` "not supported yet" in every control, so it is uninformative.
 
 This classifies no corruption, incompatibility, warning, account, continuation or old-format behavior, and it does not
 qualify paginated history, macOS, live providers or an adapter.

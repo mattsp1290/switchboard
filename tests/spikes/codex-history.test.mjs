@@ -309,6 +309,8 @@ test('actual Legacy creator exports one drained native rollout and refuses unhon
   assert.deepEqual([created.report.creator.startHistoryMode, created.report.creator.readHistoryMode], ['legacy', 'legacy']);
   assert.deepEqual(created.report.drain.map((client) => [client.closed, client.signal]), [[true, 'SIGTERM']]);
   assert.deepEqual(created.report.protocol.transcript.map((observation) => observation.request.method), ['initialize', 'thread/start', 'turn/start', 'thread/read']);
+  assert(created.report.rolloutModifiedMs > 0, 'The creator exports the native rollout mtime for every reader home');
+  assert.throws(() => legacySources({ ...created.report, rolloutModifiedMs: undefined }), /Exported native rollout mtime/);
   const sources = legacySources(created.report);
   assert(sources.healthy.equals(NATIVE));
   assert(sources.tail.equals(Buffer.concat([NATIVE, Buffer.from('{invalid-json\n')])));
@@ -358,7 +360,7 @@ test('actual Legacy reader dispatches the fixed public sequence in a fresh home 
   }
 });
 test('Legacy conclusion is only uncertified success, bounded rejection or inconclusive', async () => {
-  const { configDigest, legacyConclusion } = await import('../../spikes/codex-native/legacy-tail.mjs');
+  const { configDigest, legacyConclusion, legacyPin } = await import('../../spikes/codex-native/legacy-tail.mjs');
   const provider = (port) => ({ model_providers: { fixture: { base_url: `http://127.0.0.1:${port}/v1`, wire_api: 'responses' } }, sqlite_home: '/tmp/private-index' });
   assert.equal(configDigest(provider(41189)), configDigest({ sqlite_home: '/tmp/private-index', model_providers: { fixture: { wire_api: 'responses', base_url: 'http://127.0.0.1:34813/v1' } } }));
   assert.notEqual(configDigest(provider(41189)), configDigest({ ...provider(41189), sqlite_home: '/tmp/other' }), 'Only the loopback port and key order are ignored');
@@ -380,6 +382,11 @@ test('Legacy conclusion is only uncertified success, bounded rejection or inconc
   const readers = (overrides = {}) => ({ healthy: reader(healthy()), tail: reader(healthy()), whole: reader(rejected()),
     'absent-id': reader(absentId()), 'absent-path': reader(rejected()), ...overrides });
   assert.equal(legacyConclusion({ record, drain }, readers()).outcome, 'successful-reads-uncertified');
+  const masked = { id: 1, error: { code: -32600, message: `missing /root/.codex/${LEGACY.path} for ${LEGACY.id}` } };
+  const pin = legacyPin(legacyConclusion({ record, drain }, readers()), readers({ whole: reader(rejected().map(([method, , turns]) => [method, masked, turns])) }), record);
+  assert.deepEqual([pin.outcome, pin.tailDiffersFromHealthy, Object.keys(pin.replies)], ['successful-reads-uncertified', [], ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']]);
+  assert.deepEqual(pin.replies.whole['thread/read turns #1'], [-32600, 'missing <rollout> for <thread>'], 'Native path and ID are masked');
+  assert.deepEqual(Object.values(pin.replies['absent-id']).slice(0, 2), ['result', [-32603, 'synthetic']]);
   const rejection = legacyConclusion({ record, drain }, readers({ tail: reader(healthy().map(([method, reply, turns]) => [method, method === 'thread/read' ? error : reply, turns])) }));
   assert.equal(rejection.outcome, 'bounded-public-rejection');
   assert.deepEqual(rejection.compared.map((step) => [step.informative, step.sameAsAbsentPath]), [[true, false], [true, true], [false, true], [true, false], [true, false]]);

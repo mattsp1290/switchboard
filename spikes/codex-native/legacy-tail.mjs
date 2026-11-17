@@ -46,18 +46,22 @@ export async function legacyCreate({ client, until, root, fs }) {
   const settled = verifySource(capture, 'legacy creator settled after drain');
   const token = read.path.slice(root.length + 1);
   assert.match(token, TOKEN, 'Plain JSONL rollout under sessions');
-  const bytes = capture.entries.get(token)?.bytes;
+  const { bytes, modified } = capture.entries.get(token) ?? {};
   assert(plainJsonl(bytes), 'Rollout must be bounded, start a JSON object and end in one newline before a record is appended');
   const record = { name: 'legacy', id: thread.id, cwd, modelProvider, path: token, witness: { startedTurnId: turn.id,
     completedTurnId: completed.params.turn.id, status: 'completed', userText: 'legacy', agentText: 'synthetic discovery fixture' } };
-  return { record, rollout: bytes.toString('base64'), creator: { startHistoryMode: thread.historyMode, readHistoryMode: read.historyMode,
+  return { record, rollout: bytes.toString('base64'), rolloutModifiedMs: modified, creator: { startHistoryMode: thread.historyMode, readHistoryMode: read.historyMode,
     startPath: thread.path, readPath: read.path, capture: evidenceOf(capture), settled: settled.counters, rootChanges: settled.rootChanges },
     protocol: { transcript: client.transcript, notifications: client.events } };
 }
 
-/** Host: the five frozen source contents. Only the rollout token is ever written; no SQLite or projection exists. */
-export function legacySources({ record, rollout }) {
+/**
+ * Host: the five frozen source contents. Only the rollout token is ever written; no SQLite or projection exists.
+ * Native derives updatedAt/recencyAt from the file time, so the host gives every written rollout the native export's mtime.
+ */
+export function legacySources({ record, rollout, rolloutModifiedMs }) {
   assert.match(record.path, TOKEN);
+  assert(Number.isFinite(rolloutModifiedMs) && rolloutModifiedMs > 0, 'Exported native rollout mtime');
   const native = Buffer.from(rollout, 'base64');
   assert(plainJsonl(native), 'Exported native rollout bytes');
   return { healthy: native, tail: Buffer.concat([native, MALFORMED_RECORD]), whole: MALFORMED_RECORD, 'absent-id': native, 'absent-path': null };
@@ -162,4 +166,15 @@ export function legacyConclusion(prepared, readers, root = '/root/.codex') {
     return { outcome: 'inconclusive', reasons: ['tail replies do not align with the healthy control'], compared };
   }
   return { outcome: 'successful-reads-uncertified', compared, meaning: 'Every informative public read succeeded; success does not certify that every saved record is valid JSON.' };
+}
+/**
+ * Host: the architecture-independent result pinned in legacy-tail-result.json. Replies keep only the result branch or the
+ * error code and message, with the native rollout path and thread ID masked; tail steps that differ from healthy are listed.
+ */
+export function legacyPin({ outcome, compared = [] }, readers, record, root = '/root/.codex') {
+  const mask = (text) => record ? text.replaceAll(`${root}/${record.path}`, '<rollout>').replaceAll(record.id, '<thread>') : text;
+  const shape = (reply) => reply?.error ? [reply.error.code, mask(String(reply.error.message))] : Object.hasOwn(reply ?? {}, 'result') ? 'result' : 'neither';
+  const replies = Object.fromEntries(CONTROLS.filter((control) => readers[control]?.legacy?.steps)
+    .map((control) => [control, Object.fromEntries([...keyed(readers[control].legacy.steps)].map(([key, reply]) => [key, shape(reply)]))]));
+  return { outcome, replies, tailDiffersFromHealthy: compared.filter((step) => !step.sameAsHealthy).map((step) => step.key) };
 }

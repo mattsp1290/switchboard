@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -321,7 +321,7 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
   const log = console.log;
   const errorLog = console.error;
   try {
-    for (const fault of ['unknown-empty', 'late', 'daemon', 'removed', 'success', 'legacy-creator', 'leaf-mismatch', 'leaf-missing', 'compile-failure', 'source-drift', 'compiled-missing']) {
+    for (const fault of ['unknown-empty', 'late', 'daemon', 'removed', 'success', 'legacy-creator', 'legacy-pin', 'leaf-mismatch', 'leaf-missing', 'compile-failure', 'source-drift', 'compiled-missing']) {
       const work = realpathSync(mkdtempSync(join(tmpdir(), 'codex-lifecycle-')));
       const archive = join(work, 'inert.tgz');
       writeFileSync(archive, 'inert archive');
@@ -334,7 +334,8 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
       const wireSource = 'inert wire source\n';
       const compiledWire = 'inert compiled wire\n';
       const codec = join(work, 'codec/adapters/codex/wire.js');
-      globalThis.codexQualification = { work, wireSource, run(command, args) {
+      const legacyResult = fault === 'legacy-pin' ? JSON.parse(readFileSync(new URL('../../spikes/codex-native/legacy-tail-result.json', import.meta.url), 'utf8')) : { outcome: null };
+      globalThis.codexQualification = { work, wireSource, legacyResult, run(command, args) {
         calls.push([command, ...args]);
         if (command !== 'docker') {
           assert(command === 'tar' || command === process.execPath);
@@ -388,7 +389,7 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
           throw Object.assign(new Error('inert creator exit'), { stdout: JSON.stringify({ mode: 'prepare-legacy', failure: { message: 'Creator read-back keeps Legacy history' } }) });
         }
         if (args.at(-1) === 'prepare-legacy') return JSON.stringify({ record: { name: 'legacy', id: 'legacy-id', path: 'sessions/2026/rollout-legacy.jsonl' },
-          rollout: Buffer.from('{"opaque":"native"}\n').toString('base64'), creator: {}, drain: [] });
+          rollout: Buffer.from('{"opaque":"native"}\n').toString('base64'), rolloutModifiedMs: 1794882250043, creator: {}, drain: [] });
         if (args.at(-2) === 'legacy-read') {
           const control = args.at(-1);
           assert(!args.some((arg) => /\.sqlite|thread_history/.test(arg)), 'Legacy readers receive no SQLite or projection');
@@ -396,10 +397,11 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
             'absent-id': '{"opaque":"native"}\n' }[control];
           const file = join(work, `legacy-${control}/sessions/2026/rollout-legacy.jsonl`);
           assert.equal(existsSync(file) ? readFileSync(file, 'utf8') : undefined, expected, `Frozen ${control} source bytes`);
+          if (expected) assert.equal(Math.round(statSync(file).mtimeMs), 1794882250043, `${control} home shares the native rollout mtime`);
           legacyCalls.push(control);
           if (fault === 'success' && control === 'tail') throw Object.assign(new Error('inert reader exit'), { stdout: JSON.stringify({ mode: 'legacy-read', failure: { message: 'inert' } }) });
         }
-        if (['success', 'legacy-creator'].includes(fault)) return JSON.stringify({ mode: args.at(-1) });
+        if (['success', 'legacy-creator', 'legacy-pin'].includes(fault)) return JSON.stringify({ mode: args.at(-1) });
         assert.equal(args.at(-1), 'indexed');
         assert(args.some((arg) => arg.includes('/client.mjs,')));
         assert.equal(readFileSync(join(work, 'indexed/sessions/first.jsonl'), 'utf8'), 'synthetic opaque bytes');
@@ -429,6 +431,14 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
           assert(!existsSync(work), 'Owned work removed after codec refusal');
           assert.equal(output.length, 0);
           assert.equal(errors.length, 0);
+          continue;
+        }
+        if (fault === 'legacy-pin') {
+          await assert.rejects(import(`../../spikes/codex-native/qualify.mjs?${fault}`), (error) => error.code === 'ERR_ASSERTION'
+            && /successful-reads-uncertified/.test(error.message) && /inconclusive/.test(error.message), 'A native result that differs from the pin fails');
+          assert.deepEqual(legacyCalls, ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']);
+          assert(!existsSync(work), 'Owned work removed after a pin mismatch');
+          assert.equal(output.length, 0);
           continue;
         }
         if (['success', 'legacy-creator'].includes(fault)) {

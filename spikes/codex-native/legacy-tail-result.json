@@ -6,10 +6,34 @@
   "controls": ["healthy", "tail", "whole", "absent-id", "absent-path"],
   "readSequence": ["getConversationSummary rolloutPath", "thread/read includeTurns false", "thread/read includeTurns true",
     "thread/turns/list asc summary limit 1", "thread/items/list asc limit 1"],
-  "evidence": "guarded-inert",
-  "native": { "status": "not-run", "detail": "No Docker, native Codex or network gate ran for these sources." },
-  "outcome": null,
-  "arm64": { "source": null, "reportSha256": null, "absenceSha256": null },
-  "x64CiRun": null,
+  "pinned": "outcome, replies and tailDiffersFromHealthy are enforced by qualify.mjs on every native run. Replies keep the result branch or [code, message] with the native rollout path as <rollout> and the native thread ID as <thread>; no timestamp, ID or dated path is pinned.",
+  "outcome": "successful-reads-uncertified",
+  "replies": {
+    "healthy": { "getConversationSummary #1": "result", "thread/read #1": "result", "thread/read turns #1": "result", "thread/turns/list #1": "result",
+      "thread/items/list #1": [-32601, "thread/items/list is not supported yet"] },
+    "tail": { "getConversationSummary #1": "result", "thread/read #1": "result", "thread/read turns #1": "result", "thread/turns/list #1": "result",
+      "thread/items/list #1": [-32601, "thread/items/list is not supported yet"] },
+    "whole": {
+      "getConversationSummary #1": [-32603, "failed to load conversation summary from <rollout>: thread-store internal error: failed to read session metadata <rollout>: rollout at <rollout> is empty"],
+      "thread/read #1": [-32603, "failed to read thread: thread-store internal error: failed to read session metadata <rollout>: rollout at <rollout> is empty"],
+      "thread/read turns #1": [-32603, "failed to read thread: thread-store internal error: failed to read session metadata <rollout>: rollout at <rollout> is empty"],
+      "thread/turns/list #1": [-32603, "failed to read thread: thread-store internal error: failed to read session metadata <rollout>: rollout at <rollout> is empty"],
+      "thread/items/list #1": [-32601, "thread/items/list is not supported yet"] },
+    "absent-id": { "getConversationSummary #1": "result", "thread/read #1": [-32600, "thread not loaded: 00000000-0000-4000-8000-000000000000"],
+      "thread/read turns #1": [-32600, "thread not loaded: 00000000-0000-4000-8000-000000000000"],
+      "thread/turns/list #1": [-32600, "thread not loaded: 00000000-0000-4000-8000-000000000000"],
+      "thread/items/list #1": [-32601, "thread/items/list is not supported yet"] },
+    "absent-path": { "getConversationSummary #1": [-32600, "failed to resolve rollout path `<rollout>`: file does not exist"],
+      "thread/read #1": [-32600, "thread not loaded: <thread>"], "thread/read turns #1": [-32600, "thread not loaded: <thread>"],
+      "thread/turns/list #1": [-32600, "thread not loaded: <thread>"], "thread/items/list #1": [-32601, "thread/items/list is not supported yet"] }
+  },
+  "tailDiffersFromHealthy": [],
+  "native": {
+    "arm64": { "head": "5e92b3e", "runner": "coordinator", "reportSha256": "9200ae04aff18547f5134204708b9c35cb7a1bdb05393397bf449d84f74439e9",
+      "predatesMtimeControl": true, "tailDiffersFromHealthy": ["thread/read #1", "thread/read turns #1"],
+      "detail": "Before every home received the native mtime, healthy and tail differed only in file-time-derived updatedAt/recencyAt. Outcome and replies match this pin. The coordinator reruns arm64 on the final head before merge." },
+    "x64": { "head": "5e92b3e", "ciRun": 44002471188, "job": 133769651727, "tailDiffersFromHealthy": [],
+      "detail": "Outcome and replies match this pin; healthy and tail were written within the same second." }
+  },
   "scope": "Syntax-property read observation only. No corruption, incompatibility, warning, account or continuation classifier."
 }
