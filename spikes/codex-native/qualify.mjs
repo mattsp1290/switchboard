@@ -175,19 +175,19 @@ try {
     writeFileSync(target, file === corrupt.path ? '{invalid-json\n' : Buffer.from(encoded, 'base64'));
   }
   for (const directory of ['sessions', 'archived_sessions']) mkdirSync(join(accountSource, directory), { recursive: true });
-  const accountHeld = observeSource(accountSource, SELECTORS.host);
-  const accountInventory = inventoryOf(accountHeld);
-  const accountHashes = digestsOf(accountHeld);
+  // One frozen read-only reader home: host-held source, hashed inventory, records and per-entry mounts, verified after the run.
+  const frozenRead = (source, recordsFile, inventoryFile, stage, read) => {
+    const held = observeSource(source, SELECTORS.host);
+    writeFileSync(inventoryFile, JSON.stringify({ ...inventoryOf(held), hashes: digestsOf(held) }));
+    const mounts = ['--mount', `type=bind,source=${recordsFile},target=/opt/records.json,readonly`,
+      '--mount', `type=bind,source=${inventoryFile},target=/opt/inventory.json,readonly`];
+    for (const entry of readdirSync(source)) mounts.push('--mount', `type=bind,source=${join(source, entry)},target=/root/.codex/${entry},readonly`);
+    try { return read(mounts); } finally { verifySource(held, stage); }
+  };
   const accountRecordsFile = join(work, 'account-records.json');
-  const accountInventoryFile = join(work, 'account-inventory.json');
   writeFileSync(accountRecordsFile, JSON.stringify(accountPrepared.records));
-  writeFileSync(accountInventoryFile, JSON.stringify({ ...accountInventory, hashes: accountHashes }));
-  const accountMounts = ['--mount', `type=bind,source=${accountRecordsFile},target=/opt/records.json,readonly`,
-    '--mount', `type=bind,source=${accountInventoryFile},target=/opt/inventory.json,readonly`];
-  for (const entry of readdirSync(accountSource)) accountMounts.push('--mount', `type=bind,source=${join(accountSource, entry)},target=/root/.codex/${entry},readonly`);
-  let accounts;
-  try { accounts = JSON.parse(docker(['node', '/opt/fixture.mjs', 'account-reads'], 'discovery.mjs', accountMounts)); }
-  finally { verifySource(accountHeld, 'host account-reads container lifetime'); }
+  const accounts = frozenRead(accountSource, accountRecordsFile, join(work, 'account-inventory.json'), 'host account-reads container lifetime',
+    (mounts) => JSON.parse(docker(['node', '/opt/fixture.mjs', 'account-reads'], 'discovery.mjs', mounts)));
   // Legacy tail: one public Legacy creator, then five independently frozen fresh reader homes with no SQLite at all.
   // Partial acquisition: a Legacy container that exits nonzero after proved absence keeps its bounded report as evidence.
   const acquire = (args, mounts) => {
@@ -214,23 +214,17 @@ try {
       // Every home carries the native export's mtime, so healthy and tail differ only in the appended bytes.
       utimesSync(target, legacyPrepared.rolloutModifiedMs / 1000, legacyPrepared.rolloutModifiedMs / 1000);
     }
-    const held = observeSource(source, SELECTORS.host);
     assert.deepEqual(readdirSync(source).sort(), ['archived_sessions', 'sessions'], 'Only history trees, no SQLite or projection');
-    const inventoryFile = join(work, `legacy-${control}-inventory.json`);
-    writeFileSync(inventoryFile, JSON.stringify({ ...inventoryOf(held), hashes: digestsOf(held) }));
-    const mounts = ['--mount', `type=bind,source=${legacyRecordsFile},target=/opt/records.json,readonly`,
-      '--mount', `type=bind,source=${inventoryFile},target=/opt/inventory.json,readonly`];
-    for (const entry of readdirSync(source)) mounts.push('--mount', `type=bind,source=${join(source, entry)},target=/root/.codex/${entry},readonly`);
-    try { legacyReaders[control] = acquire(['legacy-read', control], mounts); }
-    finally { verifySource(held, `host legacy ${control} container lifetime`); }
+    legacyReaders[control] = frozenRead(source, legacyRecordsFile, join(work, `legacy-${control}-inventory.json`),
+      `host legacy ${control} container lifetime`, (mounts) => acquire(['legacy-read', control], mounts));
   }
-  const legacyTail = { creator: { ...legacyPrepared, rollout: undefined }, readers: legacyReaders, conclusion: legacyConclusion(legacyPrepared, legacyReaders) };
-  assert(OUTCOMES.includes(legacyTail.conclusion.outcome));
-  // Every native run is compared with the recorded architecture-independent pin after its full report is printed.
+  const { rollout: _rollout, ...legacyCreator } = legacyPrepared;
+  const legacyTail = { creator: legacyCreator, readers: legacyReaders, conclusion: legacyConclusion(legacyPrepared, legacyReaders) };
+  // A malformed pin file fails here; any valid pin is compared with this run only after the full report is printed.
   legacyTail.pin = legacyPin(legacyTail.conclusion, legacyReaders, legacyPrepared.record);
-  const pinned = JSON.parse(readFileSync(join(here, 'legacy-tail-result.json'), 'utf8'));
-  assert(OUTCOMES.includes(pinned.outcome), 'Recorded Legacy tail outcome');
-  legacyExpected = { outcome: pinned.outcome, replies: pinned.replies, tailDiffersFromHealthy: pinned.tailDiffersFromHealthy };
+  const { outcome, replies, tailDiffersFromHealthy } = JSON.parse(readFileSync(join(here, 'legacy-tail-result.json'), 'utf8'));
+  assert(OUTCOMES.includes(outcome), 'Recorded Legacy tail outcome');
+  legacyExpected = { outcome, replies, tailDiffersFromHealthy };
   result = { native: pins.native, image: pins.image, platform: pin.platform,
     wireCodec: { sourceSha256Before, sourceSha256After, compiledSha256 },
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,

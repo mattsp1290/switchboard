@@ -187,7 +187,7 @@ const listing = [];
 let output = evidence;
 try {
   if (mode === 'prepare-legacy') output = await legacyCreate({ client: await connect(), until, root, fs });
-  else if (mode.startsWith('prepare')) {
+  else if (['prepare', 'prepare-accounts'].includes(mode)) {
     const client = await connect();
     const records = [];
     const fixtures = mode === 'prepare-accounts' ? [

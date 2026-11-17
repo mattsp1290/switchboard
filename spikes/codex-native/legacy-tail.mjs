@@ -18,6 +18,7 @@ export const CONTROLS = Object.freeze(['healthy', 'tail', 'whole', 'absent-id', 
 export const OUTCOMES = Object.freeze(['successful-reads-uncertified', 'bounded-public-rejection', 'inconclusive']);
 // Never created by any fixture; a well-formed UUID so a rejection is about absence, not ID syntax.
 export const ABSENT_ID = '00000000-0000-4000-8000-000000000000';
+const ROOT = '/root/.codex'; // the reader home every container mounts; conclusions compare native paths against it
 const TOKEN = /^sessions\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.jsonl$/;
 // Each container's synthetic Responses server listens on its own ephemeral loopback port, and native serializes config maps
 // in no fixed key order (both observed in the first x64 run), so the digest sorts keys and masks only that port.
@@ -119,7 +120,7 @@ function keyed(steps) {
   }));
 }
 /** Host: the only conclusion site. Every gate failure is inconclusive; a tail rejection or success says nothing more. */
-export function legacyConclusion(prepared, readers, root = '/root/.codex') {
+export function legacyConclusion(prepared, readers) {
   if (prepared.acquisition) return { outcome: 'inconclusive', reasons: ['creator precondition'],
     precondition: { stage: 'creator', acquisition: prepared.acquisition, failure: prepared.failure?.message ?? null } };
   const { record, drain } = prepared;
@@ -145,8 +146,8 @@ export function legacyConclusion(prepared, readers, root = '/root/.codex') {
   const turns = [...loaded, ...pages('thread/turns/list')];
   const saved = [...loaded.flatMap((turn) => (turn.items ?? []).map((item) => ({ turnId: turn.id, item }))), ...pages('thread/items/list')]
     .filter((entry) => entry.turnId === witness.completedTurnId).map((entry) => entry.item);
-  need(summary?.conversationId === record.id && summary.path === `${root}/${record.path}`, 'healthy path summary identity');
-  need(thread?.id === record.id && thread.historyMode === 'legacy' && thread.path === `${root}/${record.path}` && thread.turns?.length === 0, 'healthy Legacy metadata');
+  need(summary?.conversationId === record.id && summary.path === `${ROOT}/${record.path}`, 'healthy path summary identity');
+  need(thread?.id === record.id && thread.historyMode === 'legacy' && thread.path === `${ROOT}/${record.path}` && thread.turns?.length === 0, 'healthy Legacy metadata');
   need(turns.some((turn) => turn.id === witness.completedTurnId && turn.status === 'completed'), 'healthy saved turn');
   need(saved.some((item) => item.type === 'userMessage' && item.content?.some((part) => part.text === witness.userText))
     && saved.some((item) => item.type === 'agentMessage' && item.text === witness.agentText), 'healthy turn and message association');
@@ -163,7 +164,8 @@ export function legacyConclusion(prepared, readers, root = '/root/.codex') {
   if (informative.some((step) => rejection(step.tail))) return { outcome: 'bounded-public-rejection', compared,
     meaning: 'The public read path returned a well-formed error for this file where the healthy control succeeded. No reason is inferred.' };
   const [tailSummary, tailThread] = ['getConversationSummary #1', 'thread/read #1'].map((key) => tail.get(key)?.result);
-  if (!informative.every((step) => step.tail?.result) || tailSummary?.summary?.conversationId !== record.id || tailThread?.thread?.id !== record.id) {
+  const tailAnswered = informative.every((step) => step.tail?.result) && tailSummary?.summary?.conversationId === record.id && tailThread?.thread?.id === record.id;
+  if (!tailAnswered) {
     return { outcome: 'inconclusive', reasons: ['tail replies do not align with the healthy control'], compared };
   }
   return { outcome: 'successful-reads-uncertified', compared, meaning: 'Every informative public read succeeded; success does not certify that every saved record is valid JSON.' };
@@ -172,8 +174,8 @@ export function legacyConclusion(prepared, readers, root = '/root/.codex') {
  * Host: the architecture-independent result pinned in legacy-tail-result.json. Replies keep only the result branch or the
  * error code and message, with the native rollout path and thread ID masked; tail steps that differ from healthy are listed.
  */
-export function legacyPin({ outcome, compared = [] }, readers, record, root = '/root/.codex') {
-  const mask = (text) => record ? text.replaceAll(`${root}/${record.path}`, '<rollout>').replaceAll(record.id, '<thread>') : text;
+export function legacyPin({ outcome, compared = [] }, readers, record) {
+  const mask = (text) => record ? text.replaceAll(`${ROOT}/${record.path}`, '<rollout>').replaceAll(record.id, '<thread>') : text;
   const shape = (reply) => reply?.error ? [reply.error.code, mask(String(reply.error.message))] : Object.hasOwn(reply ?? {}, 'result') ? 'result' : 'neither';
   const replies = Object.fromEntries(CONTROLS.filter((control) => readers[control]?.legacy?.steps)
     .map((control) => [control, Object.fromEntries([...keyed(readers[control].legacy.steps)].map(([key, reply]) => [key, shape(reply)]))]));
