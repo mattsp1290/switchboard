@@ -63,13 +63,14 @@ export type CodexOpenError = { readonly code: SessionOperationError['code'] | Se
 export type CodexEvidence = 'qualified' | 'unqualified';
 /**
  * Per-method label carried on every decoded event. `qualified`: the pinned 0.169.0 binary emitted the method with this
- * meaning in a native run (codex-native-api.md, probe.mjs). `unqualified`: decoded from the generated bindings only,
- * until the execution proof (X1) pins it; the adapter preserves it but promises no native meaning or completeness.
+ * meaning in a native run (probe.mjs; usage by execution proof X1 on linux/arm64 and x64). `unqualified`: decoded from
+ * the generated bindings only; the adapter preserves it but promises no native meaning or completeness. Opaque `native`
+ * events stay `unqualified` even when natively seen (`turn/started`), because the adapter decodes no meaning from them.
  */
 export const codexNotificationEvidence = Object.freeze({
   'turn/completed': 'qualified',
   'item/agentMessage/delta': 'qualified',
-  'thread/tokenUsage/updated': 'unqualified',
+  'thread/tokenUsage/updated': 'qualified',
 } as const satisfies Record<string, CodexEvidence>);
 const evidenceOf = (method: string): CodexEvidence => (Object.hasOwn(codexNotificationEvidence, method)
   ? codexNotificationEvidence[method as keyof typeof codexNotificationEvidence] : 'unqualified');

@@ -188,7 +188,7 @@ test('create starts a bound thread, runs one turn and streams accepted, deltas, 
   assert.deepEqual(snapshot.observation.evidence.nativeOperation, { namespace: 'codex-turn', id: completion.terminal.turnId });
   assert.deepEqual(events.map((event) => event.kind), ['turn-accepted', 'native', 'text-delta', 'text-delta', 'usage', 'turn-completed']);
   const metered = events.find((event) => event.kind === 'usage');
-  assert.deepEqual([metered.total, metered.last, metered.modelContextWindow, metered.evidence], [usage(2), usage(1), 1000, 'unqualified']);
+  assert.deepEqual([metered.total, metered.last, metered.modelContextWindow, metered.evidence], [usage(2), usage(1), 1000, 'qualified']);
   assert.deepEqual(f.sent, ['initialize', 'config/read', 'account/read', 'thread/start', 'turn/start']);
 });
 
@@ -577,7 +577,7 @@ test('usage keeps native total and last labelled per method; malformed usage bec
   assert.deepEqual(opaque.params.tokenUsage, malformed, 'native payload preserved, no zeros invented');
   assert.deepEqual([metered.total, metered.last, metered.modelContextWindow], [usage(4), usage(2), null]);
   assert.equal(metered.evidence, real.codexNotificationEvidence['thread/tokenUsage/updated']);
-  assert.equal(metered.evidence, 'unqualified', 'unqualified until the native proof pins it');
+  assert.equal(metered.evidence, 'qualified', 'qualified by native proof X1 on both architectures');
   assert.equal(events.find((event) => event.kind === 'turn-completed').evidence, 'qualified');
 });
 
