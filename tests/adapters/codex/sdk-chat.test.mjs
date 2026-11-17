@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createCodexRuntime } from './sdk-runtime.mjs';
+import { assertCoherentReport } from '../readiness-oracle.mjs';
 
 const executable = fileURLToPath(new URL('./sdk-cli.mjs', import.meta.url));
 async function fixture(t) {
@@ -229,4 +230,130 @@ test('a missing absolute CLI fails readiness without waiting for an exit event',
   const runtime = createCodexRuntime({ cwd: dir, model: 'gpt-6.1-sol', codexPathOverride: join(dir, 'missing-cli') });
   t.after(() => runtime.close());
   await assert.rejects(runtime.checkReady(), { message: 'Install Codex CLI 0.169.0 to use Codex chat.' });
+});
+
+const INSTALL = 'Install Codex CLI 0.169.0 to use Codex chat.';
+const SIGN_IN = 'Sign in with ChatGPT using codex login to use Codex chat.';
+const canaries = ['SECRET', 'Logged in', 'codex-cli', 'Error'];
+const calls = async dir => (await readFile(join(dir, 'calls.log'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
+async function waitForPid(dir, name = 'pid') {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    try { return Number(await readFile(join(dir, name), 'utf8')); } catch { await setTimeout(10); }
+  }
+  assert.fail(`${name} was not written`);
+}
+
+test('readiness report records installation, exact version and ChatGPT sign-in as checked facts', async t => {
+  const { dir, open } = await fixture(t);
+  const report = assertCoherentReport(await open().readinessReport(), canaries);
+  assert.equal(report.verdict, 'ready');
+  assert.deepEqual(report.checked, ['installation', 'version', 'authentication']);
+  assert.deepEqual(report.facts, { installation: { state: 'available' }, version: { state: 'qualified', required: '0.169.0', observed: '0.169.0' },
+    authentication: { state: 'signed_in', method: 'chatgpt' }, workspace: { state: 'unsupported' } });
+  assert.deepEqual(await calls(dir), ['--version', 'login status']);
+});
+
+test('each readiness outcome keeps its facts separate and checkReady keeps the same probes and legacy message', async t => {
+  const { account, dir, open } = await fixture(t);
+  const runtime = open();
+  for (const [overrides, facts, code, legacy] of [
+    [{ version: '0.170.0' }, { version: { state: 'mismatch', required: '0.169.0', observed: '0.170.0' }, authentication: { state: 'not_checked' } }, 'version_required', INSTALL],
+    [{ version: 'SECRET_VERSION 0.169.0' }, { version: { state: 'unknown' }, authentication: { state: 'not_checked' } }, 'retry_check', INSTALL],
+    [{ overflow: '--version' }, { version: { state: 'unknown' } }, 'retry_check', INSTALL],
+    [{ login: 'Not logged in', loginExit: 1 }, { authentication: { state: 'sign_in_required' } }, 'sign_in_required', SIGN_IN],
+    [{ login: 'Not logged in' }, { authentication: { state: 'sign_in_required' } }, 'sign_in_required', SIGN_IN],
+    [{ login: 'Logged in using ChatGPT', loginExit: 1 }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
+    [{ login: 'Logged in using API key SECRET_KEY' }, { authentication: { state: 'unsupported_method' } }, 'sign_in_required', SIGN_IN],
+    [{ login: 'Error checking login status: SECRET_STATUS', loginExit: 1 }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
+    [{ login: 'Not logged in SECRET_SUFFIX', loginExit: 1 }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
+    [{ overflow: 'login' }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
+  ]) {
+    await account(overrides);
+    await rm(join(dir, 'calls.log'), { force: true });
+    const report = assertCoherentReport(await runtime.readinessReport(), canaries);
+    assert.equal(report.facts.installation.state, 'available');
+    for (const [fact, observation] of Object.entries(facts)) assert.deepEqual(report.facts[fact], observation, fact);
+    assert.equal(report.remediation.code, code);
+    const probes = await calls(dir);
+    await rm(join(dir, 'calls.log'), { force: true });
+    await assert.rejects(runtime.checkReady(), { message: legacy });
+    assert.deepEqual(await calls(dir), probes);
+  }
+});
+
+test('missing or non-executable CLI paths are positively observed, a missing working directory is not', async t => {
+  const { dir } = await fixture(t);
+  await writeFile(join(dir, 'plain-cli'), '#!/bin/sh\n', { mode: 0o644 });
+  for (const [cwd, codexPathOverride, state] of [[dir, join(dir, 'missing-cli'), 'not_installed'],
+    [dir, join(dir, 'plain-cli'), 'not_executable'], [join(dir, 'gone'), executable, 'unknown']]) {
+    const runtime = createCodexRuntime({ cwd, model: 'gpt-6.1-sol', codexHome: dir, codexPathOverride });
+    t.after(() => runtime.close());
+    const report = assertCoherentReport(await runtime.readinessReport(), canaries);
+    assert.deepEqual([report.facts.installation.state, report.facts.version.state], [state, 'not_checked']);
+    assert.equal(report.remediation.code, state === 'unknown' ? 'retry_check' : 'install_required');
+    await assert.rejects(runtime.checkReady(), { message: INSTALL });
+  }
+  assert.deepEqual(await calls(dir), []);
+});
+
+test('a probe that ignores SIGTERM times out within its deadline, is reaped and is not a missing installation', { timeout: 15000 }, async t => {
+  const { account, dir, open } = await fixture(t);
+  for (const preflight of ['--version', 'login']) {
+    await rm(join(dir, 'pid'), { force: true });
+    await account({ preflight });
+    const started = performance.now();
+    const report = assertCoherentReport(await open().readinessReport({ timeoutMs: 200 }), canaries);
+    assert(performance.now() - started < 2500, 'deadline plus kill grace');
+    assert.equal(report.facts.installation.state, 'available');
+    assert.deepEqual(preflight === 'login' ? report.facts.authentication : report.facts.version, { state: 'timed_out' });
+    assert.equal(report.remediation.code, 'retry_check');
+    const pid = await waitForPid(dir);
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  }
+});
+
+test('a grandchild holding the probe pipes settles at the deadline', { timeout: 15000 }, async t => {
+  const { account, dir, open } = await fixture(t);
+  await account({ grandchild: '--version' });
+  const started = performance.now();
+  const report = assertCoherentReport(await open().readinessReport({ timeoutMs: 300 }), canaries);
+  assert(performance.now() - started < 2000);
+  process.kill(await waitForPid(dir, 'grandchild'));
+  assert.deepEqual([report.facts.installation.state, report.facts.version.state], ['available', 'timed_out']);
+});
+
+test('host cancellation and close report cancelled or closed checks and reap the probe child', { timeout: 15000 }, async t => {
+  const { account, dir, open } = await fixture(t);
+  const report = assertCoherentReport(await open().readinessReport({ signal: AbortSignal.abort() }));
+  assert.deepEqual([report.facts.installation.state, report.facts.version.state, report.remediation.code], ['cancelled', 'not_checked', 'check_cancelled']);
+  assert.deepEqual(await calls(dir), []);
+  await account({ preflight: '--version' });
+  for (const stop of ['host', 'close']) {
+    await rm(join(dir, 'pid'), { force: true });
+    const runtime = open();
+    const host = new AbortController();
+    const pending = runtime.readinessReport({ signal: host.signal });
+    const pid = await waitForPid(dir);
+    await (stop === 'host' ? host.abort() : runtime.close());
+    const stopped = assertCoherentReport(await pending);
+    assert.deepEqual([stopped.facts.installation.state, stopped.facts.version.state], ['available', 'cancelled']);
+    assert.equal(stopped.remediation.code, stop === 'host' ? 'check_cancelled' : 'runtime_closed');
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  }
+  const closed = open();
+  await closed.close();
+  await rm(join(dir, 'calls.log'), { force: true });
+  const after = assertCoherentReport(await closed.readinessReport());
+  assert.deepEqual([after.checked, after.facts.installation.state, after.remediation.code], [[], 'not_checked', 'runtime_closed']);
+  await assert.rejects(closed.checkReady(), { message: 'Codex operation failed.' });
+  assert.deepEqual(await calls(dir), []);
+});
+
+test('invalid readiness options reject without spawning', async t => {
+  const { dir, open } = await fixture(t);
+  const runtime = open();
+  for (const options of [{ timeoutMs: 0 }, { timeoutMs: 10_001 }, { timeoutMs: 1.5 }, { timeoutMs: '5' }, { signal: 'abort' }]) {
+    await assert.rejects(runtime.readinessReport(options), { message: 'Codex operation failed.' });
+  }
+  assert.deepEqual(await calls(dir), []);
 });

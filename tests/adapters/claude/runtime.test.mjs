@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createClaudeRuntime } from '../../../adapters/claude/src/index.ts';
+import { assertCoherentReport } from '../readiness-oracle.mjs';
 
 const id = '12345678-1234-1234-1234-123456789abc';
 async function fixture(config, run) {
@@ -175,3 +176,38 @@ for (const mode of ['writes-lost-before-hold', 'writes-lost-after-hold']) {
     assert.equal((await turn.finished).outcome,'failed');
   }));
 }
+
+const unsupported = { state: 'unsupported' };
+test('Claude readiness reports local paths and the executable override without claiming version or authentication', async () => fixture({}, async (runtime, dir) => {
+  const report = assertCoherentReport(await runtime.readinessReport(), ['fixture-key']);
+  assert.deepEqual([report.verdict, report.remediation.code, report.checked], ['unverified', 'check_unavailable', ['installation', 'workspace']]);
+  assert.deepEqual(report.facts, { installation: { state: 'available' }, version: unsupported, authentication: unsupported, workspace: { state: 'accessible' } });
+  const bundled = createClaudeRuntime({ cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', model: 'opus' });
+  const plain = assertCoherentReport(await bundled.readinessReport());
+  assert.deepEqual([plain.facts.installation, plain.checked], [unsupported, ['workspace']]);
+  await bundled.checkReady();
+}));
+
+test('Claude readiness separates a missing or non-executable override and an inaccessible directory while checkReady keeps its message', async () => fixture({}, async (runtime, dir) => {
+  await writeFile(resolve(dir, 'plain-cli'), '', { mode: 0o644 });
+  for (const [cwd, claudePathOverride, fact, state, code] of [
+    [dir, resolve(dir, 'missing-cli'), 'installation', 'not_installed', 'install_required'],
+    [dir, resolve(dir, 'plain-cli'), 'installation', 'not_executable', 'install_required'],
+    [resolve(dir, 'gone'), resolve('tests/adapters/claude/fixture.mjs'), 'workspace', 'inaccessible', 'workspace_unavailable'],
+  ]) {
+    const other = createClaudeRuntime({ cwd, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'SECRET_CLAUDE_KEY', model: 'sonnet', claudePathOverride });
+    const report = assertCoherentReport(await other.readinessReport(), ['SECRET_CLAUDE_KEY', dir]);
+    assert.deepEqual([report.verdict, report.facts[fact].state, report.remediation.code], ['blocked', state, code]);
+    await assert.rejects(other.checkReady(), { message: 'Claude operation failed.' });
+  }
+}));
+
+test('Claude readiness honours a pre-aborted signal and reports a closed runtime', async () => fixture({}, async runtime => {
+  const cancelled = assertCoherentReport(await runtime.readinessReport({ signal: AbortSignal.abort() }));
+  assert.deepEqual([cancelled.facts.installation.state, cancelled.facts.workspace.state, cancelled.remediation.code], ['cancelled', 'cancelled', 'check_cancelled']);
+  await assert.rejects(runtime.readinessReport({ signal: 'abort' }), /Claude operation failed/);
+  await runtime.close();
+  const closed = assertCoherentReport(await runtime.readinessReport());
+  assert.deepEqual([closed.checked, closed.facts.workspace.state, closed.remediation.code], [[], 'not_checked', 'runtime_closed']);
+  await assert.rejects(runtime.checkReady(), /Claude operation failed/);
+}));

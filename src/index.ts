@@ -87,3 +87,8 @@ export type {
   DispatchHandle, FreshDispatchOptions, ReconcileResult, ReconciliationHandle,
   ReconcileNative, SharedDispatchOptions, RecoveryDispatchOptions,
 } from './core/dispatch.js';
+export type {
+  AuthenticationObservation, InstallationObservation, ReadinessActionCode, ReadinessFact, ReadinessFacts,
+  ReadinessRemediationCode, ReadinessReport, ReadinessSource, ReadinessUnknownCode, UnobservedState,
+  VersionObservation, WorkspaceObservation,
+} from './core/readiness.js';

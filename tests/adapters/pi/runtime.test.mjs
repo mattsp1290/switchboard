@@ -8,6 +8,7 @@ import test from 'node:test';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
 import { terminalOutcome } from '../../../adapters/pi/src/terminal.ts';
+import { assertCoherentReport } from '../readiness-oracle.mjs';
 
 const source = new URL('../../../adapters/pi/src/index.ts', import.meta.url).href;
 const hook = registerHooks({ resolve(specifier, context, next) {
@@ -433,5 +434,25 @@ test('admission rejects an unwritable follow-up journal instead of trusting the 
     const reopened = await current.open({ sessionFile: session.sessionFile });
     assert.equal((await prompt(reopened, 'Continue original history')).terminal.outcome, 'completed');
     assert.equal(requests.at(-1).messages.filter(message => message.role === 'user').length, 2);
+  });
+});
+
+test('Pi readiness reports its directories but never installation, version or authentication', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, runtime, requests }) => {
+    const pi = await runtime();
+    const unsupported = { state: 'unsupported' };
+    const report = assertCoherentReport(await pi.readinessReport(), [key]);
+    assert.deepEqual([report.verdict, report.remediation.code, report.checked], ['unverified', 'check_unavailable', ['workspace']]);
+    assert.deepEqual(report.facts, { installation: unsupported, version: unsupported, authentication: unsupported, workspace: { state: 'accessible' } });
+    const cancelled = assertCoherentReport(await pi.readinessReport({ signal: AbortSignal.abort() }));
+    assert.deepEqual([cancelled.facts.workspace.state, cancelled.remediation.code], ['cancelled', 'check_cancelled']);
+    await assert.rejects(pi.readinessReport({ signal: 'abort' }), /Pi operation failed/);
+    await rm(join(directory, 'sessions'), { recursive: true });
+    const missing = assertCoherentReport(await pi.readinessReport(), [key, directory]);
+    assert.deepEqual([missing.verdict, missing.facts.workspace.state, missing.remediation.code], ['blocked', 'inaccessible', 'workspace_unavailable']);
+    await pi.close();
+    const closed = assertCoherentReport(await pi.readinessReport());
+    assert.deepEqual([closed.checked, closed.facts.workspace.state, closed.remediation.code], [[], 'not_checked', 'runtime_closed']);
+    assert.equal(requests.length, 0);
   });
 });

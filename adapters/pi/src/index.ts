@@ -28,14 +28,48 @@ export interface PiSession {
   abort(): Promise<void>;
   close(): Promise<void>;
 }
+type Unsupported = { readonly state: 'unsupported' };
+/**
+ * Assignable to the root `ReadinessReport`. Pi re-observes only the directories `createPiRuntime` checked.
+ * The SDK runs in-process and its version and credentials are not probed, so Pi cannot report ready.
+ */
+export type PiReadinessReport = {
+  readonly provider: 'pi';
+  readonly observedAt: string;
+  readonly checked: readonly 'workspace'[];
+  readonly facts: {
+    readonly installation: Unsupported; readonly version: Unsupported; readonly authentication: Unsupported;
+    readonly workspace: { readonly state: 'accessible' | 'inaccessible' | 'unknown' | 'cancelled' | 'not_checked' };
+  };
+} & (
+  | { readonly verdict: 'blocked'; readonly remediation: { readonly code: 'workspace_unavailable'; readonly message: string } }
+  | { readonly verdict: 'unverified';
+    readonly remediation: { readonly code: 'retry_check' | 'check_cancelled' | 'runtime_closed' | 'check_unavailable'; readonly message: string } });
 export interface PiRuntime {
   open(options?: { readonly sessionFile?: string }): Promise<PiSession>;
+  readinessReport(options?: { readonly signal?: AbortSignal }): Promise<PiReadinessReport>;
   close(): Promise<void>;
 }
 
 const writers = new Set<string>();
 const MAX_SESSIONS = 32;
 const failure = () => new Error('Pi operation failed.');
+const remedies = {
+  workspace_unavailable: 'Make the Pi working directory and session directory available.',
+  retry_check: 'Pi did not finish the readiness check. Try again.',
+  check_cancelled: 'The Pi readiness check was cancelled.',
+  runtime_closed: 'This Pi runtime is closed.',
+  check_unavailable: 'Local Pi checks passed. Version and sign-in are confirmed when a chat starts.',
+} as const;
+
+async function workspaceState(cwd: string, directory: string): Promise<'accessible' | 'inaccessible' | 'unknown'> {
+  try {
+    return (await stat(cwd)).isDirectory() && (await stat(directory)).isDirectory() ? 'accessible' : 'inaccessible';
+  } catch (error) {
+    const code = error !== null && typeof error === 'object' ? Reflect.get(error, 'code') : undefined;
+    return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES' || code === 'EPERM' ? 'inaccessible' : 'unknown';
+  }
+}
 
 function emptyResources(): ResourceLoader {
   const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
@@ -249,6 +283,18 @@ export async function createPiRuntime(options: PiRuntimeOptions): Promise<PiRunt
         opening.add(operation);
         void operation.then(() => opening.delete(operation), () => opening.delete(operation));
         return operation;
+      },
+      async readinessReport(readiness): Promise<PiReadinessReport> {
+        const signal = readiness?.signal;
+        if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure();
+        const state = closing ? 'not_checked' : signal?.aborted ? 'cancelled' : await workspaceState(cwd, directory);
+        const unsupported = { state: 'unsupported' } as const;
+        const base = { provider: 'pi', observedAt: new Date().toISOString(),
+          checked: state === 'accessible' || state === 'inaccessible' ? ['workspace' as const] : [],
+          facts: { installation: unsupported, version: unsupported, authentication: unsupported, workspace: { state } } } as const;
+        if (state === 'inaccessible') return { ...base, verdict: 'blocked', remediation: { code: 'workspace_unavailable', message: remedies.workspace_unavailable } };
+        const code = closing ? 'runtime_closed' : state === 'cancelled' ? 'check_cancelled' : state === 'unknown' ? 'retry_check' : 'check_unavailable';
+        return { ...base, verdict: 'unverified', remediation: { code, message: remedies[code] } };
       },
       close() {
         closing ??= (async () => {

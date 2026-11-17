@@ -165,3 +165,50 @@ Sessions use the native SDK's persisted session data inside the specified direct
 Claude `start()` rejection can occur after the native process received the prompt, so hosts should treat it as uncertain and avoid automatic retries. If the SDK reports lost transcript writes for the active session, the turn fails and that runtime rejects further attempts to resume the session. This knowledge is held only in memory and does not survive a new runtime or process. A failed turn does not identify the cause.
 
 Stop is available on admitted turns. Before admission, `start()` has no per-request cancellation handle and its 30-second deadline bounds the wait. `close()` cancels all pending work owned by that runtime. Session IDs must use canonical lowercase UUIDs.
+
+### Provider readiness reports
+
+`checkReady()` is unchanged. It runs the same probes and throws the same messages as before. When a host needs the reason, call `readinessReport({ signal? })` on a Codex, Claude or Pi runtime. Codex also accepts `timeoutMs`, a per-probe deadline from 1 through 10000 milliseconds that defaults to 10000. The report resolves for every provider condition, including a missing CLI, a timeout, cancellation and a closed runtime. It rejects only for invalid options. Root types `ReadinessReport` and `ReadinessSource` let a host hold all three runtimes in one collection. Each adapter also exports a narrower type: `CodexReadinessReport`, `ClaudeReadinessReport` and `PiReadinessReport`.
+
+A report records four facts separately: `installation`, `version`, `authentication` and `workspace`. A passing or positively failing state is listed in `checked`. These states are not evidence of absence:
+
+- `timed_out` and `unknown`: a probe ran without positive evidence, for example a non-zero exit, malformed or oversized output, or an unclassified error. `cancelled`: the host signal stopped the check, possibly before the probe started.
+- `not_checked`: a probe exists but did not run because an earlier fact did not pass or the runtime is closed.
+- `unsupported`: the adapter has no probe for this fact.
+
+`verdict` is `ready` only when installation, the exact qualified version and authentication were all observed passing. It is `blocked` when a failing condition was positively observed, and `unverified` otherwise. `remediation` is `null` only for `ready`.
+
+| Code | Verdict | Meaning |
+|---|---|---|
+| `install_required` | blocked | The executable is missing or not executable. |
+| `version_required` | blocked | The CLI reported a version other than the exact qualified one. A newer version is not supported. |
+| `sign_in_required` | blocked | Codex reported `Not logged in`, or a login method other than ChatGPT. |
+| `workspace_unavailable` | blocked | The working or session directory is missing or not accessible. |
+| `retry_check` | unverified | A probe timed out or produced no usable evidence. |
+| `check_cancelled` | unverified | The host signal aborted the check. |
+| `runtime_closed` | unverified | The runtime was closed before or during the check. |
+| `check_unavailable` | unverified | Local checks passed, but the adapter cannot observe sign-in. |
+
+Codes and messages are fixed text. Codex blocked reports reuse the `checkReady()` messages. The only text in a report that comes from a native process is `version.observed`, and only when it matches a release pattern such as `0.170.0` or `0.170.0-rc.1`. Native output, paths and credentials are never included.
+
+What each adapter observes:
+
+- Codex runs `codex --version` and then, only for exactly 0.169.0, `codex login status`. The same bounds as `checkReady()` apply to each call: at most two children, run one after the other, 16 KiB of output each, and SIGTERM at the deadline or on cancellation followed by SIGKILL one second later. A version probe that times out leaves installation `available`. A login probe that times out or errors leaves authentication `unknown`, never `sign_in_required`. The executable is resolved from `PATH` when the runtime is created, so a later `PATH` change is not seen. A deleted override is seen. Workspace is `unsupported`.
+- Claude checks the readable working directory, creates and checks the private session directory as `checkReady()` does, and checks an explicit `claudePathOverride` for execute permission. Without an override, installation is `unsupported`. It never observes the CLI version or whether the API key works, so it never reports `ready`. Claude and Pi read `signal` only before their local filesystem checks, which have no deadline.
+- Pi re-checks only the directories that `createPiRuntime` validated. The SDK runs in-process, and its version and credentials are not probed, so installation, version and authentication are `unsupported`.
+
+A report is a point-in-time observation at `observedAt`. It is not cached, it does not guarantee that the next turn starts, and it is not native qualification. It never installs, updates, signs in, calls a model or refreshes a catalog. Tests use fixture CLIs only. The Codex `Not logged in` line was taken from the strings of the qualified 0.169.0 binary and has not been exercised natively. Any other output is reported as `unknown`, never as `signed_in`.
+
+```ts
+import type { ReadinessReport, ReadinessSource } from '@mattsp1290/switchboard';
+
+async function providerRows(sources: Record<string, ReadinessSource>, signal: AbortSignal) {
+	return Promise.all(Object.entries(sources).map(async ([name, runtime]) => {
+		const report: ReadinessReport = await runtime.readinessReport({ signal });
+		if (report.verdict === 'ready') return { name, status: 'Ready', at: report.observedAt };
+		// blocked: show the fix. unverified: offer Retry, or explain that sign-in is confirmed when a chat starts.
+		return { name, status: report.remediation.message, code: report.remediation.code, at: report.observedAt };
+	}));
+}
+// const rows = await providerRows({ codex, claude, pi }, AbortSignal.timeout(25_000));
+```
