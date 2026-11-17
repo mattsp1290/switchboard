@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
-import { accountLogin } from './account-reads.mjs';
+import { accountLogin, accountProfile, accountRouting } from './account-reads.mjs';
 // The compiled product modules, mounted read-only from the host's fresh build.
 import { codexSessionMethods, codexSessions } from '../dist/adapters/codex/sessions.js';
 import { openCodexTransport } from '../dist/adapters/codex/transport.js';
@@ -25,12 +25,17 @@ const server = createServer((request, response) => {
   response.writeHead(403).end('Inspection inference refused');
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+// Without an auth-requiring provider, account/read projects a null account (the qualifier's first attempt,
+// inconclusive-null-requester-account), so no requester can bind. Routing stays on a separate local origin.
+const routing = createServer(accountRouting);
+await new Promise((resolve) => routing.listen(0, '127.0.0.1', resolve));
 const config = { model_provider: 'fixture', model: 'fixture-model', check_for_update_on_startup: false, 'analytics.enabled': false, 'features.apps': false };
 for (const provider of ['fixture', 'other']) Object.assign(config, {
   [`model_providers.${provider}.name`]: provider, [`model_providers.${provider}.base_url`]: `http://127.0.0.1:${server.address().port}/v1`,
   [`model_providers.${provider}.wire_api`]: 'responses', [`model_providers.${provider}.supports_websockets`]: false,
   [`model_providers.${provider}.request_max_retries`]: 0, [`model_providers.${provider}.stream_max_retries`]: 0,
 });
+Object.assign(config, accountProfile(`http://127.0.0.1:${routing.address().port}`, `http://127.0.0.1:${server.address().port}`));
 // R4 starts the server without a private index, so the adapter's own precondition must refuse before any history read.
 if (scenario !== 'unprivate') Object.assign(config, { sqlite_home: '/tmp/private-index', log_dir: '/tmp/private-logs' });
 const child = spawn('/opt/codex', ['app-server', ...Object.entries(config).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])],
@@ -78,6 +83,12 @@ try {
   report.initialize = { codexHome: initialized.result?.codexHome ?? null, userAgent: initialized.result?.userAgent ?? null };
   need((await transport.notify({ method: 'initialized' }, signal())).kind === 'written', 'initialized notification written');
   need(!(await raw('account/login/start', { type: 'apiKey', apiKey: 'synthetic-discovery-key' })).error, 'API key login');
+  // Diagnostic evidence for every scenario: raw reads, never counted as adapter methods.
+  const resolved = await raw('config/read', { includeLayers: false });
+  report.config = { sqlite_home: resolved.result?.config?.sqlite_home ?? null, log_dir: resolved.result?.config?.log_dir ?? null };
+  const projected = (await raw('account/read', { refreshToken: false })).result;
+  report.account = { type: projected?.account?.type ?? null, userId: typeof projected?.userId === 'string',
+    requiresOpenaiAuth: projected?.requiresOpenaiAuth ?? null };
   const scope = { home, request: borrowed, initialize: { codexHome: initialized.result?.codexHome } };
   const access = (binding) => ({ scope, binding, bounds, signal: AbortSignal.timeout(30000) });
   const bind = async (nativeFormat) => {
@@ -87,9 +98,6 @@ try {
   const reference = (binding, opaque) => ({ kind: 'session', formatVersion: 1, binding, opaque });
   const { first, legacy } = manifest;
   if (scenario === 'unprivate') {
-    const resolved = await raw('config/read', { includeLayers: false });
-    report.config = { sqlite_home: resolved.result?.config?.sqlite_home ?? null, log_dir: resolved.result?.config?.log_dir ?? null };
-    report.methods = [];
     report.bind = outcome(await bind('codex-thread/paginated'));
     const fixed = { engine: 'codex', nativeVersion: '0.169.0', account: 'apiKey', authorizedScope: home, nativeFormat: 'codex-thread/paginated' };
     report.discover = summary(await codexSessions.discover(access(fixed)));
@@ -99,6 +107,7 @@ try {
     const paginated = await bind('codex-thread/paginated');
     need(paginated.kind === 'ok', 'paginated binding');
     report.binding = paginated.value ?? null;
+    if (paginated.kind === 'error') report.bindError = paginated.error.code;
     const binding = paginated.value;
     if (scenario === 'read' || scenario === 'malformed') {
       const page = await codexSessions.discover(access(binding));
@@ -161,8 +170,10 @@ try {
   await Promise.race([childClosed, delay(5000)]);
   if (!closed) { child.kill('SIGKILL'); await childClosed; }
   report.stderrBytes = stderrBytes;
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
+  for (const owned of [server, routing]) {
+    owned.closeAllConnections();
+    await new Promise((resolve) => owned.close(resolve));
+  }
   need(report.inference === 0, 'no inference');
 }
 console.log(JSON.stringify(report));

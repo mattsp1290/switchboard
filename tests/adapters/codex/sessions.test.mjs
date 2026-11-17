@@ -133,7 +133,9 @@ test('bind and discover refuse a scope without a private index or with an unbind
   const inside = fixture(t);
   inside.scope.request = server(inside.scope.home, { config: { sqlite_home: join(inside.scope.home, 'sub') } }).request;
   assert.deepEqual(await codexSessions.discover(access(inside)), { kind: 'error', error: { code: 'invalid-input' } });
+  // The second is the projection when the provider does not require OpenAI auth (the first native proof run).
   for (const account of [() => ({ account: null, userId: null, requiresOpenaiAuth: true }),
+    () => ({ account: null, userId: null, requiresOpenaiAuth: false }),
     () => ({ account: { type: 'gcp' }, userId: null, requiresOpenaiAuth: false }),
     () => ({ account: { type: 'chatgpt' }, userId: null, requiresOpenaiAuth: true })]) {
     const fake = fixture(t, { account });
