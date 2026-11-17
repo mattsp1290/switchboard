@@ -31,6 +31,7 @@ const work = mkdtempSync(join(here, '.work/run-'));
 const name = `switchboard-codex-${randomUUID()}`;
 let cleanupUncertain = false;
 let result;
+let legacyExpected;
 const run = (command, args, options = {}) => execFileSync(command, args, { timeout: 45000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', ...options });
 try {
   const binary = join(work, 'codex');
@@ -197,7 +198,8 @@ try {
     }
   };
   const legacyPrepared = acquire(['prepare-legacy']);
-  // A creator that cannot produce genuine Legacy history is a labelled precondition failure, never an aborted qualification.
+  // A creator that cannot produce genuine Legacy history is a labelled precondition failure: no reader runs, the report is
+  // printed in full, and only then does the pin fail the run.
   const legacyBytes = legacyPrepared.acquisition ? null : legacySources(legacyPrepared);
   const legacyRecordsFile = join(work, 'legacy-records.json');
   writeFileSync(legacyRecordsFile, JSON.stringify(legacyBytes ? [legacyPrepared.record] : []));
@@ -224,10 +226,11 @@ try {
   }
   const legacyTail = { creator: { ...legacyPrepared, rollout: undefined }, readers: legacyReaders, conclusion: legacyConclusion(legacyPrepared, legacyReaders) };
   assert(OUTCOMES.includes(legacyTail.conclusion.outcome));
-  // Any native run whose architecture-independent result differs from the recorded pin fails qualification.
+  // Every native run is compared with the recorded architecture-independent pin after its full report is printed.
   legacyTail.pin = legacyPin(legacyTail.conclusion, legacyReaders, legacyPrepared.record);
   const pinned = JSON.parse(readFileSync(join(here, 'legacy-tail-result.json'), 'utf8'));
-  if (pinned.outcome) assert.deepEqual(legacyTail.pin, { outcome: pinned.outcome, replies: pinned.replies, tailDiffersFromHealthy: pinned.tailDiffersFromHealthy });
+  assert(OUTCOMES.includes(pinned.outcome), 'Recorded Legacy tail outcome');
+  legacyExpected = { outcome: pinned.outcome, replies: pinned.replies, tailDiffersFromHealthy: pinned.tailDiffersFromHealthy };
   result = { native: pins.native, image: pins.image, platform: pin.platform,
     wireCodec: { sourceSha256Before, sourceSha256After, compiledSha256 },
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,
@@ -238,3 +241,4 @@ try {
   else { rmSync(work, { recursive: true, force: true }); assert(!existsSync(work), 'Owned work removed'); }
 }
 console.log(JSON.stringify(result, null, 2));
+assert.deepEqual(result.legacyTail.pin, legacyExpected);

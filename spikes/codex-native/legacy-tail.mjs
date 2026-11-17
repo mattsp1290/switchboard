@@ -21,8 +21,9 @@ export const ABSENT_ID = '00000000-0000-4000-8000-000000000000';
 const TOKEN = /^sessions\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.jsonl$/;
 // Each container's synthetic Responses server listens on its own ephemeral loopback port, and native serializes config maps
 // in no fixed key order (both observed in the first x64 run), so the digest sorts keys and masks only that port.
-export const configDigest = (config) => createHash('sha256').update(JSON.stringify(config, (key, value) => value && typeof value === 'object'
-  && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : 1)) : value)
+const sorted = (key, value) => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : 1)) : value;
+export const configDigest = (config) => createHash('sha256').update(JSON.stringify(config, sorted)
   .replace(/http:\/\/127\.0\.0\.1:\d+\//g, 'http://127.0.0.1:loopback/')).digest('hex');
 const plainJsonl = (bytes) => bytes?.length > 0 && bytes.length <= 4 * 1024 * 1024 && bytes[0] === 0x7b && bytes.at(-1) === 0x0a;
 
@@ -57,7 +58,7 @@ export async function legacyCreate({ client, until, root, fs }) {
 
 /**
  * Host: the five frozen source contents. Only the rollout token is ever written; no SQLite or projection exists.
- * Native derives updatedAt/recencyAt from the file time, so the host gives every written rollout the native export's mtime.
+ * Native derives recencyAt (and the loaded read's updatedAt) from the file mtime, so every written rollout gets the export's.
  */
 export function legacySources({ record, rollout, rolloutModifiedMs }) {
   assert.match(record.path, TOKEN);
@@ -149,14 +150,14 @@ export function legacyConclusion(prepared, readers, root = '/root/.codex') {
   need(turns.some((turn) => turn.id === witness.completedTurnId && turn.status === 'completed'), 'healthy saved turn');
   need(saved.some((item) => item.type === 'userMessage' && item.content?.some((part) => part.text === witness.userText))
     && saved.some((item) => item.type === 'agentMessage' && item.text === witness.agentText), 'healthy turn and message association');
-  need([...healthy].some(([key, reply]) => reply.result && rejection(whole.get(key))), 'whole-file control rejected publicly');
+  need([...healthy].filter(([, reply]) => reply.result).every(([key]) => rejection(whole.get(key))), 'whole-file control rejected publicly');
   // absent-id holds the healthy rollout, so its summary must still name the native ID while the never-created ID is rejected.
   need(absentId.get('getConversationSummary #1').result?.summary?.conversationId === record.id && rejection(absentId.get('thread/read #1')), 'absent-id control rejected');
   need(rejection(absentPath.get('getConversationSummary #1')), 'absent-path control rejected');
   if (reasons.length) return { outcome: 'inconclusive', reasons };
   // Only steps the healthy control answered can speak about the tail record; others are retained but uninformative.
   const compared = [...healthy].map(([key, reply]) => ({ key, informative: Boolean(reply.result), tail: tail.get(key) ?? null,
-    sameAsHealthy: JSON.stringify(tail.get(key)) === JSON.stringify(reply),
+    sameAsHealthy: JSON.stringify(tail.get(key), sorted) === JSON.stringify(reply, sorted),
     sameAsAbsentPath: rejection(tail.get(key)) && JSON.stringify(tail.get(key).error) === JSON.stringify(absentPath.get(key)?.error) }));
   const informative = compared.filter((step) => step.informative);
   if (informative.some((step) => rejection(step.tail))) return { outcome: 'bounded-public-rejection', compared,

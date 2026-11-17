@@ -31,9 +31,12 @@
   "native": {
     "arm64": { "head": "5e92b3e", "runner": "coordinator", "reportSha256": "9200ae04aff18547f5134204708b9c35cb7a1bdb05393397bf449d84f74439e9",
       "predatesMtimeControl": true, "tailDiffersFromHealthy": ["thread/read #1", "thread/read turns #1"],
-      "detail": "Before every home received the native mtime, healthy and tail differed only in file-time-derived updatedAt/recencyAt. Outcome and replies match this pin. The coordinator reruns arm64 on the final head before merge." },
-    "x64": { "head": "5e92b3e", "ciRun": 44002471188, "job": 133769651727, "tailDiffersFromHealthy": [],
-      "detail": "Outcome and replies match this pin; healthy and tail were written within the same second." }
+      "detail": "Before every home received the native mtime, healthy and tail differed only in recencyAt (both reads) and the loaded read's updatedAt, which followed each home's write time. Outcome and replies match this pin. The coordinator reruns arm64 on the final head before merge." },
+    "x64": [
+      { "head": "5e92b3e", "ciRun": 44002471188, "job": 133769651727, "mtimeControl": false, "tailDiffersFromHealthy": [] },
+      { "head": "d044530", "ciRun": 44003944604, "job": 133774559159, "mtimeControl": true, "tailDiffersFromHealthy": [],
+        "detail": "Every home's rollout mtime equalled the native export's; the tail file's ctime fell in the next second while recencyAt stayed on the mtime's second. Matches this pin." }
+    ]
   },
   "scope": "Syntax-property read observation only. No corruption, incompatibility, warning, account or continuation classifier."
 }

@@ -387,6 +387,13 @@ test('Legacy conclusion is only uncertified success, bounded rejection or inconc
   assert.deepEqual([pin.outcome, pin.tailDiffersFromHealthy, Object.keys(pin.replies)], ['successful-reads-uncertified', [], ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']]);
   assert.deepEqual(pin.replies.whole['thread/read turns #1'], [-32600, 'missing <rollout> for <thread>'], 'Native path and ID are masked');
   assert.deepEqual(Object.values(pin.replies['absent-id']).slice(0, 2), ['result', [-32603, 'synthetic']]);
+  const drifted = legacyConclusion({ record, drain }, readers({ tail: reader(healthy().map(([method, reply, turns]) => [method, method === 'thread/turns/list' ? ok({ ...reply.result, extra: 1 }) : reply, turns])) }));
+  assert.deepEqual(legacyPin(drifted, readers(), record).tailDiffersFromHealthy, ['thread/turns/list #1']);
+  const recorded = JSON.parse(readFileSync(new URL('../../spikes/codex-native/legacy-tail-result.json', import.meta.url), 'utf8'));
+  const unmask = (text) => text.replaceAll('<rollout>', `/root/.codex/${LEGACY.path}`).replaceAll('<thread>', LEGACY.id);
+  const replay = Object.fromEntries(Object.entries(recorded.replies).map(([control, steps]) => [control, { legacy: { steps: Object.entries(steps).map(([key, shape]) =>
+    ({ method: key.split(' ')[0], params: { includeTurns: key.includes(' turns') }, reply: shape === 'result' ? ok({}) : { id: 1, error: { code: shape[0], message: unmask(shape[1]) } } })) } }]));
+  assert.deepEqual(legacyPin({ outcome: recorded.outcome }, replay, record).replies, recorded.replies, 'The recorded pin round-trips through legacyPin');
   const rejection = legacyConclusion({ record, drain }, readers({ tail: reader(healthy().map(([method, reply, turns]) => [method, method === 'thread/read' ? error : reply, turns])) }));
   assert.equal(rejection.outcome, 'bounded-public-rejection');
   assert.deepEqual(rejection.compared.map((step) => [step.informative, step.sameAsAbsentPath]), [[true, false], [true, true], [false, true], [true, false], [true, false]]);

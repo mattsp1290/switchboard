@@ -334,7 +334,7 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
       const wireSource = 'inert wire source\n';
       const compiledWire = 'inert compiled wire\n';
       const codec = join(work, 'codec/adapters/codex/wire.js');
-      const legacyResult = fault === 'legacy-pin' ? JSON.parse(readFileSync(new URL('../../spikes/codex-native/legacy-tail-result.json', import.meta.url), 'utf8')) : { outcome: null };
+      const legacyResult = fault === 'legacy-pin' ? JSON.parse(readFileSync(new URL('../../spikes/codex-native/legacy-tail-result.json', import.meta.url), 'utf8')) : { outcome: 'inconclusive', replies: {}, tailDiffersFromHealthy: [] };
       globalThis.codexQualification = { work, wireSource, legacyResult, run(command, args) {
         calls.push([command, ...args]);
         if (command !== 'docker') {
@@ -438,7 +438,7 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
             && /successful-reads-uncertified/.test(error.message) && /inconclusive/.test(error.message), 'A native result that differs from the pin fails');
           assert.deepEqual(legacyCalls, ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']);
           assert(!existsSync(work), 'Owned work removed after a pin mismatch');
-          assert.equal(output.length, 0);
+          assert.deepEqual(JSON.parse(output[0]).legacyTail.pin, { outcome: 'inconclusive', replies: {}, tailDiffersFromHealthy: [] }, 'The full report precedes the failure');
           continue;
         }
         if (['success', 'legacy-creator'].includes(fault)) {

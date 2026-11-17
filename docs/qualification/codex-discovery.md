@@ -199,9 +199,10 @@ This is a snapshot-dependent experiment. It supplies no history-only reconstruct
 
 Status: native observation, outcome `successful-reads-uncertified` on Linux arm64 and x64.
 [legacy-tail-result.json](../../spikes/codex-native/legacy-tail-result.json) pins the outcome and every control's
-per-step reply branch, error code and masked message, and `qualify.mjs` fails any native run that differs. Both runs are
-at `5e92b3e`, before the mtime control below: the coordinator's arm64 report (sha256 `9200ae04…e9`) and CI run
-44002471188 on x64. The coordinator reruns arm64 on the final head before merge.
+per-step reply branch, error code and masked message, and the list of tail steps that differ from healthy. `qualify.mjs`
+prints its full report and then fails any native run that differs. Evidence: the coordinator's arm64 report at `5e92b3e`
+(sha256 `9200ae04…e9`), which predates the mtime control below, and CI x64 runs 44002471188 at `5e92b3e` and 44003944604
+at `d044530`, the first with the mtime control. The coordinator reruns arm64 on the final head before merge.
 
 The question is narrow. Genuine Legacy history is created through the public experimental `historyMode: "legacy"` option on
 `thread/start`. If that history's rollout file is followed by one malformed JSON tail record, does the public read path
@@ -213,8 +214,8 @@ The creator runs in its own container. It starts one thread with `historyMode: "
 `turn/completed`, reads the thread back metadata-only, and drains. Only then does it capture the home and verify that the
 capture is still unchanged. Start and read-back must both report `legacy`, and the native-returned path must be a plain
 `sessions/**.jsonl` file of at most 4 MiB that starts with `{` and ends in `\n`. No other private format fact is used. If
-any of this fails, the result is a labelled creator precondition failure and an inconclusive conclusion; no reader runs and
-every earlier mode keeps its own strict result.
+any of this fails, the result is a labelled creator precondition failure and an inconclusive conclusion; no reader runs, the
+full report is printed, and the run then fails because the conclusion differs from the pin.
 
 The malformed record is the 14 bytes `{invalid-json\n`, the same bytes as the whole-file `malformed` control. The native
 file ends in `\n`, so appending them adds exactly one LF-terminated line and leaves every native byte unchanged. The line
@@ -225,8 +226,8 @@ by host admission and checked across the container lifetime. No original SQLite 
 `/tmp/private-index` and `/tmp/private-logs` must not exist before spawn, and every reader must report the same
 `config/read` digest. The digest sorts keys and masks only the per-container ephemeral loopback port of the synthetic
 Responses server, because the first x64 run showed both varying between otherwise identical homes. Native derives
-`updatedAt` and `recencyAt` from the rollout's file time, so the host gives every written rollout the mtime the creator
-observed on the native export. Healthy and tail then differ only in the appended bytes.
+`recencyAt`, and the loaded read's `updatedAt`, from the rollout's mtime, so the host gives every written rollout the mtime
+the creator observed on the native export. Healthy and tail then differ only in the appended bytes.
 
 | Control | Rollout bytes in the home | Requests | It proves |
 |---|---|---|---|
@@ -253,14 +254,16 @@ valid JSON. Each compared step also records whether the tail reply equals the he
 ### Result
 
 - **Tail.** Public reads of Legacy history whose native bytes are followed by the malformed record succeed. The path
-  summary, both `thread/read` shapes and `thread/turns/list` return the same saved turn as the healthy control: the
-  completed turn with its `userMessage` and `agentMessage`. Because they succeed, these reads fail to certify the tail's
-  syntax; nothing in the replies reports the record.
-- **Equality.** On arm64 before the mtime control, the only tail-versus-healthy differences were the file-time-derived
-  `updatedAt` and `recencyAt` of the two `thread/read` replies; on x64 the two files fell in the same second and every
-  reply was equal. The pin now requires every tail reply to equal the healthy reply.
-- **Whole file.** A rollout holding only the malformed record is reported as empty: every step returns `-32603`
-  with "failed to read session metadata … rollout at … is empty". An unparsable-only file is treated as empty.
+  summary and both `thread/read` shapes return the native ID. The loaded `thread/read` and `thread/turns/list` return the
+  same saved turn as the healthy control: the completed turn with its `userMessage` and `agentMessage`. Because they
+  succeed, these reads fail to certify the tail's syntax; nothing in the replies reports the record.
+- **Equality.** On arm64 before the mtime control, the only tail-versus-healthy differences were `recencyAt` in both
+  `thread/read` replies and `updatedAt` in the loaded one; both followed each home's write time. On x64 with the mtime
+  control, every home's rollout carried the native mtime, the tail file's ctime fell in a later second, and every tail
+  reply equalled the healthy reply, with `recencyAt` on the mtime's second. The pin requires that equality.
+- **Whole file.** A rollout holding only the 14-byte malformed record is reported as empty: every step except
+  `thread/items/list` returns `-32603` with "failed to read session metadata … rollout at … is empty". No wider parsing
+  rule is inferred.
 - **Absent controls.** `absent-id` still summarizes the native path, and every ID read returns `-32600`, `thread not
   loaded`. `absent-path` returns `-32600` "failed to resolve rollout path … file does not exist", and its ID reads
   return `thread not loaded`.

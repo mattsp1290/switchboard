@@ -63,7 +63,7 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   const send = (value) => child.stdin.write(encode(value));
   const ready = () => {
     if (failure) throw failure;
-    assert(!stopping && !closed && child.exitCode === null && child.signalCode === null, stderr().toString() || 'Native process closed');
+    assert(!stopping && !closed && child.exitCode === null && child.signalCode === null, stderr().subarray(0, 8192).toString() || 'Native process closed');
   };
   const rpc = async (method, params) => {
     ready();
