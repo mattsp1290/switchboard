@@ -13,7 +13,8 @@ import { sessionReference } from './sessions.test.js';
 const target: ToolTarget = { kind: 'tool', session: sessionReference, nativeToolCallId: 'native-a' };
 export const pendingBatch: PendingFrontendBatch = {
   formatVersion: 1, adapter: 'codex', session: sessionReference, nativeTurnId: 'turn-a', epoch: 'epoch-1',
-  sourceRunId: 'run-a', calls: [{ target, publicToolCallId: 'public-a', argumentsDigest: 'sha256:a', definitionDigest: 'sha256:b' }],
+  sourceRunId: 'run-a', calls: [{ target, publicToolCallId: 'public-a', argumentsDigest: `sha256:${'a'.repeat(64)}`,
+    definitionDigest: `sha256:${'b'.repeat(64)}` }],
 };
 export const observations: readonly RestoreObservation[] = [
   { kind: 'live-original', epoch: 'epoch-1' }, { kind: 'rejoined-original', epoch: 'epoch-2' },
@@ -44,6 +45,9 @@ export function detail(decision: RestoreDecision): string {
   }
 }
 export const delivery: DeliveryClass = frontendRestoreDelivery['paired-repair'];
+export function errorDetail(error: FrontendRestoreError): string {
+  return error.code === 'invalid-policy' ? error.field : error.code;
+}
 export const policy: FrontendRestorePolicy = {
   revision: 'app-v1',
   decide: (situation): RestoreChoice => situation.options.some((option) => option.mechanism === 'settle-interrupted')

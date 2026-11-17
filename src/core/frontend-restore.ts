@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Capability } from './capabilities.js';
 import type { Outcome } from './contracts.js';
 import type { ToolTarget } from './interaction.js';
-import { parseSessionReference, sessionLimits } from './sessions.js';
+import { parseSessionReference, sameBinding, sessionLimits } from './sessions.js';
 import type { SessionBinding, SessionReference } from './sessions.js';
 
 export type RestoreAdapter = 'codex' | 'claude' | 'pi';
@@ -58,7 +58,7 @@ type DeliveryOf = typeof frontendRestoreDelivery;
 
 export type RestoreOption = { readonly [M in RestoreMechanism]: {
   readonly mechanism: M;
-  readonly delivery: DeliveryOf[M];
+  readonly deliveryClass: DeliveryOf[M];
   readonly qualification: RestoreQualification;
 } }[RestoreMechanism];
 type DeferOption = Extract<RestoreOption, { readonly mechanism: 'defer' }>;
@@ -102,26 +102,22 @@ export type RestoreDecisionComparison = { readonly decision: RestoreDecision } &
   | { readonly effect: 'defer-ignored' }
 );
 
-export interface FrontendRestoreError {
-  readonly code: 'invalid-input' | 'unsupported-version' | 'adapter-mismatch' | 'binding-mismatch'
-    | 'session-mismatch' | 'stale-situation' | 'mechanism-unavailable' | 'decision-conflict';
-}
+export type FrontendRestoreError =
+  | { readonly code: 'invalid-input' | 'unsupported-version' | 'adapter-mismatch' | 'binding-mismatch'
+      | 'session-mismatch' | 'bounds-exceeded' | 'tampered-situation' | 'stale-situation' | 'mechanism-unavailable'
+      | 'decision-conflict' | 'policy-failed' }
+  | { readonly code: 'invalid-policy'; readonly field: 'revision' | 'decide' };
 
 type SituationPayload =
   | { readonly kind: Exclude<RestoreSituationKind, 'indeterminate'>; readonly key: string }
   | { readonly kind: 'indeterminate'; readonly key: string; readonly reason: IndeterminateReason };
-type OptionPayload = { readonly [M in RestoreMechanism]: {
-  readonly mechanism: M;
-  readonly deliveryClass: DeliveryOf[M];
-  readonly qualification: RestoreQualification;
-} }[RestoreMechanism];
 export type FrontendRestorePayload = {
   readonly sourceRunId: string;
   readonly toolCallIds: readonly string[];
   readonly situation: SituationPayload;
 } & (
-  | { readonly phase: 'required'; readonly options: readonly OptionPayload[] }
-  | ({ readonly phase: 'decided'; readonly policyRevision: string } & OptionPayload)
+  | { readonly phase: 'required'; readonly options: readonly RestoreOption[] }
+  | ({ readonly phase: 'decided'; readonly policyRevision: string } & RestoreOption)
 );
 export type FrontendRestoreFact = {
   readonly kind: 'custom';
@@ -134,7 +130,7 @@ export type FrontendRestoreFactInput =
   | { readonly phase: 'required'; readonly situation: RestoreSituation }
   | { readonly phase: 'decided'; readonly situation: RestoreSituation; readonly decision: unknown };
 
-export const frontendRestoreLimits = Object.freeze({ maxCalls: 1000 });
+export const frontendRestoreLimits = Object.freeze({ maxCalls: 1000, maxPublicIdBytes: 57344, maxFactBytes: 65536 });
 export const frontendRestoreDefaultRevision = 'switchboard.default-defer';
 
 const mechanisms = Object.freeze(Object.keys(frontendRestoreDelivery) as RestoreMechanism[]);
@@ -183,16 +179,17 @@ export const frontendRestoreCapabilities: { readonly [A in RestoreAdapter]: Fron
   pi: table('pi'),
 });
 
-const failures = new WeakMap<object, FrontendRestoreError['code']>();
+const failures = new WeakMap<object, FrontendRestoreError>();
 class RestoreFailure extends Error {
-  constructor(code: FrontendRestoreError['code'] = 'invalid-input') {
-    super(code);
-    failures.set(this, code);
+  constructor(error: FrontendRestoreError | Exclude<FrontendRestoreError['code'], 'invalid-policy'> = 'invalid-input') {
+    const value = typeof error === 'string' ? { code: error } : error;
+    super(value.code);
+    failures.set(this, Object.freeze(value));
   }
 }
 function fail(error: unknown): { readonly kind: 'error'; readonly error: FrontendRestoreError } {
-  const code = typeof error === 'object' && error !== null ? failures.get(error) ?? 'invalid-input' : 'invalid-input';
-  return Object.freeze({ kind: 'error', error: Object.freeze({ code }) });
+  const found = typeof error === 'object' && error !== null ? failures.get(error) : undefined;
+  return Object.freeze({ kind: 'error', error: found ?? Object.freeze({ code: 'invalid-input' }) });
 }
 function ok<T>(value: T): { readonly kind: 'ok'; readonly value: T } {
   return Object.freeze({ kind: 'ok', value });
@@ -213,14 +210,16 @@ function fields(value: unknown, allowed: readonly string[]): Readonly<Record<str
 function exact(value: Readonly<Record<string, unknown>>, allowed: readonly string[]): void {
   if (Object.keys(value).some((key) => !allowed.includes(key))) throw new RestoreFailure();
 }
-function text(value: unknown): string {
-  if (typeof value !== 'string' || value.trim().length === 0 || value.length > sessionLimits.identifierLength) {
-    throw new RestoreFailure();
-  }
+function isText(value: unknown): value is string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > sessionLimits.identifierLength) return false;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code <= 31 || (code >= 127 && code <= 159)) throw new RestoreFailure();
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
   }
+  return true;
+}
+function text(value: unknown): string {
+  if (!isText(value)) throw new RestoreFailure();
   return value;
 }
 function digest(value: unknown): string {
@@ -246,25 +245,19 @@ function list(value: unknown, minimum: number, maximum: number): readonly unknow
     return descriptor.value as unknown;
   });
 }
-function binding(value: unknown): SessionBinding {
-  const raw = fields(value, ['engine', 'nativeVersion', 'account', 'authorizedScope', 'nativeFormat']);
-  return { engine: text(raw.engine), nativeVersion: text(raw.nativeVersion), account: text(raw.account),
-    authorizedScope: text(raw.authorizedScope), nativeFormat: text(raw.nativeFormat) };
-}
 function session(value: unknown): SessionReference {
   const raw = fields(value, ['kind', 'formatVersion', 'binding', 'opaque']);
-  const expected = binding(raw.binding);
-  const parsed = parseSessionReference({ value: { ...raw, binding: expected }, expected });
-  if (parsed.kind === 'error') {
-    throw new RestoreFailure(parsed.error.code === 'unsupported-version' ? 'unsupported-version' : 'invalid-input');
-  }
-  return parsed.value;
+  const expected = fields(raw.binding, ['engine', 'nativeVersion', 'account', 'authorizedScope', 'nativeFormat']);
+  const parsed = parseSessionReference({ value: { ...raw, binding: expected }, expected: expected as unknown as SessionBinding });
+  if (parsed.kind === 'ok') return parsed.value;
+  throw new RestoreFailure(parsed.error.code === 'unsupported-version' ? 'unsupported-version' : 'invalid-input');
 }
 function call(value: unknown, owner: SessionReference): PendingFrontendCall {
   const raw = fields(value, ['target', 'publicToolCallId', 'argumentsDigest', 'definitionDigest']);
   const target = fields(raw.target, ['kind', 'session', 'nativeToolCallId']);
   if (target.kind !== 'tool') throw new RestoreFailure();
-  if (JSON.stringify(session(target.session)) !== JSON.stringify(owner)) throw new RestoreFailure('session-mismatch');
+  const bound = session(target.session);
+  if (!sameBinding(bound.binding, owner.binding) || bound.opaque !== owner.opaque) throw new RestoreFailure('session-mismatch');
   return Object.freeze({
     target: Object.freeze({ kind: 'tool', session: owner, nativeToolCallId: text(target.nativeToolCallId) }),
     publicToolCallId: text(raw.publicToolCallId),
@@ -279,16 +272,20 @@ function batch(value: unknown): PendingFrontendBatch {
   const calls = list(raw.calls, 1, frontendRestoreLimits.maxCalls).map((item) => call(item, owner));
   const [first, ...rest] = calls;
   if (!first) throw new RestoreFailure();
-  for (const ids of [calls.map((item) => item.target.nativeToolCallId), calls.map((item) => item.publicToolCallId)]) {
+  const publicIds = calls.map((item) => item.publicToolCallId);
+  for (const ids of [calls.map((item) => item.target.nativeToolCallId), publicIds]) {
     if (new Set(ids).size !== ids.length) throw new RestoreFailure();
   }
+  const sourceRunId = text(raw.sourceRunId);
+  const projected = Buffer.byteLength(JSON.stringify([sourceRunId, publicIds]));
+  if (projected > frontendRestoreLimits.maxPublicIdBytes) throw new RestoreFailure('bounds-exceeded');
   return Object.freeze({
     formatVersion,
     adapter: oneOf(raw.adapter, ['codex', 'claude', 'pi'] as const),
     session: owner,
     nativeTurnId: text(raw.nativeTurnId),
     epoch: text(raw.epoch),
-    sourceRunId: text(raw.sourceRunId),
+    sourceRunId,
     calls: Object.freeze([first, ...rest] as const),
   });
 }
@@ -304,7 +301,7 @@ export function parsePendingFrontendBatch(options: {
     const owner = session(expected.session);
     const parsed = batch(value);
     if (parsed.adapter !== adapter) throw new RestoreFailure('adapter-mismatch');
-    if (JSON.stringify(parsed.session.binding) !== JSON.stringify(owner.binding)) throw new RestoreFailure('binding-mismatch');
+    if (!sameBinding(parsed.session.binding, owner.binding)) throw new RestoreFailure('binding-mismatch');
     if (parsed.session.opaque !== owner.opaque) throw new RestoreFailure('session-mismatch');
     return ok(parsed);
   } catch (error) {
@@ -346,7 +343,7 @@ function situationOf(pending: PendingFrontendBatch, admission: RestoreAdmission,
     const capability = capabilities[mechanism];
     if (capability.kind !== 'supported' || !capability.api.situations.includes(classified.kind)) return [];
     if (admission === 'production' && capability.api.qualification === 'fixture-only') return [];
-    return [Object.freeze({ mechanism, delivery: frontendRestoreDelivery[mechanism],
+    return [Object.freeze({ mechanism, deliveryClass: frontendRestoreDelivery[mechanism],
       qualification: capability.api.qualification }) as RestoreOption];
   });
   const [first, ...rest] = options;
@@ -357,6 +354,7 @@ function situationOf(pending: PendingFrontendBatch, admission: RestoreAdmission,
   return Object.freeze({ formatVersion: 1, key, batch: pending, admission, options: frozenOptions, ...classified });
 }
 
+const optionKeys = ['mechanism', 'deliveryClass', 'qualification'] as const;
 function verified(value: unknown): RestoreSituation {
   const raw = fields(value, ['formatVersion', 'key', 'batch', 'admission', 'options', 'kind', 'epoch', 'reason']);
   version(raw.formatVersion);
@@ -367,9 +365,12 @@ function verified(value: unknown): RestoreSituation {
   const classified: Classified = kind === 'rejoinable' ? { kind, epoch: text(raw.epoch) }
     : kind === 'indeterminate' ? { kind, reason: oneOf(raw.reason, indeterminateReasons) } : { kind };
   const pending = batch(raw.batch);
-  if (kind === 'rejoinable' && classified.kind === 'rejoinable' && classified.epoch === pending.epoch) throw new RestoreFailure();
+  if (classified.kind === 'rejoinable' && classified.epoch === pending.epoch) throw new RestoreFailure();
   const rebuilt = situationOf(pending, oneOf(raw.admission, ['production', 'fixture'] as const), classified);
-  if (rebuilt.key !== key || JSON.stringify(rebuilt.options) !== JSON.stringify(raw.options)) throw new RestoreFailure('stale-situation');
+  const options = list(raw.options, 1, mechanisms.length).map((item) => fields(item, optionKeys));
+  const same = options.length === rebuilt.options.length
+    && rebuilt.options.every((option, index) => optionKeys.every((name) => option[name] === options[index]?.[name]));
+  if (rebuilt.key !== key || !same) throw new RestoreFailure('tampered-situation');
   return rebuilt;
 }
 
@@ -406,16 +407,24 @@ function choice(raw: Readonly<Record<string, unknown>>): RestoreChoice {
       return { kind };
   }
 }
+const choiceKeys = ['kind', 'reason', 'successorRunId', 'executionGeneration', 'replay'];
 function decision(value: unknown): RestoreDecision {
-  const { formatVersion, situationKey, policyRevision, ...rest } = fields(value, ['formatVersion', 'situationKey',
-    'policyRevision', 'kind', 'reason', 'successorRunId', 'executionGeneration', 'replay']);
-  return Object.freeze({ formatVersion: version(formatVersion), situationKey: digest(situationKey),
-    policyRevision: text(policyRevision), ...choice(rest) });
+  const { formatVersion, situationKey, policyRevision, ...rest } = fields(value,
+    ['formatVersion', 'situationKey', 'policyRevision', ...choiceKeys]);
+  const parsed = { formatVersion: version(formatVersion), situationKey: digest(situationKey),
+    policyRevision: text(policyRevision), ...choice(rest) };
+  if (parsed.policyRevision === frontendRestoreDefaultRevision && parsed.kind !== 'defer') throw new RestoreFailure();
+  return Object.freeze(parsed);
+}
+function offered(situation: RestoreSituation, mechanism: RestoreMechanism): RestoreOption {
+  const option = situation.options.find((item) => item.mechanism === mechanism);
+  if (!option) throw new RestoreFailure('mechanism-unavailable');
+  return option;
 }
 function admitted(situation: RestoreSituation, value: unknown): RestoreDecision {
   const checked = decision(value);
   if (checked.situationKey !== situation.key) throw new RestoreFailure('stale-situation');
-  if (!situation.options.some((option) => option.mechanism === checked.kind)) throw new RestoreFailure('mechanism-unavailable');
+  offered(situation, checked.kind);
   return checked;
 }
 
@@ -438,21 +447,22 @@ export async function decideFrontendRestore(input: {
   try {
     const raw = fields(input, ['situation', 'policy']);
     const situation = verified(raw.situation);
-    const deferred = Object.freeze({ formatVersion: 1, situationKey: situation.key,
-      policyRevision: frontendRestoreDefaultRevision, kind: 'defer' } as const);
-    if (raw.policy === null) return ok(deferred);
-    const policy = fields(raw.policy, ['revision', 'decide']);
-    const revision = text(policy.revision);
-    const decide = policy.decide;
-    if (typeof decide !== 'function') throw new RestoreFailure();
-    let chosen: unknown;
-    try {
-      chosen = await Reflect.apply(decide, undefined, [situation]);
-    } catch {
-      return ok(deferred);
+    const policy = raw.policy as Partial<FrontendRestorePolicy> | null;
+    const envelope = { formatVersion: 1, situationKey: situation.key } as const;
+    if (policy === null) return ok(Object.freeze({ ...envelope, policyRevision: frontendRestoreDefaultRevision, kind: 'defer' } as const));
+    const { revision, decide } = policy;
+    if (!isText(revision) || revision === frontendRestoreDefaultRevision) {
+      throw new RestoreFailure({ code: 'invalid-policy', field: 'revision' });
     }
-    const choiceFields = fields(chosen, ['kind', 'reason', 'successorRunId', 'executionGeneration', 'replay']);
-    return ok(admitted(situation, { ...choiceFields, formatVersion: 1, situationKey: situation.key, policyRevision: revision }));
+    if (typeof decide !== 'function') throw new RestoreFailure({ code: 'invalid-policy', field: 'decide' });
+    let chosen: RestoreChoice;
+    try {
+      chosen = choice(fields(await Reflect.apply(decide, policy, [situation]), choiceKeys));
+    } catch {
+      throw new RestoreFailure('policy-failed');
+    }
+    offered(situation, chosen.kind);
+    return ok(Object.freeze({ ...envelope, policyRevision: revision, ...chosen }));
   } catch (error) {
     return fail(error);
   }
@@ -485,10 +495,6 @@ export function compareRestoreDecisions(input: {
   }
 }
 
-function optionPayload(mechanism: RestoreMechanism, qualification: RestoreQualification): OptionPayload {
-  return Object.freeze({ mechanism, deliveryClass: frontendRestoreDelivery[mechanism], qualification }) as OptionPayload;
-}
-
 export function frontendRestoreFact(input: FrontendRestoreFactInput): Outcome<FrontendRestoreFact, FrontendRestoreError> {
   try {
     const raw = fields(input, ['phase', 'situation', 'decision']);
@@ -501,14 +507,11 @@ export function frontendRestoreFact(input: FrontendRestoreFactInput): Outcome<Fr
     let publicPayload: FrontendRestorePayload;
     if (raw.phase === 'required') {
       exact(raw, ['phase', 'situation']);
-      publicPayload = Object.freeze({ ...common, phase: 'required', options: Object.freeze(situation.options.map((option) =>
-        optionPayload(option.mechanism, option.qualification))) });
+      publicPayload = Object.freeze({ ...common, phase: 'required', options: situation.options });
     } else if (raw.phase === 'decided') {
       const checked = admitted(situation, raw.decision);
-      const option = situation.options.find((item) => item.mechanism === checked.kind);
-      if (!option) throw new RestoreFailure('mechanism-unavailable');
       publicPayload = Object.freeze({ ...common, phase: 'decided', policyRevision: checked.policyRevision,
-        ...optionPayload(option.mechanism, option.qualification) });
+        ...offered(situation, checked.kind) });
     } else throw new RestoreFailure();
     return ok(Object.freeze({ kind: 'custom', namespace: 'switchboard.frontend-restore', schemaVersion: '1',
       name: 'frontend-restore', publicPayload }));

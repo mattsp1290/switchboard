@@ -65,7 +65,7 @@ function copyBinding(value: unknown): SessionBinding | undefined {
   return Object.freeze({ engine, nativeVersion, account, authorizedScope, nativeFormat });
 }
 
-function sameBinding(left: SessionBinding, right: SessionBinding): boolean {
+export function sameBinding(left: SessionBinding, right: SessionBinding): boolean {
   return left.engine === right.engine && left.nativeVersion === right.nativeVersion
     && left.account === right.account && left.authorizedScope === right.authorizedScope
     && left.nativeFormat === right.nativeFormat;

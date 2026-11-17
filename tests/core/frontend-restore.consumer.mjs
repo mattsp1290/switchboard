@@ -77,14 +77,14 @@ test('options carry honest delivery classes and qualification labels', () => {
   });
   const warm = assess(observations.warm, 'codex', 'fixture');
   assert.deepEqual(warm.options, [
-    { mechanism: 'defer', delivery: 'not-delivered', qualification: 'native-free' },
-    { mechanism: 'deliver-original', delivery: 'original-call', qualification: 'fixture-only' },
-    { mechanism: 'settle-interrupted', delivery: 'not-delivered', qualification: 'native-free' },
+    { mechanism: 'defer', deliveryClass: 'not-delivered', qualification: 'native-free' },
+    { mechanism: 'deliver-original', deliveryClass: 'original-call', qualification: 'fixture-only' },
+    { mechanism: 'settle-interrupted', deliveryClass: 'not-delivered', qualification: 'native-free' },
   ]);
   for (const kind of Object.keys(observations)) {
     for (const adapter of adapters) {
       for (const option of assess(observations[kind], adapter, 'fixture').options) {
-        assert(kind === 'warm' || option.delivery !== 'original-call', 'No cold situation offers original-call delivery.');
+        assert(kind === 'warm' || option.deliveryClass !== 'original-call', 'No cold situation offers original-call delivery.');
       }
     }
   }
@@ -149,31 +149,41 @@ test('situation keys are deterministic and change with the batch, observation an
   assert(Object.isFrozen(first) && Object.isFrozen(first.options) && Object.isFrozen(first.batch.calls));
 });
 
-test('no policy defers, a throwing policy defers and an unavailable policy choice is rejected', async () => {
+test('no policy defers, a failing policy is a typed error and an unavailable policy choice is rejected', async () => {
   const situation = assess(observations['original-lost']);
   const deferred = { formatVersion: 1, situationKey: situation.key, policyRevision: frontendRestoreDefaultRevision, kind: 'defer' };
-  assert.deepEqual(await decideFrontendRestore({ situation, policy: null }), { kind: 'ok', value: deferred });
-  assert.deepEqual(await decideFrontendRestore({ situation, policy: { revision: 'app-v1', decide: () => { throw new Error('private'); } } }),
-    { kind: 'ok', value: deferred });
-  assert.deepEqual(await decideFrontendRestore({ situation, policy: { revision: 'app-v1', decide: async () => Promise.reject(new Error('x')) } }),
-    { kind: 'ok', value: deferred });
-  assert.deepEqual(await decideFrontendRestore({ situation, policy: { revision: 'app-v1', decide: async () => choices['settle-interrupted'] } }),
+  const decide = (policy) => decideFrontendRestore({ situation, policy });
+  assert.deepEqual(await decide(null), { kind: 'ok', value: deferred });
+  for (const chosen of [() => { throw new Error('private'); }, async () => Promise.reject(new Error('x')), () => ({ kind: 'retry' }),
+    () => null, () => 'defer', () => Object.create(choices.defer), () => ({ ...choices.defer, extra: true }),
+    () => new Proxy({ kind: 'defer' }, { ownKeys() { throw new Error('private'); } })]) {
+    assert.deepEqual(await decide({ revision: 'app-v1', decide: chosen }), error('policy-failed'));
+  }
+  assert.deepEqual(await decide({ revision: 'app-v1', decide: async () => choices['settle-interrupted'] }),
     { kind: 'ok', value: decisionFor(situation, 'settle-interrupted') });
   for (const mechanism of ['paired-repair', 'continue-new-turn', 'redispatch', 'deliver-original']) {
-    assert.deepEqual(await decideFrontendRestore({ situation, policy: { revision: 'app-v1', decide: () => choices[mechanism] } }),
-      error('mechanism-unavailable'));
+    assert.deepEqual(await decide({ revision: 'app-v1', decide: () => choices[mechanism] }), error('mechanism-unavailable'));
   }
-  assert.deepEqual(await decideFrontendRestore({ situation, policy: { revision: 'app-v1', decide: () => ({ kind: 'retry' }) } }),
-    error('invalid-input'));
-  for (const policy of [{ revision: '', decide: () => choices.defer }, { revision: 'app-v1' }, { revision: 'app-v1', decide: 'defer' },
-    undefined, { revision: 'app-v1', decide: () => choices.defer, extra: true }]) {
-    assert.deepEqual(await decideFrontendRestore({ situation, policy }), error('invalid-input'));
+  for (const [policy, field] of [[{ revision: '', decide: () => choices.defer }, 'revision'], [{ decide: () => choices.defer }, 'revision'],
+    [{ revision: frontendRestoreDefaultRevision, decide: () => choices.defer }, 'revision'], [{ revision: 'app-v1' }, 'decide'],
+    [{ revision: 'app-v1', decide: 'defer' }, 'decide']]) {
+    assert.deepEqual(await decide(policy), { kind: 'error', error: { code: 'invalid-policy', field } });
   }
-  for (const chosen of [null, 'defer', Object.create(choices.defer),
-    new Proxy({ kind: 'defer' }, { ownKeys() { throw new Error('private'); } })]) {
-    assert.deepEqual(await decideFrontendRestore({ situation, policy: { revision: 'app-v1', decide: () => chosen } }), error('invalid-input'));
-  }
+  assert.deepEqual(await decide(undefined), error('invalid-input'));
   assert.deepEqual(await decideFrontendRestore(null), error('invalid-input'));
+});
+
+test('class, configured and this-using policies run as methods on the policy object', async () => {
+  const situation = assess(observations['original-lost']);
+  const settled = (reason, revision = 'app-v1') => ({ kind: 'ok', value: { ...decisionFor(situation, 'settle-interrupted', revision), reason } });
+  class Policy {
+    revision = 'app-v1';
+    reason = 'expired';
+    decide(current) { return current.options.some((option) => option.mechanism === 'settle-interrupted') ? { kind: 'settle-interrupted', reason: this.reason } : { kind: 'defer' }; }
+  }
+  assert.deepEqual(await decideFrontendRestore({ situation, policy: new Policy() }), settled('expired'));
+  const configured = { revision: 'app-v2', reason: 'app-cancelled', decide() { return { kind: 'settle-interrupted', reason: this.reason }; } };
+  assert.deepEqual(await decideFrontendRestore({ situation, policy: configured }), settled('app-cancelled', 'app-v2'));
 });
 
 test('decisions are write-once by situation key with idempotent replay', () => {
@@ -201,6 +211,9 @@ test('decisions are write-once by situation key with idempotent replay', () => {
   assert.deepEqual(compare({ ...settle, situationKey: hash('f') }, settle), error('stale-situation'));
   assert.deepEqual(validateRestoreDecision({ situation, decision: { ...settle, situationKey: hash('f') } }), error('stale-situation'));
   assert.deepEqual(compare({ ...settle, formatVersion: 2 }, settle), error('unsupported-version'));
+  assert.deepEqual(compare({ ...settle, formatVersion: 2, kind: 'retry' }, settle), error('unsupported-version'));
+  assert.deepEqual(compare(null, { ...settle, policyRevision: frontendRestoreDefaultRevision }), error('invalid-input'));
+  assert.deepEqual(compare(null, { ...defer, policyRevision: frontendRestoreDefaultRevision }).kind, 'ok');
   assert.deepEqual(compareRestoreDecisions({ situation, proposed: settle }), error('invalid-input'));
   for (const invalid of [undefined, {}, { ...settle, reason: undefined }, { ...defer, reason: undefined }, { ...settle, extra: true },
     { ...defer, successorRunId: 'run' }, { ...settle, situationKey: 'not-a-digest' }, { ...settle, policyRevision: '' }, { ...settle, kind: 'retry' },
@@ -212,11 +225,16 @@ test('decisions are write-once by situation key with idempotent replay', () => {
 test('situations are re-derived, so tampered or forged situations are rejected everywhere', async () => {
   const situation = assess(observations['original-lost']);
   const forged = [
-    [{ ...situation, options: [...situation.options, { mechanism: 'deliver-original', delivery: 'original-call', qualification: 'qualified' }] }, 'stale-situation'],
-    [{ ...situation, kind: 'warm' }, 'stale-situation'],
-    [{ ...situation, admission: 'fixture' }, 'stale-situation'],
-    [{ ...situation, batch: { ...situation.batch, epoch: 'epoch-9' } }, 'stale-situation'],
-    [{ ...situation, key: hash('d') }, 'stale-situation'],
+    [{ ...situation, options: [...situation.options, { mechanism: 'deliver-original', deliveryClass: 'original-call', qualification: 'qualified' }] }, 'tampered-situation'],
+    [{ ...situation, options: situation.options.slice(0, 1) }, 'tampered-situation'],
+    [{ ...situation, options: situation.options.map((option) => ({ ...option, qualification: 'qualified' })) }, 'tampered-situation'],
+    [{ ...situation, kind: 'warm' }, 'tampered-situation'],
+    [{ ...situation, admission: 'fixture' }, 'tampered-situation'],
+    [{ ...situation, batch: { ...situation.batch, epoch: 'epoch-9' } }, 'tampered-situation'],
+    [{ ...situation, key: hash('d') }, 'tampered-situation'],
+    [{ ...situation, options: situation.options.map((option) => ({ ...option, delivery: option.deliveryClass })) }, 'invalid-input'],
+    [{ ...situation, options: [Object.defineProperty({ ...situation.options[0] }, 'qualification', { enumerable: true, get: () => 'native-free' }),
+      situation.options[1]] }, 'invalid-input'],
     [{ ...situation, kind: 'bogus' }, 'invalid-input'],
     [{ ...situation, key: 'x' }, 'invalid-input'],
     [{ ...situation, kind: 'rejoinable', epoch: 'epoch-1' }, 'invalid-input'],
@@ -232,6 +250,49 @@ test('situations are re-derived, so tampered or forged situations are rejected e
   }
   const reordered = Object.fromEntries(Object.entries(situation).reverse());
   assert.equal(validateRestoreDecision({ situation: reordered, decision: decisionFor(situation, 'defer') }).kind, 'ok');
+  const sorted = (value) => Array.isArray(value) ? value.map(sorted) : value !== null && typeof value === 'object'
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted(value[key])])) : value;
+  const persisted = sorted(JSON.parse(JSON.stringify(situation)));
+  assert.deepEqual(Object.keys(persisted.options[0]), ['deliveryClass', 'mechanism', 'qualification']);
+  assert.deepEqual(validateRestoreDecision({ situation: persisted, decision: decisionFor(situation, 'settle-interrupted') }),
+    { kind: 'ok', value: decisionFor(situation, 'settle-interrupted') });
+  const optionsReordered = { ...situation, options: situation.options.map(({ mechanism, deliveryClass, qualification }) =>
+    ({ qualification, deliveryClass, mechanism })) };
+  assert.equal(compareRestoreDecisions({ situation: optionsReordered, stored: null, proposed: decisionFor(situation, 'defer') }).kind, 'ok');
+});
+
+test('a decision for an earlier situation of the same batch is stale, not tampered', () => {
+  const earlier = assess(observations['original-lost']);
+  const later = assess(observations.indeterminate);
+  assert.deepEqual(compareRestoreDecisions({ situation: later, stored: decisionFor(earlier, 'settle-interrupted'),
+    proposed: decisionFor(later, 'defer') }), error('stale-situation'));
+  assert.deepEqual(validateRestoreDecision({ situation: later, decision: decisionFor(earlier, 'defer') }), error('stale-situation'));
+});
+
+test('batches whose public IDs could overflow a fact are rejected at parse, so every fact fits maxFactBytes', () => {
+  const { maxCalls, maxPublicIdBytes, maxFactBytes } = frontendRestoreLimits;
+  const sized = (bytes) => {
+    const ids = Array.from({ length: 64 }, (_, index) => `public-${index}-`.padEnd(900, 'x'));
+    const over = Buffer.byteLength(JSON.stringify(['run-source', ids])) - bytes;
+    ids[63] = ids[63].slice(0, ids[63].length - over);
+    return envelope('codex', { calls: ids.map((id, index) => ({ ...call(String(index)), publicToolCallId: id })) });
+  };
+  const parse = (value) => parsePendingFrontendBatch({ value, expected: { adapter: 'codex', session } });
+  assert.deepEqual(parse(sized(maxPublicIdBytes + 1)), error('bounds-exceeded'));
+  const largest = parse(sized(maxPublicIdBytes));
+  assert.equal(largest.kind, 'ok');
+  const widest = parse(envelope('codex', { calls: Array.from({ length: maxCalls }, (_, index) => call(String(index))) }));
+  assert.equal(widest.kind, 'ok');
+  for (const pending of [largest.value, widest.value]) {
+    const situation = assessFrontendRestore({ batch: pending, observation: observations['original-lost'], admission: 'fixture' }).value;
+    const required = frontendRestoreFact({ phase: 'required', situation });
+    const decided = frontendRestoreFact({ phase: 'decided', situation,
+      decision: decisionFor(situation, 'settle-interrupted', '\ud800'.repeat(1024)) });
+    for (const fact of [required, decided]) {
+      assert.equal(fact.kind, 'ok');
+      assert(Buffer.byteLength(JSON.stringify(fact.value.publicPayload)) <= maxFactBytes);
+    }
+  }
 });
 
 test('CUSTOM facts are versioned, carry only public correlations and never encode a terminal', () => {
