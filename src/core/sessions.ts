@@ -54,7 +54,8 @@ function isText(value: unknown, limit: number): value is string {
   return true;
 }
 
-function copyBinding(value: unknown): SessionBinding | undefined {
+/** Frozen copy of a well-formed binding; internal, not re-exported by the package. */
+export function copyBinding(value: unknown): SessionBinding | undefined {
   if (!isRecord(value)) return undefined;
   const { engine, nativeVersion, account, authorizedScope, nativeFormat } = value;
   if (!isText(engine, sessionLimits.identifierLength)

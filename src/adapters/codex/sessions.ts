@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { Outcome } from '../../core/contracts.js';
 import { discoverFiles, fileDiscoveryLimits } from '../../core/discovery.js';
-import { parseSessionReference, sessionLimits, validateSessionDiscoveryBounds } from '../../core/sessions.js';
+import { copyBinding, parseSessionReference, sessionLimits, validateSessionDiscoveryBounds } from '../../core/sessions.js';
 import type { SessionAccess, SessionBinding, SessionDiscovery, SessionDiscoveryBounds, SessionDiscoveryDiagnostic,
   SessionDiscoveryPage, SessionInspection, SessionInspectionResult, SessionOperationError, SessionReference,
   SessionReferenceError } from '../../core/sessions.js';
@@ -47,7 +47,6 @@ const historyModes: Readonly<Record<string, CodexNativeFormat>> = { paginated: '
 const resumable: CodexNativeFormat = 'codex-thread/paginated';
 const statuses = new Set(['notLoaded', 'idle', 'active', 'systemError']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const fields = ['engine', 'nativeVersion', 'account', 'authorizedScope', 'nativeFormat'] as const;
 
 const failure = (code: SessionOperationError['code']): Outcome<never, SessionOperationError> =>
   ({ kind: 'error', error: Object.freeze({ code }) });
@@ -78,13 +77,12 @@ function admit(options: unknown): Run | undefined {
       deadline: performance.now() + bounds.value.maxDurationMs };
   } catch { return undefined; }
 }
+const isFormat = (value: unknown): value is CodexNativeFormat => Object.values(historyModes).includes(value as CodexNativeFormat);
 function bound(run: Run, options: unknown): SessionBinding | undefined {
   try {
-    const value = record(options) ? options.binding : undefined;
-    if (!record(value) || !fields.every((key) => text(value[key]))) return undefined;
-    const binding = Object.freeze(Object.fromEntries(fields.map((key) => [key, value[key]]))) as unknown as SessionBinding;
-    return binding.engine === engine && binding.nativeVersion === nativeVersion && binding.authorizedScope === run.home
-      && Object.values(historyModes).includes(binding.nativeFormat as CodexNativeFormat) ? binding : undefined;
+    const binding = copyBinding(record(options) ? options.binding : undefined);
+    return binding?.engine === engine && binding.nativeVersion === nativeVersion && binding.authorizedScope === run.home
+      && isFormat(binding.nativeFormat) ? binding : undefined;
   } catch { return undefined; }
 }
 
@@ -151,11 +149,11 @@ Promise<Outcome<SessionBinding, SessionOperationError>> {
   const run = admit(options);
   let nativeFormat: unknown;
   try { nativeFormat = options.nativeFormat; } catch { return failure('invalid-input'); }
-  if (!run || !Object.values(historyModes).includes(nativeFormat as CodexNativeFormat)) return failure('invalid-input');
+  if (!run || !isFormat(nativeFormat)) return failure('invalid-input');
   const account = await requester(run);
   if (account.kind === 'error') return account;
   return { kind: 'ok', value: Object.freeze({ engine, nativeVersion, account: account.value, authorizedScope: run.home,
-    nativeFormat: nativeFormat as CodexNativeFormat }) };
+    nativeFormat }) };
 }
 
 /**
@@ -187,6 +185,8 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
   const remaining = Math.floor(run.deadline - performance.now());
   if (run.signal.aborted) return failure('cancelled');
   if (remaining < 1) return failure('bounds-exceeded');
+  // List-only use of the core walker: selectFile records every regular file and opens none, so no byte is ever read
+  // and the byte bounds are only the validator's minimum.
   const files = await discoverFiles<never>({ scope: { binding, root, namespace: 'host-stable' }, expected: binding,
     bounds: { ...run.bounds, maxDurationMs: remaining, maxDepth: fileDiscoveryLimits.maxDepth, maxFileBytes: 1, maxTotalBytes: 1 },
     signal: run.signal, selectFile: (name) => { names.push(name); return false; }, decode: () => ({ kind: 'skip' }) });
@@ -278,7 +278,8 @@ Promise<Outcome<CodexResumePreparation, SessionOperationError | SessionReference
   const binding = run && bound(run, options);
   if (!run || !binding) return failure('invalid-input');
   const result = await examine(run, options.reference, binding, 'binding-mismatch');
-  if (result.kind === 'error' || result.value.kind !== 'available') return result as Outcome<CodexResumePreparation, never>;
+  if (result.kind === 'error') return result;
+  if (result.value.kind !== 'available') return { kind: 'ok', value: result.value };
   if (binding.nativeFormat !== resumable) return { kind: 'ok', value: Object.freeze({ kind: 'incompatible', reason: 'native-format' }) };
   const { reference: ready } = result.value;
   return { kind: 'ok', value: Object.freeze({ kind: 'ready', reference: ready, threadId: ready.opaque }) };
