@@ -13,7 +13,7 @@ const SCENARIOS = ['X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9'];
 const [scenario] = process.argv.slice(2);
 if (!SCENARIOS.includes(scenario)) throw new Error(`Unknown scenario ${scenario}`);
 const home = '/root/.codex';
-const report = { scenario, failures: [], inference: {}, serverRequests: [], raw: {} };
+const report = { scenario, failures: [], inference: {}, serverRequests: [], raw: { nativeErrors: [] } };
 const need = (condition, label) => { if (!condition) report.failures.push(label); };
 mkdirSync('/tmp/project', { recursive: true });
 
@@ -79,18 +79,31 @@ async function until(predicate, label, ms = 10000) {
   throw new Error(`Timed out: ${label}`);
 }
 
-/** One app-server owned by this harness (the host). Its channel can gate a named outgoing method or buffer stdout. */
+/**
+ * One app-server owned by this harness (the host). Its channel can gate a named outgoing method or buffer stdout. Every
+ * native error reply is recorded raw (method, code, message), so any error outcome is diagnosable.
+ */
 function appServer({ bufferStdout = false, eofAfter } = {}) {
   const child = spawn('/opt/codex', ['app-server', ...Object.entries(config).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])],
     { cwd: '/tmp/project', env: { PATH: '/usr/local/bin:/usr/bin:/bin' } });
   let closed = false;
-  const s = { frames: [], detached: 0, buffering: bufferStdout, buffered: [], gates: new Map(), stderr: '' };
+  const s = { frames: [], detached: 0, buffering: bufferStdout, buffered: [], gates: new Map(), stderr: '', ids: new Map(), line: '' };
+  s.scan = (chunk) => {
+    const lines = (s.line + chunk).split('\n');
+    s.line = lines.pop().slice(-1048576);
+    for (const line of lines) {
+      let reply;
+      try { reply = JSON.parse(line); } catch { continue; }
+      if (reply?.error === undefined || report.raw.nativeErrors.length >= 32) continue;
+      report.raw.nativeErrors.push({ method: s.ids.get(reply.id) ?? null, code: reply.error?.code ?? null, message: reply.error?.message ?? null });
+    }
+  };
   s.exited = new Promise((resolve) => child.once('close', () => { closed = true; resolve(); }));
   s.gate = (method) => { const gate = Promise.withResolvers(); s.gates.set(method, gate); return gate; };
   s.channel = {
     listen(sink) {
       s.sink = sink;
-      const data = (chunk) => { if (s.buffering) s.buffered.push(chunk); else sink.data(chunk); };
+      const data = (chunk) => { s.scan(chunk); if (s.buffering) s.buffered.push(chunk); else sink.data(chunk); };
       const diagnostic = (chunk) => { s.stderr = (s.stderr + chunk).slice(-2048); sink.diagnostic(chunk); };
       const ended = () => sink.ended('process-exit');
       child.stdout.on('data', data);
@@ -100,7 +113,11 @@ function appServer({ bufferStdout = false, eofAfter } = {}) {
     },
     async write(frame) {
       let method = 'reply';
-      try { method = JSON.parse(Buffer.from(frame).toString()).method ?? 'reply'; } catch {}
+      try {
+        const message = JSON.parse(Buffer.from(frame).toString());
+        method = message.method ?? 'reply';
+        if (message.id !== undefined) s.ids.set(message.id, method);
+      } catch {}
       s.frames.push(method);
       await s.gates.get(method)?.promise;
       await new Promise((resolve, reject) => child.stdin.write(frame, (error) => (error ? reject(error) : resolve())));
@@ -233,25 +250,44 @@ try {
     report.terminal = await terminal(turn, 'interrupted');
     const second = appServer();
     const b = await execute(second);
-    const framesBefore = second.frames.length;
-    report.busyDuringHold = outcome(await resume(b, held1));
-    report.requestsDuringHold = second.frames.length - framesBefore;
+    const refusal = async () => {
+      const before = second.frames.length;
+      return [outcome(await resume(b, held1)), second.frames.length - before];
+    };
+    [report.busyDuringHold, report.requestsDuringHold] = await refusal();
     const independent = await create(b);
     report.independent = await terminal(turnOn(independent, 'independent'), 'independent');
     report.heldDuringHold = writers.held();
     unsubscribe.resolve();
-    const closed = await within(closing, 15000, 'close');
-    report.close = closed;
+    report.close = await within(closing, 15000, 'close');
+    // Closed, but A still lives with the thread loaded: the adapter refuses itself. A raw `thread/resume` on a third
+    // app-server records what the native does meanwhile (observation only, never a check).
+    [report.busyAfterClose, report.requestsAfterClose] = await refusal();
+    const probe = appServer();
+    const raw = await (await execute(probe)).scope.request({ method: 'thread/resume',
+      params: { ...threadParams, threadId: held1.threadId } }, AbortSignal.timeout(10000));
+    const reply = raw.kind === 'reply' ? raw.envelope.reply : undefined;
+    report.raw.nativeResumeWhileHeld = reply?.kind === 'error' ? { code: reply.error.code, message: reply.error.message }
+      : reply?.kind ?? raw.kind;
+    await executions.at(-1).close();
+    await probe.kill();
+    // The qualified release condition: the host stops A and attests its exit.
+    await first.stop();
+    await delay(100);
+    report.heldAfterExit = writers.held();
     const admitted = await resume(b, held1);
     report.admittedAfter = outcome(admitted);
     report.after = admitted.kind === 'ok' && admitted.value.kind === 'resumed'
       ? await terminal(turnOn(admitted.value.session, 'after'), 'after') : null;
     report.holdInference = report.inference['hold-x'] ?? 0;
   } else if (scenario === 'X5') {
-    const execution = await execute(appServer());
+    const s = appServer();
+    const execution = await execute(s);
     const session = await seed(execution);
     report.close = await session.close();
+    const before = s.frames.length;
     const reopened = await resume(execution, session);
+    report.reopenRequests = s.frames.length - before;
     report.reopen = outcome(reopened);
     report.raw.reopen = reopened.kind === 'ok' ? reopened.value.kind : reopened.error;
     if (reopened.kind === 'ok' && reopened.value.kind === 'resumed') {

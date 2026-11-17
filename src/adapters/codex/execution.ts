@@ -22,14 +22,14 @@ import type { RpcError } from './wire.js';
  */
 export interface CodexWriters { readonly held: () => number }
 export interface CodexExecutionBounds {
-  /** Open plus opening sessions on this execution. */
+  /** Open, opening and closed sessions on this execution until its transport ends (the thread stays loaded natively). */
   readonly maxSessions: number;
   /** Per-stream observer leases and capacity (core `createEventStream`). */
   readonly maxObservers: number;
   readonly eventCapacity: number;
   /** Turn-scoped notifications held while a `turn/start` reply (and so the turn id) is outstanding. */
   readonly maxEarlyNotifications: number;
-  /** Deadline for one session's interrupt and unsubscribe. Expiry never releases an unconcluded writer. */
+  /** Deadline for one session's interrupt and unsubscribe. Expiry never releases a writer. */
   readonly cleanupTimeoutMs: number;
   /**
    * The only bound on a written `turn/start`: the caller's signal never cancels it after entry. Expiry is `uncertain`,
@@ -55,7 +55,7 @@ export interface CodexExecutionOptions {
   /** Startup only: abort during the handshake closes the owned transport. */
   readonly signal: AbortSignal;
   readonly writers?: CodexWriters;
-  /** Host attestation that the app-server process exited. Releases this execution's retained reservations only. */
+  /** Host attestation that the app-server process exited: the only release of this execution's reservations. */
   readonly processExit?: PromiseLike<unknown>;
 }
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
@@ -122,7 +122,7 @@ export type CleanupStep = 'not-needed' | 'replied' | 'rejected' | 'not-sent' | '
 export interface CodexSessionCloseReport {
   readonly interrupt: CleanupStep;
   readonly unsubscribe: CleanupStep;
-  /** False while an entered turn has no observed native terminal; release then follows that terminal or process exit. */
+  /** False until host-attested process exit: neither the turn terminal nor `thread/unsubscribe` unloads the thread. */
   readonly released: boolean;
 }
 export interface CodexSession {
@@ -214,8 +214,7 @@ type Session = {
   readonly abort: AbortController;
   active: Turn | undefined;
   previous: Turn | undefined;
-  state: 'open' | 'closing' | 'closed';
-  cleaned: boolean;
+  state: 'open' | 'closing';
   closing: Promise<CodexSessionCloseReport> | undefined;
 };
 const turnStatuses = new Set(['completed', 'interrupted', 'failed']);
@@ -281,6 +280,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   let pendingOpens = 0;
   let closed = false;
   let exited = false;
+  /** Every reservation this execution took that may hold a natively loaded thread; released together on exit. */
+  const leases = new Set<Lease>();
   let closing: ReturnType<CodexExecution['close']> | undefined;
   const counts = { unrouted: 0, unmatchedReplies: 0, earlyOverflow: 0 };
   const count = (name: keyof typeof counts, by = 1) => { counts[name] = Math.min(counts[name] + by, Number.MAX_SAFE_INTEGER); };
@@ -346,48 +347,40 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       session.active = undefined;
       if (turn.id !== undefined) session.previous = turn;
     }
-    settleRelease(session);
   }
   /**
-   * The only release path: closing, and either host-attested process exit or cleanup attempted with no entered turn
-   * left active. A turn leaves `active` only on native conclusion (`turn/completed`, a `turn/start` error reply) or
-   * proof that it never entered; transport loss, cleanup deadlines and rejections leave it active.
+   * The only release path: host-attested exit of this app-server (`processExit` or a channel `process-exit`). A turn
+   * terminal ends the turn, not the writer: the app-server keeps the thread loaded through `thread/unsubscribe`, and a
+   * resume on another app-server fails natively while it lives (execution proof X4, X5). Deadlines and rejections never
+   * release either.
    */
-  function settleRelease(session: Session): void {
-    if (session.state === 'open') return;
-    if (exited || (session.cleaned && !session.active?.entered)) retire(session);
+  function exit(): void {
+    exited = closed = true;
+    opening.abort();
+    for (const lease of leases) release(lease);
+    leases.clear();
   }
-  function retire(session: Session): void {
-    session.state = 'closed';
-    release(session.lease);
-    if (byThread.get(session.threadId) === session) byThread.delete(session.threadId);
-    sessions.delete(session);
-    session.stream.close();
-  }
+  const keep = (lease: Lease) => { if (exited) release(lease); else leases.add(lease); };
 
   const transport: CodexTransport = openCodexTransport({ channel: captured.channel, bounds: captured.transportBounds,
     onRequest: captured.onServerRequest, onObservation: observe });
   void transport.ended.then((report) => {
     closed = true;
-    exited ||= report.reason === 'process-exit';
     opening.abort();
-    for (const session of [...sessions]) {
-      session.state = session.state === 'open' ? 'closing' : session.state;
+    for (const session of sessions) {
+      session.state = 'closing';
       session.abort.abort();
       const turn = session.active;
       if (turn?.entered && !turn.settled) turn.settle({ kind: 'unconcluded', accepted: turn.id !== undefined, reason: report.reason });
-      // A host channel signals `process-exit` only after the process exited (boundaries: Private Codex transport).
-      session.cleaned = true;
-      settleRelease(session);
+      session.stream.close();
     }
+    sessions.clear();
+    byThread.clear();
+    // A host channel signals `process-exit` only after the process exited (boundaries: Private Codex transport).
+    if (report.reason === 'process-exit') exit();
     executionEvents.close();
   });
-  if (captured.processExit !== undefined) {
-    void Promise.resolve(captured.processExit).then(() => {
-      exited = true;
-      for (const session of [...sessions]) settleRelease(session);
-    }, () => {});
-  }
+  if (captured.processExit !== undefined) void Promise.resolve(captured.processExit).then(exit, () => {});
 
   async function request(method: string, params: unknown, wait: AbortSignal): Promise<
     { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly error: RpcError } | SendFailure> {
@@ -424,7 +417,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   function attach(threadId: string, reference: SessionReference, lease: Lease, origin: CodexSession['origin'],
     native: unknown): CodexSession {
     const session: Session = { threadId, lease, stream: createEventStream(streamBounds), abort: new AbortController(),
-      active: undefined, previous: undefined, state: 'open', cleaned: false, closing: undefined };
+      active: undefined, previous: undefined, state: 'open', closing: undefined };
+    keep(lease);
     sessions.add(session);
     byThread.set(threadId, session);
     return Object.freeze({ reference, threadId, origin, native, events: Object.freeze({ subscribe: session.stream.subscribe }),
@@ -491,15 +485,16 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (prepared.value.kind !== 'ready') return { kind: 'ok', value: prepared.value };
       const { threadId } = prepared.value;
       const reply = await request('thread/resume', { ...params, threadId }, wait);
-      // Resume dispatches no turn (sessions-proof R6), so a failed or uncertain resume holds no native writer.
       if (reply.kind === 'not-sent') return fail(closed ? 'closed' : 'cancelled');
-      if (reply.kind === 'uncertain') return fail(closed ? 'closed' : 'outcome-unknown');
       if (reply.kind === 'error') return fail('native-failure');
-      const thread = record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
-      if (thread?.id !== threadId) return fail('identity-mismatch');
-      if (closed) return fail('closed');
+      // Unrejected entry: this app-server may now hold the thread loaded, so the reservation follows its exit.
       held = true;
-      return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed', reply.value) }) };
+      const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
+      const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
+        : thread?.id !== threadId ? 'identity-mismatch' : closed ? 'closed' : undefined;
+      if (refused) { keep(lease); return fail(refused); }
+      return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
+        reply.kind === 'result' ? reply.value : null) }) };
     } finally {
       pendingOpens--;
       if (!held) release(lease);
@@ -596,10 +591,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       }
       await until(turn.done);
     }
-    // Unqualified: lets this app-server unload the thread so a later same-process resume is not natively busy.
+    // Stops this session's subscription only: natively the thread stays loaded until process exit (X5).
     const unsubscribe = step(await request('thread/unsubscribe', { threadId: session.threadId }, deadline));
-    session.cleaned = true;
-    settleRelease(session);
     return Object.freeze({ interrupt, unsubscribe, released: session.lease.released });
   }
 
@@ -609,7 +602,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     await Promise.all([...sessions].map((session) => (session.closing ??= shutdown(session))));
     const report = await transport.close();
     executionEvents.close();
-    return Object.freeze({ transport: report, retained: [...sessions].filter((session) => !session.lease.released).length });
+    return Object.freeze({ transport: report, retained: leases.size });
   }
   return { kind: 'ok', value: Object.freeze({ scope, events: Object.freeze({ subscribe: executionEvents.subscribe }),
     create, resume, close: () => (closing ??= closeAll()), counts: () => Object.freeze({ ...counts }) }) };

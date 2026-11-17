@@ -74,8 +74,9 @@ try {
 }
 console.log(JSON.stringify(result, null, 2));
 // The only conclusion site, after the full report is printed and cleanup is proved. Checks cover what the module claims
-// from qualified native evidence; unqualified signals (usage, turn/started, the error-reply mapping, unsubscribe reopen,
-// error willRetry) are recorded raw and pinned, never asserted here.
+// from qualified native evidence; unqualified signals (usage, turn/started, the error-reply mapping, error willRetry, the
+// native resume while another app-server holds the thread) are recorded raw, never asserted here. Every native error
+// reply is in each report's raw.nativeErrors.
 const { X1, X2, X3, X4, X5, X6, X7, X8, X9 } = result.reports;
 const checks = {
   harness: Object.values(result.reports).every((report) => report.failures.length === 0 && report.heldAtEnd === 0),
@@ -83,9 +84,10 @@ const checks = {
   X2: X2.resume === 'resumed' && X2.sameId && X2.resumeInference === 0 && X2.completion === 'completed' && X2.prefixPreserved,
   X3: X3.b === 'completed' && X3.aPendingAfterB && X3.a === 'completed',
   X4: X4.accepted === 'accepted' && X4.terminal === 'interrupted' && X4.busyDuringHold === 'busy' && X4.requestsDuringHold === 0
-    && X4.independent === 'completed' && X4.close?.released === true && X4.close?.interrupt === 'replied'
+    && X4.independent === 'completed' && X4.close?.released === false && X4.close?.interrupt === 'replied'
+    && X4.busyAfterClose === 'busy' && X4.requestsAfterClose === 0 && X4.heldAfterExit === X4.heldDuringHold - 1
     && X4.admittedAfter === 'resumed' && X4.after === 'completed' && X4.holdInference === 1,
-  X5: X5.close?.released === true && ['resumed', 'busy'].includes(X5.reopen),
+  X5: X5.close?.released === false && X5.reopen === 'busy' && X5.reopenRequests === 0,
   X6: X6.snapshot === 'outcome-unknown' && X6.turnStartWrites === 1 && X6.retainedBeforeExit === 1 && X6.releasedAfterExit
     && X6.resume === 'resumed' && X6.inferenceAfterResume === X6.inferenceBeforeExit && X6.inferenceBeforeExit <= 1,
   X7: X7.turnStartWrites === 1 && (X7.snapshot !== 'conclusive' || X7.completion === 'rejected'),

@@ -7,7 +7,9 @@ import test from 'node:test';
 const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/execution.ts', src).href;
 // Broken controls are source mutations of the real module (precedent: tests/spikes/codex-bindings.test.mjs).
-const mutations = new Map([['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']]]);
+// early-release frees the writer at cleanup start; cleanup-release frees it once cleanup ends, as a turn-conclusion release did.
+const mutations = new Map([['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
+  ['cleanup-release', ['deadline));\n    return Object.freeze({ interrupt', 'deadline));\n    release(session.lease);\n    return Object.freeze({ interrupt']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -28,6 +30,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 } });
 const real = await import(target);
 const mutant = await import(`${target}?mutant=early-release`);
+const cleanupMutant = await import(`${target}?mutant=cleanup-release`);
 hook.deregister();
 
 const home = '/fixture/codex-home';
@@ -47,12 +50,14 @@ const usage = (n) => ({ totalTokens: 3 * n, inputTokens: n, cachedInputTokens: 0
 /** Shared synthetic native history: every app-server generation sees the same threads, as on one $CODEX_HOME. */
 function world(...ids) {
   const w = { threads: new Map(), overlaps: [] };
-  for (const id of ids) w.threads.set(id, { writer: null });
+  for (const id of ids) w.threads.set(id, { writer: null, holder: null });
   return w;
 }
 /**
- * Inert fake app-server over a borrowed channel. It answers only the methods this module and pg51 send, records every
- * request, and records an overlap whenever a second writer is admitted to a thread that has an in-progress turn.
+ * Inert, permissive fake app-server over a borrowed channel. It answers only the methods this module and pg51 send and
+ * records every request. As natively (X4, X5), a thread stays loaded by its app-server until that process exits, even
+ * after `thread/unsubscribe`; an overlap is recorded whenever a second writer is admitted while another live app-server
+ * holds the thread or a turn is in progress.
  */
 function appServer(t, w, script = {}) {
   const f = { sent: [], loaded: new Set(), holds: new Map(), detached: 0 };
@@ -64,7 +69,10 @@ function appServer(t, w, script = {}) {
     f.notify('turn/completed', { threadId, turn: { id: turnId, status, items: [], error: status === 'failed' ? { message: 'x' } : null } });
   };
   f.exit = () => {
-    for (const thread of w.threads.values()) if (thread.writer?.server === f) thread.writer = null;
+    for (const thread of w.threads.values()) {
+      if (thread.writer?.server === f) thread.writer = null;
+      if (thread.holder === f) thread.holder = null;
+    }
     f.sink.ended('process-exit');
   };
   f.hold = (method) => { const held = gate(); f.holds.set(method, held); return held; };
@@ -79,12 +87,14 @@ function appServer(t, w, script = {}) {
     },
     'thread/start': () => {
       const id = randomUUID();
-      w.threads.set(id, { writer: null });
+      w.threads.set(id, { writer: null, holder: f });
       f.loaded.add(id);
       return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' } }, model: 'fixture-model' };
     },
     'thread/resume': ({ threadId }) => {
-      if (w.threads.get(threadId).writer) w.overlaps.push(`resume ${threadId}`);
+      const thread = w.threads.get(threadId);
+      if (thread.writer || (thread.holder && thread.holder !== f)) w.overlaps.push(`resume ${threadId}`);
+      thread.holder = f;
       f.loaded.add(threadId);
       return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }] } };
     },
@@ -100,7 +110,7 @@ function appServer(t, w, script = {}) {
       void (f.holds.get('interrupted')?.promise ?? Promise.resolve()).then(() => f.complete(threadId, turnId, 'interrupted'));
       return {};
     },
-    'thread/unsubscribe': ({ threadId }) => { f.loaded.delete(threadId); return { status: 'unsubscribed' }; },
+    'thread/unsubscribe': () => ({ status: 'unsubscribed' }),
   };
   const channel = {
     listen(sink) { f.sink = sink; return () => { f.detached++; }; },
@@ -190,7 +200,10 @@ test('resume reserves before preparation, sends only the exact thread id and rej
   const execution = await open(t, real, f, writers);
   const mismatch = await execution.resume({ ...access, binding, reference: reference(id), params: { cwd: '/tmp/project' } });
   assert.deepEqual(mismatch, { kind: 'error', error: { code: 'identity-mismatch' } });
-  assert.equal(writers.held(), 0, 'mismatch releases the reservation');
+  assert.equal(writers.held(), 1, 'the native thread may be loaded, so mismatch retains the reservation');
+  f.exit();
+  await settle();
+  assert.equal(writers.held(), 0, 'process exit releases it');
   const g = appServer(t, w);
   const replacement = await open(t, real, g, writers);
   const session = await resumed(replacement, id);
@@ -268,14 +281,16 @@ test('a terminal and deltas observed before the turn/start reply are attributed 
   assert.equal(events[1].delta, 'early', 'a stale turn never reaches this session');
 });
 
-test('ownership release holds the writer through held cleanup while an independent session progresses', async (t) => {
+test('ownership release holds the writer through cleanup and after close until process exit while an independent session progresses', async (t) => {
   await ownershipRelease(t, real);
 });
 
-test('the broken early-release control enters cleanup and fails the overlap invariant', async (t) => {
-  let entered = false;
-  await assert.rejects(ownershipRelease(t, mutant, () => { entered = true; }), { message: /same-session-writer-overlap/ });
-  assert.ok(entered, 'broken control entered cleanup before the failed assertion');
+test('the broken early-release controls enter cleanup and fail the overlap invariant', async (t) => {
+  for (const module of [mutant, cleanupMutant]) {
+    let entered = false;
+    await assert.rejects(ownershipRelease(t, module, () => { entered = true; }), { message: /same-session-writer-overlap/ });
+    assert.ok(entered, 'broken control entered cleanup before the failed assertion');
+  }
 });
 
 async function ownershipRelease(t, module, cleanupEntered = () => {}) {
@@ -300,8 +315,16 @@ async function ownershipRelease(t, module, cleanupEntered = () => {}) {
   assert.deepEqual(w.overlaps, [], 'same-session-writer-overlap');
   assert.deepEqual(reopened, { kind: 'ok', value: { kind: 'busy' } });
   completion.open();
-  assert.deepEqual(await closing, { interrupt: 'replied', unsubscribe: 'replied', released: true });
+  const report = await closing;
   assert.equal((await active.completion).terminal.status, 'interrupted');
+  // The turn concluded and cleanup finished, but A still holds the thread loaded: refused before any native request.
+  const before = g.sent.length;
+  const early = await b.resume({ ...access, binding, reference: reference(first) });
+  assert.deepEqual(w.overlaps, [], 'same-session-writer-overlap');
+  assert.deepEqual(report, { interrupt: 'replied', unsubscribe: 'replied', released: false });
+  assert.deepEqual([early, g.sent.length], [{ kind: 'ok', value: { kind: 'busy' } }, before]);
+  f.exit();
+  await settle();
   const admitted = await resumed(b, first);
   assert.equal((await (await turnOn(admitted, 'after')).completion).kind, 'terminal', 'subsequent admission progresses');
   assert.deepEqual(w.overlaps, [], 'same-session-writer-overlap');
@@ -342,13 +365,14 @@ test('late cleanup from generation A cannot release or close replacement B', asy
   const a = await open(t, real, f, writers, { processExit: exit.promise });
   const first = await resumed(a, id);
   await first.close();
+  exit.open();
+  await settle();
   const g = appServer(t, w);
   const b = await open(t, real, g, writers);
   const replacement = await resumed(b, id);
-  // Generation A's late cleanup: repeated close, host exit attestation and channel end after replacement.
+  // Generation A's late cleanup after replacement: repeated close, execution close and channel end.
   await first.close();
   await a.close();
-  exit.open();
   f.sink.ended('process-exit');
   await settle();
   assert.equal(writers.held(), 1, 'B keeps its reservation');
@@ -377,21 +401,25 @@ test('aborting startup mid-handshake closes the owned transport and takes no res
   assert.equal(writers.held(), 1);
 });
 
-test('close during a pending resume yields no session and a reopen on a replacement is admitted', async (t) => {
+test('close during a pending resume yields no session and retains the entered writer until process exit', async (t) => {
   const id = randomUUID();
   const w = world(id);
   const writers = real.createCodexWriters(4);
+  const exit = gate();
   const f = appServer(t, w);
-  const a = await open(t, real, f, writers);
+  const a = await open(t, real, f, writers, { processExit: exit.promise });
   const held = f.hold('thread/resume');
   const pending = a.resume({ ...access, binding, reference: reference(id) });
   while (!f.sent.includes('thread/resume')) await settle();
   const closed = a.close();
   assert.deepEqual(await pending, { kind: 'error', error: { code: 'closed' } });
-  assert.equal((await closed).retained, 0);
+  assert.equal((await closed).retained, 1, 'the written thread/resume may have loaded the thread');
   held.open();
   const g = appServer(t, w);
   const b = await open(t, real, g, writers);
+  assert.deepEqual(await b.resume({ ...access, binding, reference: reference(id) }), { kind: 'ok', value: { kind: 'busy' } });
+  exit.open();
+  await settle();
   const session = await resumed(b, id);
   assert.equal((await (await turnOn(session)).completion).kind, 'terminal');
 });
@@ -571,25 +599,23 @@ test('unknown and thread-less notifications reach the counted execution stream, 
   assert.deepEqual(execution.counts(), { unrouted: 2, unmatchedReplies: 1, earlyOverflow: 0 });
 });
 
-test('late notifications from a released turn never reach a same-process replacement session', async (t) => {
+test('a closed session keeps its writer, so a same-process reopen is busy before any native request', async (t) => {
   const id = randomUUID();
-  const f = appServer(t, world(id));
+  const w = world(id);
+  const f = appServer(t, w);
   const writers = real.createCodexWriters(4);
   const execution = await open(t, real, f, writers);
   const first = await resumed(execution, id);
-  const old = (await (await turnOn(first)).completion).terminal.turnId;
-  assert.deepEqual(await first.close(), { interrupt: 'not-needed', unsubscribe: 'replied', released: true });
-  const replacement = await resumed(execution, id);
-  const events = collect(replacement.events);
-  const unrouted = collect(execution.events);
-  f.notify('item/agentMessage/delta', { threadId: id, turnId: old, itemId: 'm', delta: 'late' });
-  f.notify('turn/completed', { threadId: id, turn: { id: old, status: 'completed', error: null } });
-  const next = await turnOn(replacement);
-  assert.equal((await next.completion).kind, 'terminal');
-  await settle();
-  assert.equal(events.some((event) => event.turnId === old || event.params?.turnId === old), false);
-  assert.deepEqual(unrouted.map((event) => event.method), ['item/agentMessage/delta', 'turn/completed']);
+  await (await turnOn(first)).completion;
+  assert.deepEqual(await first.close(), { interrupt: 'not-needed', unsubscribe: 'replied', released: false });
+  const before = f.sent.length;
+  assert.deepEqual(await execution.resume({ ...access, binding, reference: reference(id) }), { kind: 'ok', value: { kind: 'busy' } });
+  assert.equal(f.sent.length, before);
   assert.equal(writers.held(), 1);
+  f.exit();
+  await settle();
+  assert.equal(writers.held(), 0);
+  assert.deepEqual(w.overlaps, []);
 });
 
 test('early-notification overflow is reported once the turn id is known', async (t) => {
@@ -631,8 +657,8 @@ test('a turn/start error reply is conclusive rejected and the session stays usab
   assert.deepEqual(await turn.completion, { kind: 'rejected', error });
   f.holds.delete('turn/start');
   assert.equal((await (await turnOn(session, 'next')).completion).kind, 'terminal');
-  assert.deepEqual(await session.close(), { interrupt: 'not-needed', unsubscribe: 'replied', released: true });
-  assert.equal(writers.held(), 0);
+  assert.deepEqual(await session.close(), { interrupt: 'not-needed', unsubscribe: 'replied', released: false });
+  assert.equal(writers.held(), 1);
 });
 
 test('process exit mid-turn settles unconcluded and releases; eof retains', async (t) => {
@@ -670,8 +696,8 @@ test('session and execution close are idempotent shared cleanups and reject new 
   await resumed(execution, second);
   const done = execution.close();
   assert.equal(execution.close(), done);
-  assert.deepEqual((await done).retained, 0);
-  assert.equal(writers.held(), 0);
+  assert.deepEqual((await done).retained, 2, 'closed sessions stay loaded until process exit');
+  assert.equal(writers.held(), 2);
   assert.deepEqual(await execution.create(access), { kind: 'error', error: { code: 'closed' } });
   assert.deepEqual(await execution.resume({ ...access, binding, reference: reference(first) }), { kind: 'error', error: { code: 'closed' } });
   assert.equal(f.sent.filter((method) => method === 'thread/unsubscribe').length, 2, 'each session cleaned once');
@@ -682,7 +708,8 @@ test('maxSessions and writer capacity bound opens without leaking reservations',
   const ids = [randomUUID(), randomUUID(), randomUUID()];
   const w = world(...ids);
   const writers = real.createCodexWriters(2);
-  const one = await open(t, real, appServer(t, w), writers, { bounds: { ...bounds, maxSessions: 1 } });
+  const f = appServer(t, w);
+  const one = await open(t, real, f, writers, { bounds: { ...bounds, maxSessions: 1 } });
   const kept = await resumed(one, ids[0]);
   assert.deepEqual(await one.resume({ ...access, binding, reference: reference(ids[1]) }), { kind: 'error', error: { code: 'capacity' } });
   assert.equal(writers.held(), 1, 'a capacity refusal on the execution leaks no reservation');
@@ -692,6 +719,9 @@ test('maxSessions and writer capacity bound opens without leaking reservations',
   assert.deepEqual(await two.create(access), { kind: 'error', error: { code: 'capacity' } });
   assert.equal(writers.held(), 2);
   await kept.close();
+  assert.equal(writers.held(), 2, 'close alone frees no writer capacity');
+  f.exit();
+  await settle();
   await resumed(two, ids[2]);
   assert.equal(writers.held(), 2);
   assert.throws(() => real.createCodexWriters(0), RangeError);
