@@ -287,6 +287,7 @@ Opaque `data` remains unknown and retains its identity; this promises neither de
 Input-access exceptions return a safe `invalid-input` error without the raw exception.
 Successful parsing proves correspondence to the supplied expected record. Native pending state, consumption, dispatch, persistence, and reconciliation remain later work.
 Installed fixtures verify correspondence, fact combinations, mutation isolation, malformed inputs, and public type discrimination.
+Restoring a pending frontend batch after process loss is an application choice. See [frontend tool restore](frontend-restore.md).
 
 ## Scoped filesystem discovery
 
