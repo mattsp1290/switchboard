@@ -199,6 +199,9 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
   const diagnose = () => { diagnostics.push(Object.freeze({ kind: 'file-inspection-failed',
     subject: Object.freeze({ kind: 'discovery-file', token: `file-${diagnostics.length + 1}` }) })); };
   if (ending.kind === 'complete' || (ending.kind === 'truncated' && ending.reason === 'examined')) {
+    // Directory order is filesystem-defined (APFS and ext4 differ). Code-unit order makes the native call sequence,
+    // which path of a hard-linked pair is read, result order and diagnostic tokens the same for the same admitted set.
+    names.sort();
     for (const name of names) {
       if (sessions.length >= run.bounds.maxResults) { ending = { kind: 'truncated', reason: 'results' }; break; }
       const rolloutPath = join(root, name);

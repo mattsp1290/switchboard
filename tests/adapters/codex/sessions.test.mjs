@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import fsPromises from 'node:fs/promises';
 import { linkSync, lstatSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -80,6 +81,20 @@ function server(home, options = {}) {
     return reply(handlers[call.method]?.(call.params) ?? { error: { code: -32601, message: 'unexpected' } });
   };
   return { calls, request, scope: { home, request, initialize: { codexHome: home } }, methods: () => calls.map((call) => call.method) };
+}
+/** Serves each directory's entries in code-unit order, or its reverse, and records the order served. */
+function directoryOrder(t, reverse) {
+  const listed = [];
+  const opendir = fsPromises.opendir;
+  t.mock.method(fsPromises, 'opendir', async (path, options) => {
+    const entries = [];
+    for await (const entry of await opendir(path, options)) entries.push(entry);
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    if (reverse) entries.reverse();
+    listed.push(entries.map((entry) => entry.name));
+    return { read: async () => entries.shift() ?? null, close: async () => {} };
+  });
+  return listed;
 }
 const binding = (home, extra = {}) => ({ engine: 'codex', nativeVersion: '0.169.0', account: 'apiKey',
   authorizedScope: home, nativeFormat: 'codex-thread/paginated', ...extra });
@@ -247,17 +262,26 @@ test('admission failures return outer errors before any native request', async (
 });
 
 test('transport failure after observations retains a failed page; a later abort cannot replace it', async (t) => {
-  const controller = new AbortController();
-  let reads = 0;
-  const fake = fixture(t, { on: (call) => {
-    if (call.method !== 'thread/read' || ++reads < 2) return undefined;
-    queueMicrotask(() => controller.abort());
-    return { kind: 'uncertain', reason: 'closed' };
-  } });
-  const { value } = await codexSessions.discover(access(fake, { signal: controller.signal }));
-  assert.deepEqual([value.kind, value.code], ['failed', 'native-failure']);
-  assert.equal(value.sessions.length + value.diagnostics.length >= 1, true, 'The settled first read is retained');
-  assert.equal(fake.calls.filter((call) => call.method === 'thread/read').length, 2, 'Nothing is sent after the fatal failure');
+  // The same page under both directory orders: the module, not the filesystem, decides the native call sequence.
+  for (const reverse of [false, true]) {
+    const listed = directoryOrder(t, reverse);
+    const controller = new AbortController();
+    let reads = 0;
+    const fake = fixture(t, { on: (call) => {
+      if (call.method !== 'thread/read' || ++reads < 2) return undefined;
+      queueMicrotask(() => controller.abort());
+      return { kind: 'uncertain', reason: 'closed' };
+    } });
+    const { value } = await codexSessions.discover(access(fake, { signal: controller.signal }));
+    const day = listed.find((names) => names.includes('rollout-a.jsonl'));
+    assert.equal(day.indexOf('rollout-a.jsonl') < day.indexOf('rollout-legacy.jsonl'), !reverse, 'Both orders are exercised');
+    assert.deepEqual([value.kind, value.code], ['failed', 'native-failure']);
+    assert.deepEqual(value.sessions, [session(fake.scope.home, id(1))], 'The settled first read is retained');
+    assert.equal(value.diagnostics.length, 1, 'The corrupt summary before the fatal read is retained');
+    assert.deepEqual(fake.calls.filter((call) => call.method === 'thread/read').map((call) => call.params.threadId), [id(1), id(2)],
+      'Nothing is sent after the fatal failure');
+    t.mock.restoreAll();
+  }
 });
 
 test('discover keeps a settled fatal failure ahead of a later abort and cancels while a request is outstanding', async (t) => {
