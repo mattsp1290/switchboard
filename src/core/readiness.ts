@@ -1,7 +1,8 @@
 /** One adapter's bounded local observations at `observedAt`. A report never promises that later native work succeeds. */
 export type ReadinessFact = 'installation' | 'version' | 'authentication' | 'workspace';
 /**
- * None of these is evidence of absence. `timed_out`, `cancelled` and `unknown` mean a probe ran without positive evidence.
+ * None of these is evidence of absence. `timed_out` and `unknown` mean a probe ran without positive evidence.
+ * `cancelled` means the host signal stopped the check, possibly before the probe started.
  * `not_checked` means a probe exists but was skipped. `unsupported` means the adapter has no probe for the fact.
  */
 export type UnobservedState = 'timed_out' | 'cancelled' | 'unknown' | 'not_checked' | 'unsupported';
@@ -31,6 +32,7 @@ interface ReportBase {
   /** Facts with positive evidence, passing or failing, in `ReadinessFact` order. */
   readonly checked: readonly ReadinessFact[];
 }
+/** Adapters derive the verdict and remediation from `facts`; the type does not encode that derivation. */
 export type ReadinessReport =
   | ReportBase & {
     readonly verdict: 'ready';

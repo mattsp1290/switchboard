@@ -172,7 +172,7 @@ Stop is available on admitted turns. Before admission, `start()` has no per-requ
 
 A report records four facts separately: `installation`, `version`, `authentication` and `workspace`. A passing or positively failing state is listed in `checked`. These states are not evidence of absence:
 
-- `timed_out`, `cancelled` and `unknown`: a probe ran without positive evidence, for example a non-zero exit, malformed or oversized output, or an unclassified error.
+- `timed_out` and `unknown`: a probe ran without positive evidence, for example a non-zero exit, malformed or oversized output, or an unclassified error. `cancelled`: the host signal stopped the check, possibly before the probe started.
 - `not_checked`: a probe exists but did not run because an earlier fact did not pass or the runtime is closed.
 - `unsupported`: the adapter has no probe for this fact.
 
@@ -189,12 +189,12 @@ A report records four facts separately: `installation`, `version`, `authenticati
 | `runtime_closed` | unverified | The runtime was closed before or during the check. |
 | `check_unavailable` | unverified | Local checks passed, but the adapter cannot observe sign-in. |
 
-Codes and messages are fixed text. Codex blocked reports reuse the `checkReady()` messages. The only text in a report that comes from a native process is `version.observed`, and only when it matches a plain release pattern such as `0.170.0`. Native output, paths and credentials are never included.
+Codes and messages are fixed text. Codex blocked reports reuse the `checkReady()` messages. The only text in a report that comes from a native process is `version.observed`, and only when it matches a release pattern such as `0.170.0` or `0.170.0-rc.1`. Native output, paths and credentials are never included.
 
 What each adapter observes:
 
-- Codex runs `codex --version` and then, only for exactly 0.169.0, `codex login status`. The same bounds as `checkReady()` apply: at most two children, 16 KiB of output each, and SIGTERM at the deadline or on cancellation followed by SIGKILL one second later. A version probe that times out leaves installation `available`. A login probe that times out or errors leaves authentication `unknown`, never `sign_in_required`. The executable is resolved from `PATH` when the runtime is created, so a later `PATH` change is not seen. A deleted override is seen. Workspace is `unsupported`.
-- Claude checks the readable working directory, creates and checks the private session directory as `checkReady()` does, and checks an explicit `claudePathOverride` for execute permission. Without an override, installation is `unsupported`. It never observes the CLI version or whether the API key works, so it never reports `ready`.
+- Codex runs `codex --version` and then, only for exactly 0.169.0, `codex login status`. The same bounds as `checkReady()` apply to each call: at most two children, run one after the other, 16 KiB of output each, and SIGTERM at the deadline or on cancellation followed by SIGKILL one second later. A version probe that times out leaves installation `available`. A login probe that times out or errors leaves authentication `unknown`, never `sign_in_required`. The executable is resolved from `PATH` when the runtime is created, so a later `PATH` change is not seen. A deleted override is seen. Workspace is `unsupported`.
+- Claude checks the readable working directory, creates and checks the private session directory as `checkReady()` does, and checks an explicit `claudePathOverride` for execute permission. Without an override, installation is `unsupported`. It never observes the CLI version or whether the API key works, so it never reports `ready`. Claude and Pi read `signal` only before their local filesystem checks, which have no deadline.
 - Pi re-checks only the directories that `createPiRuntime` validated. The SDK runs in-process, and its version and credentials are not probed, so installation, version and authentication are `unsupported`.
 
 A report is a point-in-time observation at `observedAt`. It is not cached, it does not guarantee that the next turn starts, and it is not native qualification. It never installs, updates, signs in, calls a model or refreshes a catalog. Tests use fixture CLIs only. The Codex `Not logged in` line was taken from the strings of the qualified 0.169.0 binary and has not been exercised natively. Any other output is reported as `unknown`, never as `signed_in`.

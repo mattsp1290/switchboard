@@ -28,22 +28,23 @@ export interface CodexRequest {
   readonly threadId?: string;
   readonly onEvent: (event: CodexEvent) => void;
 }
-type Pending = { readonly state: 'timed_out' | 'cancelled' | 'unknown' | 'not_checked' };
+type Inconclusive = { readonly state: 'timed_out' | 'cancelled' | 'unknown' | 'not_checked' };
+// Narrower than the root types on purpose: Codex pins one exact version and one login method.
 type Qualified = { readonly state: 'qualified'; readonly required: '0.169.0'; readonly observed: '0.169.0' };
 type SignedIn = { readonly state: 'signed_in'; readonly method: 'chatgpt' };
 type Facts<Installation, Version, Authentication> = {
   readonly installation: Installation; readonly version: Version;
   readonly authentication: Authentication; readonly workspace: { readonly state: 'unsupported' };
 };
-type CodexFacts = Facts<{ readonly state: 'available' | 'not_installed' | 'not_executable' } | Pending,
-  Qualified | { readonly state: 'mismatch'; readonly required: '0.169.0'; readonly observed: string } | Pending,
-  SignedIn | { readonly state: 'sign_in_required' | 'unsupported_method' } | Pending>;
+type CodexFacts = Facts<{ readonly state: 'available' | 'not_installed' | 'not_executable' } | Inconclusive,
+  Qualified | { readonly state: 'mismatch'; readonly required: '0.169.0'; readonly observed: string } | Inconclusive,
+  SignedIn | { readonly state: 'sign_in_required' | 'unsupported_method' } | Inconclusive>;
 export interface CodexReadinessOptions {
   readonly signal?: AbortSignal;
   /** Deadline for each probe in milliseconds, an integer from 1 through 10000. Defaults to 10000. */
   readonly timeoutMs?: number;
 }
-/** Assignable to the root `ReadinessReport`. Each call runs fresh bounded probes. */
+/** Assignable to the root `ReadinessReport`. Each call runs fresh bounded probes against the executable resolved at creation. */
 export type CodexReadinessReport = {
   readonly provider: 'codex';
   readonly observedAt: string;
@@ -78,7 +79,7 @@ const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 
 type ProbeKind = 'ok' | 'exited' | 'missing' | 'denied' | 'timed_out' | 'cancelled' | 'unknown';
 type Probe = { readonly spawned: boolean; readonly kind: ProbeKind; readonly stdout: string; readonly stderr: string };
 const field = (error: unknown, key: string): unknown => error !== null && typeof error === 'object' ? Reflect.get(error, key) : undefined;
-const pending = (kind: ProbeKind): Pending => ({ state: kind === 'timed_out' || kind === 'cancelled' ? kind : 'unknown' });
+const inconclusive = (kind: ProbeKind): Inconclusive => ({ state: kind === 'timed_out' || kind === 'cancelled' ? kind : 'unknown' });
 const notChecked = { state: 'not_checked' } as const;
 
 function nativeEnvironment(codexHome: string | undefined): Record<string, string> {
@@ -139,9 +140,9 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
   async function observe(signal: AbortSignal, timeoutMs: number): Promise<CodexReadinessReport> {
     const version = await probe(['--version'], signal, timeoutMs);
     const installation = version.spawned ? { state: 'available' } as const : version.kind === 'missing' ? { state: 'not_installed' } as const
-      : version.kind === 'denied' ? { state: 'not_executable' } as const : pending(version.kind);
+      : version.kind === 'denied' ? { state: 'not_executable' } as const : inconclusive(version.kind);
     const seen = version.kind === 'ok' ? versionLine.exec(version.stdout.trim())?.[1] : undefined;
-    const qualified = !version.spawned ? notChecked : version.kind !== 'ok' ? pending(version.kind)
+    const qualified = !version.spawned ? notChecked : version.kind !== 'ok' ? inconclusive(version.kind)
       : seen === QUALIFIED ? { state: 'qualified', required: QUALIFIED, observed: QUALIFIED } as const
       : seen ? { state: 'mismatch', required: QUALIFIED, observed: seen } as const : { state: 'unknown' } as const;
     let authentication: CodexFacts['authentication'] = notChecked;
@@ -151,7 +152,7 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
       const said = login.stderr.trim();
       authentication = login.kind === 'ok' && said === 'Logged in using ChatGPT' ? { state: 'signed_in', method: 'chatgpt' }
         : (login.kind === 'ok' || login.kind === 'exited') && said === 'Not logged in' ? { state: 'sign_in_required' }
-        : login.kind === 'ok' && said.startsWith('Logged in using ') ? { state: 'unsupported_method' } : pending(login.kind);
+        : login.kind === 'ok' && said.startsWith('Logged in using ') ? { state: 'unsupported_method' } : inconclusive(login.kind);
     }
     return report(installation, qualified, authentication);
   }

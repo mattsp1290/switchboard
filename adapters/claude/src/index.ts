@@ -53,6 +53,7 @@ export interface ClaudeRuntime {
 const failure = () => new Error('Claude operation failed.');
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const writers = new Set<string>();
+const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
 const refused = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EEXIST', 'EROFS', 'ELOOP']);
 const errno = (error: unknown): unknown => error !== null && typeof error === 'object' ? Reflect.get(error, 'code') : undefined;
 const remedies = {
@@ -97,8 +98,8 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
       }
     }
     const facts = { installation, version: { state: 'unsupported' }, authentication: { state: 'unsupported' }, workspace } as const;
-    const states: string[] = [installation.state, workspace.state];
-    const checked = (['installation', 'workspace'] as const).filter(fact => !['unknown', 'cancelled', 'not_checked', 'unsupported'].includes(facts[fact].state));
+    const states: readonly ClaudeFacts['installation' | 'workspace']['state'][] = [installation.state, workspace.state];
+    const checked = (['installation', 'workspace'] as const).filter(fact => !unobserved.has(facts[fact].state));
     const base = { provider: 'claude', observedAt: new Date().toISOString(), checked, facts } as const;
     const blocked = installation.state === 'not_installed' || installation.state === 'not_executable' ? 'install_required'
       : workspace.state === 'inaccessible' ? 'workspace_unavailable' : undefined;

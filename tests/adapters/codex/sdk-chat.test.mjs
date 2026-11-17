@@ -261,6 +261,8 @@ test('each readiness outcome keeps its facts separate and checkReady keeps the s
     [{ version: 'SECRET_VERSION 0.169.0' }, { version: { state: 'unknown' }, authentication: { state: 'not_checked' } }, 'retry_check', INSTALL],
     [{ overflow: '--version' }, { version: { state: 'unknown' } }, 'retry_check', INSTALL],
     [{ login: 'Not logged in', loginExit: 1 }, { authentication: { state: 'sign_in_required' } }, 'sign_in_required', SIGN_IN],
+    [{ login: 'Not logged in' }, { authentication: { state: 'sign_in_required' } }, 'sign_in_required', SIGN_IN],
+    [{ login: 'Logged in using ChatGPT', loginExit: 1 }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
     [{ login: 'Logged in using API key SECRET_KEY' }, { authentication: { state: 'unsupported_method' } }, 'sign_in_required', SIGN_IN],
     [{ login: 'Error checking login status: SECRET_STATUS', loginExit: 1 }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
     [{ login: 'Not logged in SECRET_SUFFIX', loginExit: 1 }, { authentication: { state: 'unknown' } }, 'retry_check', SIGN_IN],
