@@ -177,6 +177,54 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   const piTypes = run(process.execPath, [compiler, '-p', 'pi-types.json', '--listFilesOnly'], consumer);
   assert(!piTypes.includes('/@earendil-works/'), 'Pi declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'pi-types.json'], consumer);
+  writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
+import type { CodexReadinessReport, CodexRuntime } from '${manifest.name}/codex';
+import type { ClaudeReadinessReport, ClaudeRuntime } from '${manifest.name}/claude';
+import type { PiReadinessReport, PiRuntime } from '${manifest.name}/pi';
+declare const codex: CodexRuntime; declare const claude: ClaudeRuntime; declare const pi: PiRuntime;
+declare const wide: ReadinessReport; declare const claudeReport: ClaudeReadinessReport;
+const sources: readonly ReadinessSource[] = [codex, claude, pi];
+const narrowed: readonly ReadinessReport[] = [] as (CodexReadinessReport | ClaudeReadinessReport | PiReadinessReport)[];
+const ready = { provider: 'codex', observedAt: '', checked: ['installation', 'version', 'authentication'], verdict: 'ready', remediation: null, facts: {
+  installation: { state: 'available' }, version: { state: 'qualified', required: '0.169.0', observed: '0.169.0' },
+  authentication: { state: 'signed_in', method: 'chatgpt' }, workspace: { state: 'unsupported' } } } satisfies ReadinessReport;
+const action = (code: ReadinessRemediationCode): boolean => code === 'install_required' || code === 'version_required' || code === 'sign_in_required' || code === 'workspace_unavailable';
+function label(report: ReadinessReport): string {
+  switch (report.verdict) {
+    case 'ready': return report.facts.version.observed;
+    case 'blocked': return String(action(report.remediation.code));
+    case 'unverified': return report.remediation.message;
+    default: { const exhaustive: never = report; return exhaustive; }
+  }
+}
+// @ts-expect-error A ready report carries no remediation.
+const readyRemedy: ReadinessReport = { ...ready, remediation: { code: 'retry_check', message: '' } };
+// @ts-expect-error A ready report cannot hold an unobserved fact.
+const readyUnknown: ReadinessReport = { ...ready, facts: { ...ready.facts, authentication: { state: 'unknown' } } };
+// @ts-expect-error A blocked report needs a remediation.
+const blockedNull: ReadinessReport = { ...ready, verdict: 'blocked' };
+// @ts-expect-error A timeout is never an action code.
+const blockedRetry: ReadinessReport = { ...ready, verdict: 'blocked', remediation: { code: 'retry_check', message: '' } };
+// @ts-expect-error An unverified report cannot claim a positively observed failure.
+const unverifiedAction: ReadinessReport = { ...ready, verdict: 'unverified', remediation: { code: 'sign_in_required', message: '' } };
+// @ts-expect-error A mismatch records the observed version.
+const mismatch: ReadinessReport = { ...ready, verdict: 'blocked', remediation: { code: 'version_required', message: '' }, facts: { ...ready.facts, version: { state: 'mismatch', required: '0.169.0' } } };
+// @ts-expect-error An inconclusive observation carries no native output.
+const raw: ReadinessReport = { ...ready, verdict: 'unverified', remediation: { code: 'retry_check', message: '' }, facts: { ...ready.facts, version: { state: 'timed_out', stderr: '' } } };
+// @ts-expect-error Claude never observes authentication.
+const claudeSignedIn: ClaudeReadinessReport['facts']['authentication'] = { state: 'signed_in', method: 'chatgpt' };
+// @ts-expect-error Claude cannot report ready.
+const claudeReady = claudeReport.verdict === 'ready';
+// @ts-expect-error A wide report is not a Codex report.
+const codexOnly: CodexReadinessReport = wide;
+// @ts-expect-error Reports are read-only.
+wide.verdict = 'ready';
+void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, codexOnly];
+`);
+  writeFileSync(join(consumer, 'readiness-types.json'), JSON.stringify({ ...consumerConfig, files: ['readiness-types.test.ts'] }));
+  const readinessTypes = run(process.execPath, [compiler, '-p', 'readiness-types.json', '--listFilesOnly'], consumer);
+  assert(!/\/@(?:openai|anthropic-ai|earendil-works)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
+  run(process.execPath, [compiler, '-p', 'readiness-types.json'], consumer);
 
   const piConsumer = join(temporary, 'pi');
   mkdirSync(piConsumer);
@@ -217,6 +265,7 @@ import { createCodexRuntime } from '${manifest.name}/codex';
 const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
   codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
 try {
+  assert.equal((await runtime.readinessReport()).verdict, 'ready');
   const turn = await runtime.start({ text: 'packaged', onEvent() {} });
   assert.equal(turn.threadId, '${fixtureId}');
   assert.equal((await turn.finished).outcome, 'completed');
