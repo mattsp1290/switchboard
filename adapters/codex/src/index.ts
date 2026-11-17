@@ -36,7 +36,7 @@ type Facts<Installation, Version, Authentication> = {
   readonly installation: Installation; readonly version: Version;
   readonly authentication: Authentication; readonly workspace: { readonly state: 'unsupported' };
 };
-type CodexFacts = Facts<{ readonly state: 'available' | 'not_installed' | 'not_executable' } | Inconclusive,
+type CodexFacts = Facts<{ readonly state: 'available' } | { readonly state: 'not_installed' | 'not_executable' } | Inconclusive,
   Qualified | { readonly state: 'mismatch'; readonly required: '0.169.0'; readonly observed: string } | Inconclusive,
   SignedIn | { readonly state: 'sign_in_required' | 'unsupported_method' } | Inconclusive>;
 export interface CodexReadinessOptions {
@@ -129,11 +129,11 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
       const spawned = child?.pid !== undefined;
       if (signal.aborted || timer.aborted) return none(signal.aborted ? 'cancelled' : 'timed_out', spawned);
       if (typeof code === 'number') return { spawned, kind: 'exited', stdout: '', stderr: typeof stderr === 'string' ? stderr : '' };
-      if (spawned || (code !== 'ENOENT' && code !== 'EACCES')) return none('unknown', spawned);
+      if (spawned || (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM')) return none('unknown', spawned);
       // Spawn also reports ENOENT for a missing cwd, so only the executable path itself proves absence.
       return none(await access(executable, constants.X_OK).then((): ProbeKind => 'unknown', (reason: unknown): ProbeKind => {
         const denied = field(reason, 'code');
-        return denied === 'ENOENT' || denied === 'ENOTDIR' ? 'missing' : denied === 'EACCES' ? 'denied' : 'unknown';
+        return denied === 'ENOENT' || denied === 'ENOTDIR' ? 'missing' : denied === 'EACCES' || denied === 'EPERM' ? 'denied' : 'unknown';
       }));
     }
   }
@@ -163,7 +163,7 @@ export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
     const checked = (['installation', 'version', 'authentication'] as const).filter(fact => !unobserved.has(facts[fact].state));
     const base = { provider: 'codex', observedAt: new Date().toISOString(), checked } as const;
     if (installation.state === 'available' && version.state === 'qualified' && authentication.state === 'signed_in') {
-      return { ...base, verdict: 'ready', remediation: null, facts: { installation: { state: 'available' }, version, authentication, workspace } };
+      return { ...base, verdict: 'ready', remediation: null, facts: { installation, version, authentication, workspace } };
     }
     const blocked = installation.state === 'not_installed' || installation.state === 'not_executable' ? 'install_required'
       : version.state === 'mismatch' ? 'version_required'

@@ -91,14 +91,14 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
         await access(config, constants.R_OK | constants.W_OK);
       } catch (error) { workspace = { state: refused.has(String(errno(error))) ? 'inaccessible' : 'unknown' }; }
       if (override !== undefined) {
-        await access(override, constants.X_OK).catch((error: unknown) => {
+        try { await access(override, constants.X_OK); } catch (error) {
           const code = errno(error);
           installation = { state: code === 'ENOENT' || code === 'ENOTDIR' ? 'not_installed' : code === 'EACCES' || code === 'EPERM' ? 'not_executable' : 'unknown' };
-        });
+        }
       }
     }
     const facts = { installation, version: { state: 'unsupported' }, authentication: { state: 'unsupported' }, workspace } as const;
-    const states: readonly ClaudeFacts['installation' | 'workspace']['state'][] = [installation.state, workspace.state];
+    const states = [installation.state, workspace.state];
     const checked = (['installation', 'workspace'] as const).filter(fact => !unobserved.has(facts[fact].state));
     const base = { provider: 'claude', observedAt: new Date().toISOString(), checked, facts } as const;
     const blocked = installation.state === 'not_installed' || installation.state === 'not_executable' ? 'install_required'
