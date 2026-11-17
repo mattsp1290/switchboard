@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -159,6 +159,18 @@ test('client waits for graceful stdio drain and repeated stop is harmless', asyn
   await client.stop();
   assert.deepEqual(child.signals, ['SIGTERM']);
 });
+test('client retains exact leading stderr bytes with an explicit total and truncation after drain', async () => {
+  for (const [chunks, truncated] of [[[Buffer.from([0xe2, 0x82]), Buffer.from([0xac, 0x0a])], false], [[Buffer.alloc(40 * 1024, 1), Buffer.alloc(40 * 1024, 2)], true]]) {
+    const child = transport();
+    const client = nativeClient({}, () => {}, () => child);
+    for (const chunk of chunks) child.stderr.write(chunk);
+    await client.stop();
+    const { closed, signal, stderr } = client.drain();
+    const all = Buffer.concat(chunks);
+    assert.deepEqual([closed, signal, stderr.bytes, stderr.truncated], [true, 'SIGTERM', all.length, truncated]);
+    assert(Buffer.from(stderr.base64, 'base64').equals(all.subarray(0, 64 * 1024)), 'Exact leading bytes, split UTF-8 intact');
+  }
+});
 test('client rejects final-drain faults after close and keeps failed repeated stop observable', async () => {
   const faults = [
     ['malformed', (child) => child.stdout.write('{bad\n')],
@@ -309,11 +321,12 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
   const log = console.log;
   const errorLog = console.error;
   try {
-    for (const fault of ['unknown-empty', 'late', 'daemon', 'removed', 'success', 'leaf-mismatch', 'leaf-missing', 'compile-failure', 'source-drift', 'compiled-missing']) {
+    for (const fault of ['unknown-empty', 'late', 'daemon', 'removed', 'success', 'legacy-creator', 'legacy-pin', 'leaf-mismatch', 'leaf-missing', 'compile-failure', 'source-drift', 'compiled-missing']) {
       const work = realpathSync(mkdtempSync(join(tmpdir(), 'codex-lifecycle-')));
       const archive = join(work, 'inert.tgz');
       writeFileSync(archive, 'inert archive');
       const calls = [];
+      const legacyCalls = [];
       const errors = [];
       const output = [];
       let failed = false;
@@ -321,7 +334,8 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
       const wireSource = 'inert wire source\n';
       const compiledWire = 'inert compiled wire\n';
       const codec = join(work, 'codec/adapters/codex/wire.js');
-      globalThis.codexQualification = { work, wireSource, run(command, args) {
+      const legacyResult = fault === 'legacy-pin' ? JSON.parse(readFileSync(new URL('../../spikes/codex-native/legacy-tail-result.json', import.meta.url), 'utf8')) : { outcome: 'inconclusive', replies: {}, tailDiffersFromHealthy: [] };
+      globalThis.codexQualification = { work, wireSource, legacyResult, run(command, args) {
         calls.push([command, ...args]);
         if (command !== 'docker') {
           assert(command === 'tar' || command === process.execPath);
@@ -371,7 +385,23 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
         if (args.at(-1) === 'prepare-accounts') return JSON.stringify({ records: ['accountA', 'accountB', 'apiKey', 'corrupt'].map((name) => ({ name, path: `sessions/${name}.jsonl` })),
           files: { 'thread_history_1.sqlite': Buffer.from('opaque cold history').toString('base64'),
             ...Object.fromEntries(['accountA', 'accountB', 'apiKey', 'corrupt'].map((name) => [`sessions/${name}.jsonl`, Buffer.from('synthetic opaque bytes').toString('base64')])) } });
-        if (fault === 'success') return JSON.stringify({ mode: args.at(-1) });
+        if (args.at(-1) === 'prepare-legacy' && fault === 'legacy-creator') {
+          throw Object.assign(new Error('inert creator exit'), { stdout: JSON.stringify({ mode: 'prepare-legacy', failure: { message: 'Creator read-back keeps Legacy history' } }) });
+        }
+        if (args.at(-1) === 'prepare-legacy') return JSON.stringify({ record: { name: 'legacy', id: 'legacy-id', path: 'sessions/2026/rollout-legacy.jsonl' },
+          rollout: Buffer.from('{"opaque":"native"}\n').toString('base64'), rolloutModifiedMs: 1794882250043, creator: {}, drain: [] });
+        if (args.at(-2) === 'legacy-read') {
+          const control = args.at(-1);
+          assert(!args.some((arg) => /\.sqlite|thread_history/.test(arg)), 'Legacy readers receive no SQLite or projection');
+          const expected = { healthy: '{"opaque":"native"}\n', tail: '{"opaque":"native"}\n{invalid-json\n', whole: '{invalid-json\n',
+            'absent-id': '{"opaque":"native"}\n' }[control];
+          const file = join(work, `legacy-${control}/sessions/2026/rollout-legacy.jsonl`);
+          assert.equal(existsSync(file) ? readFileSync(file, 'utf8') : undefined, expected, `Frozen ${control} source bytes`);
+          if (expected) assert.equal(Math.round(statSync(file).mtimeMs), 1794882250043, `${control} home shares the native rollout mtime`);
+          legacyCalls.push(control);
+          if (fault === 'success' && control === 'tail') throw Object.assign(new Error('inert reader exit'), { stdout: JSON.stringify({ mode: 'legacy-read', failure: { message: 'inert' } }) });
+        }
+        if (['success', 'legacy-creator', 'legacy-pin'].includes(fault)) return JSON.stringify({ mode: args.at(-1) });
         assert.equal(args.at(-1), 'indexed');
         assert(args.some((arg) => arg.includes('/client.mjs,')));
         assert.equal(readFileSync(join(work, 'indexed/sessions/first.jsonl'), 'utf8'), 'synthetic opaque bytes');
@@ -403,13 +433,30 @@ test('actual qualifier retains frozen source on uncertainty and removes it only 
           assert.equal(errors.length, 0);
           continue;
         }
-        if (fault === 'success') {
+        if (fault === 'legacy-pin') {
+          await assert.rejects(import(`../../spikes/codex-native/qualify.mjs?${fault}`), (error) => error.code === 'ERR_ASSERTION'
+            && /successful-reads-uncertified/.test(error.message) && /inconclusive/.test(error.message), 'A native result that differs from the pin fails');
+          assert.deepEqual(legacyCalls, ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']);
+          assert(!existsSync(work), 'Owned work removed after a pin mismatch');
+          assert.deepEqual(JSON.parse(output[0]).legacyTail.pin, { outcome: 'inconclusive', replies: {}, tailDiffersFromHealthy: [] }, 'The full report precedes the failure');
+          continue;
+        }
+        if (['success', 'legacy-creator'].includes(fault)) {
           await import(`../../spikes/codex-native/qualify.mjs?${fault}`);
           assert(!existsSync(work));
           const report = JSON.parse(output[0]);
           const hash = (value) => createHash('sha256').update(value).digest('hex');
           assert.deepEqual(report.wireCodec, { sourceSha256Before: hash(wireSource), sourceSha256After: hash(wireSource), compiledSha256: hash(compiledWire) });
           assert.deepEqual(report.discovery.map((entry) => entry.mode), ['indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink']);
+          assert.equal(report.legacyTail.conclusion.outcome, 'inconclusive', 'Fake readers never promote a Legacy outcome');
+          if (fault === 'legacy-creator') {
+            assert.deepEqual(legacyCalls, [], 'No reader home without genuine Legacy history');
+            assert.deepEqual(report.legacyTail.conclusion.precondition, { stage: 'creator', acquisition: 'partial', failure: 'Creator read-back keeps Legacy history' });
+          } else {
+            assert.deepEqual(legacyCalls, ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']);
+            assert.equal(report.legacyTail.readers.tail.acquisition, 'partial', 'A cleanly removed failed reader keeps its partial report');
+            assert.equal(errors.at(-1).stdout, JSON.stringify({ mode: 'legacy-read', failure: { message: 'inert' } }));
+          }
           assert.equal(report.transformedImports, 1);
           assert.equal(report.bindingIdentity.generatedSha256, 'beeb38dfd0b050b171141bd66d51663786a50a81cbe904ba9b006289a101fd39');
           assert.equal(report.bindingIdentity.selectedSha256, report.bindingIdentity.generatedSha256);

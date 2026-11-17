@@ -8,6 +8,7 @@ export function readFileSync(path, ...options) {
     for (const pin of Object.values(pins.artifacts)) pin.sha512 = createHash('sha512').update('inert archive').digest('base64');
     return JSON.stringify(pins);
   }
+  if (String(path).endsWith('/legacy-tail-result.json')) return JSON.stringify(globalThis.codexQualification.legacyResult);
   if (String(path).includes('/node_modules/')) return JSON.stringify({ version: String(path).includes('typescript') ? '7.0.2' : '24.19.2' });
   return fs.readFileSync(path, ...options);
 }

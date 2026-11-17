@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 export const REPO = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/, '');
 export const NODE_VERSION = 'v24.22.3';
-export const EXPECTED_TOTAL = 34;
+export const EXPECTED_TOTAL = 38;
 export const COMMAND_DEADLINE_MS = 180_000;
 export const CAPS = Object.freeze({ stdout: 1 << 20, stderr: 1 << 20, channel: 256 << 10, line: 16 << 10, tail: 4 << 10 });
 export const PRELOADS = Object.freeze({
@@ -57,6 +57,9 @@ export const ORACLE = Object.freeze({
     'actual discovery refuses selected root additions in ordinary and H1 modes',
     'actual H1 discovery refuses directory and inode changes before the next requester spawn',
     'actual discovery emits one reserved progress overflow marker, bounds source evidence and withholds preservation and H1 success',
+    'actual Legacy creator exports one drained native rollout and refuses unhonored or unterminated Legacy history',
+    'actual Legacy reader dispatches the fixed public sequence in a fresh home and retains drain, stderr and checkpoints',
+    'Legacy conclusion is only uncertified success, bounded rejection or inconclusive',
     'actual preparation exports exact native turn witnesses and older modes bypass cold copies',
     'bounded observation refuses file, directory, family and missing-tree additions and removals',
     'bounded observation refuses kind, inode, mode, link, size and time changes but keeps hardlink aliases',
@@ -73,6 +76,7 @@ export const ORACLE = Object.freeze({
     'actual client wire faults reach exact terminal assertions after stdout and codec entry',
     'actual client refuses outgoing invalid envelopes without writing and retains the owned failure',
     'client waits for graceful stdio drain and repeated stop is harmless',
+    'client retains exact leading stderr bytes with an explicit total and truncation after drain',
     'client rejects final-drain faults after close and keeps failed repeated stop observable',
     'actual discovery retains a final-drain failure and exits nonzero through inert boundaries',
     'client bounds ignored TERM, escalates to KILL, and rejects failed close',
@@ -88,14 +92,14 @@ const native = (name) => `spikes/codex-native/${name}.mjs`;
 const fake = (name) => `tests/spikes/codex-${name}.mjs`;
 const WIRE = 'src/adapters/codex/wire.ts';
 
-/** @type {readonly RunSpec[]} closures measured on 3e987d1 */
+/** @type {readonly RunSpec[]} closures measured on c917973 plus legacy-tail.mjs */
 export const SUITES = Object.freeze([
   suite('account', [fake('account-fs'), native('account-reads'), native('inventory')]),
   suite('history', [fake('wire-source'), fake('history-boundary'), native('discovery'), native('inventory'),
-    native('account-reads'), native('client'), native('history-copy'), WIRE]),
+    native('account-reads'), native('client'), native('history-copy'), native('legacy-tail'), WIRE]),
   suite('lifecycle', [fake('wire-source'), fake('lifecycle-transport'), fake('lifecycle-fs'), fake('discovery-boundary'),
     native('client'), native('lifecycle'), native('discovery'), native('inventory'), native('account-reads'),
-    native('history-copy'), native('qualify'), native('protocol-bindings'), WIRE]),
+    native('history-copy'), native('legacy-tail'), native('qualify'), native('protocol-bindings'), WIRE]),
 ]);
 
 /** Resolution-only probes: a missing guard loads no package code. */

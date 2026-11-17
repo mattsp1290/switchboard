@@ -34,13 +34,13 @@ function nativeChild(respond) {
 const flooding = (out, count) => {
   for (let index = 0; index < count; index++) out.write(`${JSON.stringify({ method: 'fixture/flood', params: { index, pad: 'x'.repeat(1024) } })}\n`);
 };
-async function entry(mode, state) {
+async function entry(mode, state, args = []) {
   const saved = { argv: process.argv, exitCode: process.exitCode, log: console.log, write: process.stderr.write };
   const output = [];
   const progress = [];
   try {
     globalThis.codexHistory = state;
-    process.argv = [process.execPath, 'discovery.mjs', mode];
+    process.argv = [process.execPath, 'discovery.mjs', mode, ...args];
     process.exitCode = undefined;
     console.log = (value) => output.push(JSON.parse(value));
     process.stderr.write = (line) => { progress.push(String(line)); return true; };
@@ -260,6 +260,165 @@ test('actual discovery emits one reserved progress overflow marker, bounds sourc
   assert.equal(long.report.failure.message, 'Required bounded source evidence was omitted');
   assert.deepEqual(long.report.preservation, [], 'refused before startup');
   assert.equal(long.report.preservationSummary, undefined);
+});
+const LEGACY = { id: '00000000-0000-4000-8000-00000000000a', path: 'sessions/2026/rollout-legacy.jsonl' };
+const NATIVE = Buffer.from('{"opaque":"native legacy"}\n');
+async function legacyEntry(mode, { control, bytes, fault, stderr = '' } = {}) {
+  const work = mkdtempSync(join(tmpdir(), 'codex-legacy-'));
+  const source = join(work, 'source');
+  mkdirSync(join(source, 'sessions/2026'), { recursive: true });
+  mkdirSync(join(source, 'archived_sessions'));
+  if (bytes) writeFileSync(join(source, LEGACY.path), bytes);
+  if (fault === 'stale-private') mkdirSync(join(work, 'private-index'));
+  const witness = { startedTurnId: 'turn-legacy', completedTurnId: 'turn-legacy', status: 'completed', userText: 'legacy', agentText: 'synthetic discovery fixture' };
+  const records = [{ name: 'legacy', ...LEGACY, cwd: '/tmp/project', modelProvider: 'fixture', witness }];
+  const inventory = inventoryOf(observeSource(source, SELECTORS.ordinary, { fs: real }));
+  const sent = [];
+  const thread = (historyMode) => ({ id: LEGACY.id, historyMode, path: `/root/.codex/${LEGACY.path}`, turns: [] });
+  const state = { work, records, inventory, port: 12000, copies: [], spawn: () => {
+    const child = nativeChild(({ id, method, params }, out) => {
+      sent.push({ method, params });
+      if (!id) return;
+      const reply = (result) => out.write(`${JSON.stringify({ id, result })}\n`);
+      if (method === 'thread/start') return reply({ thread: { ...thread(fault === 'paginated' ? 'paginated' : params.historyMode), path: null } });
+      if (method === 'turn/start') {
+        writeFileSync(join(source, LEGACY.path), fault === 'unterminated' ? '{"opaque":"native legacy"}' : NATIVE);
+        reply({ turn: { id: 'turn-legacy' } });
+        return out.write(`${JSON.stringify({ method: 'turn/completed', params: { threadId: LEGACY.id, turn: { id: 'turn-legacy', status: 'completed' } } })}\n`);
+      }
+      if (method === 'config/read') return reply({ config: { sqlite_home: '/tmp/private-index', log_dir: '/tmp/private-logs' } });
+      if (control === 'tail' && method === 'thread/read' && mode === 'legacy-read') return out.write(`${JSON.stringify({ id, error: { code: -32603, message: 'synthetic' } })}\n`);
+      if (method === 'thread/read') return reply({ thread: thread('legacy') });
+      if (method === 'getConversationSummary') return reply({ summary: { conversationId: LEGACY.id, path: params.rolloutPath } });
+      reply({ data: [], nextCursor: method === 'thread/items/list' && !params.cursor ? 'next' : null, backwardsCursor: null });
+    });
+    child.stderr.write(stderr);
+    return child;
+  } };
+  try { return { ...(await entry(mode, state, control ? [control] : [])), sent, source }; }
+  finally { rmSync(work, { recursive: true, force: true }); }
+}
+test('actual Legacy creator exports one drained native rollout and refuses unhonored or unterminated Legacy history', async () => {
+  const { legacySources } = await import('../../spikes/codex-native/legacy-tail.mjs');
+  const created = await legacyEntry('prepare-legacy');
+  assert.equal(created.code, 0);
+  assert.deepEqual(created.sent.find((request) => request.method === 'thread/start').params.historyMode, 'legacy');
+  assert.deepEqual(created.sent.filter((request) => request.method !== 'initialized').map((request) => request.method), ['initialize', 'thread/start', 'turn/start', 'thread/read']);
+  assert.deepEqual(created.report.record, { name: 'legacy', id: LEGACY.id, cwd: '/tmp/project', modelProvider: 'fixture', path: LEGACY.path, witness:
+    { startedTurnId: 'turn-legacy', completedTurnId: 'turn-legacy', status: 'completed', userText: 'legacy', agentText: 'synthetic discovery fixture' } });
+  assert.deepEqual([created.report.creator.startHistoryMode, created.report.creator.readHistoryMode], ['legacy', 'legacy']);
+  assert.deepEqual(created.report.drain.map((client) => [client.closed, client.signal]), [[true, 'SIGTERM']]);
+  assert.deepEqual(created.report.protocol.transcript.map((observation) => observation.request.method), ['initialize', 'thread/start', 'turn/start', 'thread/read']);
+  assert(created.report.rolloutModifiedMs > 0, 'The creator exports the native rollout mtime for every reader home');
+  assert.throws(() => legacySources({ ...created.report, rolloutModifiedMs: undefined }), /Exported native rollout mtime/);
+  const sources = legacySources(created.report);
+  assert(sources.healthy.equals(NATIVE));
+  assert(sources.tail.equals(Buffer.concat([NATIVE, Buffer.from('{invalid-json\n')])));
+  assert.equal(sources.whole.toString(), '{invalid-json\n');
+  assert(sources['absent-id'].equals(NATIVE), 'The absent-ID home holds the healthy rollout');
+  assert.equal(sources['absent-path'], null);
+  for (const [fault, message] of [['paginated', /experimental Legacy history option/], ['unterminated', /end in one newline/]]) {
+    const refused = await legacyEntry('prepare-legacy', { fault });
+    assert.equal(refused.code, 1);
+    assert.match(refused.report.failure.message, message);
+    assert.equal(refused.report.rollout, undefined);
+  }
+});
+test('actual Legacy reader dispatches the fixed public sequence in a fresh home and retains drain, stderr and checkpoints', async () => {
+  const { ABSENT_ID } = await import('../../spikes/codex-native/legacy-tail.mjs');
+  const tail = Buffer.concat([NATIVE, Buffer.from('{invalid-json\n')]);
+  const read = await legacyEntry('legacy-read', { control: 'tail', bytes: tail, stderr: 'synthetic native warning\n' });
+  assert.equal(read.code, 0);
+  const params = { threadId: LEGACY.id };
+  assert.deepEqual(read.report.legacy.steps.map(({ method, params }) => ({ method, params })), [
+    { method: 'getConversationSummary', params: { rolloutPath: `/root/.codex/${LEGACY.path}` } },
+    { method: 'thread/read', params: { ...params, includeTurns: false } },
+    { method: 'thread/read', params: { ...params, includeTurns: true } },
+    { method: 'thread/turns/list', params: { ...params, sortDirection: 'asc', itemsView: 'summary', limit: 1 } },
+    { method: 'thread/items/list', params: { ...params, sortDirection: 'asc', limit: 1 } },
+    { method: 'thread/items/list', params: { ...params, sortDirection: 'asc', limit: 1, cursor: 'next' } }]);
+  assert.equal(read.report.legacy.steps[1].reply.error.code, -32603, 'A rejection is retained, not thrown');
+  assert.equal(read.report.legacy.sequence, 'complete');
+  assert.deepEqual(read.report.preservation, ['before startup', 'after initialization', 'after requests', 'after drained shutdown', 'after final shutdown attempts']);
+  assert.match(read.report.preservationSummary, /unchanged/);
+  assert.equal(Buffer.from(read.report.drain[0].stderr.base64, 'base64').toString(), 'synthetic native warning\n');
+  assert.equal(read.report.drain[0].stderr.truncated, false);
+  const stale = await legacyEntry('legacy-read', { control: 'healthy', bytes: NATIVE, fault: 'stale-private' });
+  assert.equal(stale.code, 1);
+  assert.match(stale.report.failure.message, /Fresh empty private SQLite and logs/);
+  assert(!stale.sent.length, 'No native spawn without a fresh private home');
+  const absentPath = await legacyEntry('legacy-read', { control: 'absent-path' });
+  assert.equal(absentPath.code, 0);
+  assert.equal(absentPath.report.legacy.steps[0].params.rolloutPath, `/root/.codex/${LEGACY.path}`, 'Absent path is the exact native path in an empty home');
+  assert(absentPath.report.legacy.steps.slice(1).every((step) => step.params.threadId === LEGACY.id));
+  const absentId = await legacyEntry('legacy-read', { control: 'absent-id', bytes: NATIVE });
+  assert.equal(absentId.code, 0);
+  assert.equal(absentId.report.legacy.steps[0].params.rolloutPath, `/root/.codex/${LEGACY.path}`);
+  assert(absentId.report.legacy.steps.slice(1).every((step) => step.params.threadId === ABSENT_ID), 'Only absent-id asks for the never-created ID');
+  for (const [control, bytes] of [['absent-path', NATIVE], ['absent-id', undefined]]) {
+    assert.equal((await legacyEntry('legacy-read', { control, bytes })).code, 1, `${control} with the wrong home refuses before dispatch`);
+  }
+});
+test('Legacy conclusion is only uncertified success, bounded rejection or inconclusive', async () => {
+  const { configDigest, legacyConclusion, legacyPin } = await import('../../spikes/codex-native/legacy-tail.mjs');
+  const provider = (port) => ({ model_providers: { fixture: { base_url: `http://127.0.0.1:${port}/v1`, wire_api: 'responses' } }, sqlite_home: '/tmp/private-index' });
+  assert.equal(configDigest(provider(41189)), configDigest({ sqlite_home: '/tmp/private-index', model_providers: { fixture: { wire_api: 'responses', base_url: 'http://127.0.0.1:34813/v1' } } }));
+  assert.notEqual(configDigest(provider(41189)), configDigest({ ...provider(41189), sqlite_home: '/tmp/other' }), 'Only the loopback port and key order are ignored');
+  const drain = [{ closed: true, stderr: { truncated: false } }];
+  const record = { id: LEGACY.id, path: LEGACY.path, witness: { completedTurnId: 'turn-legacy', userText: 'legacy', agentText: 'synthetic discovery fixture' } };
+  const ok = (result) => ({ id: 1, result });
+  const error = { id: 1, error: { code: -32603, message: 'synthetic' } };
+  const healthy = () => [
+    ['getConversationSummary', ok({ summary: { conversationId: LEGACY.id, path: `/root/.codex/${LEGACY.path}` } })],
+    ['thread/read', ok({ thread: { id: LEGACY.id, historyMode: 'legacy', path: `/root/.codex/${LEGACY.path}`, turns: [] } })],
+    ['thread/read', error, true],
+    ['thread/turns/list', ok({ data: [{ id: 'turn-legacy', status: 'completed' }], nextCursor: null })],
+    ['thread/items/list', ok({ data: [{ turnId: 'turn-legacy', item: { type: 'userMessage', content: [{ type: 'text', text: 'legacy' }] } },
+      { turnId: 'turn-legacy', item: { type: 'agentMessage', text: 'synthetic discovery fixture' } }], nextCursor: null })]];
+  const reader = (pairs, extra = {}) => ({ preservationSummary: 'unchanged', inferenceRequests: 0, drain: [{ closed: true, stderr: { truncated: false } }],
+    legacy: { sequence: 'complete', configSha256: 'same', steps: pairs.map(([method, reply, includeTurns]) => ({ method, params: { includeTurns }, reply })) }, ...extra });
+  const rejected = () => healthy().map(([method, , turns]) => [method, error, turns]);
+  const absentId = () => healthy().map(([method, reply, turns]) => [method, method === 'getConversationSummary' ? reply : error, turns]);
+  const readers = (overrides = {}) => ({ healthy: reader(healthy()), tail: reader(healthy()), whole: reader(rejected()),
+    'absent-id': reader(absentId()), 'absent-path': reader(rejected()), ...overrides });
+  assert.equal(legacyConclusion({ record, drain }, readers()).outcome, 'successful-reads-uncertified');
+  const masked = { id: 1, error: { code: -32600, message: `missing /root/.codex/${LEGACY.path} for ${LEGACY.id}` } };
+  const pin = legacyPin(legacyConclusion({ record, drain }, readers()), readers({ whole: reader(rejected().map(([method, , turns]) => [method, masked, turns])) }), record);
+  assert.deepEqual([pin.outcome, pin.tailDiffersFromHealthy, Object.keys(pin.replies)], ['successful-reads-uncertified', [], ['healthy', 'tail', 'whole', 'absent-id', 'absent-path']]);
+  assert.deepEqual(pin.replies.whole['thread/read turns #1'], [-32600, 'missing <rollout> for <thread>'], 'Native path and ID are masked');
+  assert.deepEqual(Object.values(pin.replies['absent-id']).slice(0, 2), ['result', [-32603, 'synthetic']]);
+  const drifted = legacyConclusion({ record, drain }, readers({ tail: reader(healthy().map(([method, reply, turns]) => [method, method === 'thread/turns/list' ? ok({ ...reply.result, extra: 1 }) : reply, turns])) }));
+  assert.deepEqual(legacyPin(drifted, readers(), record).tailDiffersFromHealthy, ['thread/turns/list #1']);
+  const recorded = JSON.parse(readFileSync(new URL('../../spikes/codex-native/legacy-tail-result.json', import.meta.url), 'utf8'));
+  const unmask = (text) => text.replaceAll('<rollout>', `/root/.codex/${LEGACY.path}`).replaceAll('<thread>', LEGACY.id);
+  const replay = Object.fromEntries(Object.entries(recorded.replies).map(([control, steps]) => [control, { legacy: { steps: Object.entries(steps).map(([key, shape]) =>
+    ({ method: key.split(' ')[0], params: { includeTurns: key.includes(' turns') }, reply: shape === 'result' ? ok({}) : { id: 1, error: { code: shape[0], message: unmask(shape[1]) } } })) } }]));
+  assert.deepEqual(legacyPin({ outcome: recorded.outcome }, replay, record).replies, recorded.replies, 'The recorded pin round-trips through legacyPin');
+  const rejection = legacyConclusion({ record, drain }, readers({ tail: reader(healthy().map(([method, reply, turns]) => [method, method === 'thread/read' ? error : reply, turns])) }));
+  assert.equal(rejection.outcome, 'bounded-public-rejection');
+  assert.deepEqual(rejection.compared.map((step) => [step.informative, step.sameAsAbsentPath]), [[true, false], [true, true], [false, true], [true, false], [true, false]]);
+  const uninformative = legacyConclusion({ record, drain }, readers({ tail: reader(healthy().map(([method, reply, turns]) => [method, turns ? ok({}) : reply, turns])) }));
+  assert.equal(uninformative.outcome, 'successful-reads-uncertified', 'A step the healthy control could not answer never decides the tail');
+  for (const [overrides, reason, prepared] of [
+    [{ tail: reader(healthy(), { preservationSummary: undefined }) }, 'tail harness'],
+    [{ tail: { ...reader(healthy()), acquisition: 'partial' } }, 'tail acquisition'],
+    [{ whole: reader(rejected(), { drain: [{ closed: true, stderr: { truncated: true } }] }) }, 'whole drain and stderr'],
+    [{ 'absent-path': reader(rejected(), { legacy: { sequence: 'complete', configSha256: 'other', steps: [] } }) }, 'absent-path configuration'],
+    [{ tail: reader(healthy()) }, 'creator drain and stderr', { record, drain: [] }],
+    [{ healthy: reader(healthy().map(([method, reply, turns]) => [method, method === 'thread/read' && !turns ? ok({ thread: { ...reply.result.thread, historyMode: 'paginated' } }) : reply, turns])) }, 'healthy Legacy metadata'],
+    [{ healthy: reader(healthy().slice(0, 4).concat([['thread/items/list', ok({ data: [], nextCursor: null })]])) }, 'healthy turn and message association'],
+    [{ whole: reader(healthy()) }, 'whole-file control rejected publicly'],
+    [{ 'absent-id': reader(rejected()) }, 'absent-id control rejected'],
+    [{ 'absent-id': reader(healthy()) }, 'absent-id control rejected'],
+    [{ 'absent-path': reader(healthy()) }, 'absent-path control rejected'],
+  ]) {
+    const conclusion = legacyConclusion(prepared ?? { record, drain }, readers(overrides));
+    assert.equal(conclusion.outcome, 'inconclusive');
+    assert(conclusion.reasons.includes(reason), `${reason}: ${conclusion.reasons}`);
+  }
+  const precondition = legacyConclusion({ mode: 'prepare-legacy', failure: { message: 'Public start must honor the experimental Legacy history option' }, acquisition: 'partial' }, {});
+  assert.deepEqual(precondition, { outcome: 'inconclusive', reasons: ['creator precondition'],
+    precondition: { stage: 'creator', acquisition: 'partial', failure: 'Public start must honor the experimental Legacy history option' } });
 });
 test('actual preparation exports exact native turn witnesses and older modes bypass cold copies', async () => {
   const prepared = await discovery({ mode: 'prepare-accounts' });
