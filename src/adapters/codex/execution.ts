@@ -200,14 +200,17 @@ function deferred<T>(): Deferred<T> {
   const promise = new Promise<T>((settle) => { resolve = settle; });
   return { promise, resolve };
 }
+type Early = { readonly method: string; readonly params: Record<string, unknown>; readonly turnId: string };
+/**
+ * `prepared`: no `turn/start` written. `pending`: written, reply outstanding; notifications naming an unknown turn are
+ * buffered. `identified`: the reply named the native turn. `orphaned`: written without a usable acknowledgement; its
+ * later notifications go to the execution stream, never a session.
+ */
+type TurnPhase = { readonly kind: 'prepared' } | { readonly kind: 'pending'; readonly early: Early[]; dropped: number }
+  | { readonly kind: 'identified'; readonly id: string } | { readonly kind: 'orphaned' };
 type Turn = {
-  id: string | undefined;
-  entered: boolean;
-  /** Written without a usable acknowledgement: its later notifications go to the execution stream, never a session. */
-  orphaned: boolean;
+  phase: TurnPhase;
   settled: boolean;
-  dropped: number;
-  readonly early: { readonly method: string; readonly params: Record<string, unknown> }[];
   readonly settle: (completion: CodexTurnCompletion) => void;
   readonly done: Promise<CodexTurnCompletion>;
   /** Settles when the native turn id is known or the turn settled without one. */
@@ -234,14 +237,14 @@ function text(value: unknown): value is string {
 function usage(value: unknown): CodexTokenUsage | undefined {
   if (!record(value)) return undefined;
   const fields = ['totalTokens', 'inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens',
-    'reasoningOutputTokens'] as const;
-  const copy: Record<string, number> = {};
+    'reasoningOutputTokens'] as const satisfies readonly (keyof CodexTokenUsage)[];
+  const copy: Partial<Record<keyof CodexTokenUsage, number>> = {};
   for (const field of fields) {
     const count = value[field];
     if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return undefined;
     copy[field] = count;
   }
-  return Object.freeze(copy) as unknown as CodexTokenUsage;
+  return Object.freeze(copy as CodexTokenUsage);
 }
 function passthrough(value: unknown, refused: readonly string[]): Record<string, unknown> | undefined {
   if (value === undefined) return {};
@@ -250,7 +253,7 @@ function passthrough(value: unknown, refused: readonly string[]): Record<string,
 }
 function newTurn(): Turn {
   const { promise, resolve } = deferred<CodexTurnCompletion>();
-  const turn: Turn = { id: undefined, entered: false, orphaned: false, settled: false, dropped: 0, early: [], done: promise,
+  const turn: Turn = { phase: { kind: 'prepared' }, settled: false, done: promise,
     identified: deferred<void>(), settle: (completion) => {
       if (turn.settled) return;
       turn.settled = true;
@@ -311,20 +314,20 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     if (!owner || !session) { publishNative(method, params); return; }
     const turnId = record(owner.turn) ? owner.turn.id : owner.turnId;
     if (typeof turnId !== 'string') { session.stream.publish(Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' })); return; }
-    const turn = [session.active, session.previous].find((candidate) => candidate?.id === turnId);
-    if (turn) { deliver(session, turn, method, owner); return; }
+    const turn = [session.active, session.previous]
+      .find((candidate) => candidate?.phase.kind === 'identified' && candidate.phase.id === turnId);
+    if (turn) { deliver(session, turn, turnId, method, owner); return; }
     const active = session.active;
-    const pending = active?.entered && active.id === undefined && !active.settled && !active.orphaned ? active : undefined;
+    const pending = active && !active.settled && active.phase.kind === 'pending' ? active.phase : undefined;
     // One slot beyond the bound is reserved for a terminal, so overflow can never strand the pending turn.
     const room = bounds.maxEarlyNotifications + (method === 'turn/completed' ? 1 : 0);
-    if (pending && pending.early.length < room) pending.early.push({ method, params: owner });
+    if (pending && pending.early.length < room) pending.early.push({ method, params: owner, turnId });
     else {
       if (pending) pending.dropped++;
       publishNative(method, params);
     }
   }
-  function deliver(session: Session, turn: Turn, method: string, params: Record<string, unknown>): void {
-    const turnId = turn.id as string;
+  function deliver(session: Session, turn: Turn, turnId: string, method: string, params: Record<string, unknown>): void {
     if (method === 'turn/completed' && !turn.settled && record(params.turn) && turnStatuses.has(params.turn.status as string)) {
       const terminal: CodexTurnTerminal = Object.freeze({ turnId, status: params.turn.status as CodexTurnTerminal['status'],
         error: params.turn.error ?? null, turn: params.turn });
@@ -350,13 +353,17 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     }
     session.stream.publish(Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' }));
   }
+  const stopAdmission = () => { closed = true; opening.abort(); };
+  /** A turn leaving `pending` without a native id: whatever it buffered is unrouted, never dropped silently. */
+  function drain(turn: Turn): void {
+    if (turn.phase.kind === 'pending') for (const early of turn.phase.early.splice(0)) publishNative(early.method, early.params);
+  }
   function conclude(session: Session, turn: Turn, completion: CodexTurnCompletion): void {
-    // Settled without a native id: whatever it buffered is unrouted, never dropped silently.
-    if (turn.id === undefined) for (const early of turn.early.splice(0)) publishNative(early.method, early.params);
+    drain(turn);
     turn.settle(completion);
     if (session.active === turn) {
       session.active = undefined;
-      if (turn.id !== undefined) session.previous = turn;
+      if (turn.phase.kind === 'identified') session.previous = turn;
     }
   }
   /**
@@ -366,8 +373,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    * release either.
    */
   function exit(): void {
-    exited = closed = true;
-    opening.abort();
+    exited = true;
+    stopAdmission();
     for (const lease of leases) release(lease);
     leases.clear();
   }
@@ -376,13 +383,15 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   const transport: CodexTransport = openCodexTransport({ channel: captured.channel, bounds: captured.transportBounds,
     onRequest: captured.onServerRequest, onObservation: observe });
   void transport.ended.then((report) => {
-    closed = true;
-    opening.abort();
+    stopAdmission();
     for (const session of sessions) {
       session.state = 'closing';
       session.abort.abort();
       const turn = session.active;
-      if (turn?.entered && !turn.settled) turn.settle({ kind: 'unconcluded', accepted: turn.id !== undefined, reason: report.reason });
+      if (turn && turn.phase.kind !== 'prepared' && !turn.settled) {
+        drain(turn);
+        turn.settle({ kind: 'unconcluded', accepted: turn.phase.kind === 'identified', reason: report.reason });
+      }
       session.stream.close();
     }
     sessions.clear();
@@ -538,10 +547,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   /** One native `turn/start`, never resent. `not-sent` is adapter evidence; core still records `outcome-unknown`. */
   async function dispatch(session: Session, turn: Turn, identity: DispatchIdentity,
     params: Record<string, unknown>): Promise<NativeDispatchObservation<CodexTurnResult>> {
-    turn.entered = true;
+    const pending: Extract<TurnPhase, { kind: 'pending' }> = { kind: 'pending', early: [], dropped: 0 };
+    turn.phase = pending;
     const reply = await request('turn/start', params, AbortSignal.timeout(bounds.acknowledgementTimeoutMs));
     if (reply.kind === 'not-sent') {
-      turn.entered = false;
       conclude(session, turn, { kind: 'not-sent', reason: reply.reason });
       return { kind: 'outcome-unknown' };
     }
@@ -557,15 +566,14 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const turnId = record(reply.value) && record(reply.value.turn) ? reply.value.turn.id : undefined;
     if (!text(turnId)) return orphan(turn);
     turn.identified.resolve();
-    turn.id = turnId;
+    turn.phase = { kind: 'identified', id: turnId };
     session.stream.publish(Object.freeze({ kind: 'turn-accepted', turnId, evidence: 'qualified' }));
-    if (turn.dropped > 0) {
-      count('earlyOverflow', turn.dropped);
-      session.stream.publish(Object.freeze({ kind: 'early-overflow', turnId, discarded: turn.dropped }));
+    if (pending.dropped > 0) {
+      count('earlyOverflow', pending.dropped);
+      session.stream.publish(Object.freeze({ kind: 'early-overflow', turnId, discarded: pending.dropped }));
     }
-    for (const early of turn.early.splice(0)) {
-      const owner = record(early.params.turn) ? early.params.turn.id : early.params.turnId;
-      if (owner === turnId) deliver(session, turn, early.method, early.params);
+    for (const early of pending.early.splice(0)) {
+      if (early.turnId === turnId) deliver(session, turn, turnId, early.method, early.params);
       else publishNative(early.method, early.params);
     }
     const nativeOperation = { namespace: 'codex-turn', id: turnId };
@@ -577,9 +585,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
 
   /** Entered without a usable acknowledgement: the writer stays held and buffered notifications become unrouted. */
   function orphan(turn: Turn): NativeDispatchObservation<CodexTurnResult> {
-    turn.orphaned = true;
+    drain(turn);
+    turn.phase = { kind: 'orphaned' };
     turn.identified.resolve();
-    for (const early of turn.early.splice(0)) publishNative(early.method, early.params);
     return { kind: 'outcome-unknown' };
   }
 
@@ -597,11 +605,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     if (turn) {
       await until(turn.identified.promise);
       // `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel).
-      if (turn.id !== undefined && !turn.settled) {
-        interrupt = step(await request('turn/interrupt', { threadId: session.threadId, turnId: turn.id }, deadline));
+      const { phase } = turn;
+      if (phase.kind === 'identified' && !turn.settled) {
+        interrupt = step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
       }
       // An orphaned turn settles only when the transport ends; waiting would only spend the cleanup deadline.
-      if (!turn.orphaned) await until(turn.done);
+      if (turn.phase.kind !== 'orphaned') await until(turn.done);
     }
     // Stops this session's subscription only: natively the thread stays loaded until process exit (X5).
     const unsubscribe = step(await request('thread/unsubscribe', { threadId: session.threadId }, deadline));
@@ -609,8 +618,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
 
   async function closeAll(): ReturnType<CodexExecution['close']> {
-    closed = true;
-    opening.abort();
+    stopAdmission();
     await Promise.all([...sessions].map((session) => (session.closing ??= shutdown(session))));
     const report = await transport.close();
     executionEvents.close();

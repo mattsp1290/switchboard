@@ -445,6 +445,19 @@ test('acknowledgement loss after turn/start entry is outcome-unknown and never r
   assert.equal(writers.held(), 1, 'uncertain entry retains the writer');
 });
 
+test('an invalid turn/start reply orphans the turn and session close does not wait for it', async (t) => {
+  const id = randomUUID();
+  const f = appServer(t, world(id));
+  const session = await resumed(await open(t, real, f, real.createCodexWriters(4)), id);
+  f.hold('turn/start').open('drop');
+  const turn = await turnOn(session);
+  while (f.last.method !== 'turn/start') await settle();
+  f.sink.data(Buffer.from(`${JSON.stringify({ id: f.last.id, result: {} })}\n`));
+  assert.deepEqual((await turn.run()).observation, { kind: 'outcome-unknown' });
+  const late = new Promise((resolve) => { setTimeout(resolve, 1000, 'waited').unref(); });
+  assert.deepEqual(await Promise.race([session.close(), late]), { interrupt: 'not-needed', unsubscribe: 'replied', released: false });
+});
+
 test('a not-sent turn/start is outcome-unknown in core but proven unsent to the adapter and releases nothing', async (t) => {
   const id = randomUUID();
   const w = world(id);
