@@ -18,7 +18,9 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   let failure;
   let sequence = 0;
   let bytes = 0;
-  let stderr = '';
+  const stderrLimit = 64 * 1024;
+  const stderrChunks = [];
+  let stderrBytes = 0;
   const maxFrameBytes = 1048576;
   const faultMessages = {
     'malformed-frame': 'Malformed native JSON',
@@ -43,7 +45,9 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   child.once('close', () => { closed = true; reader.close(); });
   child.once('error', (error) => { failure ??= error; reader.close(); });
   child.stdin.on('error', fail);
-  child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8192); });
+  // Exact leading stderr bytes with a total count: truncation is explicit, never a silent tail.
+  child.stderr.on('data', (chunk) => { if (stderrBytes < stderrLimit) stderrChunks.push(chunk.subarray(0, stderrLimit - stderrBytes)); stderrBytes += chunk.length; });
+  const stderr = () => Buffer.concat(stderrChunks);
   child.stdout.on('data', (chunk) => {
     bytes += chunk.length;
     if (bytes >= 2 * 1024 * 1024) fail(new Error('Native stdout budget exceeded'));
@@ -59,7 +63,7 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
   const send = (value) => child.stdin.write(encode(value));
   const ready = () => {
     if (failure) throw failure;
-    assert(!stopping && !closed && child.exitCode === null && child.signalCode === null, stderr || 'Native process closed');
+    assert(!stopping && !closed && child.exitCode === null && child.signalCode === null, stderr().toString() || 'Native process closed');
   };
   const rpc = async (method, params) => {
     ready();
@@ -76,7 +80,10 @@ export function nativeClient(config, retainProgress, spawnNative = spawn) {
     return observation.reply;
   };
   const call = async (method, params) => { const reply = await rpc(method, params); assert(!reply.error, JSON.stringify(reply)); return reply.result; };
-  return { events, transcript, call, rpc, initialized: () => { ready(); send({ method: 'initialized' }); }, stop: async () => {
+  // Empty stderr builds no base64 string, so the creator export-cap refusal still proves no base64 precedes it.
+  const drain = () => ({ closed, code: child.exitCode, signal: child.signalCode,
+    stderr: { bytes: stderrBytes, truncated: stderrBytes > stderrLimit, base64: stderrBytes ? stderr().toString('base64') : '' } });
+  return { events, transcript, call, rpc, drain, initialized: () => { ready(); send({ method: 'initialized' }); }, stop: async () => {
     stopping = true;
     try {
       if (!closed) child.kill('SIGTERM');

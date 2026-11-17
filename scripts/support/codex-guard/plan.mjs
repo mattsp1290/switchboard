@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 export const REPO = fileURLToPath(new URL('../../../', import.meta.url)).replace(/\/$/, '');
 export const NODE_VERSION = 'v24.22.3';
-export const EXPECTED_TOTAL = 34;
+export const EXPECTED_TOTAL = 35;
 export const COMMAND_DEADLINE_MS = 180_000;
 export const CAPS = Object.freeze({ stdout: 1 << 20, stderr: 1 << 20, channel: 256 << 10, line: 16 << 10, tail: 4 << 10 });
 export const PRELOADS = Object.freeze({
@@ -73,6 +73,7 @@ export const ORACLE = Object.freeze({
     'actual client wire faults reach exact terminal assertions after stdout and codec entry',
     'actual client refuses outgoing invalid envelopes without writing and retains the owned failure',
     'client waits for graceful stdio drain and repeated stop is harmless',
+    'client retains exact leading stderr bytes with an explicit total and truncation after drain',
     'client rejects final-drain faults after close and keeps failed repeated stop observable',
     'actual discovery retains a final-drain failure and exits nonzero through inert boundaries',
     'client bounds ignored TERM, escalates to KILL, and rejects failed close',

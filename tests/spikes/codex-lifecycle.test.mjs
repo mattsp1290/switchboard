@@ -159,6 +159,18 @@ test('client waits for graceful stdio drain and repeated stop is harmless', asyn
   await client.stop();
   assert.deepEqual(child.signals, ['SIGTERM']);
 });
+test('client retains exact leading stderr bytes with an explicit total and truncation after drain', async () => {
+  for (const [chunks, truncated] of [[[Buffer.from([0xe2, 0x82]), Buffer.from([0xac, 0x0a])], false], [[Buffer.alloc(40 * 1024, 1), Buffer.alloc(40 * 1024, 2)], true]]) {
+    const child = transport();
+    const client = nativeClient({}, () => {}, () => child);
+    for (const chunk of chunks) child.stderr.write(chunk);
+    await client.stop();
+    const { closed, signal, stderr } = client.drain();
+    const all = Buffer.concat(chunks);
+    assert.deepEqual([closed, signal, stderr.bytes, stderr.truncated], [true, 'SIGTERM', all.length, truncated]);
+    assert(Buffer.from(stderr.base64, 'base64').equals(all.subarray(0, 64 * 1024)), 'Exact leading bytes, split UTF-8 intact');
+  }
+});
 test('client rejects final-drain faults after close and keeps failed repeated stop observable', async () => {
   const faults = [
     ['malformed', (child) => child.stdout.write('{bad\n')],

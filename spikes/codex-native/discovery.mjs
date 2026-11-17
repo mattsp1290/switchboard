@@ -350,6 +350,7 @@ try {
   try { verifySources?.('after final shutdown attempts'); }
   catch (error) { evidence.preservationFailure = error.message; process.exitCode = 1; output = evidence; }
   evidence.inferenceRequests = inference;
+  output.drain = clients.map((client) => client.drain());
   output.fixtureRequests = requests;
   if (evidence.progressTruncated) { evidence.failure = { message: 'Required bounded progress was truncated', cause: evidence.failure }; process.exitCode = 1; }
   if (!mode.startsWith('prepare') && inference !== 0) {
