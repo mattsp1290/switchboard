@@ -2,7 +2,7 @@
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
 The foundation supplies public adapter contracts, session envelope validation, bounded event streams, and package verification.
-Native adapters and native session discovery remain future work.
+Native adapters ship for the SDK text lanes. Codex session discovery and resume preparation exist only as a private app-server component (below); product app-server execution remains future work.
 The private core package has no mandatory runtime dependencies.
 The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
 The optional `./testkit` entry supplies controlled qualification scenarios without an AG-UI peer.
@@ -224,6 +224,17 @@ Observation slots bound parsed objects whose source frames obey the frame bound.
 Trusted outgoing serialization and consumer-retained data are outside those memory bounds. Timers cannot preempt synchronous JavaScript.
 Raw envelopes and diagnostic bytes stay private. The adapter owns method decoding, unsupported replies, admitted extensions, and redaction. Trusted request callbacks can return `RpcReply.error` without closing the session; an actual throw or rejection closes with `handler-error` and sends no reply.
 This private component does not spawn native processes, qualify routes, infer approvals, retry work, or establish complete adapter readiness.
+
+## Private Codex sessions
+
+`src/adapters/codex/sessions.ts` is private (no package export) and borrows an initialized transport's `request` plus the host's `initialize` result, whose `codexHome` must equal the scope `home`.
+It implements core `SessionDiscovery` and `SessionInspection` with core codes only, adds `bind` and `prepareResume`, and sends only `codexSessionMethods`: `config/read`, `account/read`, `getConversationSummary` and metadata-only `thread/read`.
+The binding is `codex`, `0.169.0`, the native requester (`chatgpt:<userId>` or `apiKey`), the home path as `authorizedScope`, and `codex-thread/paginated` or `codex-thread/legacy` from `Thread.historyMode`.
+Every operation refuses with `invalid-input`, before any history read, unless native `config/read` reports absolute `sqlite_home` and `log_dir` outside the home. A changed or unbindable requester is `inaccessible`, or `binding-mismatch` at resume.
+Discovery admits the `<home>/sessions` tree on the host first, inventories it with `discoverFiles` without opening a file, then asks native for each path's summary and metadata. Failed files are path-free `file-inspection-failed` diagnostics; `skipped.corrupt` stays 0.
+Known-target reads map only `thread not loaded: <id>` to `absent`, a loaded thread in this app-server process to `busy`, and a format mismatch to `incompatible{native-format}`. Other native errors are `native-failure`.
+`prepareResume` rereads everything on each call and returns `ready{threadId}` only for paginated history. It reserves no writer and dispatches nothing; the execution owner reserves first, resumes with the exact ID and rejects a different returned `thread.id`.
+Busy writers in other processes, creator-account attribution, permission-denied files and archived history are not classified. The host owns the process, the private index, credentials and a stable home namespace.
 
 ## Event delivery
 

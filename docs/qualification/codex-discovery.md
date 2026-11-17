@@ -271,3 +271,23 @@ valid JSON. Each compared step also records whether the tail reply equals the he
 
 This classifies no corruption, incompatibility, warning, account, continuation or old-format behavior, and it does not
 qualify paginated history, macOS, live providers or an adapter.
+
+## Adapter composition and native proof
+
+Status: **pending native proof**. [sessions-proof-result.json](../../spikes/codex-native/sessions-proof-result.json) has no recorded outcome yet.
+
+The private `src/adapters/codex/sessions.ts` composes the qualified reads above. It borrows an initialized app-server's `request`, the host's `initialize` result and the home path. It checks that `initialize.codexHome` equals the home. The server version is only in the untyped `userAgent` text, so it is not checked; the binding pins `0.169.0`. Every operation reads `config/read` and refuses unless `sqlite_home` and `log_dir` are absolute and outside the home. It then derives the requester from `account/read {refreshToken:false}`. Discovery admits `<home>/sessions` on the host, inventories it without opening a file, then calls `getConversationSummary({rolloutPath})` for each path and `thread/read {includeTurns:false}` for each new ID. A summary whose path differs from the request becomes a diagnostic. Listing, `currentAccountOnly` and `archived_sessions` are not used.
+
+| Required outcome | Typed result | Basis |
+| --- | --- | --- |
+| Discoverable, resumable | `sessions[]`; `prepareResume` → `ready{threadId}` for paginated history | Qualified reads; exact ID returned, nothing dispatched or reserved |
+| Absent | `absent` only for `-32600` `thread not loaded: <id>` | Qualified message; other errors are `native-failure` |
+| Wrong account | `binding-mismatch` at resume (reference or changed login); `invalid-input`/`inaccessible` in inspect and discover | Switchboard binding and synthetic requester correspondence. Creator attribution is unqualified and never classified |
+| Busy | `busy` when this app-server process has the thread loaded | Per-process status only. Busy writers in other processes are unqualified; x9av owns writer reservation and must reject a resume reply with a different `thread.id` |
+| Old format | `incompatible{native-format}` on a `historyMode` mismatch, and for every Legacy resume | Legacy exact resume is unqualified; ajqy qualified reads only. `incompatible{native-version}` is never emitted |
+| Corrupt | Discovery diagnostic; known target `native-failure`; `skipped.corrupt` stays 0 | A generic `-32603` also comes back for harmless files |
+| Inaccessible | Invalid or symlinked `sessions` tree → `inaccessible` before any native request; host EACCES/EPERM counts | Permission-denied files are unqualified and stay diagnostics |
+
+Bedrock, GCP, null and user-less ChatGPT requesters are refused as `inaccessible`.
+
+`node spikes/codex-native/sessions-proof.mjs <codex-linux-<arch>.tgz> <arm64|x64>` compiles the product module into owned work and mounts it read-only. It reuses the `prepare` and `prepare-legacy` creators unchanged, then runs one reader container per scenario. R1 reads an unindexed home with an auxiliary file and a hardlink alias. R2 replaces one rollout with malformed bytes. R3 makes `sessions` a regular file. R4 starts the server without a private index. R5 uses Legacy history. R6 copies R1 into the container, resumes the prepared ID with `thread/resume {threadId}` and then changes the login. The proof also records that the fixture's `cliVersion` is `0.169.0` and that `thread/read` returns `Thread.path`. Read-only homes are verified over each container lifetime. Cleanup follows the qualifier's owned-container rules. CI runs it on x64 after the qualifier; the coordinator runs arm64. Until an outcome is recorded, a run enforces its R1–R6 checks but not the pin. It covers synthetic Linux homes only, not macOS or live providers.

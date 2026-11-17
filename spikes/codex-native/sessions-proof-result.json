@@ -1,0 +1,14 @@
+{
+  "question": "Does the compiled private Codex sessions module discover, inspect and prepare exact resume of native-created synthetic sessions with the typed outcomes it claims, sending only read methods?",
+  "nativePin": "0.169.0",
+  "entryPoint": "spikes/codex-native/sessions-proof.mjs",
+  "scenarios": { "R1": "read", "R2": "malformed", "R3": "inaccessible", "R4": "unprivate", "R5": "legacy", "R6": "resume" },
+  "pinnedFields": "aliasPathEqualsRequest, readDiagnostics, thread {cliVersion, pathPresent}, unprivateConfig, unprivateMethods, resumeTurns and the union of adapter methods. Outcomes, counts and booleans only: no ID, path, timestamp or hash is pinned. Once outcome is non-null, sessions-proof.mjs fails on any other pinned value.",
+  "evidence": "guarded-inert",
+  "native": { "status": "pending", "detail": "PENDING: no native run has been recorded. The coordinator runs arm64 locally; CI runs x64 on every PR. Until outcome is set, a run prints its report and enforces the R1-R6 checks but not this pin." },
+  "outcome": null,
+  "pinned": null,
+  "arm64": { "head": null, "reportSha256": null },
+  "x64CiRun": null,
+  "scope": "Synthetic Linux homes only. Not macOS, live providers, cross-process busy writers, permission-denied files or creator-account attribution."
+}
