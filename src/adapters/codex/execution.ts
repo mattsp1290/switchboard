@@ -55,8 +55,11 @@ export interface CodexExecutionOptions {
   /** Startup only: abort during the handshake closes the owned transport. */
   readonly signal: AbortSignal;
   readonly writers?: CodexWriters;
-  /** Host attestation that the app-server process exited: the only release of this execution's reservations. */
-  readonly processExit?: PromiseLike<unknown>;
+  /**
+   * Host attestation that the app-server process exited: the only release of this execution's reservations. Required:
+   * after `close()` detaches the channel, a later channel `process-exit` can no longer be observed.
+   */
+  readonly processExit: PromiseLike<unknown>;
 }
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch' };
@@ -100,6 +103,7 @@ export type CodexSessionEvent =
   | { readonly kind: 'usage'; readonly turnId: string; readonly total: CodexTokenUsage; readonly last: CodexTokenUsage;
     readonly modelContextWindow: number | null; readonly evidence: CodexEvidence }
   | ({ readonly kind: 'turn-completed'; readonly evidence: CodexEvidence } & CodexTurnTerminal)
+  /** `discarded` notifications went to the counted execution stream instead of this session. */
   | { readonly kind: 'early-overflow'; readonly turnId: string; readonly discarded: number }
   | CodexNativeEvent;
 export type CodexNativeEvent = { readonly kind: 'native'; readonly method: string; readonly params: unknown;
@@ -134,6 +138,7 @@ export interface CodexSession {
   readonly native: unknown;
   readonly events: EventObserver<CodexSessionEvent>;
   readonly turn: (options: CodexTurnOptions) => Outcome<CodexTurn, { readonly code: 'busy' | 'closed' | 'invalid-input' }>;
+  /** The session's event stream keeps delivering its thread's notifications until the transport ends. */
   readonly close: () => Promise<CodexSessionCloseReport>;
 }
 export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: CodexSession }
@@ -264,7 +269,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit } = options;
     const state = registries.get(options.writers ?? processWriters);
     if (!state || !record(bounds) || !record(initialize) || typeof onServerRequest !== 'function'
-      || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0) return invalid;
+      || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0
+      || typeof (processExit as { then?: unknown } | null)?.then !== 'function') return invalid;
     const { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } = bounds;
     if (![maxSessions, maxObservers, eventCapacity, maxEarlyNotifications].every((value) => positive(value))
       || ![cleanupTimeoutMs, acknowledgementTimeoutMs].every((value) => positive(value, 2147483647))
@@ -308,8 +314,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const turn = [session.active, session.previous].find((candidate) => candidate?.id === turnId);
     if (turn) { deliver(session, turn, method, owner); return; }
     const active = session.active;
-    const pending = active && active.id === undefined && !active.settled && !active.orphaned ? active : undefined;
-    if (pending && pending.early.length < bounds.maxEarlyNotifications) pending.early.push({ method, params: owner });
+    const pending = active?.entered && active.id === undefined && !active.settled && !active.orphaned ? active : undefined;
+    // One slot beyond the bound is reserved for a terminal, so overflow can never strand the pending turn.
+    const room = bounds.maxEarlyNotifications + (method === 'turn/completed' ? 1 : 0);
+    if (pending && pending.early.length < room) pending.early.push({ method, params: owner });
     else {
       if (pending) pending.dropped++;
       publishNative(method, params);
@@ -317,7 +325,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
   function deliver(session: Session, turn: Turn, method: string, params: Record<string, unknown>): void {
     const turnId = turn.id as string;
-    if (method === 'turn/completed' && record(params.turn) && turnStatuses.has(params.turn.status as string)) {
+    if (method === 'turn/completed' && !turn.settled && record(params.turn) && turnStatuses.has(params.turn.status as string)) {
       const terminal: CodexTurnTerminal = Object.freeze({ turnId, status: params.turn.status as CodexTurnTerminal['status'],
         error: params.turn.error ?? null, turn: params.turn });
       session.stream.publish(Object.freeze({ kind: 'turn-completed', evidence: evidenceOf(method), ...terminal }));
@@ -343,6 +351,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     session.stream.publish(Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' }));
   }
   function conclude(session: Session, turn: Turn, completion: CodexTurnCompletion): void {
+    // Settled without a native id: whatever it buffered is unrouted, never dropped silently.
+    if (turn.id === undefined) for (const early of turn.early.splice(0)) publishNative(early.method, early.params);
     turn.settle(completion);
     if (session.active === turn) {
       session.active = undefined;
@@ -381,7 +391,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     if (report.reason === 'process-exit') exit();
     executionEvents.close();
   });
-  if (captured.processExit !== undefined) void Promise.resolve(captured.processExit).then(exit, () => {});
+  void Promise.resolve(captured.processExit).then(exit, () => {});
 
   async function request(method: string, params: unknown, wait: AbortSignal): Promise<
     { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly error: RpcError } | SendFailure> {
@@ -590,7 +600,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (turn.id !== undefined && !turn.settled) {
         interrupt = step(await request('turn/interrupt', { threadId: session.threadId, turnId: turn.id }, deadline));
       }
-      await until(turn.done);
+      // An orphaned turn settles only when the transport ends; waiting would only spend the cleanup deadline.
+      if (!turn.orphaned) await until(turn.done);
     }
     // Stops this session's subscription only: natively the thread stays loaded until process exit (X5).
     const unsubscribe = step(await request('thread/unsubscribe', { threadId: session.threadId }, deadline));

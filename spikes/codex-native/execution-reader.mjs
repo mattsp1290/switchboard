@@ -326,6 +326,7 @@ try {
     report.raw.error = snapshot.observation.result?.error ? { code: snapshot.observation.result.error.code } : null;
     await delay(500);
     report.turnEventsWithin500ms = seen.kinds.length;
+    report.raw.turnEvents = { kinds: seen.kinds, nativeMethods: seen.methods };
     report.turnStartWrites = s.count('turn/start');
   } else if (scenario === 'X8') {
     const session = await create(await execute(appServer()));

@@ -146,7 +146,7 @@ async function open(t, module, f, writers, extra = {}) {
   const opened = await module.openCodexExecution({ channel: f.channel, transport, bounds, home, writers,
     initialize: { clientInfo: { name: 'x9av-test', title: null, version: '0' }, capabilities: null },
     onServerRequest: () => ({ kind: 'error', error: { code: -32601, message: 'test host', data: null } }),
-    signal: new AbortController().signal, ...extra });
+    signal: new AbortController().signal, processExit: new Promise(() => {}), ...extra });
   assert.equal(opened.kind, 'ok', JSON.stringify(opened));
   t.after(() => opened.value.close());
   return opened.value;
@@ -279,6 +279,9 @@ test('a terminal and deltas observed before the turn/start reply are attributed 
   assert.equal(snapshot.observation.result.status, 'completed');
   assert.deepEqual(events.map((event) => event.kind), ['turn-accepted', 'text-delta', 'turn-completed']);
   assert.equal(events[1].delta, 'early', 'a stale turn never reaches this session');
+  f.complete(id, turnId);
+  await settle();
+  assert.deepEqual(events.slice(3).map((event) => [event.kind, event.method]), [['native', 'turn/completed']], 'a settled turn concludes once');
 });
 
 test('ownership release holds the writer through cleanup and after close until process exit while an independent session progresses', async (t) => {
@@ -389,7 +392,7 @@ test('aborting startup mid-handshake closes the owned transport and takes no res
   f.hold('initialize');
   const controller = new AbortController();
   const opening = real.openCodexExecution({ channel: f.channel, transport, bounds, home, writers, initialize: {},
-    onServerRequest: () => ({ kind: 'result', value: null }), signal: controller.signal });
+    onServerRequest: () => ({ kind: 'result', value: null }), signal: controller.signal, processExit: new Promise(() => {}) });
   while (!f.sent.includes('initialize')) await settle();
   controller.abort();
   assert.deepEqual(await opening, { kind: 'error', error: { code: 'closed' } });
@@ -496,8 +499,8 @@ test('invalid options, bounds, params and references are refused before any nati
   const id = randomUUID();
   const f = appServer(t, world(id));
   const base = { channel: f.channel, transport, bounds, home, initialize: {}, onServerRequest: () => ({ kind: 'result', value: null }),
-    signal: access.signal, writers: real.createCodexWriters(4) };
-  for (const broken of [{ onServerRequest: undefined }, { home: '' }, { signal: null }, { writers: {} }, { initialize: [] },
+    signal: access.signal, writers: real.createCodexWriters(4), processExit: new Promise(() => {}) };
+  for (const broken of [{ onServerRequest: undefined }, { processExit: undefined }, { processExit: {} }, { home: '' }, { signal: null }, { writers: {} }, { initialize: [] },
     { bounds: { ...bounds, acknowledgementTimeoutMs: 0 } }, { bounds: { ...bounds, cleanupTimeoutMs: 2 ** 31 } },
     { bounds: { ...bounds, maxSessions: 1.5 } }, { bounds: null }]) {
     assert.deepEqual(await real.openCodexExecution({ ...base, ...broken }), { kind: 'error', error: { code: 'invalid-input' } });
@@ -528,7 +531,8 @@ test('an initialize reply for another home closes the transport and fails the op
   const f = appServer(t, world());
   const writers = real.createCodexWriters(4);
   const opened = await real.openCodexExecution({ channel: f.channel, transport, bounds, home: '/fixture/other-home', writers,
-    initialize: {}, onServerRequest: () => ({ kind: 'result', value: null }), signal: access.signal });
+    initialize: {}, onServerRequest: () => ({ kind: 'result', value: null }), signal: access.signal,
+    processExit: new Promise(() => {}) });
   assert.deepEqual(opened, { kind: 'error', error: { code: 'native-failure' } });
   assert.equal(f.detached, 1);
   assert.deepEqual(f.sent, ['initialize'], 'no initialized notification or later request');
@@ -630,11 +634,12 @@ test('early-notification overflow is reported once the turn id is known', async 
   while (f.last.method !== 'turn/start') await settle();
   const turnId = randomUUID();
   for (let n = 0; n < 4; n++) f.notify('item/agentMessage/delta', { threadId: id, turnId, itemId: 'm', delta: `${n}` });
+  f.complete(id, turnId);
   await settle();
   f.sink.data(Buffer.from(`${JSON.stringify({ id: f.last.id, result: { turn: { id: turnId, status: 'inProgress' } } })}\n`));
-  assert.equal((await turn.run()).observation.kind, 'accepted');
+  assert.equal((await turn.run()).observation.kind, 'conclusive', 'overflow never strands the terminal');
   await settle();
-  assert.deepEqual(events.map((event) => event.kind), ['turn-accepted', 'early-overflow', 'text-delta', 'text-delta']);
+  assert.deepEqual(events.map((event) => event.kind), ['turn-accepted', 'early-overflow', 'text-delta', 'text-delta', 'turn-completed']);
   assert.equal(events[1].discarded, 2);
   assert.deepEqual(unrouted.map((event) => event.params.delta), ['2', '3'], 'overflowed notifications are not lost');
   assert.deepEqual(execution.counts(), { unrouted: 2, unmatchedReplies: 0, earlyOverflow: 2 });
@@ -646,15 +651,20 @@ test('a turn/start error reply is conclusive rejected and the session stays usab
   const writers = real.createCodexWriters(4);
   const execution = await open(t, real, f, writers);
   const session = await resumed(execution, id);
+  const unrouted = collect(execution.events);
   f.hold('turn/start').open('drop');
   const turn = await turnOn(session);
   while (f.last.method !== 'turn/start') await settle();
+  f.notify('item/agentMessage/delta', { threadId: id, turnId: randomUUID(), itemId: 'm', delta: 'buffered' });
+  await settle();
   const error = { code: -32600, message: 'invalid input', data: null };
   f.sink.data(Buffer.from(`${JSON.stringify({ id: f.last.id, error })}\n`));
   const snapshot = await turn.run();
   assert.deepEqual([snapshot.observation.kind, snapshot.observation.result], ['conclusive', { kind: 'rejected', error }]);
   assert.equal(snapshot.observation.evidence.nativeOperation, null);
   assert.deepEqual(await turn.completion, { kind: 'rejected', error });
+  assert.deepEqual(unrouted.map((event) => event.params.delta), ['buffered'], 'buffered notifications are never dropped silently');
+  assert.equal(execution.counts().unrouted, 1);
   f.holds.delete('turn/start');
   assert.equal((await (await turnOn(session, 'next')).completion).kind, 'terminal');
   assert.deepEqual(await session.close(), { interrupt: 'not-needed', unsubscribe: 'replied', released: false });

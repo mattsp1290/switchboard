@@ -4,7 +4,7 @@
 
 ## Status
 
-**Native proof recorded.** [execution-proof-result.json](../../spikes/codex-native/execution-proof-result.json) has outcome `execution-outcomes-confirmed`: identical pinned objects on linux/arm64 (coordinator, local) and linux/x64 (CI job 134407401390) at 08810ca, with harness and X1–X9 true on both and cleanup leaving no container and an empty `.work`. Every later run, including CI x64 on every PR, fails on any other pinned value. After that run, usage was promoted to `qualified`; the pin differs from the 08810ca reports only in `X1.usage.evidence`.
+**Native proof recorded.** [execution-proof-result.json](../../spikes/codex-native/execution-proof-result.json) has outcome `execution-outcomes-confirmed`: identical pinned objects on linux/arm64 (coordinator, local) and linux/x64 (CI job 134407401390) at 08810ca, with harness and X1–X9 true on both; the arm64 cleanup left no container and an empty `.work`. Every later run, including CI x64 on every PR, fails on any other pinned value. After that run, usage was promoted to `qualified`; the pin differs from the 08810ca reports only in `X1.usage.evidence`.
 
 Observed natively on both architectures:
 
@@ -24,7 +24,7 @@ Each decoded session event carries `evidence` from `codexNotificationEvidence`. 
 | --- | --- | --- |
 | `turn/start` result with `turn.id` | dispatch `accepted`, native operation `{codex-turn, id}` | qualified (probe) |
 | `turn/completed` | completion `terminal`; `conclusive` if seen before the reply | qualified (probe) |
-| `turn/start` written, then no reply (transport loss or acknowledgement deadline) | `outcome-unknown`, writer retained, never resent | transport; native X6 |
+| `turn/start` written, then no reply (transport loss or acknowledgement deadline) | `outcome-unknown`, writer retained, never resent; the session stays busy, `completion` settles `unconcluded` when the transport ends and the turn's notifications are unrouted | transport; native X6 |
 | `turn/start` not sent | `outcome-unknown` in core, `not-sent{reason}` to the host, session usable | transport |
 | `turn/start` error reply | `conclusive{rejected}`, session usable | native (X7, code `-32600`) |
 | `thread/tokenUsage/updated` | `usage` with native `total` and `last`; malformed becomes `native` | qualified (X1) |
@@ -36,7 +36,7 @@ Each decoded session event carries `evidence` from `codexNotificationEvidence`. 
 
 `node spikes/codex-native/execution-proof.mjs <codex-linux-<arch>.tgz> <arm64|x64>` compiles the product into owned work, mounts it read-only and runs one container per scenario under the same Docker limits as the sessions proof. `execution-reader.mjs` plays the host: it spawns the app-server, lends its stdio as the channel (with optional per-method write gates, stdout buffering or an `eof` after a named write) and attests process exit. The loopback Responses service selects `answer`, `hold-<name>` or `disconnect` by the last marker in the request and reports distinct usage (input 11, cached 5, output 7, reasoning 3, total 18). The fixture provider requires OpenAI auth and logs in with a synthetic API key, so `account/read` projects the `apiKey` requester (the pg51 lesson). Every scenario records raw observations for each natively settled signal, so a failed native run is diagnosable.
 
-| ID | Scenario | Checked | Recorded (pinned) |
+| ID | Scenario | Checked | Recorded (pinned unless noted) |
 | --- | --- | --- | --- |
 | X1 | create, one answered turn | terminal `completed`, accepted/conclusive, one inference, `qualified` usage seen | event kinds, native methods, `turn/started` seen, usage values and raw payload |
 | X2 | resume in a fresh process, one turn | same ID, no resume inference, prefix preserved | saved turns on resume |
@@ -48,7 +48,7 @@ Each decoded session event carries `evidence` from `codexNotificationEvidence`. 
 | X8 | accepted stream disconnect | `failed`, delta seen, one inference | error notification and `willRetry` |
 | X9 | abort during `initialize` (stdout buffered) | `closed`, one detach, nothing reserved, fresh open creates | — |
 
-Every report records each native error reply raw (`raw.nativeErrors`: method, code, message). Module-only (inert tests, not native): the broken early-release controls (release at cleanup start, release after cleanup), early-notification overflow, late cleanup from an earlier generation, slow-observer isolation and bound refusals.
+Every report records each native error reply raw (`raw.nativeErrors`: method, code, message), and X7 the session events behind its pinned count (`raw.turnEvents`). Module-only (inert tests, not native): the broken early-release controls (release at cleanup start, release after cleanup), early-notification overflow, late cleanup from an earlier generation, slow-observer isolation and bound refusals.
 
 ## Not covered
 

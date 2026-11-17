@@ -75,8 +75,8 @@ try {
 console.log(JSON.stringify(result, null, 2));
 // The only conclusion site, after the full report is printed and cleanup is proved. Checks cover what the module claims
 // from qualified native evidence, including usage and the error-reply mapping that X1 and X7 qualified on both
-// architectures. Opaque signals (turn/started, error willRetry, the native resume while another app-server holds the
-// thread) are recorded raw and pinned, never asserted here. Every native error reply is in each report's raw.nativeErrors.
+// architectures. Opaque signals (turn/started, error willRetry) are pinned but never asserted here; the native resume while
+// another app-server holds the thread is recorded raw only. Every native error reply is in each report's raw.nativeErrors.
 const { X1, X2, X3, X4, X5, X6, X7, X8, X9 } = result.reports;
 const checks = {
   harness: Object.values(result.reports).every((report) => report.failures.length === 0 && report.heldAtEnd === 0),
