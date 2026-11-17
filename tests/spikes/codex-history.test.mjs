@@ -358,7 +358,10 @@ test('actual Legacy reader dispatches the fixed public sequence in a fresh home 
   }
 });
 test('Legacy conclusion is only uncertified success, bounded rejection or inconclusive', async () => {
-  const { legacyConclusion } = await import('../../spikes/codex-native/legacy-tail.mjs');
+  const { configDigest, legacyConclusion } = await import('../../spikes/codex-native/legacy-tail.mjs');
+  const provider = (port) => ({ model_providers: { fixture: { base_url: `http://127.0.0.1:${port}/v1`, wire_api: 'responses' } }, sqlite_home: '/tmp/private-index' });
+  assert.equal(configDigest(provider(41189)), configDigest({ sqlite_home: '/tmp/private-index', model_providers: { fixture: { wire_api: 'responses', base_url: 'http://127.0.0.1:34813/v1' } } }));
+  assert.notEqual(configDigest(provider(41189)), configDigest({ ...provider(41189), sqlite_home: '/tmp/other' }), 'Only the loopback port and key order are ignored');
   const drain = [{ closed: true, stderr: { truncated: false } }];
   const record = { id: LEGACY.id, path: LEGACY.path, witness: { completedTurnId: 'turn-legacy', userText: 'legacy', agentText: 'synthetic discovery fixture' } };
   const ok = (result) => ({ id: 1, result });

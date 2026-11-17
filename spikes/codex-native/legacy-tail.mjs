@@ -19,6 +19,11 @@ export const OUTCOMES = Object.freeze(['successful-reads-uncertified', 'bounded-
 // Never created by any fixture; a well-formed UUID so a rejection is about absence, not ID syntax.
 export const ABSENT_ID = '00000000-0000-4000-8000-000000000000';
 const TOKEN = /^sessions\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.jsonl$/;
+// Each container's synthetic Responses server listens on its own ephemeral loopback port, and native serializes config maps
+// in no fixed key order (both observed in the first x64 run), so the digest sorts keys and masks only that port.
+export const configDigest = (config) => createHash('sha256').update(JSON.stringify(config, (key, value) => value && typeof value === 'object'
+  && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : 1)) : value)
+  .replace(/http:\/\/127\.0\.0\.1:\d+\//g, 'http://127.0.0.1:loopback/')).digest('hex');
 const plainJsonl = (bytes) => bytes?.length > 0 && bytes.length <= 4 * 1024 * 1024 && bytes[0] === 0x7b && bytes.at(-1) === 0x0a;
 
 /** Creator (mode prepare-legacy): one public Legacy thread, one completed synthetic turn, drained, then one export. */
@@ -69,7 +74,7 @@ export async function legacyReads({ client, control, record, root, inventory, co
   assert.deepEqual(inventory.entries.filter((entry) => entry.candidate).map((entry) => entry.token), control === 'absent-path' ? [] : [record.path]);
   const threadId = control === 'absent-id' ? ABSENT_ID : record.id;
   Object.assign(report, { control, id: threadId, token: record.path, sequence: 'incomplete', steps: [],
-    configSha256: createHash('sha256').update(JSON.stringify(config)).digest('hex') });
+    configSha256: configDigest(config) });
   const step = async (method, params) => {
     const entry = { method, params };
     report.steps.push(entry);

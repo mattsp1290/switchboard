@@ -220,7 +220,9 @@ opens an object and is invalid JSON. Tail and whole therefore differ only in the
 
 Each control is its own container with a fresh `/root` tmpfs home holding only `sessions` and `archived_sessions`, frozen
 by host admission and checked across the container lifetime. No original SQLite or projected history is mounted.
-`/tmp/private-index` and `/tmp/private-logs` must not exist before spawn, and every reader uses the same configuration.
+`/tmp/private-index` and `/tmp/private-logs` must not exist before spawn, and every reader must report the same
+`config/read` digest. The digest sorts keys and masks only the per-container ephemeral loopback port of the synthetic
+Responses server, because the first x64 run showed both varying between otherwise identical homes.
 
 | Control | Rollout bytes in the home | Requests | It proves |
 |---|---|---|---|
