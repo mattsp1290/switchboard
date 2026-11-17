@@ -69,6 +69,18 @@ export type {
   ToolOutcome,
   ToolTarget,
 } from './core/interaction.js';
+export {
+  assessFrontendRestore, compareRestoreDecisions, decideFrontendRestore, frontendRestoreCapabilities,
+  frontendRestoreDefaultRevision, frontendRestoreDelivery, frontendRestoreFact, frontendRestoreLimits,
+  parsePendingFrontendBatch, validateRestoreDecision,
+} from './core/frontend-restore.js';
+export type {
+  DeliveryClass, FrontendRestoreCapabilities, FrontendRestoreError, FrontendRestoreFact, FrontendRestoreFactInput,
+  FrontendRestorePayload, FrontendRestorePolicy, IndeterminateReason, PendingFrontendBatch, PendingFrontendCall,
+  RestoreAdapter, RestoreAdmission, RestoreChoice, RestoreDecision, RestoreDecisionComparison, RestoreMechanism,
+  RestoreMechanismSupport, RestoreObservation, RestoreOption, RestoreQualification, RestoreSituation,
+  RestoreSituationKind,
+} from './core/frontend-restore.js';
 export { discoverFiles, fileDiscoveryLimits } from './core/discovery.js';
 export type {
   FileDecode,
