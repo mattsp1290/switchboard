@@ -5,6 +5,7 @@ import { chmodSync, closeSync, copyFileSync, createReadStream, existsSync, linkS
 import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SELECTORS, admittedPath, digestsOf, inventoryOf, observeSource, requestBudget, verifySource } from './inventory.mjs';
+import { CONTROLS as LEGACY_CONTROLS, OUTCOMES, legacyConclusion, legacySources } from './legacy-tail.mjs';
 import { ownedContainer } from './lifecycle.mjs';
 import { assertSelectedBinding, selectedRequestIdSha256, transformBindings } from './protocol-bindings.mjs';
 
@@ -43,7 +44,7 @@ try {
     const mounts = ['--mount', `type=bind,source=${binary},target=/opt/codex,readonly`];
     if (script) mounts.push('--mount', `type=bind,source=${join(here, script)},target=/opt/fixture.mjs,readonly`);
     if (script === 'discovery.mjs') {
-      for (const helper of ['inventory.mjs', 'client.mjs', 'account-reads.mjs', 'history-copy.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
+      for (const helper of ['inventory.mjs', 'client.mjs', 'account-reads.mjs', 'history-copy.mjs', 'legacy-tail.mjs']) mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
       mounts.push('--mount', `type=bind,source=${wireCodec},target=/dist/adapters/codex/wire.js,readonly`,
         '--mount', `type=bind,source=${resolve(here, '../../package.json')},target=/dist/package.json,readonly`);
     }
@@ -186,11 +187,45 @@ try {
   let accounts;
   try { accounts = JSON.parse(docker(['node', '/opt/fixture.mjs', 'account-reads'], 'discovery.mjs', accountMounts)); }
   finally { verifySource(accountHeld, 'host account-reads container lifetime'); }
+  // Legacy tail: one public Legacy creator, then five independently frozen fresh reader homes with no SQLite at all.
+  // Partial acquisition: a Legacy container that exits nonzero after proved absence keeps its bounded report as evidence.
+  const acquire = (args, mounts) => {
+    try { return JSON.parse(docker(['node', '/opt/fixture.mjs', ...args], 'discovery.mjs', mounts)); }
+    catch (error) {
+      if (error.cleanupUncertain) throw error;
+      try { return { ...JSON.parse(error.stdout), acquisition: 'partial' }; } catch { return { acquisition: 'unparsed' }; }
+    }
+  };
+  const legacyPrepared = acquire(['prepare-legacy']);
+  // A creator that cannot produce genuine Legacy history is a labelled precondition failure, never an aborted qualification.
+  const legacyBytes = legacyPrepared.acquisition ? null : legacySources(legacyPrepared);
+  const legacyRecordsFile = join(work, 'legacy-records.json');
+  writeFileSync(legacyRecordsFile, JSON.stringify(legacyBytes ? [legacyPrepared.record] : []));
+  const legacyReaders = {};
+  for (const control of legacyBytes ? LEGACY_CONTROLS : []) {
+    const source = join(work, `legacy-${control}`);
+    for (const directory of ['sessions', 'archived_sessions']) mkdirSync(join(source, directory), { recursive: true });
+    const target = join(source, legacyPrepared.record.path);
+    if (legacyBytes[control]) { mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, legacyBytes[control], { flag: 'wx' }); }
+    const held = observeSource(source, SELECTORS.host);
+    assert.deepEqual(readdirSync(source).sort(), ['archived_sessions', 'sessions'], 'Only history trees, no SQLite or projection');
+    const inventoryFile = join(work, `legacy-${control}-inventory.json`);
+    writeFileSync(inventoryFile, JSON.stringify({ ...inventoryOf(held), hashes: digestsOf(held) }));
+    const mounts = ['--mount', `type=bind,source=${legacyRecordsFile},target=/opt/records.json,readonly`,
+      '--mount', `type=bind,source=${inventoryFile},target=/opt/inventory.json,readonly`];
+    for (const entry of readdirSync(source)) mounts.push('--mount', `type=bind,source=${join(source, entry)},target=/root/.codex/${entry},readonly`);
+    try { legacyReaders[control] = acquire(['legacy-read', control], mounts); }
+    finally { verifySource(held, `host legacy ${control} container lifetime`); }
+  }
+  const legacyTail = { creator: { ...legacyPrepared, rollout: undefined }, readers: legacyReaders, conclusion: legacyConclusion(legacyPrepared, legacyReaders) };
+  assert(OUTCOMES.includes(legacyTail.conclusion.outcome));
+  const pinned = JSON.parse(readFileSync(join(here, 'legacy-tail-result.json'), 'utf8')).outcome;
+  if (pinned) assert.equal(legacyTail.conclusion.outcome, pinned, 'Recorded Legacy tail outcome');
   result = { native: pins.native, image: pins.image, platform: pin.platform,
     wireCodec: { sourceSha256Before, sourceSha256After, compiledSha256 },
     archiveIntegrity: 'verified', generatedFiles: Object.keys(generated).length, transformedImports: binding.transformedImports,
     bindingIdentity: { ...selectedBindingIdentity, sourceSha256: binding.sourceSha256, consumedSha256: binding.consumedSha256 },
-    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery, accounts, accountPreparationRequests: accountPrepared.fixtureRequests };
+    strictNodeNextNoDOM: 'passed', behavior, boundary, discovery, accounts, accountPreparationRequests: accountPrepared.fixtureRequests, legacyTail };
 } finally {
   if (cleanupUncertain) console.error(JSON.stringify({ cleanupUncertain, container: name, retainedWork: work }));
   else { rmSync(work, { recursive: true, force: true }); assert(!existsSync(work), 'Owned work removed'); }

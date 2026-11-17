@@ -8,9 +8,10 @@ import { admittedPath, evidenceOf, exportOf, observeSource, resultPath, requestB
 import { accountReads, accountLogin, accountProfile, accountRouting } from './account-reads.mjs';
 import { nativeClient } from './client.mjs';
 import { historyCopies } from './history-copy.mjs';
+import { legacyCreate, legacyReads } from './legacy-tail.mjs';
 
 const mode = process.argv[2];
-assert(['prepare', 'indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink', 'prepare-accounts', 'account-reads'].includes(mode));
+assert(['prepare', 'indexed', 'unindexed', 'malformed', 'inaccessible', 'symlink', 'prepare-accounts', 'account-reads', 'prepare-legacy', 'legacy-read'].includes(mode));
 const root = '/root/.codex';
 const accountMode = ['prepare-accounts', 'account-reads'].includes(mode);
 for (const cwd of ['/tmp/project', '/tmp/other']) mkdirSync(cwd);
@@ -54,6 +55,7 @@ if (routingServer) Object.assign(config, accountProfile(`http://127.0.0.1:${rout
 const clients = [];
 const evidence = { mode };
 if (mode === 'account-reads') evidence.accounts = { hypothesis: 'H1', status: 'inconclusive', requesters: [] };
+if (mode === 'legacy-read') evidence.legacy = { control: process.argv[3] };
 const progressLimit = 512 * 1024;
 const overflow = `${JSON.stringify({ progressOverflow: { limit: progressLimit, disposition: 'later progress omitted' } })}\n`;
 let progressBytes = 0;
@@ -184,7 +186,8 @@ async function pathObservations(client, records) {
 const listing = [];
 let output = evidence;
 try {
-  if (mode.startsWith('prepare')) {
+  if (mode === 'prepare-legacy') output = await legacyCreate({ client: await connect(), until, root, fs });
+  else if (mode.startsWith('prepare')) {
     const client = await connect();
     const records = [];
     const fixtures = mode === 'prepare-accounts' ? [
@@ -250,6 +253,7 @@ try {
     if (mode === 'account-reads') copyHistory = historyCopies(root, JSON.parse(readFileSync('/opt/inventory.json', 'utf8')), verifySources, evidence, baseline);
     assert.throws(() => writeFileSync(`${root}/sessions/write-probe`, 'fixture'), (error) => ['EROFS', 'ENOTDIR'].includes(error.code));
     const suffix = mode === 'account-reads' ? '-accountA' : '';
+    if (mode === 'legacy-read') for (const path of ['/tmp/private-index', '/tmp/private-logs']) assert(!fs.existsSync(path), 'Fresh empty private SQLite and logs');
     const client = await connect({ sqlite_home: `/tmp/private-index${suffix}`, log_dir: `/tmp/private-logs${suffix}` });
     verifySources('after initialization');
     const resolved = await client.call('config/read', { includeLayers: false });
@@ -261,6 +265,8 @@ try {
     if (mode === 'account-reads') {
       await accountReads({ connect, initialClient: client, accountLogin, records, root, params, verifySources, report: evidence.accounts,
         inventory: JSON.parse(readFileSync('/opt/inventory.json', 'utf8')) });
+    } else if (mode === 'legacy-read') {
+      await legacyReads({ client, control: evidence.legacy.control, record: records[0], root, inventory: JSON.parse(readFileSync('/opt/inventory.json', 'utf8')), config: resolved.config, report: evidence.legacy });
     } else if (mode === 'inaccessible') {
       const reply = await client.rpc('thread/list', params);
       assert.equal(reply.error?.code, -32603);

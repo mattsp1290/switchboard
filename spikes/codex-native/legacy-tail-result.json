@@ -1,0 +1,15 @@
+{
+  "question": "Does the pinned public read path reject one malformed JSON tail record appended to genuine Legacy native bytes?",
+  "nativePin": "0.169.0",
+  "entryPoint": "spikes/codex-native/qualify.mjs",
+  "malformedRecord": "{invalid-json\\n",
+  "controls": ["healthy", "tail", "whole", "absent-id", "absent-path"],
+  "readSequence": ["getConversationSummary rolloutPath", "thread/read includeTurns false", "thread/read includeTurns true",
+    "thread/turns/list asc summary limit 1", "thread/items/list asc limit 1"],
+  "evidence": "guarded-inert",
+  "native": { "status": "not-run", "detail": "No Docker, native Codex or network gate ran for these sources." },
+  "outcome": null,
+  "arm64": { "source": null, "reportSha256": null, "absenceSha256": null },
+  "x64CiRun": null,
+  "scope": "Syntax-property read observation only. No corruption, incompatibility, warning, account or continuation classifier."
+}
