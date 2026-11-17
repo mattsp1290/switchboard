@@ -276,21 +276,22 @@ qualify paginated history, macOS, live providers or an adapter.
 
 Status: **native proof recorded**, outcome `typed-outcomes-confirmed`. At 3f5bf7e the coordinator's linux/arm64 run and CI
 linux/x64 job 134243059954 printed identical pinned objects with harness and R1–R6 all true, and
-[sessions-proof-result.json](../../spikes/codex-native/sessions-proof-result.json) now pins that object. A same-path
+[sessions-proof-result.json](../../spikes/codex-native/sessions-proof-result.json) now pins that object. Arm64 was
+not rerun after discovery adopted code-unit path order (a46a47b); CI reruns x64 against the pin on every head. A same-path
 alias summarizes to the requested path, so the hardlink alias is deduplicated and the auxiliary file is R1's single
 diagnostic. `thread/read` carries `Thread.path` and the fixture's `cliVersion` `0.169.0`. Without a private index only
 `config/read` is sent, once per refused operation. The resumed thread holds one turn, and across every scenario the
 adapter sent only `account/read`, `config/read`, `getConversationSummary` and `thread/read`.
 
-The private `src/adapters/codex/sessions.ts` composes the qualified reads above. It borrows an initialized app-server's `request`, the host's `initialize` result and the home path. It checks that `initialize.codexHome` equals the home. The server version is only in the untyped `userAgent` text, so it is not checked; the binding pins `0.169.0`. Every operation reads `config/read` and refuses unless `sqlite_home` and `log_dir` are absolute and outside the home. It then derives the requester from `account/read {refreshToken:false}`. Discovery admits `<home>/sessions` on the host, inventories it without opening a file, then, in code-unit path order so the result does not depend on directory order, calls `getConversationSummary({rolloutPath})` for each path and `thread/read {includeTurns:false}` for each new ID. A summary whose path differs from the request becomes a diagnostic. Listing, `currentAccountOnly` and `archived_sessions` are not used.
+The private `src/adapters/codex/sessions.ts` composes the qualified reads above. It borrows an initialized app-server's `request`, the host's `initialize` result and the home path. It checks that `initialize.codexHome` equals the home. The server version is only in the untyped `userAgent` text, so it is not checked; the binding pins `0.169.0`. Every operation reads `config/read` and refuses unless `sqlite_home` and `log_dir` are absolute and outside the home. It then derives the requester from `account/read {refreshToken:false}`. Discovery admits `<home>/sessions` on the host, inventories it without opening a file, then, in code-unit path order, calls `getConversationSummary({rolloutPath})` for each path and `thread/read {includeTurns:false}` for each new ID. A summary whose path differs from the request becomes a diagnostic. For a complete inventory, calls, results and diagnostic tokens do not depend on directory order; which entries an `examined`-truncated inventory admitted still does. Listing, `currentAccountOnly` and `archived_sessions` are not used.
 
 | Required outcome | Typed result | Basis |
 | --- | --- | --- |
 | Discoverable, resumable | `sessions[]`; `prepareResume` → `ready{threadId}` for paginated history | Qualified reads; exact ID returned, nothing dispatched or reserved |
 | Absent | `absent` only for `-32600` `thread not loaded: <id>` | Qualified message; other errors are `native-failure` |
-| Wrong account | `binding-mismatch` at resume (reference or changed login); `invalid-input`/`inaccessible` in inspect and discover | Switchboard binding and synthetic requester correspondence. Creator attribution is unqualified and never classified |
+| Wrong account | `binding-mismatch` at resume (reference or changed login); `invalid-input`/`inaccessible` in inspect and discover | Switchboard binding and synthetic requester correspondence. Creator attribution is unqualified and never classified. Every API key is the one principal `apiKey`, so a change between API keys is indistinguishable and unqualified |
 | Busy | `busy` when this app-server process has the thread loaded | Per-process status only. Busy writers in other processes are unqualified; x9av owns writer reservation and must reject a resume reply with a different `thread.id` |
-| Old format | `incompatible{native-format}` on a `historyMode` mismatch, and for every Legacy resume | Legacy exact resume is unqualified; ajqy qualified reads only. `incompatible{native-version}` is never emitted |
+| Old format | `incompatible{native-format}` on a `historyMode` mismatch, and for every available Legacy target at resume (a loaded one is `busy`) | Legacy exact resume is unqualified; ajqy qualified reads only. `incompatible{native-version}` is never emitted |
 | Corrupt | Discovery diagnostic; known target `native-failure`; `skipped.corrupt` stays 0 | A generic `-32603` also comes back for harmless files |
 | Inaccessible | Invalid or symlinked `sessions` tree → `inaccessible` before any native request; host EACCES/EPERM counts | Permission-denied files are unqualified and stay diagnostics |
 

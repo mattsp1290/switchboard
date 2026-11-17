@@ -4,7 +4,7 @@ import fsPromises from 'node:fs/promises';
 import { linkSync, lstatSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import test, { afterEach } from 'node:test';
 
 const src = new URL('../../../src/', import.meta.url).href;
@@ -115,6 +115,10 @@ const history = {
   'state_5.sqlite': 'protected index bytes',
   'archived_sessions/2026/rollout-archived.jsonl': 'archived\n',
 };
+function fixtureWith(t, config) {
+  const home = makeHome(t, history);
+  return server(home, { config: config(home) });
+}
 function fixture(t, options = {}) {
   const home = makeHome(t, history);
   linkSync(join(home, 'sessions/2026/11/17/rollout-a.jsonl'), join(home, 'sessions/2026/alias.opaque'));
@@ -140,8 +144,11 @@ test('bind derives the complete binding from the private index and native reques
 });
 
 test('bind and discover refuse a scope without a private index or with an unbindable requester before any history read', async (t) => {
-  for (const config of [{ sqlite_home: null }, { log_dir: undefined }, { sqlite_home: 'relative/index' }]) {
-    const fake = fixture(t, { config });
+  for (const config of [{ sqlite_home: null }, { log_dir: undefined }, { sqlite_home: 'relative/index' }, 'dot-dot', 'double-slash']) {
+    // Unnormalized spellings of a path inside the home are refused like the plain one.
+    const raw = (home) => (config === 'dot-dot' ? { sqlite_home: `${dirname(home)}/x/../${basename(home)}/idx` }
+      : { log_dir: `${dirname(home)}//${basename(home)}/logs` });
+    const fake = typeof config === 'string' ? fixtureWith(t, raw) : fixture(t, { config });
     assert.deepEqual(await codexSessions.discover(access(fake)), { kind: 'error', error: { code: 'invalid-input' } });
     assert.deepEqual(fake.methods(), ['config/read']);
   }
@@ -262,26 +269,31 @@ test('admission failures return outer errors before any native request', async (
 });
 
 test('transport failure after observations retains a failed page; a later abort cannot replace it', async (t) => {
-  // The same page under both directory orders: the module, not the filesystem, decides the native call sequence.
+  // The same page and native call sequence under both directory orders: the module, not the filesystem, decides them.
+  const runs = [];
   for (const reverse of [false, true]) {
     const listed = directoryOrder(t, reverse);
-    const controller = new AbortController();
-    let reads = 0;
-    const fake = fixture(t, { on: (call) => {
-      if (call.method !== 'thread/read' || ++reads < 2) return undefined;
-      queueMicrotask(() => controller.abort());
-      return { kind: 'uncertain', reason: 'closed' };
-    } });
-    const { value } = await codexSessions.discover(access(fake, { signal: controller.signal }));
-    const day = listed.find((names) => names.includes('rollout-a.jsonl'));
-    assert.equal(day.indexOf('rollout-a.jsonl') < day.indexOf('rollout-legacy.jsonl'), !reverse, 'Both orders are exercised');
-    assert.deepEqual([value.kind, value.code], ['failed', 'native-failure']);
-    assert.deepEqual(value.sessions, [session(fake.scope.home, id(1))], 'The settled first read is retained');
-    assert.equal(value.diagnostics.length, 1, 'The corrupt summary before the fatal read is retained');
-    assert.deepEqual(fake.calls.filter((call) => call.method === 'thread/read').map((call) => call.params.threadId), [id(1), id(2)],
-      'Nothing is sent after the fatal failure');
-    t.mock.restoreAll();
+    try {
+      const controller = new AbortController();
+      let reads = 0;
+      const fake = fixture(t, { on: (call) => {
+        if (call.method !== 'thread/read' || ++reads < 2) return undefined;
+        queueMicrotask(() => controller.abort());
+        return { kind: 'uncertain', reason: 'closed' };
+      } });
+      const { value } = await codexSessions.discover(access(fake, { signal: controller.signal }));
+      const day = listed.find((names) => names.includes('rollout-a.jsonl'));
+      assert.equal(day.indexOf('rollout-a.jsonl') < day.indexOf('rollout-legacy.jsonl'), !reverse, 'Both orders are exercised');
+      assert.deepEqual([value.kind, value.code], ['failed', 'native-failure']);
+      assert.deepEqual(value.sessions, [session(fake.scope.home, id(1))], 'The settled first read is retained');
+      assert.equal(value.diagnostics.length, 1, 'The corrupt summary before the fatal read is retained');
+      assert.deepEqual(fake.calls.filter((call) => call.method === 'thread/read').map((call) => call.params.threadId), [id(1), id(2)],
+        'Nothing is sent after the fatal failure');
+      runs.push({ diagnostics: value.diagnostics, calls: fake.calls.map(({ method, params }) =>
+        [method, params?.rolloutPath?.slice(fake.scope.home.length) ?? params?.threadId ?? null]) });
+    } finally { t.mock.restoreAll(); }
   }
+  assert.deepEqual(runs[1], runs[0], 'Identical native calls and diagnostic tokens in both orders');
 });
 
 test('discover keeps a settled fatal failure ahead of a later abort and cancels while a request is outstanding', async (t) => {
@@ -345,7 +357,7 @@ test('inspect maps available, absent, busy, incompatible and unclassified native
     { error: { code: -32603, message: 'failed to read session metadata: rollout is empty' } },
     { error: { code: -32600, message: 'failed to resolve rollout path' } },
     { error: { code: -32600, message: `thread not loaded: ${id(2)}` } },
-    thread(id(2)), thread(id(1), 'future'), thread(id(1), 'paginated', 'unknown'), { result: null },
+    thread(id(2)), thread(id(1), 'future'), thread(id(1), 'constructor'), thread(id(1), 'paginated', 'unknown'), { result: null },
   ]) {
     const fake = server(home, { threads: { [id(1)]: native } });
     assert.deepEqual(await codexSessions.inspect({ ...access(fake), reference: session(home, id(1)) }), { kind: 'error', error: { code: 'native-failure' } });

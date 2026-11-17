@@ -1,5 +1,5 @@
 import { lstat } from 'node:fs/promises';
-import { isAbsolute, join, sep } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { Outcome } from '../../core/contracts.js';
 import { discoverFiles, fileDiscoveryLimits } from '../../core/discovery.js';
@@ -113,7 +113,9 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
 /**
  * Write-safety and requester precondition. Discovery writes nothing to history only with a private index
  * (codex-discovery.md, Storage and authorization boundary). The requester is the current native login
- * (`chatgpt:<userId>` or `apiKey`); it never attributes a thread's creator.
+ * (`chatgpt:<userId>` or `apiKey`); it never attributes a thread's creator. Every API key is the one principal `apiKey`,
+ * so a change between API keys has no native signal and is unqualified. Native paths are compared after `resolve`;
+ * symlink and case aliasing of the index stay host obligations.
  */
 async function requester(run: Run): Promise<Outcome<string, SessionOperationError>> {
   const config = await call(run, 'config/read', { includeLayers: false });
@@ -122,7 +124,7 @@ async function requester(run: Run): Promise<Outcome<string, SessionOperationErro
   if (!record(settings)) return failure('native-failure');
   for (const key of ['sqlite_home', 'log_dir']) {
     const path = settings[key];
-    if (typeof path !== 'string' || !isAbsolute(path) || within(path, run.home)) return failure('invalid-input');
+    if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
   const reply = await call(run, 'account/read', { refreshToken: false });
   if (typeof reply === 'string') return failure(operation(reply));
@@ -137,7 +139,7 @@ type Thread = { readonly format: CodexNativeFormat; readonly loaded: boolean };
 function thread(value: unknown, id: string): Thread | undefined {
   const item = record(value) ? value.thread : undefined;
   if (!record(item) || item.id !== id || typeof item.historyMode !== 'string' || !record(item.status)) return undefined;
-  const format = historyModes[item.historyMode];
+  const format = Object.hasOwn(historyModes, item.historyMode) ? historyModes[item.historyMode] : undefined;
   const status = item.status.type;
   return format && typeof status === 'string' && statuses.has(status) ? { format, loaded: status !== 'notLoaded' } : undefined;
 }
@@ -201,6 +203,7 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
   if (ending.kind === 'complete' || (ending.kind === 'truncated' && ending.reason === 'examined')) {
     // Directory order is filesystem-defined (APFS and ext4 differ). Code-unit order makes the native call sequence,
     // which path of a hard-linked pair is read, result order and diagnostic tokens the same for the same admitted set.
+    // Which entries an examined-truncated listing admitted still follows directory order.
     names.sort();
     for (const name of names) {
       if (sessions.length >= run.bounds.maxResults) { ending = { kind: 'truncated', reason: 'results' }; break; }
