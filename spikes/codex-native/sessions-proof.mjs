@@ -141,5 +141,5 @@ const pinned = { aliasPathEqualsRequest: read.aliasPathEqualsRequest, readDiagno
   methods: [...new Set(Object.values(reports).flatMap((report) => report.methods))].sort() };
 console.log(JSON.stringify({ pinned }));
 const recorded = JSON.parse(readFileSync(join(here, 'sessions-proof-result.json'), 'utf8'));
-// Pending record (outcome null): the run is reported but nothing is enforced yet, as with the first Legacy tail record.
+// A recorded outcome enforces the pin; a pending record (outcome null) would only report, as the first Legacy tail record did.
 if (recorded.outcome !== null) assert.deepEqual(pinned, recorded.pinned, 'Recorded native sessions proof');
