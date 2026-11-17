@@ -65,13 +65,13 @@ function within(path: string, home: string): boolean {
   return path === home || path.startsWith(home.endsWith(sep) ? home : `${home}${sep}`);
 }
 
-/** Copies and checks host input once; getters that throw are invalid input. */
+/** Copies and checks host input once; getters that throw are invalid input. `home` must be canonical (`resolve`d). */
 function admit(options: unknown): Run | undefined {
   try {
     if (!record(options) || !record(options.scope)) return undefined;
     const { scope: { home, request, initialize }, bounds: rawBounds, signal } = options;
     const bounds = validateSessionDiscoveryBounds(rawBounds);
-    if (!text(home) || !isAbsolute(home) || home.split(sep).some((part) => part === '.' || part === '..')
+    if (!text(home) || !isAbsolute(home) || home !== resolve(home)
       || !record(initialize) || initialize.codexHome !== home || typeof request !== 'function' || !(signal instanceof AbortSignal) || bounds.kind === 'error') return undefined;
     return { home, request: request as Run['request'], bounds: bounds.value, signal,
       deadline: performance.now() + bounds.value.maxDurationMs };
@@ -204,7 +204,7 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
     // Directory order is filesystem-defined (APFS and ext4 differ). Code-unit order makes the native call sequence,
     // which path of a hard-linked pair is read, result order and diagnostic tokens the same for the same admitted set.
     // Which entries an examined-truncated listing admitted still follows directory order.
-    names.sort();
+    names.sort(); // UTF-16 code-unit order
     for (const name of names) {
       if (sessions.length >= run.bounds.maxResults) { ending = { kind: 'truncated', reason: 'results' }; break; }
       const rolloutPath = join(root, name);

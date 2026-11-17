@@ -227,7 +227,7 @@ This private component does not spawn native processes, qualify routes, infer ap
 
 ## Private Codex sessions
 
-`src/adapters/codex/sessions.ts` is private (no package export) and borrows an initialized transport's `request` plus the host's `initialize` result, whose `codexHome` must equal the scope `home`.
+`src/adapters/codex/sessions.ts` is private (no package export) and borrows an initialized transport's `request` plus the host's `initialize` result, whose `codexHome` must equal the scope `home`, which must be a canonical absolute path.
 It implements core `SessionDiscovery` and `SessionInspection` with core codes only, adds `bind` and `prepareResume`, and sends only `codexSessionMethods`: `config/read`, `account/read`, `getConversationSummary` and metadata-only `thread/read`.
 The binding is `codex`, `0.169.0`, the native requester (`chatgpt:<userId>` or `apiKey`), the home path as `authorizedScope`, and `codex-thread/paginated` or `codex-thread/legacy` from `Thread.historyMode`.
 Every operation refuses with `invalid-input`, before any history read, unless native `config/read` reports absolute `sqlite_home` and `log_dir` outside the home. A changed or unbindable requester is `inaccessible`, or `binding-mismatch` at resume. Every API key is the one principal `apiKey`, so a change between API keys is unqualified.

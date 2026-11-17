@@ -172,6 +172,9 @@ test('operations refuse invalid scope, binding, format, bounds and signal withou
   const invalid = [
     { ...access(fake), scope: { home: 'relative', request: fake.request } },
     { ...access(fake), scope: { home: `${fake.scope.home}/../x`, request: fake.request } },
+    // Non-canonical spellings, even when initialize agrees, would defeat the inside-home index check.
+    ...[`${fake.scope.home}/`, `${dirname(fake.scope.home)}//${basename(fake.scope.home)}`].map((home) =>
+      ({ ...access(fake), scope: { home, request: fake.request, initialize: { codexHome: home } }, binding: binding(home) })),
     { ...access(fake), scope: { home: fake.scope.home, initialize: fake.scope.initialize } },
     { ...access(fake), scope: { ...fake.scope, initialize: { codexHome: '/other' } } },
     { ...access(fake), scope: { ...fake.scope, initialize: undefined } },
