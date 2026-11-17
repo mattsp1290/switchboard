@@ -159,7 +159,7 @@ The indexed, unindexed, and malformed containers perform these path requests. Th
 
 Admission includes directories, protected indexes, and sidecars in its accounting. It permits at most 128 entries, eight levels, 8 MiB per regular file, 8 MiB of actual file bytes in aggregate, and one second. It rejects symlinks, special files, unexpected devices, traversal failures, unstable metadata, and paths outside the admitted history trees. Every regular history file qualifies regardless of extension. Directory enumeration stops when the entry or time budget fails. The synthetic fixture owner freezes the namespace. These metadata checks do not establish a production snapshot or exclude a hostile ancestor replacement.
 
-The native client retains its six-second RPC deadline, 2 MiB stdout limit, bounded stderr tail, and container resource limits. The combined discovery client allows at most 128 protocol requests. Path inspection has a separate 32-request budget. Broad listing uses at most eight pages of two records for each archive value, every pinned source kind, all providers, and `currentAccountOnly:false`. It omits cwd, search, section, project, relation, and exclusion restrictions. Exhaustion, page truncation, native failure, and repeated or invalid cursors remain distinct observations. This is ordinary listing, not an all-native-object guarantee.
+The native client retains its six-second RPC deadline, 2 MiB stdout limit, and container resource limits. It keeps the exact first 64 KiB of stderr with a total byte count and a `truncated` flag, and every discovery report records each client's close, exit code, signal and that stderr in `drain`. The combined discovery client allows at most 128 protocol requests. Path inspection has a separate 32-request budget. Broad listing uses at most eight pages of two records for each archive value, every pinned source kind, all providers, and `currentAccountOnly:false`. It omits cwd, search, section, project, relation, and exclusion restrictions. Exhaustion, page truncation, native failure, and repeated or invalid cursors remain distinct observations. This is ordinary listing, not an all-native-object guarantee.
 
 The host checks the full source metadata and bytes over the container lifecycle. The client checks selected metadata and bytes before startup, after initialization, after requests, after stdio-drained shutdown, and after final shutdown attempts. Unexpected failures retain bounded request and reply evidence, drained notifications where possible, and preservation checks. A separate 512 KiB progress stream preserves observations in captured container stderr if an outer deadline prevents the final report. Progress truncation is explicit and emits one reserved `progressOverflow` marker. Inspection must dispatch zero inference. Synthetic fixture preparation keeps its existing loopback inference flow.
 
@@ -179,7 +179,7 @@ The observed arm64 run inspected nine admitted files in each path mode. Indexed 
 
 The current discovery variants share `client.mjs`. It rejects malformed, non-UTF-8, invalid-envelope, oversized-frame and truncated-EOF output, stdout overflow, invalid outgoing envelopes, asynchronous process, stdin and stdout errors, and requests beyond 128 before dispatch. Shutdown waits for the process `close` event and drained stdio, closes the reader, then rejects any latched protocol or transport failure, including final-drain faults. After six seconds it sends SIGKILL and waits at most six more seconds for close. Helper imports perform no native or daemon operation.
 
-The qualifier uses `lifecycle.mjs` for every named container. Successful run or removal supplies operation evidence. An independent bounded inventory must also omit the exact name. Failed creation plus failed removal plus empty inventory remains uncertain because daemon-side creation may arrive late. No uncertain creation is retried. Failed execution still fails after confirmed cleanup. Bounded partial stdout and stderr survive failure.
+The qualifier uses `lifecycle.mjs` for every named container. Successful run or removal supplies operation evidence. An independent bounded inventory must also omit the exact name. Failed creation plus failed removal plus empty inventory remains uncertain because daemon-side creation may arrive late. No uncertain creation is retried. Failed execution still fails after confirmed cleanup, except for the Legacy tail containers below, whose bounded partial report is kept as `acquisition: 'partial'` (or `'unparsed'`) and can only make that experiment inconclusive. Bounded partial stdout and stderr survive failure.
 
 On uncertainty the qualifier retains the actual frozen work directory and emits its exact path and container name. It deletes work only after confirmed absence, and prints success only after work removal. The focused inert tests intercept actual source and transports. They establish branch behavior without running Docker, a native executable, or a listener. Historical parent arm64 and emulated x64 runs at `d467665e4faa` passed all five discovery modes, twelve behavior assertions, and strict compilation of 784 generated public binding files. Parent independently confirmed both exact containers and every qualifier run directory absent. `qualification-lifecycle-result.json` records the retained report and absence hashes. Fresh parent runs after the shutdown correction passed the same arm64 and emulated x64 native, binding, and cleanup controls. Eleven focused inert tests include final-drain failure propagation through the actual discovery entry point; all 26 package tests pass. Current and historical evidence hashes are separate in the result file. These observations do not qualify native x64 hardware, macOS, H1, or a live provider.
 
@@ -194,3 +194,55 @@ Each reader first establishes actual synthetic requester context through `accoun
 Only all controls, zero inspection inference, preserved selected source metadata and bytes through final shutdown attempts and the host container lifetime, confirmed container absence, and removed owned work can earn the bounded `negative-public-read-result`. Failure and truncated required proof stay inconclusive. Drained SIGTERM termination proves no clean SQLite close or checkpoint. Present recovery sidecars remain part of the cold snapshot. Native writes affect disposable copies only.
 The supported auth-required provider profile uses separate synthetic loopback model and routing-bootstrap origins. Both listeners share the existing HTTP30 limit. All existing RPC, time, page, path, output, progress, entry, memory, tmpfs, image, network, and compiler limits remain. The current qualified client and uncertainty-preserving container owner are unchanged. Eighteen focused inert tests intercept the actual source boundaries and start no native executable, daemon, or listener. The native observations qualify this bounded snapshot experiment only. They do not qualify native x64 hardware, macOS, production accounts, an adapter, or live providers.
 This is a snapshot-dependent experiment. It supplies no history-only reconstruction, unique creator attribution, production eligibility classifier, general discovery coverage, adapter support, or pg51 completion. Every original wrong-account, busy, old, corrupt, inaccessible, external discovery and resume, no-rewrite, all-engine, direct and LiteLLM, native-feature, host authority and durability, no blind retry, confinement, SDK, native adapter, live, macOS, and release requirement remains open.
+
+## Legacy tail-record read experiment
+
+Status: inert source only. Native evidence is pending the coordinator's arm64 run; the Linux x64 CI job runs the same
+entry point. [legacy-tail-result.json](../../spikes/codex-native/legacy-tail-result.json) records native `not-run` and no
+outcome. Once it records an outcome, `qualify.mjs` fails on any different outcome.
+
+The question is narrow. Genuine Legacy history is created through the public experimental `historyMode: "legacy"` option on
+`thread/start`. If that history's rollout file is followed by one malformed JSON tail record, does the public read path
+reject it within bounds, read it successfully, or give inconclusive evidence?
+[legacy-tail.mjs](../../spikes/codex-native/legacy-tail.mjs) owns the experiment; `discovery.mjs` enters it through the
+`prepare-legacy` and `legacy-read <control>` modes, and `qualify.mjs` runs it after the account reads.
+
+The creator runs in its own container. It starts one thread with `historyMode: "legacy"`, runs one synthetic turn to
+`turn/completed`, reads the thread back metadata-only, and drains. Only then does it capture the home and verify that the
+capture is still unchanged. Start and read-back must both report `legacy`, and the native-returned path must be a plain
+`sessions/**.jsonl` file of at most 4 MiB that starts with `{` and ends in `\n`. No other private format fact is used. If
+any of this fails, the result is a labelled creator precondition failure and an inconclusive conclusion; no reader runs and
+every earlier mode keeps its own strict result.
+
+The malformed record is the 14 bytes `{invalid-json\n`, the same bytes as the whole-file `malformed` control. The native
+file ends in `\n`, so appending them adds exactly one LF-terminated line and leaves every native byte unchanged. The line
+opens an object and is invalid JSON. Tail and whole therefore differ only in the genuine native prefix.
+
+Each control is its own container with a fresh `/root` tmpfs home holding only `sessions` and `archived_sessions`, frozen
+by host admission and checked across the container lifetime. No original SQLite or projected history is mounted.
+`/tmp/private-index` and `/tmp/private-logs` must not exist before spawn, and every reader uses the same configuration.
+
+| Control | Rollout bytes in the home | Requests | It proves |
+|---|---|---|---|
+| `healthy` | native | native ID and path | actual Legacy saved history: `historyMode: "legacy"`, the exact ID and path, the completed turn and both messages |
+| `tail` | native + record | native ID and path | the observation |
+| `whole` | record alone | native ID and path | a malformed file is publicly rejected on some step healthy answered |
+| `absent-id` | native | native path, never-created ID | the path still resolves to the native ID while the absent ID is rejected |
+| `absent-path` | none | native ID and path | the native path, absent from this home, is rejected |
+
+Every control dispatches the same fixed sequence and keeps every reply: `getConversationSummary` by path, `thread/read`
+with `includeTurns:false`, `thread/read` with `includeTurns:true`, then `thread/turns/list` and `thread/items/list` in
+ascending pages of one, at most eight pages, with non-repeating cursors. The loaded read is there because the binary contains
+the message "does not use paginated history", so the page APIs may refuse Legacy threads by design.
+
+`legacyConclusion` is the only conclusion site. A creator precondition failure, a partial or unparsed reader, missing
+preservation, inference, progress or stderr truncation, an unclosed client, an incomplete sequence or page refusal, a reply
+with no single result or error branch, a configuration mismatch, or a failed healthy, whole, absent-id or absent-path
+control gives `inconclusive` with named reasons. Otherwise steps are aligned by method, read shape and ordinal. Only steps
+the healthy control answered count. A well-formed JSON-RPC error on one of them in the tail control gives
+`bounded-public-rejection`; bounds come from the six-second RPC deadline, clean drain and preserved source. All of them
+succeeding with the native ID gives `successful-reads-uncertified`: success does not certify that every saved record is
+valid JSON. Each compared step also records whether the tail reply equals the healthy reply or the absent-path error.
+
+This classifies no corruption, incompatibility, warning, account, continuation or old-format behavior, and it does not
+qualify paginated history, macOS, live providers or an adapter.
