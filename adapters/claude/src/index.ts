@@ -24,8 +24,28 @@ export interface ClaudeRequest {
   readonly threadId?: string;
   readonly onEvent: (event: ClaudeEvent) => void;
 }
+type ClaudeFacts = {
+  readonly installation: { readonly state: 'available' | 'not_installed' | 'not_executable' | 'unknown' | 'cancelled' | 'not_checked' | 'unsupported' };
+  readonly version: { readonly state: 'unsupported' };
+  readonly authentication: { readonly state: 'unsupported' };
+  readonly workspace: { readonly state: 'accessible' | 'inaccessible' | 'unknown' | 'cancelled' | 'not_checked' };
+};
+/**
+ * Assignable to the root `ReadinessReport`. Claude observes local paths and an explicit executable override only.
+ * It never observes the CLI version or whether the API key works, so it cannot report ready.
+ */
+export type ClaudeReadinessReport = {
+  readonly provider: 'claude';
+  readonly observedAt: string;
+  readonly checked: readonly ('installation' | 'workspace')[];
+  readonly facts: ClaudeFacts;
+} & (
+  | { readonly verdict: 'blocked'; readonly remediation: { readonly code: 'install_required' | 'workspace_unavailable'; readonly message: string } }
+  | { readonly verdict: 'unverified';
+    readonly remediation: { readonly code: 'retry_check' | 'check_cancelled' | 'runtime_closed' | 'check_unavailable'; readonly message: string } });
 export interface ClaudeRuntime {
   checkReady(): Promise<void>;
+  readinessReport(options?: { readonly signal?: AbortSignal }): Promise<ClaudeReadinessReport>;
   start(request: ClaudeRequest): Promise<ClaudeTurn>;
   close(): Promise<void>;
 }
@@ -33,6 +53,16 @@ export interface ClaudeRuntime {
 const failure = () => new Error('Claude operation failed.');
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const writers = new Set<string>();
+const refused = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EEXIST', 'EROFS', 'ELOOP']);
+const errno = (error: unknown): unknown => error !== null && typeof error === 'object' ? Reflect.get(error, 'code') : undefined;
+const remedies = {
+  install_required: 'Install Claude Code at the configured executable path.',
+  workspace_unavailable: 'Make the working directory readable and the Claude session directory writable.',
+  retry_check: 'Claude did not finish the readiness check. Try again.',
+  check_cancelled: 'The Claude readiness check was cancelled.',
+  runtime_closed: 'This Claude runtime is closed.',
+  check_unavailable: 'Local Claude checks passed. Sign-in and version are confirmed when a chat starts.',
+} as const;
 
 export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntime {
   if (!isAbsolute(options.cwd) || !isAbsolute(options.sessionDirectory) || !options.apiKey.trim()
@@ -48,14 +78,42 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
   const active = new Map<AbortController, Promise<ClaudeTerminal>>();
   const lostSessions = new Set<string>();
   let closed = false;
+  async function observe(signal?: AbortSignal): Promise<ClaudeReadinessReport> {
+    const override = options.claudePathOverride;
+    const skipped = closed ? 'not_checked' : signal?.aborted ? 'cancelled' : undefined;
+    let workspace: ClaudeFacts['workspace'] = { state: skipped ?? 'accessible' };
+    let installation: ClaudeFacts['installation'] = { state: override === undefined ? 'unsupported' : skipped ?? 'available' };
+    if (!skipped) {
+      try {
+        await access(cwd, constants.R_OK);
+        await mkdir(config, { recursive: true, mode: 0o700 });
+        await access(config, constants.R_OK | constants.W_OK);
+      } catch (error) { workspace = { state: refused.has(String(errno(error))) ? 'inaccessible' : 'unknown' }; }
+      if (override !== undefined) {
+        await access(override, constants.X_OK).catch((error: unknown) => {
+          const code = errno(error);
+          installation = { state: code === 'ENOENT' || code === 'ENOTDIR' ? 'not_installed' : code === 'EACCES' || code === 'EPERM' ? 'not_executable' : 'unknown' };
+        });
+      }
+    }
+    const facts = { installation, version: { state: 'unsupported' }, authentication: { state: 'unsupported' }, workspace } as const;
+    const states: string[] = [installation.state, workspace.state];
+    const checked = (['installation', 'workspace'] as const).filter(fact => !['unknown', 'cancelled', 'not_checked', 'unsupported'].includes(facts[fact].state));
+    const base = { provider: 'claude', observedAt: new Date().toISOString(), checked, facts } as const;
+    const blocked = installation.state === 'not_installed' || installation.state === 'not_executable' ? 'install_required'
+      : workspace.state === 'inaccessible' ? 'workspace_unavailable' : undefined;
+    if (blocked) return { ...base, verdict: 'blocked', remediation: { code: blocked, message: remedies[blocked] } };
+    const code = closed ? 'runtime_closed' : states.includes('cancelled') ? 'check_cancelled' : states.includes('unknown') ? 'retry_check' : 'check_unavailable';
+    return { ...base, verdict: 'unverified', remediation: { code, message: remedies[code] } };
+  }
   async function checkReady(): Promise<void> {
     if (closed) throw failure();
-    try {
-      await access(cwd, constants.R_OK);
-      await mkdir(config, { recursive: true, mode: 0o700 });
-      await access(config, constants.R_OK | constants.W_OK);
-      if (options.claudePathOverride !== undefined) await access(options.claudePathOverride, constants.X_OK);
-    } catch { throw failure(); }
+    const { facts: { installation, workspace } } = await observe();
+    if (workspace.state !== 'accessible' || (installation.state !== 'available' && installation.state !== 'unsupported')) throw failure();
+  }
+  function readinessReport(readiness?: { readonly signal?: AbortSignal }): Promise<ClaudeReadinessReport> {
+    const signal = readiness?.signal;
+    return signal !== undefined && !(signal instanceof AbortSignal) ? Promise.reject(failure()) : observe(signal);
   }
   function start(request: ClaudeRequest): Promise<ClaudeTurn> {
     const { text, threadId: requested, onEvent } = request;
@@ -204,7 +262,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
     active.set(controller, finished);
     return admission.promise;
   }
-  return { checkReady, start, async close() {
+  return { checkReady, readinessReport, start, async close() {
     closed = true;
     const pending = [...active.entries()];
     for (const [controller] of pending) controller.abort();
