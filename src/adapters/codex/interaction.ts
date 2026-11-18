@@ -58,7 +58,10 @@ export interface CodexInteractionOptions {
 export type CodexSettlement =
   /** The reply was handed to the transport once. No native evidence confirms delivery, so it stays unknown. */
   | { readonly kind: 'replied'; readonly nativeChoiceId: string; readonly delivery: NativeDelivery }
-  /** Native ended the request before any host reply; a JSON-RPC error freed the transport lease, never a decision. */
+  /**
+   * Native ended the request before any host reply; a JSON-RPC error freed the transport lease, never a decision. `by` is
+   * whichever native signal arrived first, so it follows arrival order (not pinned natively).
+   */
   | { readonly kind: 'withdrawn'; readonly by: 'serverRequest/resolved' | 'item/completed' | 'turn/completed';
     readonly evidence: 'unqualified' }
   /** The host-selected expiry answered a decision-free error; its native fate is unqualified. */

@@ -78,6 +78,17 @@ console.log(JSON.stringify(result, null, 2));
 // architectures. Opaque signals (turn/started, error willRetry) are pinned but never asserted here; the native resume while
 // another app-server holds the thread is recorded raw only. Every native error reply is in each report's raw.nativeErrors.
 const { X1, X2, X3, X4, X5, X6, X7, X8, X9 } = result.reports;
+// Architecture-independent pin: outcomes, counts, booleans and native-reported usage only; never IDs, paths, timestamps or hashes.
+// Printed before any assertion so a failing run still shows the object to compare. Arrival-order and timing facts stay raw:
+// X1.snapshot is conclusive only when turn/completed beats the turn/start reply; thread/started reaches the session only when
+// read after attach() registers the thread from the thread/start reply, else it is published unrouted on the execution
+// stream; X6.inferenceBeforeExit counts inference inside a 500 ms window; X7's event count was that same thread/started race.
+const pinned = { X1: { eventKinds: X1.eventKinds, nativeMethods: X1.nativeMethods?.filter((method) => method !== 'thread/started'),
+  turnStartedSeen: X1.turnStartedSeen, usageSeen: X1.usageSeen, usage: X1.usage }, X2: { resumeTurns: X2.resumeTurns },
+  X5: { unsubscribe: X5.close?.unsubscribe ?? null, reopen: X5.reopen, afterReopen: X5.afterReopen ?? null },
+  X6: { completion: X6.completion }, X7: { snapshot: X7.snapshot, completion: X7.completion, error: X7.raw.error },
+  X8: { errorNotification: X8.errorNotification } };
+console.log(JSON.stringify({ pinned }));
 const checks = {
   harness: Object.values(result.reports).every((report) => report.failures.length === 0 && report.heldAtEnd === 0),
   X1: X1.completion === 'completed' && ['accepted', 'conclusive'].includes(X1.snapshot) && X1.inference.answer === 1
@@ -95,17 +106,6 @@ const checks = {
   X8: X8.terminal === 'failed' && X8.deltaSeen && X8.disconnectInference === 1,
   X9: X9.aborted === 'error:closed' && X9.detached === 1 && X9.heldAfterAbort === 0 && X9.freshCreate === 'ok',
 };
-// Architecture-independent pin: outcomes, counts, booleans and native-reported usage only; never IDs, paths, timestamps or hashes.
-// Printed before any assertion so a failing run still shows the object to compare. Arrival-order and timing facts stay raw:
-// X1.snapshot is conclusive only when turn/completed beats the turn/start reply; thread/started reaches the session only when
-// read after attach() registers the thread from the thread/start reply, else it is published unrouted on the execution
-// stream; X6.inferenceBeforeExit counts inference inside a 500 ms window; X7's event count was that same thread/started race.
-const pinned = { X1: { eventKinds: X1.eventKinds, nativeMethods: X1.nativeMethods.filter((method) => method !== 'thread/started'),
-  turnStartedSeen: X1.turnStartedSeen, usageSeen: X1.usageSeen, usage: X1.usage }, X2: { resumeTurns: X2.resumeTurns },
-  X5: { unsubscribe: X5.close?.unsubscribe ?? null, reopen: X5.reopen, afterReopen: X5.afterReopen ?? null },
-  X6: { completion: X6.completion }, X7: { snapshot: X7.snapshot, completion: X7.completion, error: X7.raw.error },
-  X8: { errorNotification: X8.errorNotification } };
-console.log(JSON.stringify({ pinned }));
 console.log(JSON.stringify({ checks }));
 // A large report can still be queued on a pipe; an assertion exit would drop it and the lines above.
 await new Promise((resolve) => process.stdout.write('', resolve));

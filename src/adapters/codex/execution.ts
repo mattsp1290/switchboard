@@ -628,7 +628,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CleanupStep> {
     return (turn.interrupting ??= until(turn.identified.promise, deadline).then(async () => {
       const { phase } = turn;
-      if (phase.kind !== 'identified' || turn.settled) return 'not-needed';
+      if (phase.kind !== 'identified' || turn.settled) {
+        // Nothing was written: a still-pending turn may yet be identified, so a later interrupt or close tries again.
+        if (!turn.settled && phase.kind !== 'orphaned') turn.interrupting = undefined;
+        return 'not-needed';
+      }
       return step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
     }));
   }
