@@ -122,6 +122,10 @@ test('the generated config round-trips through config/read into a routed bind; d
   assert.equal(multiAgentOff(proxy.codexProxyConfig(route, options).config.args), true);
   // Broken control: without the pin the routed config leaves native multi-agent on.
   assert.equal(multiAgentOff(multiAgent.codexProxyConfig(route, options).config.args), false);
+  // ...and the routed bind refuses that config: a host that omits the pins cannot bind a route the model can bypass.
+  const unpinned = appServer(configRead(multiAgent.codexProxyConfig(route, options).config.args), routed);
+  t.after(() => rmSync(unpinned.home, { recursive: true, force: true }));
+  assert.deepEqual(await bind(unpinned, true), { kind: 'error', error: { code: 'inaccessible' } });
   // No route: provider command auth has no native login to bind, so there is no subscription or stored-key passthrough.
   assert.deepEqual(await bind(fake, false), { kind: 'error', error: { code: 'inaccessible' } });
   // Broken control: a static env-key credential in the generated entry is refused by the routed check.

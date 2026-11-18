@@ -230,7 +230,8 @@ const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endp
   credentialPurpose: 'litellm-proxy', model: 'team/gpt-5.1-codex', scope: { engine: 'codex', account: 'host-account-a' } });
 const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
   env_key: null, experimental_bearer_token: null };
-const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider } },
+const pinned = { multi_agent: false, multi_agent_v2: false };
+const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider }, features: pinned },
   account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
 
 test('a routed execution refuses provider and config overrides unsent and any thread native puts on another provider', async (t) => {
@@ -334,7 +335,7 @@ test('a direct execution refuses a routed thread and any start or resume reply o
 
 test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
   const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
-  const routed = { config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider } },
+  const routed = { config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider }, features: pinned },
     account: { account: null, userId: null, requiresOpenaiAuth: false } };
   const w = world();
   const writers = real.createCodexWriters(4);

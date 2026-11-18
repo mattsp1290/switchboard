@@ -7,8 +7,10 @@ import test from 'node:test';
 
 const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/sessions.ts', src).href;
-// Broken control: a routed requester that falls back to the native login instead of refusing it.
-const mutations = new Map([['native-fallback', ['if (run.route) {', 'if (run.route && account === null) {']]]);
+// Broken controls: a routed requester that falls back to the native login instead of refusing it, and one that binds
+// without checking the multi-agent pins.
+const mutations = new Map([['native-fallback', ['if (run.route) {', 'if (run.route && account === null) {']],
+  ['unpinned', ['|| settings.features.multi_agent_v2 !== false) return false;', '|| settings.features.multi_agent_v2 !== false) {}']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -29,6 +31,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 } });
 const { codexSessions } = await import(target);
 const fallback = (await import(`${target}?mutant=native-fallback`)).codexSessions;
+const unpinned = (await import(`${target}?mutant=unpinned`)).codexSessions;
 const { codexRoutePrincipal, copyCodexRoute } = await import(new URL('adapters/codex/route.ts', src).href);
 hook.deregister();
 
@@ -49,15 +52,18 @@ function home(t) {
 const entry = { name: 'LiteLLM', base_url: 'http://127.0.0.1:4000/v1', env_key: null, experimental_bearer_token: null,
   auth: { command: '/usr/bin/node', args: ['helper.mjs'], timeout_ms: 5000, refresh_interval_ms: 300000, cwd: '/w' },
   wire_api: 'responses', requires_openai_auth: false };
+// `config/read` reports `-c features.multi_agent=false` nested under `features` and omits an unset feature (me4l-pin out.json).
+const pinned = { multi_agent_v2: false, network_proxy: null, multi_agent: false, memories: false };
 /** Fake app-server: the native projections observed with provider command auth (codex-native-api.md). */
 function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route, providers = { litellm: entry },
-  threads = {}, threadProviders = {} } = {}) {
+  threads = {}, threadProviders = {}, features = pinned } = {}) {
   const calls = [];
   const request = async (call) => {
     calls.push(call.method);
     const id = call.params.threadId ?? threads[call.params.rolloutPath];
     const value = call.method === 'config/read'
       ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_providers: providers,
+        ...(features === 'absent' ? {} : { features }),
         ...(provider === 'absent' ? {} : { model_provider: provider }) } }
       : call.method === 'account/read' ? account
         : call.method === 'getConversationSummary' ? { summary: { path: call.params.rolloutPath, conversationId: id } }
@@ -107,6 +113,22 @@ test('a routed requester refuses a provider entry that is not exactly the route 
   // A built-in provider (ollama) is absent from model_providers yet reports no login: never a route.
   const ollama = server(home(t), { route: { ...route, providerId: 'ollama' }, provider: 'ollama' });
   assert.deepEqual(await bind(ollama), { kind: 'error', error: { code: 'inaccessible' } });
+});
+
+test('a routed requester refuses unless native multi-agent is pinned off', async (t) => {
+  const { multi_agent: _v1, ...noV1 } = pinned;
+  const { multi_agent_v2: _v2, ...noV2 } = pinned;
+  for (const features of [noV1, noV2, { ...pinned, multi_agent: true }, { ...pinned, multi_agent_v2: true },
+    { ...pinned, multi_agent: 'false' }, { memories: false }, 'absent', null]) {
+    const fake = server(home(t), { features });
+    assert.deepEqual(await bind(fake), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(features));
+    assert.deepEqual(fake.calls, ['config/read']);
+  }
+  // Broken control: without the pin check a host that omitted the generated args binds a bypassable route.
+  assert.equal((await bind(server(home(t), { features: { memories: false } }), unpinned)).value?.account, principal);
+  // Direct mode does not consult the pins.
+  const direct = server(home(t), { route: null, features: 'absent', account: { account: { type: 'apiKey' } } });
+  assert.equal((await bind(direct)).value.account, 'apiKey');
 });
 
 test('a routed resume and discovery admit only threads native ran on the route provider', async (t) => {
