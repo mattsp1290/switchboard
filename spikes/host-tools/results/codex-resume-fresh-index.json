@@ -1,0 +1,3627 @@
+{
+  "probe": "codex-resume-fresh-index",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-codex-resume-fresh-index-d6441ded",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-7iT55W,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "420",
+    "node",
+    "/probe/codex-probe.mjs",
+    "resume-fresh-index"
+  ],
+  "startedAt": "2026-11-18T21:31:54.461Z",
+  "finishedAt": "2026-11-18T21:31:58.160Z",
+  "provenance": {
+    "gitHead": "6bc4d8d77e60087d6ffb2c2e600d7d8f98260c29",
+    "probeSources": {
+      "spikes/host-tools/claude-probe.mjs": "af4505f2494b5df7b821b139f105bf9262d0377f63cc9af9b9aa76cb1f66541d",
+      "spikes/host-tools/codex-probe.mjs": "9241c99d1fa69d39d6589c477051983adf97ea62c2932a8d43dcbd4edd236fae",
+      "spikes/host-tools/facts-probe.mjs": "c67d31a57408eeb8481a14e0a5da16dfdc80446f2fd35a79e3e82c56284e0c18",
+      "spikes/host-tools/pi-probe.mjs": "47a7d77e0bd658b33e59fcbb3c81bdf171ee7894845e00bd11a2cdfe5aff12df",
+      "spikes/host-tools/pi-seccomp.mjs": "e33732fad996b1628f65787d451e71e83dacb02df0168f3f343a0a6712532344",
+      "spikes/host-tools/run.mjs": "e8401829145548550aa3b3c3e13e4d80d77d5c9c899eda576757a82aab411b47"
+    },
+    "transportSources": {
+      "src/adapters/codex/transport.ts": "ae39146c6749070b0e364cfb3491a0838a54debfe988a0b98a166a33c5f3972c",
+      "src/adapters/codex/wire.ts": "394b244ecd7a71c16cba408a410c96b446ef7509891aa71ec470b95722efb6a6",
+      "src/core/events.ts": "6129339b4987f337d8114ebec498f264f9f6acebf2bbbbb45ebbe9bd6736b712"
+    },
+    "docker": {
+      "server": "29.2.1",
+      "arch": "arm64",
+      "os": "Ubuntu 24.04.4 LTS"
+    },
+    "runnerPlatform": "darwin/arm64",
+    "volume": {
+      "name": "sb-p0-host-tools-nm",
+      "npm": "11.19.1",
+      "packages": {
+        "@openai/codex": {
+          "version": "0.169.0",
+          "integrity": "sha512-KhzYlkKPxoNssR8CEm45IjqnFWn7UtlF4CiD3tOJPea51xBs7MaHy0UQG9GSbCqk6Lrjn5QdJDV0QD1/FgWlGw=="
+        },
+        "@openai/codex-linux-arm64": {
+          "version": "0.169.0-linux-arm64",
+          "integrity": "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg=="
+        },
+        "@openai/codex-sdk": {
+          "version": "0.169.0",
+          "integrity": "sha512-N2ZApXiOjjDiWKuoyaW3zdww9ggFtxKjeMp5qq+kW77UXDOxY2O6hg60ahip319Tlt6iwYEoDfPQzn9a6d3jFA=="
+        },
+        "@anthropic-ai/claude-agent-sdk": {
+          "version": "0.3.323",
+          "integrity": "sha512-GXIczMzzceNWB+bIImK59hWOQoBWZtSw+AESPc/qbAWmmHM8Wrqb5KvTwWZ07CmjyC/KcPC47nOLxxyHlWqKPA=="
+        },
+        "@anthropic-ai/claude-agent-sdk-linux-arm64": {
+          "version": "0.3.323",
+          "integrity": "sha512-ONhCJapk9UxpaZ3HY1GTZezMoiQ6Ab7fIubS+dJeXIyj8aQjGQALHQoEl9D1Hrr+q5ppZPOAt0hg69x8aGbTBA=="
+        },
+        "@modelcontextprotocol/sdk": {
+          "version": "1.32.2",
+          "integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw=="
+        },
+        "@earendil-works/pi-ai": {
+          "version": "1.5.2",
+          "integrity": "sha512-2tWPSnV3qzfiDIY3aWluBag3vC++Vs+VsXt/UquSU5onPMohPih72FUhIhaqmDdMYubOgB3Byl9uF4Vk40JLvQ=="
+        },
+        "@earendil-works/pi-coding-agent": {
+          "version": "1.5.2",
+          "integrity": "sha512-mUWI04rqF1Vd/m1q+Ps1XeWsTXEVvRUnsmRa83I3Dzua0Tx5bYS93imeqtIfrXf7PkkaR6ERz+AuQhIJlom5yA=="
+        },
+        "@earendil-works/pi-agent-core": {
+          "version": "1.5.2",
+          "integrity": "sha512-ie5mejS7mGfXt//9As7i3LfxVXdktZvF1JP4EQsUXTp4mU437h23MNGx7wXZ5VYs3YiG/Qnj3e7OZ2HC069OMw=="
+        },
+        "typescript": {
+          "version": "7.0.2",
+          "integrity": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="
+        }
+      }
+    }
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "resume-fresh-index",
+    "codex": "codex-cli 0.169.0",
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "transportBounds": {
+      "maxFrameBytes": 1048576,
+      "maxChunkBytes": 2097151,
+      "maxDiagnosticBytes": 65536,
+      "maxPending": 8,
+      "maxHandlers": 4,
+      "maxWrites": 8,
+      "observationCapacity": 4096,
+      "handlerTimeoutMs": 180000,
+      "observationTimeoutMs": 5000,
+      "writeTimeoutMs": 20000
+    },
+    "model": [
+      {
+        "n": 1,
+        "at": 568,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message"
+        ],
+        "functionCalls": [],
+        "functionCallOutputs": [],
+        "lastUser": "turn p1-start: call:host_probe",
+        "wanted": "host_probe",
+        "continued": false,
+        "reply": {
+          "functionCall": "call_1",
+          "name": "host_probe",
+          "namespace": null
+        }
+      },
+      {
+        "n": 2,
+        "at": 615,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          }
+        ],
+        "lastUser": "turn p1-start: call:host_probe",
+        "wanted": "host_probe",
+        "continued": true,
+        "reply": {
+          "text": "answer after call_1"
+        }
+      },
+      {
+        "n": 3,
+        "at": 1126,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          }
+        ],
+        "lastUser": "turn p2-resume: call:host_probe",
+        "wanted": "host_probe",
+        "continued": false,
+        "reply": {
+          "functionCall": "call_3",
+          "name": "host_probe",
+          "namespace": null
+        }
+      },
+      {
+        "n": 4,
+        "at": 1159,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          },
+          {
+            "call_id": "call_3",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 3\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          },
+          {
+            "call_id": "call_3",
+            "output": "host result for call_3"
+          }
+        ],
+        "lastUser": "turn p2-resume: call:host_probe",
+        "wanted": "host_probe",
+        "continued": true,
+        "reply": {
+          "text": "answer after call_3"
+        }
+      },
+      {
+        "n": 5,
+        "at": 1780,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          },
+          {
+            "call_id": "call_3",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 3\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          },
+          {
+            "call_id": "call_3",
+            "output": "host result for call_3"
+          }
+        ],
+        "lastUser": "turn p3-resume: call:host_probe",
+        "wanted": "host_probe",
+        "continued": false,
+        "reply": {
+          "functionCall": "call_5",
+          "name": "host_probe",
+          "namespace": null
+        }
+      },
+      {
+        "n": 6,
+        "at": 1797,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          },
+          {
+            "call_id": "call_3",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 3\"}"
+          },
+          {
+            "call_id": "call_5",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 5\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          },
+          {
+            "call_id": "call_3",
+            "output": "host result for call_3"
+          },
+          {
+            "call_id": "call_5",
+            "output": "host result for call_5"
+          }
+        ],
+        "lastUser": "turn p3-resume: call:host_probe",
+        "wanted": "host_probe",
+        "continued": true,
+        "reply": {
+          "text": "answer after call_5"
+        }
+      },
+      {
+        "n": 7,
+        "at": 2349,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          },
+          {
+            "call_id": "call_3",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 3\"}"
+          },
+          {
+            "call_id": "call_5",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 5\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          },
+          {
+            "call_id": "call_3",
+            "output": "host result for call_3"
+          },
+          {
+            "call_id": "call_5",
+            "output": "host result for call_5"
+          }
+        ],
+        "lastUser": "turn p4-resume: call:host_probe",
+        "wanted": "host_probe",
+        "continued": false,
+        "reply": {
+          "functionCall": "call_7",
+          "name": "host_probe",
+          "namespace": null
+        }
+      },
+      {
+        "n": 8,
+        "at": 2497,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          },
+          {
+            "call_id": "call_3",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 3\"}"
+          },
+          {
+            "call_id": "call_5",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 5\"}"
+          },
+          {
+            "call_id": "call_7",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 7\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          },
+          {
+            "call_id": "call_3",
+            "output": "host result for call_3"
+          },
+          {
+            "call_id": "call_5",
+            "output": "host result for call_5"
+          },
+          {
+            "call_id": "call_7",
+            "output": "host result for call_7"
+          }
+        ],
+        "lastUser": "turn p4-resume: call:host_probe",
+        "wanted": "host_probe",
+        "continued": true,
+        "reply": {
+          "text": "answer after call_7"
+        }
+      }
+    ],
+    "processes": [
+      {
+        "label": "p1-start",
+        "pid": 22,
+        "startedAt": 126,
+        "sqliteHome": "/home/probe/index-1",
+        "notifications": [
+          {
+            "at": 334,
+            "method": "configWarning",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+              "details": null
+            }
+          },
+          {
+            "at": 334,
+            "method": "remoteControl/status/changed",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 418,
+            "method": "thread/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 445,
+            "method": "warning",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null,
+            "params": {
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            }
+          },
+          {
+            "at": 530,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 532,
+            "method": "turn/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          {
+            "at": 546,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d105-7470-875e-7bf58d583bd9",
+            "itemStatus": null
+          },
+          {
+            "at": 552,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d105-7470-875e-7bf58d583bd9",
+            "itemStatus": null
+          },
+          {
+            "at": 593,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_1",
+            "itemStatus": "inProgress",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": null,
+            "contentItems": null,
+            "arguments": {
+              "note": "request 1"
+            }
+          },
+          {
+            "at": 599,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_1",
+            "itemStatus": "completed",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "host result for call_1"
+              }
+            ],
+            "arguments": {
+              "note": "request 1"
+            }
+          },
+          {
+            "at": 605,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 1013,
+                "inputTokens": 1001,
+                "cachedInputTokens": 1,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 1
+              },
+              "last": {
+                "totalTokens": 1013,
+                "inputTokens": 1001,
+                "cachedInputTokens": 1,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 1
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 606,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 623,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "itemType": "agentMessage",
+            "itemId": "msg_2",
+            "itemStatus": null,
+            "text": ""
+          },
+          {
+            "at": 624,
+            "method": "item/agentMessage/delta",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          {
+            "at": 626,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "itemType": "agentMessage",
+            "itemId": "msg_2",
+            "itemStatus": null,
+            "text": "answer after call_1"
+          },
+          {
+            "at": 631,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 3036,
+                "inputTokens": 3002,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 34,
+                "reasoningOutputTokens": 3
+              },
+              "last": {
+                "totalTokens": 2023,
+                "inputTokens": 2001,
+                "cachedInputTokens": 2,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 22,
+                "reasoningOutputTokens": 2
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 631,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 642,
+            "method": "thread/readState/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 642,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 643,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 38545,
+              "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+              "lines": 19,
+              "mtimeMs": 1795037516129.2068,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 18,
+                "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 3002,
+                  "cached_input_tokens": 3,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 34,
+                  "reasoning_output_tokens": 3,
+                  "total_tokens": 3036
+                },
+                "last": {
+                  "input_tokens": 2001,
+                  "cached_input_tokens": 2,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 22,
+                  "reasoning_output_tokens": 2,
+                  "total_tokens": 2023
+                }
+              }
+            }
+          }
+        ],
+        "terminals": [
+          {
+            "at": 643,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 38545,
+              "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+              "lines": 19,
+              "mtimeMs": 1795037516129.2068,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 18,
+                "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 3002,
+                  "cached_input_tokens": 3,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 34,
+                  "reasoning_output_tokens": 3,
+                  "total_tokens": 3036
+                },
+                "last": {
+                  "input_tokens": 2001,
+                  "cached_input_tokens": 2,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 22,
+                  "reasoning_output_tokens": 2,
+                  "total_tokens": 2023
+                }
+              }
+            }
+          }
+        ],
+        "serverRequests": [
+          {
+            "method": "item/tool/call",
+            "idType": "number",
+            "receivedAt": 594,
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "callId": "call_1",
+            "namespace": null,
+            "tool": "host_probe",
+            "arguments": {
+              "note": "request 1"
+            },
+            "notificationsDuringHold": [],
+            "answeredAt": 594,
+            "heldMs": 0,
+            "answer": "host result for call_1"
+          }
+        ],
+        "rpc": [
+          {
+            "method": "initialize",
+            "at": 319,
+            "ok": true
+          },
+          {
+            "method": "thread/start",
+            "at": 418,
+            "ok": true
+          },
+          {
+            "method": "turn/start",
+            "at": 462,
+            "ok": true
+          }
+        ],
+        "stderrTail": "\u001b[2m2026-11-18T21:31:55.794361Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.\n",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 707
+        },
+        "transportEnd": {
+          "at": 685,
+          "reason": "caller-close",
+          "unsettled": {
+            "handlers": 0,
+            "observer": false,
+            "write": false
+          }
+        },
+        "stopMethod": "stdin-eof"
+      },
+      {
+        "label": "p2-resume",
+        "pid": 88,
+        "startedAt": 716,
+        "sqliteHome": "/home/probe/index-2",
+        "notifications": [
+          {
+            "at": 937,
+            "method": "configWarning",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+              "details": null
+            }
+          },
+          {
+            "at": 938,
+            "method": "remoteControl/status/changed",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 979,
+            "method": "deprecationNotice",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.",
+              "details": null
+            }
+          },
+          {
+            "at": 1048,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1052,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 3036,
+                "inputTokens": 3002,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 34,
+                "reasoningOutputTokens": 3
+              },
+              "last": {
+                "totalTokens": 2023,
+                "inputTokens": 2001,
+                "cachedInputTokens": 2,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 22,
+                "reasoningOutputTokens": 2
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 1062,
+            "method": "thread/goal/cleared",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1068,
+            "method": "warning",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null,
+            "params": {
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            }
+          },
+          {
+            "at": 1081,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1081,
+            "method": "turn/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          {
+            "at": 1104,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d337-79f0-aeaa-0bf814e65e77",
+            "itemStatus": null
+          },
+          {
+            "at": 1116,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d337-79f0-aeaa-0bf814e65e77",
+            "itemStatus": null
+          },
+          {
+            "at": 1138,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_3",
+            "itemStatus": "inProgress",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": null,
+            "contentItems": null,
+            "arguments": {
+              "note": "request 3"
+            }
+          },
+          {
+            "at": 1142,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_3",
+            "itemStatus": "completed",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "host result for call_3"
+              }
+            ],
+            "arguments": {
+              "note": "request 3"
+            }
+          },
+          {
+            "at": 1145,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 6069,
+                "inputTokens": 6003,
+                "cachedInputTokens": 6,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 66,
+                "reasoningOutputTokens": 6
+              },
+              "last": {
+                "totalTokens": 3033,
+                "inputTokens": 3001,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 32,
+                "reasoningOutputTokens": 3
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 1145,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 1172,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "itemType": "agentMessage",
+            "itemId": "msg_4",
+            "itemStatus": null,
+            "text": ""
+          },
+          {
+            "at": 1173,
+            "method": "item/agentMessage/delta",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          {
+            "at": 1173,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "itemType": "agentMessage",
+            "itemId": "msg_4",
+            "itemStatus": null,
+            "text": "answer after call_3"
+          },
+          {
+            "at": 1176,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 10112,
+                "inputTokens": 10004,
+                "cachedInputTokens": 10,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 108,
+                "reasoningOutputTokens": 10
+              },
+              "last": {
+                "totalTokens": 4043,
+                "inputTokens": 4001,
+                "cachedInputTokens": 4,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 42,
+                "reasoningOutputTokens": 4
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 1176,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 1185,
+            "method": "thread/readState/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1186,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1186,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 46865,
+              "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+              "lines": 33,
+              "mtimeMs": 1795037516675.206,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 32,
+                "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 10004,
+                  "cached_input_tokens": 10,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 108,
+                  "reasoning_output_tokens": 10,
+                  "total_tokens": 10112
+                },
+                "last": {
+                  "input_tokens": 4001,
+                  "cached_input_tokens": 4,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 42,
+                  "reasoning_output_tokens": 4,
+                  "total_tokens": 4043
+                }
+              }
+            }
+          }
+        ],
+        "terminals": [
+          {
+            "at": 1186,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 46865,
+              "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+              "lines": 33,
+              "mtimeMs": 1795037516675.206,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 32,
+                "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 10004,
+                  "cached_input_tokens": 10,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 108,
+                  "reasoning_output_tokens": 10,
+                  "total_tokens": 10112
+                },
+                "last": {
+                  "input_tokens": 4001,
+                  "cached_input_tokens": 4,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 42,
+                  "reasoning_output_tokens": 4,
+                  "total_tokens": 4043
+                }
+              }
+            }
+          }
+        ],
+        "serverRequests": [
+          {
+            "method": "item/tool/call",
+            "idType": "number",
+            "receivedAt": 1138,
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "callId": "call_3",
+            "namespace": null,
+            "tool": "host_probe",
+            "arguments": {
+              "note": "request 3"
+            },
+            "notificationsDuringHold": [],
+            "answeredAt": 1138,
+            "heldMs": 0,
+            "answer": "host result for call_3"
+          }
+        ],
+        "rpc": [
+          {
+            "method": "initialize",
+            "at": 937,
+            "ok": true
+          },
+          {
+            "method": "thread/resume",
+            "at": 1052,
+            "ok": true
+          },
+          {
+            "method": "turn/start",
+            "at": 1072,
+            "ok": true
+          }
+        ],
+        "stderrTail": "\u001b[2m2026-11-18T21:31:56.418976Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.\n",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 1272
+        },
+        "transportEnd": {
+          "at": 1226,
+          "reason": "caller-close",
+          "unsettled": {
+            "handlers": 0,
+            "observer": false,
+            "write": false
+          }
+        },
+        "stopMethod": "stdin-eof"
+      },
+      {
+        "label": "p3-resume",
+        "pid": 151,
+        "startedAt": 1278,
+        "sqliteHome": "/home/probe/index-3",
+        "notifications": [
+          {
+            "at": 1572,
+            "method": "configWarning",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+              "details": null
+            }
+          },
+          {
+            "at": 1576,
+            "method": "remoteControl/status/changed",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 1588,
+            "method": "deprecationNotice",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.",
+              "details": null
+            }
+          },
+          {
+            "at": 1723,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1726,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 10112,
+                "inputTokens": 10004,
+                "cachedInputTokens": 10,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 108,
+                "reasoningOutputTokens": 10
+              },
+              "last": {
+                "totalTokens": 4043,
+                "inputTokens": 4001,
+                "cachedInputTokens": 4,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 42,
+                "reasoningOutputTokens": 4
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 1733,
+            "method": "thread/goal/cleared",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1740,
+            "method": "warning",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null,
+            "params": {
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            }
+          },
+          {
+            "at": 1750,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1750,
+            "method": "turn/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          {
+            "at": 1768,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d5ca-7613-bd19-1bf1ab92a2d9",
+            "itemStatus": null
+          },
+          {
+            "at": 1770,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d5ca-7613-bd19-1bf1ab92a2d9",
+            "itemStatus": null
+          },
+          {
+            "at": 1786,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_5",
+            "itemStatus": "inProgress",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": null,
+            "contentItems": null,
+            "arguments": {
+              "note": "request 5"
+            }
+          },
+          {
+            "at": 1788,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_5",
+            "itemStatus": "completed",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "host result for call_5"
+              }
+            ],
+            "arguments": {
+              "note": "request 5"
+            }
+          },
+          {
+            "at": 1791,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 15165,
+                "inputTokens": 15005,
+                "cachedInputTokens": 15,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 160,
+                "reasoningOutputTokens": 15
+              },
+              "last": {
+                "totalTokens": 5053,
+                "inputTokens": 5001,
+                "cachedInputTokens": 5,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 52,
+                "reasoningOutputTokens": 5
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 1792,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 1800,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "itemType": "agentMessage",
+            "itemId": "msg_6",
+            "itemStatus": null,
+            "text": ""
+          },
+          {
+            "at": 1800,
+            "method": "item/agentMessage/delta",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          {
+            "at": 1802,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "itemType": "agentMessage",
+            "itemId": "msg_6",
+            "itemStatus": null,
+            "text": "answer after call_5"
+          },
+          {
+            "at": 1807,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 21228,
+                "inputTokens": 21006,
+                "cachedInputTokens": 21,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 222,
+                "reasoningOutputTokens": 21
+              },
+              "last": {
+                "totalTokens": 6063,
+                "inputTokens": 6001,
+                "cachedInputTokens": 6,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 62,
+                "reasoningOutputTokens": 6
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 1807,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 1818,
+            "method": "thread/readState/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1818,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 1818,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 55206,
+              "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+              "lines": 47,
+              "mtimeMs": 1795037517304.205,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 46,
+                "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 21006,
+                  "cached_input_tokens": 21,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 222,
+                  "reasoning_output_tokens": 21,
+                  "total_tokens": 21228
+                },
+                "last": {
+                  "input_tokens": 6001,
+                  "cached_input_tokens": 6,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 62,
+                  "reasoning_output_tokens": 6,
+                  "total_tokens": 6063
+                }
+              }
+            }
+          }
+        ],
+        "terminals": [
+          {
+            "at": 1818,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 55206,
+              "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+              "lines": 47,
+              "mtimeMs": 1795037517304.205,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 46,
+                "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 21006,
+                  "cached_input_tokens": 21,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 222,
+                  "reasoning_output_tokens": 21,
+                  "total_tokens": 21228
+                },
+                "last": {
+                  "input_tokens": 6001,
+                  "cached_input_tokens": 6,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 62,
+                  "reasoning_output_tokens": 6,
+                  "total_tokens": 6063
+                }
+              }
+            }
+          }
+        ],
+        "serverRequests": [
+          {
+            "method": "item/tool/call",
+            "idType": "number",
+            "receivedAt": 1787,
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "callId": "call_5",
+            "namespace": null,
+            "tool": "host_probe",
+            "arguments": {
+              "note": "request 5"
+            },
+            "notificationsDuringHold": [],
+            "answeredAt": 1787,
+            "heldMs": 0,
+            "answer": "host result for call_5"
+          }
+        ],
+        "rpc": [
+          {
+            "method": "initialize",
+            "at": 1572,
+            "ok": true
+          },
+          {
+            "method": "thread/resume",
+            "at": 1726,
+            "ok": true
+          },
+          {
+            "method": "turn/start",
+            "at": 1740,
+            "ok": true
+          }
+        ],
+        "stderrTail": "\u001b[2m2026-11-18T21:31:57.043982Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.\n",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 1860
+        },
+        "transportEnd": {
+          "at": 1842,
+          "reason": "caller-close",
+          "unsettled": {
+            "handlers": 0,
+            "observer": false,
+            "write": false
+          }
+        },
+        "stopMethod": "stdin-eof"
+      },
+      {
+        "label": "p4-resume",
+        "pid": 216,
+        "startedAt": 1866,
+        "sqliteHome": "/home/probe/index-4",
+        "notifications": [
+          {
+            "at": 2180,
+            "method": "configWarning",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+              "details": null
+            }
+          },
+          {
+            "at": 2180,
+            "method": "remoteControl/status/changed",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 2186,
+            "method": "deprecationNotice",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.",
+              "details": null
+            }
+          },
+          {
+            "at": 2266,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 2277,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 21228,
+                "inputTokens": 21006,
+                "cachedInputTokens": 21,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 222,
+                "reasoningOutputTokens": 21
+              },
+              "last": {
+                "totalTokens": 6063,
+                "inputTokens": 6001,
+                "cachedInputTokens": 6,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 62,
+                "reasoningOutputTokens": 6
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 2277,
+            "method": "thread/goal/cleared",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 2286,
+            "method": "warning",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null,
+            "params": {
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            }
+          },
+          {
+            "at": 2298,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 2301,
+            "method": "turn/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+          },
+          {
+            "at": 2324,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d7f6-70b1-82a5-44893cdd18f6",
+            "itemStatus": null
+          },
+          {
+            "at": 2334,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "itemType": "userMessage",
+            "itemId": "01a1f092-d7f6-70b1-82a5-44893cdd18f6",
+            "itemStatus": null
+          },
+          {
+            "at": 2424,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_7",
+            "itemStatus": "inProgress",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": null,
+            "contentItems": null,
+            "arguments": {
+              "note": "request 7"
+            }
+          },
+          {
+            "at": 2456,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_7",
+            "itemStatus": "completed",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "host result for call_7"
+              }
+            ],
+            "arguments": {
+              "note": "request 7"
+            }
+          },
+          {
+            "at": 2480,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 28301,
+                "inputTokens": 28007,
+                "cachedInputTokens": 28,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 294,
+                "reasoningOutputTokens": 28
+              },
+              "last": {
+                "totalTokens": 7073,
+                "inputTokens": 7001,
+                "cachedInputTokens": 7,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 72,
+                "reasoningOutputTokens": 7
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 2481,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 2502,
+            "method": "item/started",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "itemType": "agentMessage",
+            "itemId": "msg_8",
+            "itemStatus": null,
+            "text": ""
+          },
+          {
+            "at": 2502,
+            "method": "item/agentMessage/delta",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+          },
+          {
+            "at": 2505,
+            "method": "item/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "itemType": "agentMessage",
+            "itemId": "msg_8",
+            "itemStatus": null,
+            "text": "answer after call_7"
+          },
+          {
+            "at": 2510,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 36384,
+                "inputTokens": 36008,
+                "cachedInputTokens": 36,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 376,
+                "reasoningOutputTokens": 36
+              },
+              "last": {
+                "totalTokens": 8083,
+                "inputTokens": 8001,
+                "cachedInputTokens": 8,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 82,
+                "reasoningOutputTokens": 8
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 2512,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 2523,
+            "method": "thread/readState/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 2525,
+            "method": "thread/status/changed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": null
+          },
+          {
+            "at": 2525,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 63552,
+              "sha256": "ed95303036bd5cf3cdd5b4dfd4195908d0e6f7934833388c5268b9de5496b760",
+              "lines": 61,
+              "mtimeMs": 1795037518011.2039,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 60,
+                "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 36008,
+                  "cached_input_tokens": 36,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 376,
+                  "reasoning_output_tokens": 36,
+                  "total_tokens": 36384
+                },
+                "last": {
+                  "input_tokens": 8001,
+                  "cached_input_tokens": 8,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 82,
+                  "reasoning_output_tokens": 8,
+                  "total_tokens": 8083
+                }
+              }
+            }
+          }
+        ],
+        "terminals": [
+          {
+            "at": 2525,
+            "method": "turn/completed",
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+              "bytes": 63552,
+              "sha256": "ed95303036bd5cf3cdd5b4dfd4195908d0e6f7934833388c5268b9de5496b760",
+              "lines": 61,
+              "mtimeMs": 1795037518011.2039,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 60,
+                "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 36008,
+                  "cached_input_tokens": 36,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 376,
+                  "reasoning_output_tokens": 36,
+                  "total_tokens": 36384
+                },
+                "last": {
+                  "input_tokens": 8001,
+                  "cached_input_tokens": 8,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 82,
+                  "reasoning_output_tokens": 8,
+                  "total_tokens": 8083
+                }
+              }
+            }
+          }
+        ],
+        "serverRequests": [
+          {
+            "method": "item/tool/call",
+            "idType": "number",
+            "receivedAt": 2425,
+            "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "callId": "call_7",
+            "namespace": null,
+            "tool": "host_probe",
+            "arguments": {
+              "note": "request 7"
+            },
+            "notificationsDuringHold": [],
+            "answeredAt": 2425,
+            "heldMs": 0,
+            "answer": "host result for call_7"
+          }
+        ],
+        "rpc": [
+          {
+            "method": "initialize",
+            "at": 2170,
+            "ok": true
+          },
+          {
+            "method": "thread/resume",
+            "at": 2270,
+            "ok": true
+          },
+          {
+            "method": "turn/start",
+            "at": 2290,
+            "ok": true
+          }
+        ],
+        "stderrTail": "\u001b[2m2026-11-18T21:31:57.648033Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.\n",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 2593
+        },
+        "transportEnd": {
+          "at": 2566,
+          "reason": "caller-close",
+          "unsettled": {
+            "handlers": 0,
+            "observer": false,
+            "write": false
+          }
+        },
+        "stopMethod": "stdin-eof"
+      }
+    ],
+    "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+    "segments": [
+      {
+        "label": "p1-start",
+        "method": "thread/start",
+        "initialize": "result",
+        "open": {
+          "ok": true,
+          "threadId": "01a1f092-d042-7250-95ed-393bd2923afa"
+        },
+        "modelRequests": [
+          1,
+          2
+        ],
+        "result": {
+          "label": "p1-start",
+          "toolCalls": [
+            {
+              "method": "item/tool/call",
+              "tool": "host_probe",
+              "namespace": null,
+              "callId": "call_1",
+              "heldMs": 0,
+              "answer": "host result for call_1",
+              "abortedAt": null,
+              "abortReason": null,
+              "notificationsDuringHold": []
+            }
+          ],
+          "dynamicToolItems": [
+            {
+              "at": 593,
+              "method": "item/started",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_1",
+              "itemStatus": "inProgress",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": null,
+              "contentItems": null,
+              "arguments": {
+                "note": "request 1"
+              }
+            },
+            {
+              "at": 599,
+              "method": "item/completed",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_1",
+              "itemStatus": "completed",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": true,
+              "contentItems": [
+                {
+                  "type": "inputText",
+                  "text": "host result for call_1"
+                }
+              ],
+              "arguments": {
+                "note": "request 1"
+              }
+            }
+          ],
+          "agentMessages": [
+            "answer after call_1"
+          ],
+          "turn": {
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+            "status": "completed",
+            "error": null,
+            "turnStart": null
+          },
+          "usage": [
+            {
+              "at": 605,
+              "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+              "total": {
+                "totalTokens": 1013,
+                "inputTokens": 1001,
+                "cachedInputTokens": 1,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 1
+              },
+              "last": {
+                "totalTokens": 1013,
+                "inputTokens": 1001,
+                "cachedInputTokens": 1,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 1
+              }
+            },
+            {
+              "at": 631,
+              "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+              "total": {
+                "totalTokens": 3036,
+                "inputTokens": 3002,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 34,
+                "reasoningOutputTokens": 3
+              },
+              "last": {
+                "totalTokens": 2023,
+                "inputTokens": 2001,
+                "cachedInputTokens": 2,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 22,
+                "reasoningOutputTokens": 2
+              }
+            }
+          ],
+          "errors": [
+            {
+              "at": 334,
+              "method": "configWarning",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+                "details": null
+              }
+            },
+            {
+              "at": 445,
+              "method": "warning",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": null,
+              "params": {
+                "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+                "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+              }
+            }
+          ]
+        },
+        "fingerprintAtTurnCompleted": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 38545,
+          "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+          "lines": 19,
+          "mtimeMs": 1795037516129.2068,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 18,
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 3002,
+              "cached_input_tokens": 3,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 34,
+              "reasoning_output_tokens": 3,
+              "total_tokens": 3036
+            },
+            "last": {
+              "input_tokens": 2001,
+              "cached_input_tokens": 2,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 22,
+              "reasoning_output_tokens": 2,
+              "total_tokens": 2023
+            }
+          }
+        },
+        "fingerprintAtSegmentEnd": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 38545,
+          "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+          "lines": 19,
+          "mtimeMs": 1795037516129.2068,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 18,
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 3002,
+              "cached_input_tokens": 3,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 34,
+              "reasoning_output_tokens": 3,
+              "total_tokens": 3036
+            },
+            "last": {
+              "input_tokens": 2001,
+              "cached_input_tokens": 2,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 22,
+              "reasoning_output_tokens": 2,
+              "total_tokens": 2023
+            }
+          }
+        },
+        "stopMethod": "stdin-eof",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 707
+        },
+        "fingerprintAfterExit": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 38545,
+          "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+          "lines": 19,
+          "mtimeMs": 1795037516129.2068,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 18,
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 3002,
+              "cached_input_tokens": 3,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 34,
+              "reasoning_output_tokens": 3,
+              "total_tokens": 3036
+            },
+            "last": {
+              "input_tokens": 2001,
+              "cached_input_tokens": 2,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 22,
+              "reasoning_output_tokens": 2,
+              "total_tokens": 2023
+            }
+          }
+        }
+      },
+      {
+        "label": "p2-resume",
+        "method": "thread/resume",
+        "initialize": "result",
+        "fingerprintBeforeOpen": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 38545,
+          "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+          "lines": 19,
+          "mtimeMs": 1795037516129.2068,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 18,
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 3002,
+              "cached_input_tokens": 3,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 34,
+              "reasoning_output_tokens": 3,
+              "total_tokens": 3036
+            },
+            "last": {
+              "input_tokens": 2001,
+              "cached_input_tokens": 2,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 22,
+              "reasoning_output_tokens": 2,
+              "total_tokens": 2023
+            }
+          }
+        },
+        "open": {
+          "ok": true,
+          "threadId": "01a1f092-d042-7250-95ed-393bd2923afa"
+        },
+        "fingerprintAtOpen": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 38545,
+          "sha256": "a598707161463b8d13a7d85ada2a11f7496d60a2fcfbb5ee92d8526eaeca4e57",
+          "lines": 19,
+          "mtimeMs": 1795037516129.2068,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 18,
+            "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 3002,
+              "cached_input_tokens": 3,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 34,
+              "reasoning_output_tokens": 3,
+              "total_tokens": 3036
+            },
+            "last": {
+              "input_tokens": 2001,
+              "cached_input_tokens": 2,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 22,
+              "reasoning_output_tokens": 2,
+              "total_tokens": 2023
+            }
+          }
+        },
+        "modelRequests": [
+          3,
+          4
+        ],
+        "result": {
+          "label": "p2-resume",
+          "toolCalls": [
+            {
+              "method": "item/tool/call",
+              "tool": "host_probe",
+              "namespace": null,
+              "callId": "call_3",
+              "heldMs": 0,
+              "answer": "host result for call_3",
+              "abortedAt": null,
+              "abortReason": null,
+              "notificationsDuringHold": []
+            }
+          ],
+          "dynamicToolItems": [
+            {
+              "at": 1138,
+              "method": "item/started",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_3",
+              "itemStatus": "inProgress",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": null,
+              "contentItems": null,
+              "arguments": {
+                "note": "request 3"
+              }
+            },
+            {
+              "at": 1142,
+              "method": "item/completed",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_3",
+              "itemStatus": "completed",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": true,
+              "contentItems": [
+                {
+                  "type": "inputText",
+                  "text": "host result for call_3"
+                }
+              ],
+              "arguments": {
+                "note": "request 3"
+              }
+            }
+          ],
+          "agentMessages": [
+            "answer after call_3"
+          ],
+          "turn": {
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+            "status": "completed",
+            "error": null,
+            "turnStart": null
+          },
+          "usage": [
+            {
+              "at": 1052,
+              "turnId": "01a1f092-d08e-7a41-8899-185b5cf61f7b",
+              "total": {
+                "totalTokens": 3036,
+                "inputTokens": 3002,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 34,
+                "reasoningOutputTokens": 3
+              },
+              "last": {
+                "totalTokens": 2023,
+                "inputTokens": 2001,
+                "cachedInputTokens": 2,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 22,
+                "reasoningOutputTokens": 2
+              }
+            },
+            {
+              "at": 1145,
+              "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+              "total": {
+                "totalTokens": 6069,
+                "inputTokens": 6003,
+                "cachedInputTokens": 6,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 66,
+                "reasoningOutputTokens": 6
+              },
+              "last": {
+                "totalTokens": 3033,
+                "inputTokens": 3001,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 32,
+                "reasoningOutputTokens": 3
+              }
+            },
+            {
+              "at": 1176,
+              "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+              "total": {
+                "totalTokens": 10112,
+                "inputTokens": 10004,
+                "cachedInputTokens": 10,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 108,
+                "reasoningOutputTokens": 10
+              },
+              "last": {
+                "totalTokens": 4043,
+                "inputTokens": 4001,
+                "cachedInputTokens": 4,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 42,
+                "reasoningOutputTokens": 4
+              }
+            }
+          ],
+          "errors": [
+            {
+              "at": 937,
+              "method": "configWarning",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+                "details": null
+              }
+            },
+            {
+              "at": 979,
+              "method": "deprecationNotice",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.",
+                "details": null
+              }
+            },
+            {
+              "at": 1068,
+              "method": "warning",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": null,
+              "params": {
+                "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+                "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+              }
+            }
+          ]
+        },
+        "fingerprintAtTurnCompleted": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 46865,
+          "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+          "lines": 33,
+          "mtimeMs": 1795037516675.206,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 32,
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 10004,
+              "cached_input_tokens": 10,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 108,
+              "reasoning_output_tokens": 10,
+              "total_tokens": 10112
+            },
+            "last": {
+              "input_tokens": 4001,
+              "cached_input_tokens": 4,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 42,
+              "reasoning_output_tokens": 4,
+              "total_tokens": 4043
+            }
+          }
+        },
+        "fingerprintAtSegmentEnd": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 46865,
+          "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+          "lines": 33,
+          "mtimeMs": 1795037516675.206,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 32,
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 10004,
+              "cached_input_tokens": 10,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 108,
+              "reasoning_output_tokens": 10,
+              "total_tokens": 10112
+            },
+            "last": {
+              "input_tokens": 4001,
+              "cached_input_tokens": 4,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 42,
+              "reasoning_output_tokens": 4,
+              "total_tokens": 4043
+            }
+          }
+        },
+        "stopMethod": "stdin-eof",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 1272
+        },
+        "fingerprintAfterExit": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 46865,
+          "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+          "lines": 33,
+          "mtimeMs": 1795037516675.206,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 32,
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 10004,
+              "cached_input_tokens": 10,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 108,
+              "reasoning_output_tokens": 10,
+              "total_tokens": 10112
+            },
+            "last": {
+              "input_tokens": 4001,
+              "cached_input_tokens": 4,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 42,
+              "reasoning_output_tokens": 4,
+              "total_tokens": 4043
+            }
+          }
+        }
+      },
+      {
+        "label": "p3-resume",
+        "method": "thread/resume",
+        "initialize": "result",
+        "fingerprintBeforeOpen": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 46865,
+          "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+          "lines": 33,
+          "mtimeMs": 1795037516675.206,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 32,
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 10004,
+              "cached_input_tokens": 10,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 108,
+              "reasoning_output_tokens": 10,
+              "total_tokens": 10112
+            },
+            "last": {
+              "input_tokens": 4001,
+              "cached_input_tokens": 4,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 42,
+              "reasoning_output_tokens": 4,
+              "total_tokens": 4043
+            }
+          }
+        },
+        "open": {
+          "ok": true,
+          "threadId": "01a1f092-d042-7250-95ed-393bd2923afa"
+        },
+        "fingerprintAtOpen": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 46865,
+          "sha256": "6c492934fc5526ae58ac2b84eedc3eb70ec62f5a1cbb972404603c76fc6db36b",
+          "lines": 33,
+          "mtimeMs": 1795037516675.206,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 32,
+            "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 10004,
+              "cached_input_tokens": 10,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 108,
+              "reasoning_output_tokens": 10,
+              "total_tokens": 10112
+            },
+            "last": {
+              "input_tokens": 4001,
+              "cached_input_tokens": 4,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 42,
+              "reasoning_output_tokens": 4,
+              "total_tokens": 4043
+            }
+          }
+        },
+        "modelRequests": [
+          5,
+          6
+        ],
+        "result": {
+          "label": "p3-resume",
+          "toolCalls": [
+            {
+              "method": "item/tool/call",
+              "tool": "host_probe",
+              "namespace": null,
+              "callId": "call_5",
+              "heldMs": 0,
+              "answer": "host result for call_5",
+              "abortedAt": null,
+              "abortReason": null,
+              "notificationsDuringHold": []
+            }
+          ],
+          "dynamicToolItems": [
+            {
+              "at": 1786,
+              "method": "item/started",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_5",
+              "itemStatus": "inProgress",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": null,
+              "contentItems": null,
+              "arguments": {
+                "note": "request 5"
+              }
+            },
+            {
+              "at": 1788,
+              "method": "item/completed",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_5",
+              "itemStatus": "completed",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": true,
+              "contentItems": [
+                {
+                  "type": "inputText",
+                  "text": "host result for call_5"
+                }
+              ],
+              "arguments": {
+                "note": "request 5"
+              }
+            }
+          ],
+          "agentMessages": [
+            "answer after call_5"
+          ],
+          "turn": {
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+            "status": "completed",
+            "error": null,
+            "turnStart": null
+          },
+          "usage": [
+            {
+              "at": 1726,
+              "turnId": "01a1f092-d30d-72f2-b3e1-ee8003b1e620",
+              "total": {
+                "totalTokens": 10112,
+                "inputTokens": 10004,
+                "cachedInputTokens": 10,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 108,
+                "reasoningOutputTokens": 10
+              },
+              "last": {
+                "totalTokens": 4043,
+                "inputTokens": 4001,
+                "cachedInputTokens": 4,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 42,
+                "reasoningOutputTokens": 4
+              }
+            },
+            {
+              "at": 1791,
+              "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+              "total": {
+                "totalTokens": 15165,
+                "inputTokens": 15005,
+                "cachedInputTokens": 15,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 160,
+                "reasoningOutputTokens": 15
+              },
+              "last": {
+                "totalTokens": 5053,
+                "inputTokens": 5001,
+                "cachedInputTokens": 5,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 52,
+                "reasoningOutputTokens": 5
+              }
+            },
+            {
+              "at": 1807,
+              "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+              "total": {
+                "totalTokens": 21228,
+                "inputTokens": 21006,
+                "cachedInputTokens": 21,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 222,
+                "reasoningOutputTokens": 21
+              },
+              "last": {
+                "totalTokens": 6063,
+                "inputTokens": 6001,
+                "cachedInputTokens": 6,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 62,
+                "reasoningOutputTokens": 6
+              }
+            }
+          ],
+          "errors": [
+            {
+              "at": 1572,
+              "method": "configWarning",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+                "details": null
+              }
+            },
+            {
+              "at": 1588,
+              "method": "deprecationNotice",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.",
+                "details": null
+              }
+            },
+            {
+              "at": 1740,
+              "method": "warning",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": null,
+              "params": {
+                "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+                "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+              }
+            }
+          ]
+        },
+        "fingerprintAtTurnCompleted": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 55206,
+          "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+          "lines": 47,
+          "mtimeMs": 1795037517304.205,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 46,
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 21006,
+              "cached_input_tokens": 21,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 222,
+              "reasoning_output_tokens": 21,
+              "total_tokens": 21228
+            },
+            "last": {
+              "input_tokens": 6001,
+              "cached_input_tokens": 6,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 62,
+              "reasoning_output_tokens": 6,
+              "total_tokens": 6063
+            }
+          }
+        },
+        "fingerprintAtSegmentEnd": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 55206,
+          "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+          "lines": 47,
+          "mtimeMs": 1795037517304.205,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 46,
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 21006,
+              "cached_input_tokens": 21,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 222,
+              "reasoning_output_tokens": 21,
+              "total_tokens": 21228
+            },
+            "last": {
+              "input_tokens": 6001,
+              "cached_input_tokens": 6,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 62,
+              "reasoning_output_tokens": 6,
+              "total_tokens": 6063
+            }
+          }
+        },
+        "stopMethod": "stdin-eof",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 1860
+        },
+        "fingerprintAfterExit": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 55206,
+          "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+          "lines": 47,
+          "mtimeMs": 1795037517304.205,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 46,
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 21006,
+              "cached_input_tokens": 21,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 222,
+              "reasoning_output_tokens": 21,
+              "total_tokens": 21228
+            },
+            "last": {
+              "input_tokens": 6001,
+              "cached_input_tokens": 6,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 62,
+              "reasoning_output_tokens": 6,
+              "total_tokens": 6063
+            }
+          }
+        }
+      },
+      {
+        "label": "p4-resume",
+        "method": "thread/resume",
+        "initialize": "result",
+        "fingerprintBeforeOpen": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 55206,
+          "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+          "lines": 47,
+          "mtimeMs": 1795037517304.205,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 46,
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 21006,
+              "cached_input_tokens": 21,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 222,
+              "reasoning_output_tokens": 21,
+              "total_tokens": 21228
+            },
+            "last": {
+              "input_tokens": 6001,
+              "cached_input_tokens": 6,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 62,
+              "reasoning_output_tokens": 6,
+              "total_tokens": 6063
+            }
+          }
+        },
+        "open": {
+          "ok": true,
+          "threadId": "01a1f092-d042-7250-95ed-393bd2923afa"
+        },
+        "fingerprintAtOpen": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 55206,
+          "sha256": "97a025a4da7f5e5d1fa1a381c61db249ed01c88837064307cdd78441d47a3c28",
+          "lines": 47,
+          "mtimeMs": 1795037517304.205,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 46,
+            "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 21006,
+              "cached_input_tokens": 21,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 222,
+              "reasoning_output_tokens": 21,
+              "total_tokens": 21228
+            },
+            "last": {
+              "input_tokens": 6001,
+              "cached_input_tokens": 6,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 62,
+              "reasoning_output_tokens": 6,
+              "total_tokens": 6063
+            }
+          }
+        },
+        "modelRequests": [
+          7,
+          8
+        ],
+        "result": {
+          "label": "p4-resume",
+          "toolCalls": [
+            {
+              "method": "item/tool/call",
+              "tool": "host_probe",
+              "namespace": null,
+              "callId": "call_7",
+              "heldMs": 0,
+              "answer": "host result for call_7",
+              "abortedAt": null,
+              "abortReason": null,
+              "notificationsDuringHold": []
+            }
+          ],
+          "dynamicToolItems": [
+            {
+              "at": 2424,
+              "method": "item/started",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_7",
+              "itemStatus": "inProgress",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": null,
+              "contentItems": null,
+              "arguments": {
+                "note": "request 7"
+              }
+            },
+            {
+              "at": 2456,
+              "method": "item/completed",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+              "itemType": "dynamicToolCall",
+              "itemId": "call_7",
+              "itemStatus": "completed",
+              "tool": "host_probe",
+              "namespace": null,
+              "success": true,
+              "contentItems": [
+                {
+                  "type": "inputText",
+                  "text": "host result for call_7"
+                }
+              ],
+              "arguments": {
+                "note": "request 7"
+              }
+            }
+          ],
+          "agentMessages": [
+            "answer after call_7"
+          ],
+          "turn": {
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+            "status": "completed",
+            "error": null,
+            "turnStart": null
+          },
+          "usage": [
+            {
+              "at": 2277,
+              "turnId": "01a1f092-d5ae-7d12-af0a-c9cc52cb974b",
+              "total": {
+                "totalTokens": 21228,
+                "inputTokens": 21006,
+                "cachedInputTokens": 21,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 222,
+                "reasoningOutputTokens": 21
+              },
+              "last": {
+                "totalTokens": 6063,
+                "inputTokens": 6001,
+                "cachedInputTokens": 6,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 62,
+                "reasoningOutputTokens": 6
+              }
+            },
+            {
+              "at": 2480,
+              "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+              "total": {
+                "totalTokens": 28301,
+                "inputTokens": 28007,
+                "cachedInputTokens": 28,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 294,
+                "reasoningOutputTokens": 28
+              },
+              "last": {
+                "totalTokens": 7073,
+                "inputTokens": 7001,
+                "cachedInputTokens": 7,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 72,
+                "reasoningOutputTokens": 7
+              }
+            },
+            {
+              "at": 2510,
+              "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003",
+              "total": {
+                "totalTokens": 36384,
+                "inputTokens": 36008,
+                "cachedInputTokens": 36,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 376,
+                "reasoningOutputTokens": 36
+              },
+              "last": {
+                "totalTokens": 8083,
+                "inputTokens": 8001,
+                "cachedInputTokens": 8,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 82,
+                "reasoningOutputTokens": 8
+              }
+            }
+          ],
+          "errors": [
+            {
+              "at": 2180,
+              "method": "configWarning",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+                "details": null
+              }
+            },
+            {
+              "at": 2186,
+              "method": "deprecationNotice",
+              "threadId": null,
+              "turnId": null,
+              "params": {
+                "summary": "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.",
+                "details": null
+              }
+            },
+            {
+              "at": 2286,
+              "method": "warning",
+              "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+              "turnId": null,
+              "params": {
+                "threadId": "01a1f092-d042-7250-95ed-393bd2923afa",
+                "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+              }
+            }
+          ]
+        },
+        "fingerprintAtTurnCompleted": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 63552,
+          "sha256": "ed95303036bd5cf3cdd5b4dfd4195908d0e6f7934833388c5268b9de5496b760",
+          "lines": 61,
+          "mtimeMs": 1795037518011.2039,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 60,
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 36008,
+              "cached_input_tokens": 36,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 376,
+              "reasoning_output_tokens": 36,
+              "total_tokens": 36384
+            },
+            "last": {
+              "input_tokens": 8001,
+              "cached_input_tokens": 8,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 82,
+              "reasoning_output_tokens": 8,
+              "total_tokens": 8083
+            }
+          }
+        },
+        "fingerprintAtSegmentEnd": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 63552,
+          "sha256": "ed95303036bd5cf3cdd5b4dfd4195908d0e6f7934833388c5268b9de5496b760",
+          "lines": 61,
+          "mtimeMs": 1795037518011.2039,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 60,
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 36008,
+              "cached_input_tokens": 36,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 376,
+              "reasoning_output_tokens": 36,
+              "total_tokens": 36384
+            },
+            "last": {
+              "input_tokens": 8001,
+              "cached_input_tokens": 8,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 82,
+              "reasoning_output_tokens": 8,
+              "total_tokens": 8083
+            }
+          }
+        },
+        "stopMethod": "stdin-eof",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 2593
+        },
+        "fingerprintAfterExit": {
+          "path": "sessions/2026/11/18/rollout-2026-11-18T21-31-55-01a1f092-d042-7250-95ed-393bd2923afa.jsonl",
+          "bytes": 63552,
+          "sha256": "ed95303036bd5cf3cdd5b4dfd4195908d0e6f7934833388c5268b9de5496b760",
+          "lines": 61,
+          "mtimeMs": 1795037518011.2039,
+          "lastLine": {
+            "type": "event_msg",
+            "payloadType": "task_complete"
+          },
+          "lastTaskComplete": {
+            "line": 60,
+            "turnId": "01a1f092-d7cf-71b1-8a41-871ac7d23003"
+          },
+          "rolloutTotals": {
+            "total": {
+              "input_tokens": 36008,
+              "cached_input_tokens": 36,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 376,
+              "reasoning_output_tokens": 36,
+              "total_tokens": 36384
+            },
+            "last": {
+              "input_tokens": 8001,
+              "cached_input_tokens": 8,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 82,
+              "reasoning_output_tokens": 8,
+              "total_tokens": 8083
+            }
+          }
+        }
+      }
+    ],
+    "syntheticUsagePerResponse": {
+      "1": {
+        "input_tokens": 1001,
+        "input_tokens_details": {
+          "cached_tokens": 1
+        },
+        "output_tokens": 12,
+        "output_tokens_details": {
+          "reasoning_tokens": 1
+        },
+        "total_tokens": 1013
+      },
+      "2": {
+        "input_tokens": 2001,
+        "input_tokens_details": {
+          "cached_tokens": 2
+        },
+        "output_tokens": 22,
+        "output_tokens_details": {
+          "reasoning_tokens": 2
+        },
+        "total_tokens": 2023
+      },
+      "3": {
+        "input_tokens": 3001,
+        "input_tokens_details": {
+          "cached_tokens": 3
+        },
+        "output_tokens": 32,
+        "output_tokens_details": {
+          "reasoning_tokens": 3
+        },
+        "total_tokens": 3033
+      },
+      "4": {
+        "input_tokens": 4001,
+        "input_tokens_details": {
+          "cached_tokens": 4
+        },
+        "output_tokens": 42,
+        "output_tokens_details": {
+          "reasoning_tokens": 4
+        },
+        "total_tokens": 4043
+      },
+      "5": {
+        "input_tokens": 5001,
+        "input_tokens_details": {
+          "cached_tokens": 5
+        },
+        "output_tokens": 52,
+        "output_tokens_details": {
+          "reasoning_tokens": 5
+        },
+        "total_tokens": 5053
+      },
+      "6": {
+        "input_tokens": 6001,
+        "input_tokens_details": {
+          "cached_tokens": 6
+        },
+        "output_tokens": 62,
+        "output_tokens_details": {
+          "reasoning_tokens": 6
+        },
+        "total_tokens": 6063
+      },
+      "7": {
+        "input_tokens": 7001,
+        "input_tokens_details": {
+          "cached_tokens": 7
+        },
+        "output_tokens": 72,
+        "output_tokens_details": {
+          "reasoning_tokens": 7
+        },
+        "total_tokens": 7073
+      },
+      "8": {
+        "input_tokens": 8001,
+        "input_tokens_details": {
+          "cached_tokens": 8
+        },
+        "output_tokens": 82,
+        "output_tokens_details": {
+          "reasoning_tokens": 8
+        },
+        "total_tokens": 8083
+      }
+    }
+  }
+}

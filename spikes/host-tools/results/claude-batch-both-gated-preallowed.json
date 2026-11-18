@@ -1,0 +1,1264 @@
+{
+  "probe": "claude-batch-both-gated-preallowed",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-claude-batch-both-gated-preallowed-afd248b1",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-7iT55W,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "300",
+    "node",
+    "/probe/claude-probe.mjs",
+    "batch-both-gated-preallowed"
+  ],
+  "startedAt": "2026-11-18T21:31:54.491Z",
+  "finishedAt": "2026-11-18T21:31:59.900Z",
+  "provenance": {
+    "gitHead": "6bc4d8d77e60087d6ffb2c2e600d7d8f98260c29",
+    "probeSources": {
+      "spikes/host-tools/claude-probe.mjs": "af4505f2494b5df7b821b139f105bf9262d0377f63cc9af9b9aa76cb1f66541d",
+      "spikes/host-tools/codex-probe.mjs": "9241c99d1fa69d39d6589c477051983adf97ea62c2932a8d43dcbd4edd236fae",
+      "spikes/host-tools/facts-probe.mjs": "c67d31a57408eeb8481a14e0a5da16dfdc80446f2fd35a79e3e82c56284e0c18",
+      "spikes/host-tools/pi-probe.mjs": "47a7d77e0bd658b33e59fcbb3c81bdf171ee7894845e00bd11a2cdfe5aff12df",
+      "spikes/host-tools/pi-seccomp.mjs": "e33732fad996b1628f65787d451e71e83dacb02df0168f3f343a0a6712532344",
+      "spikes/host-tools/run.mjs": "e8401829145548550aa3b3c3e13e4d80d77d5c9c899eda576757a82aab411b47"
+    },
+    "transportSources": {
+      "src/adapters/codex/transport.ts": "ae39146c6749070b0e364cfb3491a0838a54debfe988a0b98a166a33c5f3972c",
+      "src/adapters/codex/wire.ts": "394b244ecd7a71c16cba408a410c96b446ef7509891aa71ec470b95722efb6a6",
+      "src/core/events.ts": "6129339b4987f337d8114ebec498f264f9f6acebf2bbbbb45ebbe9bd6736b712"
+    },
+    "docker": {
+      "server": "29.2.1",
+      "arch": "arm64",
+      "os": "Ubuntu 24.04.4 LTS"
+    },
+    "runnerPlatform": "darwin/arm64",
+    "volume": {
+      "name": "sb-p0-host-tools-nm",
+      "npm": "11.19.1",
+      "packages": {
+        "@openai/codex": {
+          "version": "0.169.0",
+          "integrity": "sha512-KhzYlkKPxoNssR8CEm45IjqnFWn7UtlF4CiD3tOJPea51xBs7MaHy0UQG9GSbCqk6Lrjn5QdJDV0QD1/FgWlGw=="
+        },
+        "@openai/codex-linux-arm64": {
+          "version": "0.169.0-linux-arm64",
+          "integrity": "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg=="
+        },
+        "@openai/codex-sdk": {
+          "version": "0.169.0",
+          "integrity": "sha512-N2ZApXiOjjDiWKuoyaW3zdww9ggFtxKjeMp5qq+kW77UXDOxY2O6hg60ahip319Tlt6iwYEoDfPQzn9a6d3jFA=="
+        },
+        "@anthropic-ai/claude-agent-sdk": {
+          "version": "0.3.323",
+          "integrity": "sha512-GXIczMzzceNWB+bIImK59hWOQoBWZtSw+AESPc/qbAWmmHM8Wrqb5KvTwWZ07CmjyC/KcPC47nOLxxyHlWqKPA=="
+        },
+        "@anthropic-ai/claude-agent-sdk-linux-arm64": {
+          "version": "0.3.323",
+          "integrity": "sha512-ONhCJapk9UxpaZ3HY1GTZezMoiQ6Ab7fIubS+dJeXIyj8aQjGQALHQoEl9D1Hrr+q5ppZPOAt0hg69x8aGbTBA=="
+        },
+        "@modelcontextprotocol/sdk": {
+          "version": "1.32.2",
+          "integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw=="
+        },
+        "@earendil-works/pi-ai": {
+          "version": "1.5.2",
+          "integrity": "sha512-2tWPSnV3qzfiDIY3aWluBag3vC++Vs+VsXt/UquSU5onPMohPih72FUhIhaqmDdMYubOgB3Byl9uF4Vk40JLvQ=="
+        },
+        "@earendil-works/pi-coding-agent": {
+          "version": "1.5.2",
+          "integrity": "sha512-mUWI04rqF1Vd/m1q+Ps1XeWsTXEVvRUnsmRa83I3Dzua0Tx5bYS93imeqtIfrXf7PkkaR6ERz+AuQhIJlom5yA=="
+        },
+        "@earendil-works/pi-agent-core": {
+          "version": "1.5.2",
+          "integrity": "sha512-ie5mejS7mGfXt//9As7i3LfxVXdktZvF1JP4EQsUXTp4mU437h23MNGx7wXZ5VYs3YiG/Qnj3e7OZ2HC069OMw=="
+        },
+        "typescript": {
+          "version": "7.0.2",
+          "integrity": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="
+        }
+      }
+    }
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "batch-both-gated-preallowed",
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "versions": {
+      "sdk": "0.3.323",
+      "cliPackage": "0.3.323",
+      "mcp": "1.32.2"
+    },
+    "model": [
+      {
+        "n": 1,
+        "at": 2267,
+        "phase": 1,
+        "path": "/v1/messages",
+        "tools": [
+          "mcp__host__host_echo",
+          "mcp__host__host_probe"
+        ],
+        "stream": true,
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "<system-reminder>\n# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/probe/project\n - Is a git repository: f"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nYou are powered by the model named Sonnet 4.6. The exact model ID is claude-sonnet-4-6. Assistant knowledge cutoff is August 2025.\n</system-re"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nToday's date is 2026-11-18.\n</system-reminder>\n"
+              },
+              {
+                "type": "text",
+                "text": "scenario:batch-both-gated-preallowed please call the host tool"
+              }
+            ]
+          }
+        ],
+        "resultCounts": {},
+        "reply": {
+          "calls": [
+            {
+              "id": "toolu_01HostProbeBatch0000005",
+              "name": "mcp__host__host_probe"
+            },
+            {
+              "id": "toolu_01HostEchoBatch00000005",
+              "name": "mcp__host__host_echo"
+            }
+          ]
+        }
+      },
+      {
+        "n": 2,
+        "at": 3923,
+        "phase": 2,
+        "path": "/v1/messages",
+        "tools": [
+          "mcp__host__host_echo",
+          "mcp__host__host_probe"
+        ],
+        "stream": true,
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "<system-reminder>\n# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/probe/project\n - Is a git repository: f"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nYou are powered by the model named Sonnet 4.6. The exact model ID is claude-sonnet-4-6. Assistant knowledge cutoff is August 2025.\n</system-re"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nToday's date is 2026-11-18.\n</system-reminder>\n"
+              },
+              {
+                "type": "text",
+                "text": "scenario:batch-both-gated-preallowed please call the host tool"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostEchoBatch00000005",
+                "name": "mcp__host__host_echo",
+                "input": {
+                  "note": "batch-both-gated-preallowed"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_01HostEchoBatch00000005",
+                "content": "host result for host_echo in phase 2"
+              },
+              {
+                "type": "text",
+                "text": "Continue from where you left off."
+              }
+            ]
+          }
+        ],
+        "resultCounts": {
+          "toolu_01HostEchoBatch00000005": 1
+        },
+        "reply": {
+          "text": "done after toolu_01HostEchoBatch00000005"
+        }
+      }
+    ],
+    "phases": [
+      {
+        "phase": 1,
+        "hostExit": {
+          "code": 0,
+          "signal": null
+        },
+        "hostStderrTail": "",
+        "hooks": [
+          {
+            "at": 2470,
+            "event": "PreToolUse",
+            "tool_name": "mcp__host__host_probe",
+            "tool_use_id": "toolu_01HostProbeBatch0000005",
+            "tool_input": {
+              "note": "batch-both-gated-preallowed"
+            },
+            "mcp_server": {
+              "name": "host",
+              "source": "dynamic"
+            },
+            "savedDeferral": false,
+            "decision": "defer"
+          },
+          {
+            "at": 2524,
+            "event": "PreToolUse",
+            "tool_name": "mcp__host__host_echo",
+            "tool_use_id": "toolu_01HostEchoBatch00000005",
+            "tool_input": {
+              "note": "batch-both-gated-preallowed"
+            },
+            "mcp_server": {
+              "name": "host",
+              "source": "dynamic"
+            },
+            "savedDeferral": false,
+            "decision": "defer"
+          }
+        ],
+        "mcp": [
+          {
+            "at": 1885,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 1924,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 1955,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 1972,
+            "method": "GET",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 1982,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          }
+        ],
+        "handlers": [],
+        "sdk": [
+          {
+            "at": 2187,
+            "type": "system",
+            "subtype": "init",
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "tools": [
+              "mcp__host__host_echo",
+              "mcp__host__host_probe"
+            ],
+            "mcp_servers": [
+              {
+                "name": "host",
+                "status": "connected",
+                "source": "dynamic"
+              }
+            ],
+            "permissionMode": "dontAsk",
+            "claude_code_version": "2.1.323"
+          },
+          {
+            "at": 2396,
+            "type": "assistant",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeBatch0000005",
+                "name": "mcp__host__host_probe",
+                "input": {
+                  "note": "batch-both-gated-preallowed"
+                }
+              }
+            ]
+          },
+          {
+            "at": 2475,
+            "type": "assistant",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostEchoBatch00000005",
+                "name": "mcp__host__host_echo",
+                "input": {
+                  "note": "batch-both-gated-preallowed"
+                }
+              }
+            ]
+          },
+          {
+            "at": 2548,
+            "type": "result",
+            "subtype": "success",
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "is_error": false,
+            "stop_reason": "tool_deferred",
+            "terminal_reason": "tool_deferred",
+            "deferred_tool_use": {
+              "id": "toolu_01HostEchoBatch00000005",
+              "name": "mcp__host__host_echo",
+              "input": {
+                "note": "batch-both-gated-preallowed"
+              }
+            },
+            "num_turns": 1,
+            "result": "",
+            "permission_denials": [],
+            "errors": null
+          }
+        ],
+        "cli": [
+          {
+            "at": 1157,
+            "pid": 24,
+            "command": "<node_modules>/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
+            "args": [
+              "--output-format",
+              "stream-json",
+              "--verbose",
+              "--input-format",
+              "stream-json",
+              "--max-turns=3",
+              "--model=claude-sonnet-4-6",
+              "--debug-file=/home/probe/debug-batch-both-gated-preallowed-1.log",
+              "--allowedTools=mcp__host__host_probe,mcp__host__host_echo",
+              "--tools=",
+              "--mcp-config",
+              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:39637/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
+              "--setting-sources=",
+              "--strict-mcp-config",
+              "--permission-mode=dontAsk"
+            ],
+            "exit": {
+              "code": 0,
+              "signal": null,
+              "at": 2617
+            }
+          }
+        ],
+        "result": {
+          "at": 2548,
+          "type": "result",
+          "subtype": "success",
+          "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+          "is_error": false,
+          "stop_reason": "tool_deferred",
+          "terminal_reason": "tool_deferred",
+          "deferred_tool_use": {
+            "id": "toolu_01HostEchoBatch00000005",
+            "name": "mcp__host__host_echo",
+            "input": {
+              "note": "batch-both-gated-preallowed"
+            }
+          },
+          "num_turns": 1,
+          "result": "",
+          "permission_denials": [],
+          "errors": null
+        },
+        "debugLines": [
+          "2026-11-18T21:31:58.312Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: defer",
+          "2026-11-18T21:31:58.315Z [DEBUG] Hook result has permissionBehavior=defer",
+          "2026-11-18T21:31:58.338Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: defer",
+          "2026-11-18T21:31:58.344Z [DEBUG] Hook result has permissionBehavior=defer"
+        ],
+        "transcript": [
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "c50d9b65-4a86-4380-be2d-4b6fe92da082",
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "21b9b8dc-52bd-4ed3-9562-2b742ce710cd",
+            "parentUuid": "c50d9b65-4a86-4380-be2d-4b6fe92da082",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "environment",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "29c050c3-0f11-4c3d-915b-9329a89a3ce3",
+            "parentUuid": "21b9b8dc-52bd-4ed3-9562-2b742ce710cd",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "model",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "495463b1-123e-4264-976e-08d7655ba2f6",
+            "parentUuid": "29c050c3-0f11-4c3d-915b-9329a89a3ce3",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "total_tokens_reminder",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "atis-latch",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "ed6c150e-54b8-4b94-855b-5787761476cc",
+            "parentUuid": "495463b1-123e-4264-976e-08d7655ba2f6",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "session_context",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "cc3a8b39-1f82-4318-b5f2-d16212ccba92",
+            "parentUuid": "ed6c150e-54b8-4b94-855b-5787761476cc",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "date",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "015fdea4-88a6-49d8-98a8-14a4ca52b0ff",
+            "parentUuid": "cc3a8b39-1f82-4318-b5f2-d16212ccba92",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "api-request-shape",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "api-request-blob",
+            "uuid": null,
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "api-request",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "tools-used",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "f202c80b-80e1-4a49-bfbe-cc95b7c1a477",
+            "parentUuid": "015fdea4-88a6-49d8-98a8-14a4ca52b0ff",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeBatch0000005"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "4f5e50f2-a2dc-4cd1-9131-0b8407569c2d",
+            "parentUuid": "f202c80b-80e1-4a49-bfbe-cc95b7c1a477",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostEchoBatch00000005"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "tools-used",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "aa4403db-f13f-483d-8e2d-6423f4e79445",
+            "parentUuid": "4f5e50f2-a2dc-4cd1-9131-0b8407569c2d",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "hook_deferred_tool",
+              "toolUseID": "toolu_01HostProbeBatch0000005"
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "46297e6b-dc71-4c8d-ae2f-f3ff27f77bc6",
+            "parentUuid": "aa4403db-f13f-483d-8e2d-6423f4e79445",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "hook_deferred_tool",
+              "toolUseID": "toolu_01HostEchoBatch00000005"
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "6b4f1291-be92-460a-85bd-c3725a081dcc",
+            "parentUuid": "46297e6b-dc71-4c8d-ae2f-f3ff27f77bc6",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "last-prompt",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "cost-state",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          }
+        ],
+        "mcpPort": 39637
+      },
+      {
+        "phase": 2,
+        "hostExit": {
+          "code": 0,
+          "signal": null
+        },
+        "hostStderrTail": "",
+        "hooks": [
+          {
+            "at": 3811,
+            "event": "PreToolUse",
+            "tool_name": "mcp__host__host_echo",
+            "tool_use_id": "toolu_01HostEchoBatch00000005",
+            "tool_input": {
+              "note": "batch-both-gated-preallowed"
+            },
+            "mcp_server": {
+              "name": "host",
+              "source": "dynamic"
+            },
+            "savedDeferral": true,
+            "decision": "allow"
+          },
+          {
+            "at": 3848,
+            "event": "PostToolUse",
+            "tool_name": "mcp__host__host_echo",
+            "tool_use_id": "toolu_01HostEchoBatch00000005"
+          }
+        ],
+        "mcp": [
+          {
+            "at": 3571,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 3641,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 3671,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 3678,
+            "method": "GET",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 3684,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 3828,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          }
+        ],
+        "handlers": [
+          {
+            "at": 3833,
+            "name": "host_echo",
+            "arguments": {
+              "note": "batch-both-gated-preallowed"
+            },
+            "text": "host result for host_echo in phase 2",
+            "toolUseId": "toolu_01HostEchoBatch00000005"
+          }
+        ],
+        "sdk": [
+          {
+            "at": 3755,
+            "type": "command_lifecycle",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b"
+          },
+          {
+            "at": 3851,
+            "type": "attachment",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b"
+          },
+          {
+            "at": 3857,
+            "type": "user",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "blocks": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_01HostEchoBatch00000005",
+                "content": "host result for host_echo in phase 2"
+              }
+            ]
+          },
+          {
+            "at": 3857,
+            "type": "attachment",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b"
+          },
+          {
+            "at": 3885,
+            "type": "system",
+            "subtype": "init",
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "tools": [
+              "mcp__host__host_echo",
+              "mcp__host__host_probe"
+            ],
+            "mcp_servers": [
+              {
+                "name": "host",
+                "status": "connected",
+                "source": "dynamic"
+              }
+            ],
+            "permissionMode": "dontAsk",
+            "claude_code_version": "2.1.323"
+          },
+          {
+            "at": 3929,
+            "type": "assistant",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "done after toolu_01HostEchoBatch00000005"
+              }
+            ]
+          },
+          {
+            "at": 3939,
+            "type": "result",
+            "subtype": "success",
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+            "is_error": false,
+            "stop_reason": "end_turn",
+            "terminal_reason": "completed",
+            "deferred_tool_use": null,
+            "num_turns": 1,
+            "result": "done after toolu_01HostEchoBatch00000005",
+            "permission_denials": [],
+            "errors": null
+          },
+          {
+            "at": 3941,
+            "type": "command_lifecycle",
+            "subtype": null,
+            "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b"
+          }
+        ],
+        "cli": [
+          {
+            "at": 3273,
+            "pid": 45,
+            "command": "<node_modules>/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
+            "args": [
+              "--output-format",
+              "stream-json",
+              "--verbose",
+              "--input-format",
+              "stream-json",
+              "--max-turns=3",
+              "--model=claude-sonnet-4-6",
+              "--debug-file=/home/probe/debug-batch-both-gated-preallowed-2.log",
+              "--resume=2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+              "--allowedTools=mcp__host__host_probe,mcp__host__host_echo",
+              "--tools=",
+              "--mcp-config",
+              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:36321/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
+              "--setting-sources=",
+              "--strict-mcp-config",
+              "--permission-mode=dontAsk",
+              "--await-initialize"
+            ],
+            "exit": {
+              "code": 0,
+              "signal": null,
+              "at": 3994
+            }
+          }
+        ],
+        "result": {
+          "at": 3939,
+          "type": "result",
+          "subtype": "success",
+          "session_id": "2691db5d-ac32-47ee-a5ff-4cfb2140835b",
+          "is_error": false,
+          "stop_reason": "end_turn",
+          "terminal_reason": "completed",
+          "deferred_tool_use": null,
+          "num_turns": 1,
+          "result": "done after toolu_01HostEchoBatch00000005",
+          "permission_denials": [],
+          "errors": null
+        },
+        "debugLines": [
+          "2026-11-18T21:31:59.555Z [DEBUG] [print.ts] Auto-resuming deferred tool: mcp__host__host_echo (toolu_01HostEchoBatch00000005)",
+          "2026-11-18T21:31:59.596Z [DEBUG] Deferred tool resume: re-emitting mcp__host__host_echo (toolu_01HostEchoBatch00000005) through PreToolUse",
+          "2026-11-18T21:31:59.623Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: allow"
+        ],
+        "transcript": [
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "c50d9b65-4a86-4380-be2d-4b6fe92da082",
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "21b9b8dc-52bd-4ed3-9562-2b742ce710cd",
+            "parentUuid": "c50d9b65-4a86-4380-be2d-4b6fe92da082",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "environment",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "29c050c3-0f11-4c3d-915b-9329a89a3ce3",
+            "parentUuid": "21b9b8dc-52bd-4ed3-9562-2b742ce710cd",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "model",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "495463b1-123e-4264-976e-08d7655ba2f6",
+            "parentUuid": "29c050c3-0f11-4c3d-915b-9329a89a3ce3",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "total_tokens_reminder",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "atis-latch",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "ed6c150e-54b8-4b94-855b-5787761476cc",
+            "parentUuid": "495463b1-123e-4264-976e-08d7655ba2f6",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "session_context",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "cc3a8b39-1f82-4318-b5f2-d16212ccba92",
+            "parentUuid": "ed6c150e-54b8-4b94-855b-5787761476cc",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "date",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "015fdea4-88a6-49d8-98a8-14a4ca52b0ff",
+            "parentUuid": "cc3a8b39-1f82-4318-b5f2-d16212ccba92",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "api-request-shape",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "api-request-blob",
+            "uuid": null,
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "api-request",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "tools-used",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "f202c80b-80e1-4a49-bfbe-cc95b7c1a477",
+            "parentUuid": "015fdea4-88a6-49d8-98a8-14a4ca52b0ff",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeBatch0000005"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "4f5e50f2-a2dc-4cd1-9131-0b8407569c2d",
+            "parentUuid": "f202c80b-80e1-4a49-bfbe-cc95b7c1a477",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostEchoBatch00000005"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "tools-used",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "aa4403db-f13f-483d-8e2d-6423f4e79445",
+            "parentUuid": "4f5e50f2-a2dc-4cd1-9131-0b8407569c2d",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "hook_deferred_tool",
+              "toolUseID": "toolu_01HostProbeBatch0000005"
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "46297e6b-dc71-4c8d-ae2f-f3ff27f77bc6",
+            "parentUuid": "aa4403db-f13f-483d-8e2d-6423f4e79445",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "hook_deferred_tool",
+              "toolUseID": "toolu_01HostEchoBatch00000005"
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "6b4f1291-be92-460a-85bd-c3725a081dcc",
+            "parentUuid": "46297e6b-dc71-4c8d-ae2f-f3ff27f77bc6",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "last-prompt",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "cost-state",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "79041ec6-f97b-4ed8-a066-aac98d4e825c",
+            "parentUuid": "4f5e50f2-a2dc-4cd1-9131-0b8407569c2d",
+            "role": "user",
+            "blocks": [
+              {
+                "type": "tool_result",
+                "id": "toolu_01HostEchoBatch00000005"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "9b2becfb-993d-48ed-84d3-03fc11f0fa29",
+            "parentUuid": "79041ec6-f97b-4ed8-a066-aac98d4e825c",
+            "role": "user",
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "api-request-blob",
+            "uuid": null,
+            "parentUuid": null,
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostEchoBatch00000005"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "api-request",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "59180e1a-4a30-43cd-93d1-3e2df27efda0",
+            "parentUuid": "9b2becfb-993d-48ed-84d3-03fc11f0fa29",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "last-prompt",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "mode",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "cost-state",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          }
+        ],
+        "mcpPort": 36321
+      }
+    ]
+  }
+}
