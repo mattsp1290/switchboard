@@ -29,6 +29,7 @@ const input = [{ type: 'text', text: 'Fixture only.', text_elements: [] }];
 const settle = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve)); };
 const nativePolicy = { approvalPolicy: 'untrusted', approvalsReviewer: 'user', sandbox: { type: 'readOnly' } };
 const options = { maxObservers: 2, eventCapacity: 64, maxSettled: 8, maxPending: 3, transport };
+const availableDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'];
 const withdrawnFrame = (id) => ({ id, error: { code: -32000, message: 'Request no longer pending', data: null } });
 
 /**
@@ -104,11 +105,12 @@ async function turnOn(session) {
   await started.value.run();
   return started.value;
 }
-/** A native command approval for the session's active turn; returns the pending record the bridge published. */
+/** A native command approval (no `approvalId`, as 0.169 sends) for the active turn; returns the published pending record. */
 async function approval(ctx, session, id = 'req-1', extra = {}) {
   const turnId = ctx.f.turns.get(session.threadId);
   ctx.f.request(id, 'item/commandExecution/requestApproval', { kind: 'command', threadId: session.threadId, turnId,
-    itemId: `item-${id}`, startedAtMs: 1, environmentId: null, command: 'touch /tmp/marker', ...extra });
+    itemId: `item-${id}`, startedAtMs: 1, environmentId: null, command: 'touch /tmp/marker',
+    availableDecisions, ...extra });
   await settle();
   const event = ctx.events.findLast((candidate) => candidate.kind === 'pending');
   assert.ok(event, 'pending published');
@@ -322,7 +324,7 @@ test('transport loss while an approval is pending settles lost, writes nothing a
   ctx.f.lose();
   assert.equal((await turn.completion).kind, 'unconcluded');
   await settle();
-  assert.deepEqual(settledOf(ctx.events), [{ kind: 'lost', reply: 'not-sent' }]);
+  assert.deepEqual(settledOf(ctx.events), [{ kind: 'lost', reply: 'not-sent', cause: 'eof' }]);
   assert.deepEqual(await reply(ctx, choose(pending, 'accept')), refusedError('stale-interaction'));
   assert.deepEqual(ctx.f.replies, []);
 });
@@ -348,7 +350,7 @@ test('a host that never answers trips the transport handler deadline; the approv
   const completion = await turn.completion;
   assert.deepEqual([completion.kind, completion.reason], ['unconcluded', 'handler-timeout']);
   await settle();
-  assert.deepEqual(settledOf(ctx.events), [{ kind: 'lost', reply: 'not-sent' }]);
+  assert.deepEqual(settledOf(ctx.events), [{ kind: 'lost', reply: 'not-sent', cause: 'handler-timeout' }]);
   assert.deepEqual(ctx.f.replies, [], 'the bridge never answers on its own deadline');
 });
 
@@ -407,21 +409,42 @@ test('numeric and string native request ids are answered with their exact type',
   assert.deepEqual(ctx.f.replies, [{ id: '7', result: { decision: 'decline' } }, { id: 7, result: { decision: 'accept' } }]);
 });
 
-test('parameterized native choices carry the request proposal and nothing forces an approval policy', async (t) => {
+test('choices are the request availableDecisions; an object decision is written verbatim and nothing forces a policy', async (t) => {
   const ctx = await setup(t);
   const [session] = ctx.sessions;
   await turnOn(session);
-  const amendment = ['touch', '/tmp/marker'];
-  const network = { host: 'example.test', action: 'allow' };
-  const pending = await approval(ctx, session, 'req-1', { proposedExecpolicyAmendment: amendment, proposedNetworkPolicyAmendments: [network] });
-  assert.deepEqual(pending.choices.map((choice) => choice.nativeChoiceId),
-    ['accept', 'acceptForSession', 'decline', 'cancel', 'acceptWithExecpolicyAmendment', 'applyNetworkPolicyAmendment:0']);
-  await reply(ctx, choose(pending, 'applyNetworkPolicyAmendment:0'));
+  // The 0.169 native shape: no `decline` offered, and the amendment arrives as an object decision.
+  const amendment = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch', '/tmp/marker'] } };
+  const pending = await approval(ctx, session, 'req-1', { availableDecisions: ['accept', amendment, 'cancel'],
+    proposedExecpolicyAmendment: ['touch', '/tmp/marker'] });
+  assert.deepEqual(pending.choices.map((choice) => choice.nativeChoiceId), ['accept', 'acceptWithExecpolicyAmendment:1', 'cancel']);
+  assert.equal(JSON.parse(pending.target.nativeApprovalId)[3], null, 'absent approvalId is part of the identity');
+  for (const choice of ['decline', 'acceptForSession', 'acceptWithExecpolicyAmendment']) {
+    assert.deepEqual(await reply(ctx, choose(pending, choice)), refusedError('choice-mismatch'), choice);
+  }
   await settle();
-  assert.deepEqual(ctx.f.replies, [{ id: 'req-1', result: { decision: { applyNetworkPolicyAmendment: { network_policy_amendment: network } } } }]);
+  assert.deepEqual([ctx.f.replies, ctx.bridge.pending()], [[], [pending]], 'not-offered choices are refused locally, nothing written');
+  await reply(ctx, choose(pending, 'acceptWithExecpolicyAmendment:1'));
+  await settle();
+  assert.deepEqual(ctx.f.replies, [{ id: 'req-1', result: { decision: amendment } }]);
   const policy = ctx.f.params.filter(([method]) => ['thread/start', 'turn/start'].includes(method)).map(([, params]) => params);
   assert.deepEqual(policy.map((params) => [params.approvalPolicy, params.sandbox]), [['untrusted', undefined], [undefined, undefined]],
     'only host-passed policy reaches native');
+});
+
+test('a command approval without a usable availableDecisions list is refused malformed, never given synthesized choices', async (t) => {
+  const ctx = await setup(t);
+  const [session] = ctx.sessions;
+  await turnOn(session);
+  const turnId = ctx.f.turns.get(session.threadId);
+  const lists = [undefined, null, [], ['accept', 'accept'], ['accept', { a: 1, b: 2 }], ['accept', 7]];
+  for (const [n, list] of lists.entries()) {
+    ctx.f.request(`bad-${n}`, 'item/commandExecution/requestApproval',
+      { threadId: session.threadId, turnId, itemId: `item-${n}`, ...(list === undefined ? {} : { availableDecisions: list }) });
+    await settle();
+  }
+  assert.deepEqual(ctx.events.map((event) => [event.kind, event.reason]), lists.map(() => ['refused', 'malformed']));
+  assert.deepEqual(ctx.f.replies.map((frame) => frame.error.code), lists.map(() => -32602));
 });
 
 test('tool and delegation continuations are unsupported for Codex', async (t) => {
@@ -457,7 +480,7 @@ test('approvals beyond maxPending are refused with a decision-free error and nev
   const [a, b] = ctx.sessions;
   const turns = [await turnOn(a), await turnOn(b)];
   const request = (id, session) => ctx.f.request(id, 'item/commandExecution/requestApproval', { threadId: session.threadId,
-    turnId: ctx.f.turns.get(session.threadId), itemId: `item-${id}` });
+    turnId: ctx.f.turns.get(session.threadId), itemId: `item-${id}`, availableDecisions });
   // A burst of maxPending + 1 (= maxHandlers) in one tick: one handler slot is left for the refusal.
   for (const [id, session] of [['a1', a], ['a2', a], ['b1', b], ['b2', b]]) request(id, session);
   await settle();
@@ -479,7 +502,7 @@ test('a request for a turn whose terminal was already observed is withdrawn at o
   ctx.f.complete(session.threadId);
   await turn.completion;
   await settle();
-  ctx.f.request('late', 'item/commandExecution/requestApproval', { threadId: session.threadId, turnId, itemId: 'i' });
+  ctx.f.request('late', 'item/commandExecution/requestApproval', { threadId: session.threadId, turnId, itemId: 'i', availableDecisions });
   await settle();
   assert.deepEqual(settledOf(ctx.events), [{ kind: 'withdrawn', by: 'turn/completed', evidence: 'unqualified' }]);
   assert.equal(ctx.f.replies[0].error.code, -32000);
@@ -494,7 +517,7 @@ test('a blind bridge observer is reported and its live approvals stay answerable
   assert.equal(ctx.bridge.attach(overflowed).kind, 'ok');
   await settle();
   assert.deepEqual(ctx.events.filter((event) => event.kind === 'blind'), [{ kind: 'blind', threadId }]);
-  ctx.f.request('blind-1', 'item/commandExecution/requestApproval', { threadId, turnId: 'turn-b', itemId: 'item-b' });
+  ctx.f.request('blind-1', 'item/commandExecution/requestApproval', { threadId, turnId: 'turn-b', itemId: 'item-b', availableDecisions });
   await settle();
   const pending = ctx.events.findLast((event) => event.kind === 'pending').pending;
   assert.equal((await reply(ctx, choose(pending, 'decline'))).kind, 'ok');

@@ -5,7 +5,7 @@ import { interactionLimits, parseInteractionContinuation } from '../../core/inte
 import type { ApprovalTarget, InteractionError, NativeDelivery, PendingApproval, ToolEffect } from '../../core/interaction.js';
 import type { CodexEvidence, CodexSession, CodexSessionEvent } from './execution.js';
 import type { RequestId } from './protocol/RequestId.js';
-import type { TransportBounds, TransportOptions } from './transport.js';
+import type { EndReason, TransportBounds, TransportOptions } from './transport.js';
 import type { IncomingCall, RpcReply } from './wire.js';
 
 /**
@@ -63,8 +63,8 @@ export type CodexSettlement =
     readonly evidence: 'unqualified' }
   /** The host-selected expiry answered a decision-free error; its native fate is unqualified. */
   | { readonly kind: 'expired'; readonly delivery: NativeDelivery }
-  /** The transport ended first: no decision was written, and none ever will be. */
-  | { readonly kind: 'lost'; readonly reply: 'not-sent' };
+  /** The transport ended first (`cause`, e.g. `handler-timeout`): no decision was written, and none ever will be. */
+  | { readonly kind: 'lost'; readonly reply: 'not-sent'; readonly cause: EndReason | 'aborted' };
 export type CodexInteractionEvent =
   | { readonly kind: 'pending'; readonly pending: PendingApproval; readonly evidence: CodexEvidence }
   | { readonly kind: 'refused'; readonly method: string; readonly threadId: string | null;
@@ -126,30 +126,27 @@ const withdrawnReply = refusal(-32000, 'Request no longer pending');
 const expiredReply = refusal(-32000, 'Approval expired unanswered');
 const unknown = Object.freeze({ kind: 'unknown' } as const);
 const fail = <E>(error: E) => Object.freeze({ kind: 'error', error: Object.freeze(error) }) as { kind: 'error'; error: E };
-const stableDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
+/** The file-change request carries no `availableDecisions` in the 0.169 bindings; its decision enum is this set. */
+const fileChangeDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
 const unanswered = (entry: Entry) => entry.state === 'live' || entry.state === 'reserved';
 
-/** Native choices are the decisions this request admits; parameterized ones carry the request's own proposal. */
-function decisions(method: Entry['method'], params: Record<string, unknown>): Map<string, unknown> {
-  const choices = new Map<string, unknown>(stableDecisions.map((decision) => [decision, decision]));
-  if (method !== 'item/commandExecution/requestApproval') return choices;
-  if (Array.isArray(params.availableDecisions)) {
-    // Experimental API: the native advertises the exact set, so it replaces the stable one.
-    choices.clear();
-    params.availableDecisions.forEach((decision: unknown, index) => {
-      const name = typeof decision === 'string' ? decision : record(decision) ? `${Object.keys(decision)[0]}:${index}` : undefined;
-      if (name) choices.set(name, decision);
-    });
-    return choices;
+/**
+ * Choices are exactly the request's own `availableDecisions` (0.169 command approvals under `untrusted`/`read-only` offer
+ * `accept`, `{acceptWithExecpolicyAmendment}` and `cancel`, never `decline`). A string decision is its own choice. A
+ * single-key object decision is passed through opaque as `<key>:<index>`: the reply writes a copy of the request's object
+ * verbatim, so the bridge never builds or edits a proposal. Anything else, or a command approval without the list, is
+ * `undefined` (refused malformed): the bridge never synthesizes a decision native did not offer.
+ */
+function decisions(method: Entry['method'], params: Record<string, unknown>): Map<string, unknown> | undefined {
+  const offered: unknown = params.availableDecisions ?? (method === 'item/fileChange/requestApproval' ? fileChangeDecisions : null);
+  if (!Array.isArray(offered)) return undefined;
+  const choices = new Map<string, unknown>();
+  for (const [index, decision] of offered.entries()) {
+    const name = typeof decision === 'string' ? decision
+      : record(decision) && Object.keys(decision).length === 1 ? `${Object.keys(decision)[0]}:${index}` : undefined;
+    if (name === undefined || choices.has(name)) return undefined;
+    choices.set(name, structuredClone(decision));
   }
-  const amendment = params.proposedExecpolicyAmendment;
-  if (amendment !== undefined && amendment !== null) {
-    choices.set('acceptWithExecpolicyAmendment', { acceptWithExecpolicyAmendment: { execpolicy_amendment: amendment } });
-  }
-  const network = params.proposedNetworkPolicyAmendments;
-  if (Array.isArray(network)) network.forEach((proposal: unknown, index) => {
-    choices.set(`applyNetworkPolicyAmendment:${index}`, { applyNetworkPolicyAmendment: { network_policy_amendment: proposal } });
-  });
   return choices;
 }
 
@@ -244,6 +241,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     // Typed and lossless: the JSON-RPC id keeps its type, and the turn makes it unique across app-server generations.
     const id = JSON.stringify([request.id, turnId, itemId, approvalId]);
     const choices = decisions(method, params);
+    if (!choices) return refuse(request, 'malformed');
     const target: ApprovalTarget = Object.freeze({ kind: 'approval', session: attached.session.reference, nativeApprovalId: id,
       tool: Object.freeze({ nativeToolCallId: itemId }) });
     const pending: PendingApproval = Object.freeze({ kind: 'approval', target, nativePolicy: attached.policy,
@@ -262,7 +260,10 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
     const entry: Entry = { id, requestId: request.id, threadId, turnId, itemId, method, decisions: choices,
       pending, state: 'live', timer: undefined, finish };
-    const onAbort = () => { if (unanswered(entry)) settle(entry, { kind: 'lost', reply: 'not-sent' }, withdrawnReply); };
+    const onAbort = () => {
+      if (unanswered(entry)) settle(entry, { kind: 'lost', reply: 'not-sent',
+        cause: typeof signal.reason === 'string' ? signal.reason as EndReason : 'aborted' }, withdrawnReply);
+    };
     signal.addEventListener('abort', onAbort, { once: true });
     live.set(id, entry);
     publish({ kind: 'pending', pending: entry.pending, evidence: codexApprovalEvidence[method] });

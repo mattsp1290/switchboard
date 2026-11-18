@@ -11,7 +11,7 @@ import { codexApprovalEvidence, codexServerRequestSupport, createCodexInteractio
 // app-servers, lends their stdio as the channel, attests process exit and continues approvals through the bridge. It
 // records facts, raw native observations, every native error and named failed checks; the host
 // (interaction-proof.mjs) is the only place a run passes. Never retries.
-const SCENARIOS = ['N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'N7', 'N8', 'N9'];
+const SCENARIOS = ['N1', 'N2', 'N3', 'N4', 'N5', 'N7', 'N8', 'N9'];
 const [scenario] = process.argv.slice(2);
 if (!SCENARIOS.includes(scenario)) throw new Error(`Unknown scenario ${scenario}`);
 const home = '/root/.codex';
@@ -24,7 +24,7 @@ mkdirSync('/tmp/project', { recursive: true });
 // `hold-<name>` (parked until released), `call-<name>` (one native `exec_command` function call, then text once its
 // output is in the history) and `tool-<name>` (a call of the named native tool when it is advertised).
 const commands = { n1: 'touch /tmp/n1-marker', n2: 'touch /tmp/n2-marker', n3: 'touch /tmp/n3-marker', n4: 'touch /tmp/n4-marker',
-  n5: 'touch /tmp/n5-marker', n6: 'touch /tmp/n6-marker', n7: 'sleep 3; touch /tmp/n7-marker', n9: 'touch /tmp/n9-marker' };
+  n5: 'touch /tmp/n5-marker', n7: 'sleep 3; touch /tmp/n7-marker', n9: 'touch /tmp/n9-marker' };
 const toolCalls = { request_user_input: { questions: [{ id: 'q1', header: 'Fixture', question: 'Fixture only?', options: [
   { label: 'yes', description: 'fixture' }, { label: 'no', description: 'fixture' }] }] },
 request_permissions: { reason: 'fixture', permissions: { network: { enabled: true } } } };
@@ -237,8 +237,9 @@ const order = () => report.raw.notifications.map((entry) => entry.method)
 
 try {
   report.labels = { support: codexServerRequestSupport, evidence: codexApprovalEvidence };
-  if (['N1', 'N2', 'N6'].includes(scenario)) {
-    const choice = { N1: 'decline', N2: 'accept', N6: 'cancel' }[scenario];
+  if (['N1', 'N2'].includes(scenario)) {
+    // N1: 0.169 offers no `decline` here, so the not-offered choice must be refused locally before the native `cancel`.
+    const choice = { N1: 'cancel', N2: 'accept' }[scenario];
     const marker = `call-${scenario.toLowerCase()}`;
     const b = bridge();
     const session = await create(await execute(appServer(), b), b);
@@ -247,6 +248,10 @@ try {
     const pending = await b.pending('approval');
     report.pendingMethod = pending.request.data.method;
     report.choices = pending.choices.map((entry) => entry.nativeChoiceId);
+    if (scenario === 'N1') {
+      report.notOffered = outcome(await b.reply(pending, 'decline'));
+      report.framesAfterNotOffered = report.replyFrames.length;
+    }
     report.reply = outcome(await b.reply(pending, choice));
     report.duplicate = outcome(await b.reply(pending, choice));
     report.terminal = await terminal(turn, 'terminal');
@@ -269,7 +274,7 @@ try {
     const read = await execution.scope.request({ method: 'thread/read', params: { threadId: other.threadId } }, AbortSignal.timeout(10000));
     report.read = read.kind === 'reply' ? read.envelope.reply.kind : read.kind;
     report.concurrentA = report.serverRequests.filter((entry) => entry.method === pending.request.data.method).length;
-    report.reply = outcome(await b.reply(pending, 'decline'));
+    report.reply = outcome(await b.reply(pending, 'cancel'));
     report.a = await terminal(ta, 'A');
     report.marker = existsSync('/tmp/n3-marker');
   } else if (scenario === 'N4' || scenario === 'N9') {

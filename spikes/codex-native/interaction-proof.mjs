@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { ownedContainer } from './lifecycle.mjs';
 
 // 118i native proof: the compiled private Codex interaction bridge over the execution module against the pinned app-server
-// and a synthetic loopback Responses service that emits a real command approval (N1-N9). Separate from execution-proof.mjs
+// and a synthetic loopback Responses service that emits a real command approval (N1-N9, N6 folded into N1). Separate from execution-proof.mjs
 // so its pin, sources and guarded closure stay unchanged.
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
@@ -28,7 +28,7 @@ const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest(
 const SOURCES = ['src/adapters/codex/execution.ts', 'src/adapters/codex/sessions.ts', 'src/adapters/codex/transport.ts',
   'src/adapters/codex/wire.ts', 'src/core/dispatch.ts', 'src/core/sessions.ts', 'src/core/discovery.ts', 'src/core/events.ts',
   'src/core/contracts.ts', 'src/adapters/codex/interaction.ts', 'src/core/interaction.ts'];
-const SCENARIOS = ['N1', 'N2', 'N3', 'N4', 'N5', 'N6', 'N7', 'N8', 'N9'];
+const SCENARIOS = ['N1', 'N2', 'N3', 'N4', 'N5', 'N7', 'N8', 'N9'];
 mkdirSync(join(here, '.work'), { recursive: true });
 const work = mkdtempSync(join(here, '.work/interaction-'));
 const name = `switchboard-codex-interaction-${randomUUID()}`;
@@ -84,23 +84,26 @@ console.log(JSON.stringify(result, null, 2));
 // withdrawn without a decision, interrupt requested, transport survival and writer release only on exit. Native reactions
 // (terminal after interrupt or expiry, resolved order, accept or cancel item status, replay after resume, advertised
 // tools) are recorded and pinned raw, never asserted. Every native error reply is in each report's raw.nativeErrors.
-const { N1, N2, N3, N4, N5, N6, N7, N8, N9 } = result.reports;
+const { N1, N2, N3, N4, N5, N7, N8, N9 } = result.reports;
 const statuses = ['completed', 'interrupted', 'failed'];
+const decisionNames = (request) => (request?.availableDecisions ?? [])
+  .map((d, index) => (typeof d === 'string' ? d : `${Object.keys(d)[0]}:${index}`));
 const approvalMethod = 'item/commandExecution/requestApproval';
 const checks = {
   harness: Object.values(result.reports).every((report) => report.failures.length === 0 && report.heldAtEnd === 0),
-  N1: N1.pendingMethod === approvalMethod && N1.reply === 'ok' && N1.duplicate === 'error:duplicate-interaction'
-    && JSON.stringify(N1.decisionFrames) === '["decline"]' && N1.item.includes('declined') && N1.settlements.join() === 'replied'
-    && N1.bridge.includes('observed:item/completed:known:qualified') && N1.marker === false && N1.terminal === 'completed'
-    && N1.markerInference === 2,
+  // Choices are the request's own availableDecisions; a not-offered choice is refused locally with nothing written.
+  N1: N1.pendingMethod === approvalMethod && JSON.stringify(N1.choices) === JSON.stringify(decisionNames(N1.serverRequests[0]))
+    && N1.notOffered === 'error:choice-mismatch' && N1.framesAfterNotOffered === 0 && N1.reply === 'ok'
+    && N1.duplicate === 'error:duplicate-interaction' && JSON.stringify(N1.decisionFrames) === '["cancel"]'
+    && N1.settlements.join() === 'replied' && N1.marker === false && statuses.includes(N1.terminal)
+    && N1.item.includes('declined') === N1.bridge.includes('observed:item/completed:known:qualified'),
   N2: N2.reply === 'ok' && N2.duplicate === 'error:duplicate-interaction' && JSON.stringify(N2.decisionFrames) === '["accept"]'
     && statuses.includes(N2.terminal),
-  N3: N3.b === 'completed' && N3.aPendingAfterB && N3.read === 'result' && N3.reply === 'ok' && N3.a === 'completed'
+  N3: N3.b === 'completed' && N3.aPendingAfterB && N3.read === 'result' && N3.reply === 'ok' && statuses.includes(N3.a)
     && N3.closeReasons.every((reason) => reason === 'caller-close'),
   N4: N4.interrupt === 'replied' && N4.decisionFrames === 0 && N4.marker === false && N4.independent === 'completed',
   N5: N5.heldBeforeKill === 1 && N5.heldAfterExit === 0 && N5.settlements.join() === 'lost' && N5.replyFramesBeforeResume === 0
     && N5.lateReply === 'error:stale-interaction' && N5.marker === false && N5.resume === 'resumed' && N5.inferenceAfterResume === 0,
-  N6: N6.reply === 'ok' && JSON.stringify(N6.decisionFrames) === '["cancel"]' && statuses.includes(N6.terminal),
   N7: N7.reply === 'ok' && N7.interrupt === 'replied' && statuses.includes(N7.terminal),
   N8: N8.errorOnlyRefusals === true,
   N9: N9.settlements.join() === 'expired' && N9.decisionFrames === 0 && N9.errorFrames.includes(-32000) && N9.marker === false
@@ -109,16 +112,17 @@ const checks = {
 console.log(JSON.stringify({ checks }));
 for (const [check, passed] of Object.entries(checks)) assert(passed, `Native interaction proof ${check}`);
 // Architecture-independent pin: outcomes, statuses, counts, booleans and native orderings only; never IDs, paths or timestamps.
-const requests = (report) => report.serverRequests.map(({ method, idType, approvalId }) => ({ method, idType, approvalId }));
+const requests = (report) => report.serverRequests.map(({ method, idType, approvalId, availableDecisions }) =>
+  ({ method, idType, approvalId, offered: availableDecisions?.map((d) => (typeof d === 'string' ? d : Object.keys(d)[0])) ?? null }));
 const pinned = {
-  N1: { choices: N1.choices, item: N1.item, terminal: N1.terminal, order: N1.order, requests: requests(N1) },
+  N1: { choices: N1.choices, item: N1.item, terminal: N1.terminal, order: N1.order, requests: requests(N1),
+    markerInference: N1.markerInference },
   N2: { terminal: N2.terminal, item: N2.item, marker: N2.marker, order: N2.order, markerInference: N2.markerInference },
-  N3: { concurrentA: N3.concurrentA },
+  N3: { concurrentA: N3.concurrentA, a: N3.a },
   N4: { terminalWithin5s: N4.terminalWithin5s, terminal: N4.terminal, settlements: N4.settlements, withdrawnBy: N4.withdrawnBy,
     item: N4.item, order: N4.order, markerInference: N4.markerInference },
   N5: { completion: N5.completion, resumedLastTurn: N5.resumedLastTurn, resumedItems: N5.resumedItems,
     requestsAfterResume: N5.requestsAfterResume, reappeared: N5.reappeared ?? null },
-  N6: { terminal: N6.terminal, item: N6.item, markerInference: N6.markerInference },
   N7: { commandStarted: N7.commandStarted, terminal: N7.terminal, item: N7.item, marker: N7.marker },
   N8: { candidates: N8.candidates, notAdvertised: N8.notAdvertised ?? false, reactions: N8.reactions, refusedMethods: N8.refusedMethods },
   N9: { terminalWithin5s: N9.terminalWithin5s, terminal: N9.terminal, item: N9.item, order: N9.order },

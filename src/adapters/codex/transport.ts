@@ -51,6 +51,7 @@ export interface TransportBounds {
 export interface TransportOptions {
   readonly channel: BorrowedChannel;
   readonly bounds: TransportBounds;
+  /** `signal` aborts only when the transport ends, with that `EndReason` as `signal.reason`. */
   readonly onRequest: (request: IncomingCall, signal: AbortSignal) => RpcReply | PromiseLike<RpcReply>;
   readonly onObservation: (observation: Observation, signal: AbortSignal) => void | PromiseLike<void>;
 }
@@ -157,7 +158,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       clearTimeout(handler.timer);
       if (handler.phase === 'scheduled' || (handler.phase === 'reply'
         && !(active?.owner.kind === 'reply' && active.owner.handler === handler))) handlers.delete(handler.id);
-      handler.controller.abort();
+      handler.controller.abort(reason);
     }
     report();
   }
