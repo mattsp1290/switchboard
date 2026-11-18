@@ -299,6 +299,10 @@ const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' })
  * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
  * A networked shell is always refused (features.ts `networked-shell-under-route`): `sandbox` `danger-full-access`, any
  * `permissions` profile, and a `sandboxPolicy` other than `readOnly` or `workspaceWrite` without `networkAccess` (snapshot).
+ * Approvals are always off (features.ts `approvals-under-route`): an `approvalPolicy` other than `"never"`, granular and
+ * `null` included, is refused, since an approved escalated command runs outside the sandbox. An absent one is sent as
+ * `"never"`: natively a resumed thread keeps its persisted policy over the `codexProxyConfig` pin. `approvalsReviewer`
+ * passes: under `never` native rejects an escalation before any reviewer or host is asked.
  */
 const routeOverride = (route: CodexProxyRoute | undefined, target: string, params: Record<string, unknown>) => {
   if (!route) return undefined;
@@ -313,6 +317,10 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   const shell = 'a networked shell can take route tokens from the broker and use them on any model';
   if (params.sandbox === 'danger-full-access') return refuse('sandbox', shell);
   if (params.permissions != null) return refuse('permissions', shell);
+  if (Object.hasOwn(params, 'approvalPolicy') && params.approvalPolicy !== 'never') {
+    return refuse('approvalPolicy', 'an approved escalated command runs outside the sandbox and can take route tokens');
+  }
+  params.approvalPolicy = 'never';
   if (params.sandboxPolicy != null) {
     const policy = record(params.sandboxPolicy) ? { ...params.sandboxPolicy } : {};
     if (!['readOnly', 'workspaceWrite'].includes(policy.type as string) || (policy.networkAccess ?? false) !== false) {

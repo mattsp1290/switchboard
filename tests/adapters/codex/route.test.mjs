@@ -10,7 +10,8 @@ const target = new URL('adapters/codex/sessions.ts', src).href;
 // Broken controls: a routed requester that falls back to the native login instead of refusing it, and one that binds
 // without checking the multi-agent pins.
 const mutations = new Map([['native-fallback', ['if (run.route) {', 'if (run.route && account === null) {']],
-  ['unpinned', ['|| settings.features.multi_agent_v2 !== false) return false;', '|| settings.features.multi_agent_v2 !== false) {}']]]);
+  ['unpinned', ['|| settings.features.multi_agent_v2 !== false) return false;', '|| settings.features.multi_agent_v2 !== false) {}']],
+  ['approvals', ["  if (settings.approval_policy !== 'never') return false;\n", '']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -32,6 +33,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 const { codexSessions } = await import(target);
 const fallback = (await import(`${target}?mutant=native-fallback`)).codexSessions;
 const unpinned = (await import(`${target}?mutant=unpinned`)).codexSessions;
+const approving = (await import(`${target}?mutant=approvals`)).codexSessions;
 const { codexRoutePrincipal, copyCodexRoute } = await import(new URL('adapters/codex/route.ts', src).href);
 hook.deregister();
 
@@ -54,7 +56,9 @@ const entry = { name: 'LiteLLM', base_url: 'http://127.0.0.1:4000/v1', env_key: 
   wire_api: 'responses', requires_openai_auth: false };
 // `config/read` reports `-c features.multi_agent=false` nested under `features` and omits an unset feature (me4l-pin out.json).
 const pinned = { multi_agent_v2: false, network_proxy: null, multi_agent: false, memories: false };
-const sandbox = { sandbox_mode: 'workspace-write', default_permissions: null, sandbox_workspace_write: { writable_roots: [], network_access: false } };
+// `config/read` reports `-c approval_policy="never"` as that string and an unset policy as null (pvvq-native cfgread).
+const sandbox = { sandbox_mode: 'workspace-write', default_permissions: null, sandbox_workspace_write: { writable_roots: [], network_access: false },
+  approval_policy: 'never' };
 /** Fake app-server: the native projections observed with provider command auth (codex-native-api.md). */
 function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route, providers = { litellm: entry },
   threads = {}, threadProviders = {}, features = pinned, sandboxing = sandbox } = {}) {
@@ -135,6 +139,21 @@ test('a routed requester refuses unless native multi-agent is pinned off', async
   assert.equal((await bind(server(home(t), { features: { memories: false } }), unpinned)).value?.account, principal);
   // Direct mode does not consult the pins.
   const direct = server(home(t), { route: null, features: 'absent', account: { account: { type: 'apiKey' } } });
+  assert.equal((await bind(direct)).value.account, 'apiKey');
+});
+
+test('a routed requester refuses unless native approvals are pinned to never', async (t) => {
+  const granular = { granular: { sandbox_approval: true, rules: true, skill_approval: false, request_permissions: false, mcp_elicitations: true } };
+  const { approval_policy: _policy, ...unset } = sandbox;
+  for (const sandboxing of [unset, ...[null, 'on-request', 'untrusted', 'Never', granular, { never: true }].map((approval_policy) => ({ ...sandbox, approval_policy }))]) {
+    const fake = server(home(t), { sandboxing });
+    assert.deepEqual(await bind(fake), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(sandboxing));
+    assert.deepEqual(fake.calls, ['config/read']);
+  }
+  // Broken control: without the check a config.toml approval policy binds a route an approved escalation can leave.
+  assert.equal((await bind(server(home(t), { sandboxing: { ...sandbox, approval_policy: 'on-request' } }), approving)).value?.account, principal);
+  // Direct mode does not consult it.
+  const direct = server(home(t), { route: null, sandboxing: { ...sandbox, approval_policy: 'on-request' }, account: { account: { type: 'apiKey' } } });
   assert.equal((await bind(direct)).value.account, 'apiKey');
 });
 

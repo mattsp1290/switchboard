@@ -13,7 +13,8 @@ import type { Outcome } from '../../core/contracts.js';
  * default.
  *
  * The adapter adds no setting: an omitted field keeps Codex's own default, and nothing forces an approval policy,
- * sandbox or tool allowlist. Raw passthrough keys the host also supplies are preserved unchanged and never re-validated.
+ * sandbox or tool allowlist, except under a proxy route (execution.ts routeOverride, approvals-under-route). Raw
+ * passthrough keys the host also supplies are preserved unchanged and never re-validated.
  * With no `features` the raw params pass exactly as before; with `features`, the protocol's combination rules and the
  * experimentalApi gates apply to the merged request. A typed field that contradicts a raw key, or a combination the
  * protocol forbids, fails with `invalid-input` and nothing is sent. Every typed field also accepts `null`, which means
@@ -94,9 +95,11 @@ const everyTarget = (start: readonly string[], resume = start, turn = start): Co
 const gate = 'initialize capabilities.experimentalApi === true';
 export const codexFeatureCapabilities = Object.freeze({
   'command-approval-decline': supported('qualified', { onServerRequest: ['item/commandExecution/requestApproval'] },
-    'A native command approval request declined by the host leaves the item declined and the command unrun.'),
+    'A native command approval request declined by the host leaves the item declined and the command unrun. Under a '
+    + 'proxy route native sends none: approvals are pinned off (approvals-under-route).'),
   'approval-policy': supported('typed-unqualified', everyTarget(['approvalPolicy', 'approvalsReviewer']),
-    `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission journeys are unqualified.`),
+    `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission `
+    + 'journeys are unqualified. Under a proxy route only "never" is accepted and an absent approvalPolicy is sent as "never" (approvals-under-route).'),
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
     `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
     + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network.'),
@@ -111,8 +114,8 @@ export const codexFeatureCapabilities = Object.freeze({
     'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
     + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. A thread that '
     + 'starts or resumes on another model is native-failure: resume it with params.model = route.model. Routed config '
-    + 'disables multi-agent (multi-agent-under-route) and networked shells (networked-shell-under-route). Live LiteLLM '
-    + 'qualification is owned by switchboard-ov4y.'),
+    + 'disables multi-agent (multi-agent-under-route), networked shells (networked-shell-under-route) and approvals '
+    + '(approvals-under-route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
   'multi-agent-under-route': unavailable('Under a proxy route, codexProxyConfig sets features.multi_agent and '
     + 'features.multi_agent_v2 to false: a sub-agent spawn_agent model argument would send requests on a model the model '
     + 'chose, bypassing the route model. The host cannot re-enable it: routed thread config is refused. Direct mode keeps '
@@ -121,7 +124,13 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'against the broker socket for a fresh route token and send requests on any model. Always refused, with no opt-in: '
     + 'sandbox danger-full-access, a sandboxPolicy other than readOnly or workspaceWrite without networkAccess, and any '
     + 'permissions profile are invalid-input, unsent; codexProxyConfig pins sandbox_mode read-only with '
-    + 'network_access false. The host must decline approvals that would run a command unsandboxed or grant network.'),
+    + 'network_access false, and approvals are off (approvals-under-route).'),
+  'approvals-under-route': unavailable('Under a proxy route, an approved escalated command (exec_command sandbox_permissions '
+    + 'require_escalated) runs outside the sandbox, where it could run the credential helper for a fresh route token and '
+    + 'send requests on any model. Always off, with no opt-in: codexProxyConfig pins approval_policy never, the bind '
+    + 'requires config/read to report it, an approvalPolicy other than "never" is invalid-input, unsent, and an absent '
+    + 'one is sent as "never" since a resumed thread keeps its persisted policy. Native rejects the escalation without '
+    + 'asking the host or any approvalsReviewer, which is therefore accepted unchanged.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
     + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),

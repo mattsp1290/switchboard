@@ -8,7 +8,9 @@ const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/execution.ts', src).href;
 // Broken controls are source mutations of the real module (precedent: tests/spikes/codex-bindings.test.mjs).
 // early-release frees the writer at cleanup start; cleanup-release frees it once cleanup ends, as a turn-conclusion release did.
-const mutations = new Map([['networked-shell', ['  const shell =', '  if (params.sandbox) return undefined;\n  const shell =']], ['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
+// approvals drops the approvalPolicy refusal and the never default, as before pvvq.
+const mutations = new Map([['networked-shell', ['  const shell =', '  if (params.sandbox) return undefined;\n  const shell =']],
+  ['approvals', [/ {2}if \(Object\.hasOwn\(params, 'approvalPolicy'\)[^]*?params\.approvalPolicy = 'never';\n/u, '']], ['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
   ['cleanup-release', ['deadline));\n    return Object.freeze({ interrupt', 'deadline));\n    release(session.lease);\n    return Object.freeze({ interrupt']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
@@ -32,6 +34,7 @@ const real = await import(target);
 const mutant = await import(`${target}?mutant=early-release`);
 const cleanupMutant = await import(`${target}?mutant=cleanup-release`);
 const shellMutant = await import(`${target}?mutant=networked-shell`);
+const approvalsMutant = await import(`${target}?mutant=approvals`);
 hook.deregister();
 
 const home = '/fixture/codex-home';
@@ -62,7 +65,7 @@ function world(...ids) {
  * holds the thread or a turn is in progress.
  */
 function appServer(t, w, script = {}) {
-  const f = { sent: [], loaded: new Set(), holds: new Map(), detached: 0 };
+  const f = { sent: [], requests: [], loaded: new Set(), holds: new Map(), detached: 0 };
   const send = (value) => { if (f.sink && !f.gone) f.sink.data(Buffer.from(`${JSON.stringify(value)}\n`)); };
   f.notify = (method, params) => send({ method, params });
   f.complete = (threadId, turnId, status = 'completed') => {
@@ -132,6 +135,7 @@ function appServer(t, w, script = {}) {
       if (message.method === undefined || message.id === undefined) return Promise.resolve();
       f.sent.push(message.method);
       f.last = message;
+      f.requests.push(message);
       const held = f.holds.get(message.method);
       void (held?.promise ?? Promise.resolve()).then((mode) => {
         if (mode === 'drop') return;
@@ -232,7 +236,7 @@ const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endp
 const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
   env_key: null, experimental_bearer_token: null };
 const pinned = { multi_agent: false, multi_agent_v2: false };
-const sandboxPin = { sandbox_mode: 'read-only', sandbox_workspace_write: { network_access: false } };
+const sandboxPin = { sandbox_mode: 'read-only', sandbox_workspace_write: { network_access: false }, approval_policy: 'never' };
 const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider },
   features: pinned, ...sandboxPin },
   account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
@@ -306,6 +310,74 @@ test('a routed execution refuses provider and config overrides unsent and any th
   const pinned = await (await open(t, real, appServer(t, w, routedServer()), writers, { route })).resume({ ...staleRef, params: { model: route.model } });
   assert.equal(pinned.value?.kind, 'resumed', JSON.stringify(pinned));
   await pinned.value.session.close();
+});
+
+test('a routed execution refuses every approval policy but never, unsent, and sends never when none is given', async (t) => {
+  const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
+  const id = randomUUID();
+  const w = world(id);
+  w.threads.get(id).provider = 'litellm';
+  w.threads.get(id).model = route.model;
+  const writers = real.createCodexWriters(4);
+  const f = appServer(t, w, routedServer());
+  const execution = await open(t, real, f, writers, { route });
+  const routedRef = { ...access, binding: { ...binding, account: principal }, reference: reference(id, { account: principal }) };
+  // Owner decision: approvals are always off under a route (features.ts approvals-under-route).
+  const granular = { granular: { sandbox_approval: true, rules: true, mcp_elicitations: true } };
+  const shapes = ['on-request', 'untrusted', granular, { granular: { ...granular.granular, sandbox_approval: false } }, null, 'Never', {}];
+  const sent = f.sent.length;
+  for (const approvalPolicy of shapes) {
+    for (const result of [await execution.create({ ...access, params: { approvalPolicy } }),
+      await execution.resume({ ...routedRef, params: { approvalPolicy } })]) {
+      assert.equal(result.error?.code, 'invalid-input', JSON.stringify(approvalPolicy));
+      assert.match(result.error.message, /^thread\/(start|resume) approvalPolicy is refused under a proxy route: an approved escalated command/u);
+    }
+  }
+  // A typed feature is merged first, so it is refused the same way.
+  assert.equal((await execution.create({ ...access, features: { approvalPolicy: 'on-request' } })).error?.code, 'invalid-input');
+  assert.deepEqual(f.sent.slice(sent), [], 'nothing is sent for a refused approval policy');
+  // never is sent as given; an absent policy is sent as never, since natively a resumed thread keeps its persisted
+  // policy over the config pin (pvvq-native resume-phase2-new). approvalsReviewer passes: under never native asks no reviewer.
+  const created = await execution.create({ ...access, params: { approvalPolicy: 'never', approvalsReviewer: 'auto_review' } });
+  assert.equal(created.kind, 'ok', JSON.stringify(created));
+  assert.deepEqual([f.last.method, f.last.params.approvalPolicy, f.last.params.approvalsReviewer], ['thread/start', 'never', 'auto_review']);
+  const turned = created.value.turn({ hostOperationId: 'never', input, params: { approvalsReviewer: 'guardian_subagent' },
+    signal: new AbortController().signal, recordIntent: () => {} });
+  assert.equal((await turned.value.completion).kind, 'terminal');
+  assert.deepEqual(f.requests.findLast((m) => m.method === 'turn/start').params.approvalPolicy, 'never');
+  const turnSent = f.sent.length;
+  for (const approvalPolicy of shapes) {
+    const refused = created.value.turn({ hostOperationId: `op-${JSON.stringify(approvalPolicy)}`, input, params: { approvalPolicy },
+      signal: new AbortController().signal, recordIntent: () => {} });
+    assert.equal(refused.error?.code, 'invalid-input', JSON.stringify(approvalPolicy));
+    assert.match(refused.error.message, /^turn\/start approvalPolicy is refused under a proxy route/u);
+  }
+  assert.equal(created.value.turn({ hostOperationId: 'typed', input, features: { approvalPolicy: 'untrusted' },
+    signal: new AbortController().signal, recordIntent: () => {} }).error?.code, 'invalid-input');
+  assert.equal(f.sent.length, turnSent, 'nothing is sent for a refused turn');
+  await created.value.close();
+  const g = appServer(t, w, routedServer());
+  const resumed = await (await open(t, real, g, writers, { route })).resume(routedRef);
+  assert.equal(resumed.value?.kind, 'resumed', JSON.stringify(resumed));
+  assert.equal(g.requests.find((m) => m.method === 'thread/resume').params.approvalPolicy, 'never');
+  await resumed.value.session.close();
+  // Broken control: without the refusal a host-chosen policy is sent and nothing pins a resumed thread.
+  const h = appServer(t, w, routedServer());
+  const leaky = await open(t, approvalsMutant, h, approvalsMutant.createCodexWriters(1), { route });
+  const opened = await leaky.create({ ...access, params: { approvalPolicy: 'on-request' } });
+  assert.equal(opened.kind, 'ok');
+  assert.equal(h.last.params.approvalPolicy, 'on-request');
+  await opened.value.close();
+  // Direct mode passes approvalPolicy through unchanged and adds none.
+  const d = appServer(t, w);
+  const direct = await open(t, real, d, real.createCodexWriters(4));
+  for (const approvalPolicy of ['on-request', granular, undefined]) {
+    const session = await direct.create({ ...access, params: approvalPolicy === undefined ? {} : { approvalPolicy } });
+    assert.equal(session.kind, 'ok', JSON.stringify(session));
+    assert.deepEqual(d.last.params.approvalPolicy, approvalPolicy);
+    await session.value.close();
+  }
+  assert.deepEqual(w.overlaps, []);
 });
 
 test('a direct execution refuses a routed thread and any start or resume reply on another provider', async (t) => {
