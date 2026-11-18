@@ -51,7 +51,8 @@ function appServer() {
     'initialize': () => ({ codexHome: home, userAgent: 'fake/0.169.0' }),
     'config/read': () => ({ config: { sqlite_home: '/private/index', log_dir: '/private/logs' } }),
     'account/read': () => ({ account: { type: 'apiKey' } }),
-    'thread/start': () => ({ thread: { id: randomUUID(), historyMode: 'paginated', ephemeral: false }, ...nativePolicy }),
+    // Natively a thread runs on `config/read` `model_provider`, or `openai` when absent (ai7m binds to it).
+    'thread/start': () => ({ thread: { id: randomUUID(), historyMode: 'paginated', ephemeral: false, modelProvider: 'openai' }, ...nativePolicy }),
     'turn/start': ({ threadId }) => {
       const turnId = randomUUID();
       f.turns.set(threadId, turnId);
@@ -60,7 +61,7 @@ function appServer() {
     },
     'turn/interrupt': ({ threadId }) => { queueMicrotask(() => f.complete(threadId, 'interrupted')); return {}; },
     'thread/unsubscribe': () => ({ status: 'unsubscribed' }),
-    'thread/read': () => ({ thread: { id: 'x', historyMode: 'paginated', status: { type: 'idle' } } }),
+    'thread/read': () => ({ thread: { id: 'x', historyMode: 'paginated', status: { type: 'idle' }, modelProvider: 'openai' } }),
   };
   f.channel = {
     listen(sink) { f.sink = sink; return () => {}; },
