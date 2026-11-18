@@ -50,7 +50,8 @@ const usage = (n) => ({ totalTokens: 3 * n, inputTokens: n, cachedInputTokens: 0
 /** Shared synthetic native history: every app-server generation sees the same threads, as on one $CODEX_HOME. */
 function world(...ids) {
   const w = { threads: new Map(), overlaps: [] };
-  for (const id of ids) w.threads.set(id, { writer: null, holder: null });
+  // Seeded threads were created natively on the default provider (`openai`), as a direct app-server does.
+  for (const id of ids) w.threads.set(id, { writer: null, holder: null, provider: 'openai' });
   return w;
 }
 /**
@@ -84,13 +85,17 @@ function appServer(t, w, script = {}) {
       const thread = w.threads.get(threadId);
       if (!thread) return { error: { code: -32600, message: `thread not loaded: ${threadId}` } };
       return { thread: { id: threadId, historyMode: 'paginated', status: { type: f.loaded.has(threadId) ? 'idle' : 'notLoaded' },
-        modelProvider: 'litellm' } };
+        modelProvider: thread.provider } };
     },
     'thread/start': () => {
+      // Natively a thread runs on `config/read` `model_provider`, or `openai` when it is absent; `script.provider` is a
+      // reply that puts it elsewhere.
       const id = randomUUID();
-      w.threads.set(id, { writer: null, holder: f });
+      const provider = 'provider' in script ? script.provider : script.config?.model_provider ?? 'openai';
+      w.threads.set(id, { writer: null, holder: f, provider });
       f.loaded.add(id);
-      return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' }, modelProvider: script.provider ?? 'litellm' },
+      return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' },
+        ...(provider === undefined ? {} : { modelProvider: provider }) },
         model: 'fixture-model' };
     },
     'thread/resume': ({ threadId }) => {
@@ -98,7 +103,9 @@ function appServer(t, w, script = {}) {
       if (thread.writer || (thread.holder && thread.holder !== f)) w.overlaps.push(`resume ${threadId}`);
       thread.holder = f;
       f.loaded.add(threadId);
-      return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }], modelProvider: script.provider ?? 'litellm' } };
+      // Native resumes a thread on its own provider, whatever this app-server's default.
+      return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }],
+        ...('provider' in script ? (script.provider === undefined ? {} : { modelProvider: script.provider }) : { modelProvider: thread.provider }) } };
     },
     'turn/start': ({ threadId }) => {
       const thread = w.threads.get(threadId);
@@ -227,6 +234,7 @@ test('a routed execution refuses provider and config overrides unsent and any th
   const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
   const id = randomUUID();
   const w = world(id);
+  w.threads.get(id).provider = 'litellm';
   const writers = real.createCodexWriters(4);
   const f = appServer(t, w, routedServer());
   const execution = await open(t, real, f, writers, { route });
@@ -254,6 +262,41 @@ test('a routed execution refuses provider and config overrides unsent and any th
   g.exit();
   await settle();
   assert.equal(writers.held(), held, 'process exit releases it');
+});
+
+test('a direct execution refuses a routed thread and any start or resume reply on another provider', async (t) => {
+  const litellm = randomUUID();
+  const id = randomUUID();
+  const w = world(id, litellm);
+  w.threads.get(litellm).provider = 'litellm';
+  const writers = real.createCodexWriters(4);
+  // Native probe7: a direct app-server whose config still lists the litellm entry. The routed thread is never prepared.
+  const f = appServer(t, w, { config: { model_provider: 'openai', model_providers: { litellm: routedProvider } } });
+  const execution = await open(t, real, f, writers);
+  assert.deepEqual(await execution.resume({ ...access, binding, reference: reference(litellm) }),
+    { kind: 'error', error: { code: 'inaccessible' } });
+  assert.equal(writers.held(), 0, 'a refused preparation releases the reservation');
+  assert(!f.sent.includes('thread/resume'));
+  // An absent `model_provider` is `openai`: an openai thread still resumes and runs a turn.
+  const session = await resumed(await open(t, real, appServer(t, w), writers), id);
+  assert.equal((await (await turnOn(session)).completion).kind, 'terminal');
+  await session.close();
+  // A reply on another provider, or with none, never becomes a session; resume keeps the lease as on identity-mismatch.
+  for (const provider of ['litellm', undefined]) {
+    const other = randomUUID();
+    w.threads.set(other, { writer: null, holder: null, provider: 'openai' });
+    const g = appServer(t, w, { provider });
+    const off = await open(t, real, g, writers);
+    assert.deepEqual(await off.create(access), { kind: 'error', error: { code: 'native-failure' } }, String(provider));
+    const held = writers.held();
+    assert.deepEqual(await off.resume({ ...access, binding, reference: reference(other) }),
+      { kind: 'error', error: { code: 'native-failure' } }, String(provider));
+    assert.equal(writers.held(), held + 1);
+    g.exit();
+    await settle();
+    assert.equal(writers.held(), held, 'process exit releases it');
+  }
+  assert.deepEqual(w.overlaps, []);
 });
 
 test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
@@ -296,7 +339,8 @@ test('a routed execution binds create and resume to the route principal, turns, 
   const bad = await real.openCodexExecution({ channel: appServer(t, w).channel, transport, bounds, home, writers, initialize: {},
     onServerRequest: () => ({}), signal: new AbortController().signal, processExit: new Promise(() => {}),
     route: { ...route, endpoint: 'http://127.0.0.1:4000' } });
-  assert.deepEqual(bad, { kind: 'error', error: { code: 'invalid-input' } });
+  assert.deepEqual(bad, { kind: 'error', error: { code: 'invalid-input',
+    message: 'route endpoint must be a canonical http(s) URL ending in /v1, with no credentials, query or fragment' } });
   assert.deepEqual(w.overlaps, []);
 });
 

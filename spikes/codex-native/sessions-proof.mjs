@@ -68,7 +68,9 @@ try {
   const legacyPrepared = JSON.parse(docker(['node', '/opt/fixture.mjs', 'prepare-legacy'], 'discovery.mjs', creatorHelpers));
   const record = (wanted) => prepared.records.find((entry) => entry.name === wanted);
   const first = record('first');
-  const expected = ['first', 'second', 'otherCwd', 'otherProvider', 'accountA', 'accountB'].map((entry) => record(entry).id).sort();
+  // The reader runs on `fixture`; `otherProvider` was created on `other`, which native would resume there, so the
+  // provider check (ai7m) keeps it out of discovery.
+  const expected = ['first', 'second', 'otherCwd', 'accountA', 'accountB'].map((entry) => record(entry).id).sort();
   const manifest = { first: first.id, firstPath: first.path, second: record('second').id, absent: randomUUID(), legacy: legacyPrepared.record.id };
   assert(!prepared.records.some((entry) => entry.id === manifest.absent));
   // Unindexed reader homes: no SQLite, the unauthorized rollout omitted, plus an auxiliary file and a hardlink alias.

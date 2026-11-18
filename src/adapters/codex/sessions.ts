@@ -28,7 +28,8 @@ export interface CodexSessionScope {
   /**
    * The host-selected LiteLLM proxy route this app-server runs under, if any. Absent: direct mode, the requester is the
    * native login. Present: the requester is the host-asserted route principal (route.ts); an invalid route is
-   * `invalid-input` before any native request.
+   * `invalid-input` before any native request. A host runs one mode per Codex home: the writer registry keys by the
+   * complete reference, so a routed and a direct app-server over one home would not exclude each other's writers.
    */
   readonly route?: CodexProxyRoute;
 }
@@ -37,7 +38,8 @@ export const codexSessionMethods = Object.freeze(['config/read', 'account/read',
 type Method = typeof codexSessionMethods[number];
 export type CodexNativeFormat = 'codex-thread/paginated' | 'codex-thread/legacy';
 export type CodexResumePreparation =
-  | { readonly kind: 'ready'; readonly reference: SessionReference; readonly threadId: string }
+  /** `provider` is the requester's effective native provider: the resume reply's `thread.modelProvider` must equal it. */
+  | { readonly kind: 'ready'; readonly reference: SessionReference; readonly threadId: string; readonly provider: string }
   | Exclude<SessionInspectionResult, { readonly kind: 'available' }>;
 type Access = SessionAccess<CodexSessionScope>;
 type Run = { readonly home: string; readonly request: CodexSessionScope['request']; readonly bounds: SessionDiscoveryBounds;
@@ -132,6 +134,16 @@ function routedProvider(settings: Record<string, unknown>, route: CodexProxyRout
     && entry.env_key == null && entry.experimental_bearer_token == null;
 }
 /**
+ * The provider native runs this app-server's threads on: `config/read` `model_provider`, or Codex's default `openai`
+ * when it is absent or null (codex-native-api.md, Proxy-routed requester). Anything else is unreadable.
+ */
+function effectiveProvider(settings: Record<string, unknown>): string | undefined {
+  const provider = settings.model_provider;
+  return provider == null ? 'openai' : text(provider) ? provider : undefined;
+}
+/** The binding principal and the effective native provider every admitted thread must run on. */
+type Requester = { readonly principal: string; readonly provider: string };
+/**
  * Write-safety and requester precondition. Discovery writes nothing to history only with a private index
  * (codex-discovery.md, Storage and authorization boundary). The requester is the current native login
  * (`chatgpt:<userId>` or `apiKey`); it never attributes a thread's creator. Every API key is the one principal `apiKey`,
@@ -142,8 +154,12 @@ function routedProvider(settings: Record<string, unknown>, route: CodexProxyRout
  * so the requester is the route principal, admitted only while `config/read` names the route's provider with an entry
  * matching the route (routedProvider) and `account/read` reports no account and `requiresOpenaiAuth: false`. A native
  * login under a route is refused, never used as a fallback: the prefix keeps routed and direct principals disjoint.
+ *
+ * Both modes also yield the effective provider. Native resumes and runs a thread on its own `Thread.modelProvider`
+ * whatever the app-server's default, with that provider's credentials, so every caller admits only threads on it: a
+ * direct requester never reaches a routed thread, nor a routed requester a direct one.
  */
-async function requester(run: Run): Promise<Outcome<string, SessionOperationError>> {
+async function requester(run: Run): Promise<Outcome<Requester, SessionOperationError>> {
   const config = await call(run, 'config/read', { includeLayers: false });
   if (typeof config === 'string') return failure(operation(config));
   const settings = config.kind === 'result' && record(config.value) ? config.value.config : undefined;
@@ -153,17 +169,19 @@ async function requester(run: Run): Promise<Outcome<string, SessionOperationErro
     if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
   if (run.route && !routedProvider(settings, run.route)) return failure('inaccessible');
+  const provider = effectiveProvider(settings);
+  if (!provider) return failure('native-failure');
   const reply = await call(run, 'account/read', { refreshToken: false });
   if (typeof reply === 'string') return failure(operation(reply));
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
   const { account, userId, requiresOpenaiAuth } = reply.value;
   if (run.route) {
-    return account === null && requiresOpenaiAuth === false ? { kind: 'ok', value: codexRoutePrincipal(run.route) }
-      : failure('inaccessible');
+    return account === null && requiresOpenaiAuth === false
+      ? { kind: 'ok', value: { principal: codexRoutePrincipal(run.route), provider } } : failure('inaccessible');
   }
   const principal = !record(account) ? undefined : account.type === 'apiKey' ? 'apiKey'
     : account.type === 'chatgpt' && text(userId) ? `chatgpt:${userId}` : undefined;
-  return text(principal) ? { kind: 'ok', value: principal } : failure('inaccessible');
+  return text(principal) ? { kind: 'ok', value: { principal, provider } } : failure('inaccessible');
 }
 
 type Thread = { readonly format: CodexNativeFormat; readonly loaded: boolean; readonly provider: unknown };
@@ -178,16 +196,25 @@ function thread(value: unknown, id: string): Thread | undefined {
 const reference = (binding: SessionBinding, opaque: string): SessionReference =>
   Object.freeze({ kind: 'session', formatVersion: 1, binding, opaque });
 
-async function bind(options: Omit<Access, 'binding'> & { readonly nativeFormat: CodexNativeFormat }):
-Promise<Outcome<SessionBinding, SessionOperationError>> {
+type BindOptions = Omit<Access, 'binding'> & { readonly nativeFormat: CodexNativeFormat };
+/**
+ * `bind` plus the requester's effective provider, for the execution owner (x9av): a `thread/start` reply whose
+ * `thread.modelProvider` differs runs off the bound requester and must never become a session.
+ */
+export async function bindCodexRequester(options: BindOptions):
+Promise<Outcome<{ readonly binding: SessionBinding; readonly provider: string }, SessionOperationError>> {
   const run = admit(options);
   let nativeFormat: unknown;
   try { nativeFormat = options.nativeFormat; } catch { return failure('invalid-input'); }
   if (!run || !isFormat(nativeFormat)) return failure('invalid-input');
   const account = await requester(run);
   if (account.kind === 'error') return account;
-  return { kind: 'ok', value: Object.freeze({ engine, nativeVersion, account: account.value, authorizedScope: run.home,
-    nativeFormat }) };
+  return { kind: 'ok', value: { provider: account.value.provider, binding: Object.freeze({ engine, nativeVersion,
+    account: account.value.principal, authorizedScope: run.home, nativeFormat }) } };
+}
+async function bind(options: BindOptions): Promise<Outcome<SessionBinding, SessionOperationError>> {
+  const bound = await bindCodexRequester(options);
+  return bound.kind === 'ok' ? { kind: 'ok', value: bound.value.binding } : bound;
 }
 
 /**
@@ -207,7 +234,7 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
   }
   const account = await requester(run);
   if (account.kind === 'error') return account;
-  if (account.value !== binding.account) return failure('inaccessible');
+  if (account.value.principal !== binding.account) return failure('inaccessible');
   const names: string[] = [];
   const sessions: SessionReference[] = [];
   const diagnostics: SessionDiscoveryDiagnostic[] = [];
@@ -254,8 +281,8 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
       const found = read.kind === 'result' ? thread(read.value, id) : undefined;
       if (!found) { diagnose(); continue; }
       seen.add(id);
-      // Routed: only threads native ran on the route's provider; a direct thread in the same home is not listed.
-      if (found.format === binding.nativeFormat && (!run.route || found.provider === run.route.providerId)) {
+      // Only threads on the requester's provider: a routed thread is not listed to a direct requester, nor the reverse.
+      if (found.format === binding.nativeFormat && found.provider === account.value.provider) {
         sessions.push(reference(binding, id));
       }
     }
@@ -265,31 +292,33 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
 
 /** Known-target inspection. Every call rereads native state; nothing from discovery is trusted or reserved. */
 async function examine(run: Run, value: unknown, binding: SessionBinding, requesterMismatch: 'inaccessible' | 'binding-mismatch'):
-Promise<Outcome<SessionInspectionResult, SessionOperationError | SessionReferenceError>> {
+Promise<Outcome<{ readonly result: SessionInspectionResult; readonly provider: string },
+  SessionOperationError | SessionReferenceError>> {
   const parsed = parseSessionReference({ value, expected: binding });
   if (parsed.kind === 'error') return parsed;
   const threadId = parsed.value.opaque;
   if (!uuid.test(threadId)) return { kind: 'error', error: Object.freeze({ code: 'invalid-reference' }) };
   const account = await requester(run);
   if (account.kind === 'error') return account;
-  if (account.value !== binding.account) return { kind: 'error', error: Object.freeze({ code: requesterMismatch }) };
+  if (account.value.principal !== binding.account) return { kind: 'error', error: Object.freeze({ code: requesterMismatch }) };
+  const { provider } = account.value;
+  const ok = (result: SessionInspectionResult) => ({ kind: 'ok', value: { result: Object.freeze(result), provider } }) as const;
   const read = await call(run, 'thread/read', { threadId, includeTurns: false });
   if (typeof read === 'string') return failure(operation(read));
   if (read.kind === 'error') {
     // Qualified absent signal only: -32600 with this exact message (codex-discovery.md Known-target read).
     return read.code === -32600 && read.message === `thread not loaded: ${threadId}`
-      ? { kind: 'ok', value: Object.freeze({ kind: 'absent' }) } : failure('native-failure');
+      ? ok({ kind: 'absent' }) : failure('native-failure');
   }
   const found = thread(read.value, threadId);
   if (!found) return failure('native-failure');
-  // Routed: a thread native created on another provider would resume there (Thread.modelProvider), off the route.
-  if (run.route && found.provider !== run.route.providerId) return failure('inaccessible');
-  if (found.format !== binding.nativeFormat) {
-    return { kind: 'ok', value: Object.freeze({ kind: 'incompatible', reason: 'native-format' }) };
-  }
+  // A thread native created on another provider would resume there (Thread.modelProvider) with that provider's
+  // credentials, off this requester; a missing provider is refused the same way.
+  if (found.provider !== provider) return failure('inaccessible');
+  if (found.format !== binding.nativeFormat) return ok({ kind: 'incompatible', reason: 'native-format' });
   // Loaded in this app-server process: a resume would rejoin it rather than open a quiescent session.
-  if (found.loaded) return { kind: 'ok', value: Object.freeze({ kind: 'busy' }) };
-  return { kind: 'ok', value: Object.freeze({ kind: 'available', reference: parsed.value }) };
+  if (found.loaded) return ok({ kind: 'busy' });
+  return ok({ kind: 'available', reference: parsed.value });
 }
 
 async function inspect(options: Access & { readonly reference: SessionReference }):
@@ -298,7 +327,7 @@ Promise<Outcome<SessionInspectionResult, SessionOperationError>> {
   const binding = run && bound(run, options);
   if (!run || !binding) return failure('invalid-input');
   const result = await examine(run, options.reference, binding, 'inaccessible');
-  if (result.kind === 'ok') return result;
+  if (result.kind === 'ok') return { kind: 'ok', value: result.value.result };
   const { code } = result.error;
   return code === 'invalid-reference' || code === 'unsupported-version' || code === 'binding-mismatch'
     || code === 'session-mismatch' ? failure('invalid-input') : failure(code);
@@ -309,7 +338,8 @@ Promise<Outcome<SessionInspectionResult, SessionOperationError>> {
  * private index and availability immediately before use, and returns only the exact native identity. It dispatches
  * nothing and reserves nothing: enumeration and preparation hold no writer. The execution owner (x9av) must take its
  * writer reservation, keyed by the complete validated reference, before calling; it then sends `thread/resume` with
- * `threadId` only and must reject a reply whose `thread.id` differs, so no new session is ever silently substituted.
+ * `threadId` only and must reject a reply whose `thread.id` differs, so no new session is ever silently substituted,
+ * or whose `thread.modelProvider` is not the returned `provider`, so the thread never runs off the bound requester.
  */
 async function prepareResume(options: Access & { readonly reference: unknown }):
 Promise<Outcome<CodexResumePreparation, SessionOperationError | SessionReferenceError>> {
@@ -318,10 +348,11 @@ Promise<Outcome<CodexResumePreparation, SessionOperationError | SessionReference
   if (!run || !binding) return failure('invalid-input');
   const result = await examine(run, options.reference, binding, 'binding-mismatch');
   if (result.kind === 'error') return result;
-  if (result.value.kind !== 'available') return { kind: 'ok', value: result.value };
+  const { result: inspected, provider } = result.value;
+  if (inspected.kind !== 'available') return { kind: 'ok', value: inspected };
   if (binding.nativeFormat !== resumable) return { kind: 'ok', value: Object.freeze({ kind: 'incompatible', reason: 'native-format' }) };
-  const { reference: ready } = result.value;
-  return { kind: 'ok', value: Object.freeze({ kind: 'ready', reference: ready, threadId: ready.opaque }) };
+  const { reference: ready } = inspected;
+  return { kind: 'ok', value: Object.freeze({ kind: 'ready', reference: ready, threadId: ready.opaque, provider }) };
 }
 
 export const codexSessions = Object.freeze({ bind, discover, inspect, prepareResume }) satisfies

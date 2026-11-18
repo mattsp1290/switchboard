@@ -14,7 +14,8 @@ export interface CodexProxyRoute {
   readonly providerId: string;
   /**
    * Proxy base URL: the `endpointValid` rules of core auth, a path ending in `/v1`, and canonical WHATWG spelling
-   * (`new URL(endpoint).href === endpoint`), so one route never has two principals through case or `..` aliases.
+   * (`new URL(endpoint).href === endpoint`), so one route never has two principals through case or `..` aliases. The
+   * host generates the native `base_url` verbatim from this string: `config/read` echoes it unnormalized.
    */
   readonly endpoint: string;
   readonly credentialPurpose: 'litellm-proxy';
@@ -36,17 +37,33 @@ function text(value: unknown): value is string {
   return true;
 }
 
-/** Copies and validates a host route once; getters that throw and every malformed field are `undefined`. */
-export function copyCodexRoute(value: unknown): CodexProxyRoute | undefined {
+/**
+ * Copies and validates a host route once. `problem` names the first failing rule for the host; a getter that throws
+ * and every malformed field are refused.
+ */
+export function checkCodexRoute(value: unknown): { readonly route: CodexProxyRoute } | { readonly problem: string } {
   try {
-    if (!record(value) || !record(value.scope)) return undefined;
+    if (!record(value) || !record(value.scope)) return { problem: 'route must be an object with a scope object' };
     const { kind, providerId, endpoint, credentialPurpose, scope: { engine, account } } = value;
-    if (kind !== 'litellm-proxy' || credentialPurpose !== 'litellm-proxy' || typeof providerId !== 'string'
-      || !providerKey.test(providerId) || !endpointValid(endpoint) || new URL(endpoint).href !== endpoint
-      || !/\/v1$/u.test(new URL(endpoint).pathname)
-      || !text(engine) || !text(account)) return undefined;
-    return Object.freeze({ kind, providerId, endpoint, credentialPurpose, scope: Object.freeze({ engine, account }) });
-  } catch { return undefined; }
+    if (kind !== 'litellm-proxy' || credentialPurpose !== 'litellm-proxy') {
+      return { problem: 'route kind and credentialPurpose must be "litellm-proxy"' };
+    }
+    if (typeof providerId !== 'string' || !providerKey.test(providerId)) {
+      return { problem: 'route providerId must be a model_providers key of 1-64 letters, digits, "_" or "-"' };
+    }
+    if (!endpointValid(endpoint) || new URL(endpoint).href !== endpoint || !/\/v1$/u.test(new URL(endpoint).pathname)) {
+      return { problem: 'route endpoint must be a canonical http(s) URL ending in /v1, with no credentials, query or fragment' };
+    }
+    if (!text(engine) || !text(account)) {
+      return { problem: 'route scope engine and account must be non-blank identifiers without control characters' };
+    }
+    return { route: Object.freeze({ kind, providerId, endpoint, credentialPurpose, scope: Object.freeze({ engine, account }) }) };
+  } catch { return { problem: 'route could not be read' }; }
+}
+/** `checkCodexRoute` without the reason: `undefined` for any invalid route. */
+export function copyCodexRoute(value: unknown): CodexProxyRoute | undefined {
+  const checked = checkCodexRoute(value);
+  return 'route' in checked ? checked.route : undefined;
 }
 
 /**

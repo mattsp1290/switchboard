@@ -51,16 +51,18 @@ const entry = { name: 'LiteLLM', base_url: 'http://127.0.0.1:4000/v1', env_key: 
   wire_api: 'responses', requires_openai_auth: false };
 /** Fake app-server: the native projections observed with provider command auth (codex-native-api.md). */
 function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route, providers = { litellm: entry },
-  threads = {} } = {}) {
+  threads = {}, threadProviders = {} } = {}) {
   const calls = [];
   const request = async (call) => {
     calls.push(call.method);
     const id = call.params.threadId ?? threads[call.params.rolloutPath];
     const value = call.method === 'config/read'
-      ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_provider: provider, model_providers: providers } }
+      ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_providers: providers,
+        ...(provider === 'absent' ? {} : { model_provider: provider }) } }
       : call.method === 'account/read' ? account
         : call.method === 'getConversationSummary' ? { summary: { path: call.params.rolloutPath, conversationId: id } }
-          : { thread: { id, historyMode: 'paginated', status: { type: 'notLoaded' }, modelProvider: id.endsWith('2') ? 'openai' : 'litellm' } };
+          : { thread: { id, historyMode: 'paginated', status: { type: 'notLoaded' },
+            ...(Object.hasOwn(threadProviders, id) ? threadProviders[id] : { modelProvider: id.endsWith('2') ? 'openai' : 'litellm' }) } };
     return { kind: 'reply', envelope: { id: 1, raw: {}, reply: { kind: 'result', value } } };
   };
   const scope = { home: dir, request, initialize: { codexHome: dir }, ...(scopeRoute ? { route: scopeRoute } : {}) };
@@ -129,11 +131,51 @@ test('direct mode is unchanged: a null native account is still inaccessible', as
   assert.equal((await bind(server(home(t), { route: null, account: { account: { type: 'apiKey' } } }))).value.account, 'apiKey');
 });
 
+test('a direct requester admits only threads on its effective provider, never a routed thread', async (t) => {
+  // Native probe7: a direct app-server over a home with a routed thread bound `apiKey` and resumed that thread on the
+  // proxy with the helper's bearer. Direct discovery, inspection and preparation now refuse it.
+  const dir = home(t);
+  const other = threadId.replace(/1$/, '2');
+  const direct = { route: null, provider: 'openai', account: { account: { type: 'apiKey' } } };
+  const access = (fake) => ({ ...options(fake), binding: binding(dir, 'apiKey') });
+  const litellm = reference(dir, 'apiKey');
+  const openai = { ...litellm, opaque: other };
+  const fake = server(dir, direct);
+  assert.deepEqual(await codexSessions.inspect({ ...access(fake), reference: litellm }), { kind: 'error', error: { code: 'inaccessible' } });
+  assert.deepEqual(await codexSessions.prepareResume({ ...access(fake), reference: litellm }),
+    { kind: 'error', error: { code: 'inaccessible' } });
+  assert.deepEqual(await codexSessions.prepareResume({ ...access(fake), reference: openai }),
+    { kind: 'ok', value: { kind: 'ready', reference: openai, threadId: other, provider: 'openai' } });
+  mkdirSync(join(dir, 'sessions'));
+  for (const id of [threadId, other]) writeFileSync(join(dir, 'sessions', `${id}.jsonl`), '');
+  const threads = Object.fromEntries([threadId, other].map((id) => [join(dir, 'sessions', `${id}.jsonl`), id]));
+  const page = await codexSessions.discover({ ...access(server(dir, { ...direct, threads })) });
+  assert.deepEqual(page.value.sessions.map((item) => item.opaque), [other]);
+  assert.equal(page.value.examined, 2);
+  // An absent or null `model_provider` is Codex's default `openai`: the litellm thread is still refused.
+  for (const provider of ['absent', null]) {
+    const fallback = server(dir, { ...direct, provider });
+    assert.deepEqual(await codexSessions.prepareResume({ ...access(fallback), reference: openai }),
+      { kind: 'ok', value: { kind: 'ready', reference: openai, threadId: other, provider: 'openai' } }, String(provider));
+    assert.deepEqual(await codexSessions.prepareResume({ ...access(fallback), reference: litellm }),
+      { kind: 'error', error: { code: 'inaccessible' } }, String(provider));
+  }
+  // A thread with no readable provider is refused, and an unreadable `model_provider` binds nothing.
+  for (const value of [{}, { modelProvider: null }, { modelProvider: 7 }]) {
+    const missing = server(dir, { ...direct, threadProviders: { [other]: value } });
+    assert.deepEqual(await codexSessions.inspect({ ...access(missing), reference: openai }),
+      { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(value));
+  }
+  for (const provider of [7, '', { id: 'openai' }]) {
+    assert.deepEqual(await bind(server(dir, { ...direct, provider })), { kind: 'error', error: { code: 'native-failure' } });
+  }
+});
+
 test('routed and direct references never resolve under each other', async (t) => {
   const dir = home(t);
   const direct = server(dir, { route: null, account: { account: { type: 'apiKey' } } });
   const viaRoute = server(dir);
-  const ready = { kind: 'ok', value: { kind: 'ready', reference: reference(dir, principal), threadId } };
+  const ready = { kind: 'ok', value: { kind: 'ready', reference: reference(dir, principal), threadId, provider: 'litellm' } };
   const prepare = (fake, account) => codexSessions.prepareResume({ ...options(fake), binding: binding(dir, account),
     reference: reference(dir, account) });
   assert.deepEqual(await prepare(viaRoute, principal), ready);

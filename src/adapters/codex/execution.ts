@@ -10,9 +10,9 @@ import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, Ses
   SessionReferenceError } from '../../core/sessions.js';
 import { resolveCodexFeatures } from './features.js';
 import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
-import { copyCodexRoute } from './route.js';
+import { checkCodexRoute } from './route.js';
 import type { CodexProxyRoute } from './route.js';
-import { codexSessions } from './sessions.js';
+import { bindCodexRequester, codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
 import type { BorrowedChannel, CloseReport, CodexTransport, EndReason, Observation, SendFailure, TransportBounds,
@@ -66,11 +66,16 @@ export interface CodexExecutionOptions {
   readonly processExit: PromiseLike<unknown>;
   /**
    * The LiteLLM proxy route the host configured this app-server with, copied once at open. Sessions then bind to the
-   * host-asserted route principal instead of a native login (sessions.ts); absent is direct mode. Invalid: `invalid-input`.
+   * host-asserted route principal instead of a native login (sessions.ts); absent is direct mode. Invalid: `invalid-input`
+   * with a `message` naming the failing rule. A host runs one mode per Codex home: the writer registry keys by the
+   * complete reference, so a routed and a direct execution over one home would not exclude each other's writers.
    */
   readonly route?: CodexProxyRoute;
 }
-/** `message` is present only on a typed-feature or proxy-route `invalid-input` (features.ts, routeOverride), naming the rejected setting. */
+/**
+ * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
+ * routeOverride, checkCodexRoute), naming the rejected setting or rule.
+ */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
 export type CodexEvidence = 'qualified' | 'unqualified';
@@ -290,13 +295,14 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
 const fail = (code: CodexOpenError['code']) => ({ kind: 'error', error: Object.freeze({ code }) }) as const;
 
 export async function openCodexExecution(options: CodexExecutionOptions):
-Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'native-failure' }>> {
+Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'native-failure'; readonly message?: string }>> {
   let captured;
   try {
     const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit, route: rawRoute } = options;
     const state = registries.get(options.writers ?? processWriters);
-    const route = rawRoute === undefined ? undefined : copyCodexRoute(rawRoute);
-    if (rawRoute !== undefined && !route) return invalid;
+    const checked = rawRoute === undefined ? undefined : checkCodexRoute(rawRoute);
+    if (checked && 'problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
+    const route = checked?.route;
     if (!state || !record(bounds) || !record(initialize) || typeof onServerRequest !== 'function'
       || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0
       || typeof (processExit as { then?: unknown } | null)?.then !== 'function') return invalid;
@@ -492,17 +498,19 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     pendingOpens++;
     try {
       // The pg51 gate: private index precondition and the live native requester become the binding.
-      const bound = await codexSessions.bind({ scope, bounds: access.bounds, signal: wait, nativeFormat: 'codex-thread/paginated' });
+      const bound = await bindCodexRequester({ scope, bounds: access.bounds, signal: wait, nativeFormat: 'codex-thread/paginated' });
       if (bound.kind === 'error') return closed ? fail('closed') : bound;
       const reply = await request('thread/start', params, wait);
       if (reply.kind === 'not-sent') return fail(closed ? 'closed' : 'cancelled');
       if (reply.kind === 'uncertain') return fail('outcome-unknown');
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
+      // A thread on another provider than the bound requester's (routed or direct) runs off it: never a session.
       if (!thread || !text(thread.id) || !uuid.test(thread.id) || thread.historyMode !== 'paginated' || thread.ephemeral !== false
-        || (route && thread.modelProvider !== route.providerId)) {
+        || thread.modelProvider !== bound.value.provider) {
         return fail('native-failure');
       }
-      const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value, opaque: thread.id });
+      const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value.binding,
+        opaque: thread.id });
       const lease = acquire(writers, reference);
       if (typeof lease === 'string') return fail(lease === 'busy' ? 'native-failure' : 'capacity');
       // Close-during-open: a reply after close started never yields a session. Start-only IDs hold no writer.
@@ -543,7 +551,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         signal: wait, reference });
       if (prepared.kind === 'error') return closed ? fail('closed') : prepared;
       if (prepared.value.kind !== 'ready') return { kind: 'ok', value: prepared.value };
-      const { threadId } = prepared.value;
+      const { threadId, provider } = prepared.value;
       const reply = await request('thread/resume', { ...params, threadId }, wait);
       if (reply.kind === 'not-sent') return fail(closed ? 'closed' : 'cancelled');
       if (reply.kind === 'error') return fail('native-failure');
@@ -552,8 +560,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
       const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
         : thread?.id !== threadId ? 'identity-mismatch'
-          // Routed: a thread native resumed on another provider runs off the route; it never becomes a session.
-          : route && thread.modelProvider !== route.providerId ? 'native-failure' : closed ? 'closed' : undefined;
+          // A thread native resumed on another provider than the requester's runs off it; it never becomes a session.
+          : thread.modelProvider !== provider ? 'native-failure' : closed ? 'closed' : undefined;
       if (refused) { keep(lease); return fail(refused); }
       return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
         reply.kind === 'result' ? reply.value : null) }) };
