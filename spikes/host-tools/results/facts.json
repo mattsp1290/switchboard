@@ -1,0 +1,266 @@
+{
+  "probe": "facts",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-facts-753ec2ca",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-2fIx2a,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "120",
+    "node",
+    "/probe/facts-probe.mjs"
+  ],
+  "startedAt": "2026-11-18T21:05:39.556Z",
+  "finishedAt": "2026-11-18T21:05:41.286Z",
+  "docker": "29.2.1 linux/arm64",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "versions": {
+      "claudeSdk": "0.3.323",
+      "claudeCli": "2.1.323 (Claude Code)",
+      "codexSdk": "0.169.0",
+      "codex": "codex-cli 0.169.0",
+      "piCodingAgent": "1.5.2",
+      "piAgentCore": "1.5.2"
+    },
+    "claudeTypes": {
+      "hookPermissionDecision": [
+        {
+          "line": 1052,
+          "text": "export declare type HookPermissionDecision = 'allow' | 'deny' | 'ask' | 'defer';"
+        }
+      ],
+      "preToolUseInput": [
+        {
+          "line": 2630,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2648,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2808,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2826,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2899,
+          "text": "export declare type PreToolUseHookInput = BaseHookInput & {"
+        },
+        {
+          "line": 2904,
+          "text": "mcp_server?: McpServerProvenance;"
+        }
+      ],
+      "mcpServerProvenance": [
+        {
+          "line": 1324,
+          "text": "export declare type McpServerProvenance = {"
+        }
+      ],
+      "sdkServerConfig": [
+        {
+          "line": 1290,
+          "text": "type: 'sdk';"
+        }
+      ],
+      "mcpToolNaming": [
+        {
+          "line": 48,
+          "text": "* Array of tool names to explicitly disallow for this agent. MCP server-level specs (mcp__server, mcp__server__*, mcp__*) remove every tool from the named server (or all MCP tools)."
+        },
+        {
+          "line": 1729,
+          "text": "* an MCP tool can set `{ Bash: 'mcp__workspace__bash' }` so that if the"
+        },
+        {
+          "line": 1744,
+          "text": "* toolAliases: { Bash: 'mcp__workspace__bash' }"
+        },
+        {
+          "line": 4037,
+          "text": "* Wire name, e.g. \"mcp__linear__create_issue\"."
+        },
+        {
+          "line": 5025,
+          "text": "* Fully-qualified MCP tool name, e.g. mcp__server__tool_name. Plugin-hosted servers are ordinary MCP servers here — e.g. mcp__plugin_documents_docs__doc_export (server names are normalized: non-[a-zA-Z0-9_-] becomes _)."
+        }
+      ],
+      "deferredToolUse": [
+        {
+          "line": 5565,
+          "text": "export declare type SDKDeferredToolUse = {"
+        },
+        {
+          "line": 6301,
+          "text": "deferred_tool_use?: SDKDeferredToolUse;"
+        }
+      ],
+      "terminalReason": [
+        {
+          "line": 10427,
+          "text": "export declare type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'api_error' | 'malformed_tool_use_exhausted' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'backgr"
+        }
+      ],
+      "resultStopReason": [
+        {
+          "line": 6128,
+          "text": "stop_reason: string | null;"
+        },
+        {
+          "line": 6279,
+          "text": "stop_reason: string | null;"
+        }
+      ]
+    },
+    "claudeBinary": {
+      "returned permissionDecision=defer in interactive mode; ignoring (defer is print-mode only)": true,
+      "tool calls are in this batch; ignoring (defer is solo-only": true,
+      "returned permissionDecision=defer for a served call; refusing (no resume machinery)": true,
+      "tool_deferred_unavailable": true,
+      "Auto-resuming deferred tool": true
+    },
+    "codexProtocol": {
+      "command": "codex app-server generate-ts --experimental --out /tmp/codex-protocol",
+      "files": 951,
+      "sha256": "d9bacb7ece9dc2ddf26900564df8d195818be23437f1617df2eed6c873789261",
+      "serverRequestToolCall": [
+        {
+          "line": 20,
+          "text": "\"item/tool/call\", id: RequestId, params: DynamicToolCallParams"
+        }
+      ],
+      "dynamicToolCallParams": [
+        {
+          "line": 6,
+          "text": "export type DynamicToolCallParams = { threadId: string, turnId: string, callId: string, namespace: string | null, tool: string, arguments: JsonValue, };"
+        }
+      ],
+      "dynamicToolCallResponse": [
+        {
+          "line": 6,
+          "text": "export type DynamicToolCallResponse = { contentItems: Array<DynamicToolCallOutputContentItem>, success: boolean, };"
+        }
+      ],
+      "dynamicToolSpec": [
+        {
+          "line": 6,
+          "text": "export type DynamicToolFunctionSpec = { name: string, description: string, inputSchema: JsonValue, deferLoading?: boolean, };"
+        }
+      ],
+      "threadStartDynamicTools": [
+        {
+          "line": 72,
+          "text": "environments?: Array<TurnEnvironmentParams> | null, dynamicTools?: Array<DynamicToolSpec> | null,"
+        }
+      ],
+      "threadResumeDynamicTools": [],
+      "turnStartDynamicTools": [],
+      "timeoutFieldsInDynamicTypes": [],
+      "experimentalCapability": [
+        {
+          "line": 12,
+          "text": "* Requires `experimentalApi`. Pending requests can be replayed to compatible clients."
+        },
+        {
+          "line": 23,
+          "text": "experimentalApi: boolean,"
+        }
+      ]
+    },
+    "codexBinary": {
+      "dynamic tool calls are not supported in exec mode": true,
+      "dynamic tool call was cancelled before receiving a response": true
+    },
+    "codexSdk": [
+      {
+        "line": 178,
+        "text": "const commandArgs = [\"exec\", \"--experimental-json\"];"
+      }
+    ],
+    "pi": {
+      "toolCallHook": [
+        {
+          "line": 999,
+          "text": "* Fired before a tool executes. Can block."
+        },
+        {
+          "line": 1109,
+          "text": "export interface ToolCallEventResult {"
+        },
+        {
+          "line": 1266,
+          "text": "on(event: \"tool_call\", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): () => void;"
+        }
+      ],
+      "docsBlock": [
+        {
+          "line": 975,
+          "text": "Fired after `tool_execution_start`, before the tool executes. **Can block.** Use `isToolCallEventType` to narrow and get typed inputs."
+        },
+        {
+          "line": 3253,
+          "text": "- `tool_call` errors block the tool (fail-safe)"
+        }
+      ],
+      "beforeToolCall": [
+        {
+          "line": 39,
+          "text": "* Result returned from `beforeToolCall`."
+        },
+        {
+          "line": 82,
+          "text": "/** Context passed to `beforeToolCall`. */"
+        },
+        {
+          "line": 279,
+          "text": "beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;"
+        }
+      ]
+    }
+  }
+}

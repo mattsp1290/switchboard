@@ -1,0 +1,503 @@
+{
+  "probe": "pi-launcher",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-pi-launcher-4a0e55e6",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "--security-opt",
+    "seccomp=<repo>/spikes/host-tools/.work/seccomp-pi-launcher.json",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-SVWCdv,target=/dist,readonly",
+    "--entrypoint",
+    "node",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "/probe/pi-probe.mjs",
+    "launcher"
+  ],
+  "startedAt": "2026-11-18T20:50:55.607Z",
+  "finishedAt": "2026-11-18T20:50:58.705Z",
+  "docker": "29.2.1 linux/arm64",
+  "seccompProfile": {
+    "defaultAction": "SCMP_ACT_ALLOW",
+    "architectures": [
+      "SCMP_ARCH_AARCH64"
+    ],
+    "syscalls": [
+      {
+        "names": [
+          "setsid",
+          "setpgid"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "socket",
+          "socketpair",
+          "io_uring_setup"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "fork",
+          "vfork"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "clone3"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 38
+      },
+      {
+        "names": [
+          "tkill",
+          "pidfd_send_signal",
+          "rt_sigqueueinfo",
+          "rt_tgsigqueueinfo"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "shmget",
+          "msgget",
+          "semget",
+          "mq_open",
+          "ptrace"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "chmod",
+          "utime",
+          "utimes",
+          "futimesat"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "fchmodat",
+          "fchmodat2",
+          "utimensat",
+          "setxattr",
+          "lsetxattr",
+          "removexattr",
+          "lremovexattr",
+          "setxattrat",
+          "removexattrat",
+          "file_setattr"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1
+      },
+      {
+        "names": [
+          "clone"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 65536,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_MASKED_EQ"
+          }
+        ]
+      },
+      {
+        "names": [
+          "prctl"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ]
+      },
+      {
+        "names": [
+          "kill"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_NE"
+          }
+        ]
+      },
+      {
+        "names": [
+          "tgkill"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_NE"
+          }
+        ]
+      },
+      {
+        "names": [
+          "prlimit64"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "sched_setaffinity"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "sched_setattr"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "sched_setparam"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "sched_setscheduler"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "setpriority"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 0,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_NE"
+          }
+        ]
+      },
+      {
+        "names": [
+          "setpriority"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 0,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          },
+          {
+            "index": 1,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "ioprio_set"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_NE"
+          }
+        ]
+      },
+      {
+        "names": [
+          "ioprio_set"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 0,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          },
+          {
+            "index": 1,
+            "value": 1,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_GT"
+          }
+        ]
+      },
+      {
+        "names": [
+          "fcntl"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 1,
+            "value": 8,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ]
+      },
+      {
+        "names": [
+          "fcntl"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 1,
+            "value": 15,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ]
+      },
+      {
+        "names": [
+          "ioctl"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 1,
+            "value": 35073,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ]
+      },
+      {
+        "names": [
+          "ioctl"
+        ],
+        "action": "SCMP_ACT_ERRNO",
+        "errnoRet": 1,
+        "args": [
+          {
+            "index": 1,
+            "value": 35074,
+            "valueTwo": 0,
+            "op": "SCMP_CMP_EQ"
+          }
+        ]
+      }
+    ]
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "launcher",
+    "pid": 1,
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "YARN_VERSION"
+    ],
+    "versions": {
+      "pi-coding-agent": "1.5.2",
+      "pi-ai": "1.5.2",
+      "pi-agent-core": "1.5.2"
+    },
+    "controls": {
+      "socket": {
+        "ok": false,
+        "code": "EPERM",
+        "syscall": "connect"
+      },
+      "spawn": {
+        "ok": false,
+        "code": "EPERM"
+      },
+      "utimes": {
+        "ok": false,
+        "code": "EPERM",
+        "message": "EPERM: operation not permitted, utime '/home/probe/controls-ajp6Hm/file'"
+      },
+      "chmod": {
+        "ok": false,
+        "code": "EPERM",
+        "message": "EPERM: operation not permitted, chmod '/home/probe/controls-ajp6Hm/file'"
+      },
+      "sqliteWriteLock": {
+        "ok": true,
+        "value": "committed"
+      },
+      "signalOther": {
+        "ok": false,
+        "code": "EPERM",
+        "message": "kill EPERM"
+      }
+    },
+    "turns": {
+      "in-memory": {
+        "ok": true,
+        "kind": "in-memory",
+        "streamCalls": [
+          {
+            "messages": 2,
+            "tools": []
+          }
+        ],
+        "messages": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "last": {
+          "role": "assistant",
+          "stopReason": "stop",
+          "text": "pi answer to 1 prompt(s)",
+          "errorMessage": null
+        },
+        "files": []
+      },
+      "file-backed": {
+        "ok": true,
+        "kind": "file-backed",
+        "streamCalls": [
+          {
+            "messages": 2,
+            "tools": []
+          }
+        ],
+        "messages": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "last": {
+          "role": "assistant",
+          "stopReason": "stop",
+          "text": "pi answer to 1 prompt(s)",
+          "errorMessage": null
+        },
+        "files": [
+          "sessions",
+          "sessions/2026-11-18T20-50-58-660Z_01a1f06d-51e2-70db-be35-106ba8d3a98b.jsonl"
+        ]
+      }
+    },
+    "load": {
+      "ok": true
+    }
+  }
+}

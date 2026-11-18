@@ -1,0 +1,1067 @@
+{
+  "probe": "claude-solo",
+  "label": "claude-sdk-0.3.306",
+  "volume": "sb-p0-host-tools-nm-306",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-claude-solo-932c94f8",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm-306,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-H8bMes,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "300",
+    "node",
+    "/probe/claude-probe.mjs",
+    "solo"
+  ],
+  "startedAt": "2026-11-18T21:05:43.228Z",
+  "finishedAt": "2026-11-18T21:05:44.602Z",
+  "docker": "29.2.1 linux/arm64",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "solo",
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "versions": {
+      "sdk": "0.3.306",
+      "cli": "0.3.306",
+      "mcp": "1.32.2"
+    },
+    "model": [
+      {
+        "n": 1,
+        "at": 510,
+        "phase": 1,
+        "path": "/v1/messages",
+        "tools": [
+          "mcp__host__host_echo",
+          "mcp__host__host_probe"
+        ],
+        "stream": true,
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "<system-reminder>\n# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/probe/project\n - Is a git repository: f"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nYou are powered by the model named Sonnet 4.6. The exact model ID is claude-sonnet-4-6. Assistant knowledge cutoff is August 2025.\n</system-re"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nToday's date is 2026-11-18.\n</system-reminder>\n"
+              },
+              {
+                "type": "text",
+                "text": "scenario:solo please call the host tool"
+              }
+            ]
+          }
+        ],
+        "resultCounts": {},
+        "reply": {
+          "calls": [
+            {
+              "id": "toolu_01HostProbeSolo00000001",
+              "name": "mcp__host__host_probe"
+            }
+          ]
+        }
+      },
+      {
+        "n": 2,
+        "at": 1099,
+        "phase": 2,
+        "path": "/v1/messages",
+        "tools": [
+          "mcp__host__host_echo",
+          "mcp__host__host_probe"
+        ],
+        "stream": true,
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "<system-reminder>\n# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/probe/project\n - Is a git repository: f"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nYou are powered by the model named Sonnet 4.6. The exact model ID is claude-sonnet-4-6. Assistant knowledge cutoff is August 2025.\n</system-re"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "<system-reminder>\nToday's date is 2026-11-18.\n</system-reminder>\n"
+              },
+              {
+                "type": "text",
+                "text": "scenario:solo please call the host tool"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeSolo00000001",
+                "name": "mcp__host__host_probe",
+                "input": {
+                  "note": "solo"
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_01HostProbeSolo00000001",
+                "content": "host result for host_probe in phase 2"
+              },
+              {
+                "type": "text",
+                "text": "Continue from where you left off."
+              }
+            ]
+          }
+        ],
+        "resultCounts": {
+          "toolu_01HostProbeSolo00000001": 1
+        },
+        "reply": {
+          "text": "done after toolu_01HostProbeSolo00000001"
+        }
+      }
+    ],
+    "phases": [
+      {
+        "phase": 1,
+        "hostExit": {
+          "code": 0,
+          "signal": null
+        },
+        "hostStderrTail": "",
+        "hooks": [
+          {
+            "at": 536,
+            "event": "PreToolUse",
+            "tool_name": "mcp__host__host_probe",
+            "tool_use_id": "toolu_01HostProbeSolo00000001",
+            "tool_input": {
+              "note": "solo"
+            },
+            "mcp_server": {
+              "name": "host",
+              "source": "dynamic"
+            },
+            "savedDeferral": false,
+            "decision": "defer"
+          }
+        ],
+        "mcp": [
+          {
+            "at": 401,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 417,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 423,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 426,
+            "method": "GET",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 428,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          }
+        ],
+        "handlers": [],
+        "sdk": [
+          {
+            "at": 476,
+            "type": "system",
+            "subtype": "init",
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "tools": [
+              "mcp__host__host_echo",
+              "mcp__host__host_probe"
+            ],
+            "mcp_servers": [
+              {
+                "name": "host",
+                "status": "connected",
+                "source": "dynamic"
+              }
+            ],
+            "permissionMode": "dontAsk",
+            "claude_code_version": "2.1.306"
+          },
+          {
+            "at": 530,
+            "type": "assistant",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeSolo00000001",
+                "name": "mcp__host__host_probe",
+                "input": {
+                  "note": "solo"
+                }
+              }
+            ]
+          },
+          {
+            "at": 544,
+            "type": "result",
+            "subtype": "success",
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "is_error": false,
+            "stop_reason": "tool_deferred",
+            "terminal_reason": "tool_deferred",
+            "deferred_tool_use": {
+              "id": "toolu_01HostProbeSolo00000001",
+              "name": "mcp__host__host_probe",
+              "input": {
+                "note": "solo"
+              }
+            },
+            "num_turns": 1,
+            "result": "",
+            "permission_denials": [],
+            "errors": null
+          }
+        ],
+        "cli": [
+          {
+            "at": 224,
+            "pid": 24,
+            "command": "<node_modules>/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
+            "args": [
+              "--output-format",
+              "stream-json",
+              "--verbose",
+              "--input-format",
+              "stream-json",
+              "--model=claude-sonnet-4-6",
+              "--debug-file=/home/probe/debug-solo-1.log",
+              "--tools=",
+              "--mcp-config",
+              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:40355/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
+              "--setting-sources=",
+              "--strict-mcp-config",
+              "--permission-mode=dontAsk"
+            ],
+            "exit": {
+              "code": 0,
+              "signal": null,
+              "at": 565
+            }
+          }
+        ],
+        "result": {
+          "at": 544,
+          "type": "result",
+          "subtype": "success",
+          "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+          "is_error": false,
+          "stop_reason": "tool_deferred",
+          "terminal_reason": "tool_deferred",
+          "deferred_tool_use": {
+            "id": "toolu_01HostProbeSolo00000001",
+            "name": "mcp__host__host_probe",
+            "input": {
+              "note": "solo"
+            }
+          },
+          "num_turns": 1,
+          "result": "",
+          "permission_denials": [],
+          "errors": null
+        },
+        "debugLines": [
+          "2026-11-18T21:05:43.982Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: defer",
+          "2026-11-18T21:05:43.983Z [DEBUG] Hook result has permissionBehavior=defer"
+        ],
+        "transcript": [
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "e2e26b7d-ac22-4576-949d-bc4af44c2bbb",
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "ea6c44f5-9afc-4a15-a2ae-8cd35a5844db",
+            "parentUuid": "e2e26b7d-ac22-4576-949d-bc4af44c2bbb",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "environment",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "ac85be81-2b6c-4f72-b9dc-dfa229ad8166",
+            "parentUuid": "ea6c44f5-9afc-4a15-a2ae-8cd35a5844db",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "model",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "d5d1e207-7036-4649-bd08-42ac9c15653c",
+            "parentUuid": "ac85be81-2b6c-4f72-b9dc-dfa229ad8166",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "total_tokens_reminder",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "atis-latch",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "f1b24d98-4ad4-428e-b748-7c76a93fb7c2",
+            "parentUuid": "d5d1e207-7036-4649-bd08-42ac9c15653c",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "session_context",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "860cb820-2122-43e8-bd1a-ba8d45664875",
+            "parentUuid": "f1b24d98-4ad4-428e-b748-7c76a93fb7c2",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "date",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "7485a508-3d62-4019-8537-0d67f146ebc0",
+            "parentUuid": "860cb820-2122-43e8-bd1a-ba8d45664875",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "api-request-shape",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "api-request-blob",
+            "uuid": null,
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "api-request",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "27119776-133d-41eb-b9b2-5d69c33ba791",
+            "parentUuid": "7485a508-3d62-4019-8537-0d67f146ebc0",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeSolo00000001"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "9f89f7fd-68bc-481a-8265-a6ab0ada3e14",
+            "parentUuid": "27119776-133d-41eb-b9b2-5d69c33ba791",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "hook_deferred_tool",
+              "toolUseID": "toolu_01HostProbeSolo00000001"
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "a1bdf46b-b5fe-4faa-9e05-1c0ea96ac822",
+            "parentUuid": "9f89f7fd-68bc-481a-8265-a6ab0ada3e14",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "last-prompt",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "cost-state",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          }
+        ],
+        "mcpPort": 40355
+      },
+      {
+        "phase": 2,
+        "hostExit": {
+          "code": 0,
+          "signal": null
+        },
+        "hostStderrTail": "",
+        "hooks": [
+          {
+            "at": 1033,
+            "event": "PreToolUse",
+            "tool_name": "mcp__host__host_probe",
+            "tool_use_id": "toolu_01HostProbeSolo00000001",
+            "tool_input": {
+              "note": "solo"
+            },
+            "mcp_server": {
+              "name": "host",
+              "source": "dynamic"
+            },
+            "savedDeferral": true,
+            "decision": "allow"
+          },
+          {
+            "at": 1047,
+            "event": "PostToolUse",
+            "tool_name": "mcp__host__host_probe",
+            "tool_use_id": "toolu_01HostProbeSolo00000001"
+          }
+        ],
+        "mcp": [
+          {
+            "at": 952,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 968,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 975,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 979,
+            "method": "GET",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 981,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          },
+          {
+            "at": 1041,
+            "method": "POST",
+            "url": "/mcp",
+            "authorized": true,
+            "hostHeader": true
+          }
+        ],
+        "handlers": [
+          {
+            "at": 1043,
+            "name": "host_probe",
+            "arguments": {
+              "note": "solo"
+            },
+            "text": "host result for host_probe in phase 2",
+            "toolUseId": "toolu_01HostProbeSolo00000001"
+          }
+        ],
+        "sdk": [
+          {
+            "at": 1016,
+            "type": "command_lifecycle",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d"
+          },
+          {
+            "at": 1049,
+            "type": "attachment",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d"
+          },
+          {
+            "at": 1050,
+            "type": "user",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "blocks": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "toolu_01HostProbeSolo00000001",
+                "content": "host result for host_probe in phase 2"
+              }
+            ]
+          },
+          {
+            "at": 1050,
+            "type": "attachment",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d"
+          },
+          {
+            "at": 1072,
+            "type": "system",
+            "subtype": "init",
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "tools": [
+              "mcp__host__host_echo",
+              "mcp__host__host_probe"
+            ],
+            "mcp_servers": [
+              {
+                "name": "host",
+                "status": "connected",
+                "source": "dynamic"
+              }
+            ],
+            "permissionMode": "dontAsk",
+            "claude_code_version": "2.1.306"
+          },
+          {
+            "at": 1103,
+            "type": "assistant",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "blocks": [
+              {
+                "type": "text",
+                "text": "done after toolu_01HostProbeSolo00000001"
+              }
+            ]
+          },
+          {
+            "at": 1109,
+            "type": "result",
+            "subtype": "success",
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+            "is_error": false,
+            "stop_reason": "end_turn",
+            "terminal_reason": "completed",
+            "deferred_tool_use": null,
+            "num_turns": 1,
+            "result": "done after toolu_01HostProbeSolo00000001",
+            "permission_denials": [],
+            "errors": null
+          },
+          {
+            "at": 1113,
+            "type": "command_lifecycle",
+            "subtype": null,
+            "session_id": "aa0000b9-3961-4d02-91be-6e497176799d"
+          }
+        ],
+        "cli": [
+          {
+            "at": 778,
+            "pid": 50,
+            "command": "<node_modules>/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
+            "args": [
+              "--output-format",
+              "stream-json",
+              "--verbose",
+              "--input-format",
+              "stream-json",
+              "--model=claude-sonnet-4-6",
+              "--debug-file=/home/probe/debug-solo-2.log",
+              "--resume=aa0000b9-3961-4d02-91be-6e497176799d",
+              "--tools=",
+              "--mcp-config",
+              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:33871/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
+              "--setting-sources=",
+              "--strict-mcp-config",
+              "--permission-mode=dontAsk",
+              "--await-initialize"
+            ],
+            "exit": {
+              "code": 0,
+              "signal": null,
+              "at": 1137
+            }
+          }
+        ],
+        "result": {
+          "at": 1109,
+          "type": "result",
+          "subtype": "success",
+          "session_id": "aa0000b9-3961-4d02-91be-6e497176799d",
+          "is_error": false,
+          "stop_reason": "end_turn",
+          "terminal_reason": "completed",
+          "deferred_tool_use": null,
+          "num_turns": 1,
+          "result": "done after toolu_01HostProbeSolo00000001",
+          "permission_denials": [],
+          "errors": null
+        },
+        "debugLines": [
+          "2026-11-18T21:05:44.453Z [DEBUG] [print.ts] Auto-resuming deferred tool: mcp__host__host_probe (toolu_01HostProbeSolo00000001)",
+          "2026-11-18T21:05:44.469Z [DEBUG] Deferred tool resume: re-emitting mcp__host__host_probe (toolu_01HostProbeSolo00000001) through PreToolUse",
+          "2026-11-18T21:05:44.476Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: allow",
+          "2026-11-18T21:05:44.480Z [INFO] [Stall] tool_dispatch_start tool=mcp_tool toolUseId=toolu_01HostProbeSolo00000001 permissionDecisionMs=1",
+          "2026-11-18T21:05:44.487Z [INFO] [Stall] tool_dispatch_end tool=mcp_tool toolUseId=toolu_01HostProbeSolo00000001 outcome=ok durationMs=7"
+        ],
+        "transcript": [
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "e2e26b7d-ac22-4576-949d-bc4af44c2bbb",
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "ea6c44f5-9afc-4a15-a2ae-8cd35a5844db",
+            "parentUuid": "e2e26b7d-ac22-4576-949d-bc4af44c2bbb",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "environment",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "ac85be81-2b6c-4f72-b9dc-dfa229ad8166",
+            "parentUuid": "ea6c44f5-9afc-4a15-a2ae-8cd35a5844db",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "model",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "d5d1e207-7036-4649-bd08-42ac9c15653c",
+            "parentUuid": "ac85be81-2b6c-4f72-b9dc-dfa229ad8166",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "total_tokens_reminder",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "atis-latch",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "f1b24d98-4ad4-428e-b748-7c76a93fb7c2",
+            "parentUuid": "d5d1e207-7036-4649-bd08-42ac9c15653c",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "session_context",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "860cb820-2122-43e8-bd1a-ba8d45664875",
+            "parentUuid": "f1b24d98-4ad4-428e-b748-7c76a93fb7c2",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "date",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "7485a508-3d62-4019-8537-0d67f146ebc0",
+            "parentUuid": "860cb820-2122-43e8-bd1a-ba8d45664875",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "api-request-shape",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "api-request-blob",
+            "uuid": null,
+            "parentUuid": null,
+            "role": "user",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              },
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "api-request",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "27119776-133d-41eb-b9b2-5d69c33ba791",
+            "parentUuid": "7485a508-3d62-4019-8537-0d67f146ebc0",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "tool_use",
+                "id": "toolu_01HostProbeSolo00000001"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "attachment",
+            "uuid": "9f89f7fd-68bc-481a-8265-a6ab0ada3e14",
+            "parentUuid": "27119776-133d-41eb-b9b2-5d69c33ba791",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "hook_deferred_tool",
+              "toolUseID": "toolu_01HostProbeSolo00000001"
+            }
+          },
+          {
+            "type": "attachment",
+            "uuid": "a1bdf46b-b5fe-4faa-9e05-1c0ea96ac822",
+            "parentUuid": "9f89f7fd-68bc-481a-8265-a6ab0ada3e14",
+            "role": null,
+            "blocks": null,
+            "attachment": {
+              "type": "prompt_snapshot",
+              "toolUseID": null
+            }
+          },
+          {
+            "type": "last-prompt",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "cost-state",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "queue-operation",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "c8861653-531e-4bbf-a0cc-b11b9540ad65",
+            "parentUuid": "27119776-133d-41eb-b9b2-5d69c33ba791",
+            "role": "user",
+            "blocks": [
+              {
+                "type": "tool_result",
+                "id": "toolu_01HostProbeSolo00000001"
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "user",
+            "uuid": "82b139d1-564c-492d-ac0f-098a08a77fbf",
+            "parentUuid": "c8861653-531e-4bbf-a0cc-b11b9540ad65",
+            "role": "user",
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "api-request",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "assistant",
+            "uuid": "66044816-7f72-48d5-97b9-12a7f3a62814",
+            "parentUuid": "82b139d1-564c-492d-ac0f-098a08a77fbf",
+            "role": "assistant",
+            "blocks": [
+              {
+                "type": "text",
+                "id": null
+              }
+            ],
+            "attachment": null
+          },
+          {
+            "type": "last-prompt",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "mode",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          },
+          {
+            "type": "cost-state",
+            "uuid": null,
+            "parentUuid": null,
+            "role": null,
+            "blocks": null,
+            "attachment": null
+          }
+        ],
+        "mcpPort": 33871
+      }
+    ]
+  }
+}

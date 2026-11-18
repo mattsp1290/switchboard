@@ -1,0 +1,145 @@
+{
+  "probe": "pi-unconfined",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-pi-unconfined-7c7868f8",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-SVWCdv,target=/dist,readonly",
+    "--entrypoint",
+    "node",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "/probe/pi-probe.mjs",
+    "unconfined"
+  ],
+  "startedAt": "2026-11-18T20:50:55.610Z",
+  "finishedAt": "2026-11-18T20:50:58.333Z",
+  "docker": "29.2.1 linux/arm64",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "unconfined",
+    "pid": 1,
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "YARN_VERSION"
+    ],
+    "versions": {
+      "pi-coding-agent": "1.5.2",
+      "pi-ai": "1.5.2",
+      "pi-agent-core": "1.5.2"
+    },
+    "controls": {
+      "socket": {
+        "ok": false,
+        "code": "ECONNREFUSED",
+        "syscall": "connect"
+      },
+      "spawn": {
+        "ok": true,
+        "status": 0
+      },
+      "utimes": {
+        "ok": true,
+        "value": null
+      },
+      "chmod": {
+        "ok": true,
+        "value": null
+      },
+      "sqliteWriteLock": {
+        "ok": true,
+        "value": "committed"
+      },
+      "signalOther": {
+        "ok": false,
+        "code": "ESRCH",
+        "message": "kill ESRCH"
+      }
+    },
+    "turns": {
+      "in-memory": {
+        "ok": true,
+        "kind": "in-memory",
+        "streamCalls": [
+          {
+            "messages": 2,
+            "tools": []
+          }
+        ],
+        "messages": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "last": {
+          "role": "assistant",
+          "stopReason": "stop",
+          "text": "pi answer to 1 prompt(s)",
+          "errorMessage": null
+        },
+        "files": []
+      },
+      "file-backed": {
+        "ok": true,
+        "kind": "file-backed",
+        "streamCalls": [
+          {
+            "messages": 2,
+            "tools": []
+          }
+        ],
+        "messages": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "last": {
+          "role": "assistant",
+          "stopReason": "stop",
+          "text": "pi answer to 1 prompt(s)",
+          "errorMessage": null
+        },
+        "files": [
+          "sessions",
+          "sessions/2026-11-18T20-50-58-242Z_01a1f06d-503b-72a2-9945-a2bd40b44ad6.jsonl"
+        ]
+      }
+    },
+    "load": {
+      "ok": true
+    }
+  }
+}

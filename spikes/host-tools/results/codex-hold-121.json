@@ -1,0 +1,637 @@
+{
+  "probe": "codex-hold-121",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-codex-hold-121-90849807",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-SVWCdv,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "420",
+    "node",
+    "/probe/codex-probe.mjs",
+    "hold-121"
+  ],
+  "startedAt": "2026-11-18T20:50:55.587Z",
+  "finishedAt": "2026-11-18T20:53:08.427Z",
+  "docker": "29.2.1 linux/arm64",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "hold-121",
+    "codex": "codex-cli 0.169.0",
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "transportBounds": {
+      "maxFrameBytes": 1048576,
+      "maxChunkBytes": 2097151,
+      "maxDiagnosticBytes": 65536,
+      "maxPending": 8,
+      "maxHandlers": 4,
+      "maxWrites": 8,
+      "observationCapacity": 4096,
+      "handlerTimeoutMs": 180000,
+      "observationTimeoutMs": 5000,
+      "writeTimeoutMs": 20000
+    },
+    "model": [
+      {
+        "n": 1,
+        "at": 624,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message"
+        ],
+        "functionCalls": [],
+        "functionCallOutputs": [],
+        "lastUser": "call:host_probe and hold",
+        "wanted": "host_probe",
+        "continued": false,
+        "reply": {
+          "functionCall": "call_1",
+          "name": "host_probe"
+        }
+      },
+      {
+        "n": 2,
+        "at": 121682,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message",
+          "function_call",
+          "function_call_output"
+        ],
+        "functionCalls": [
+          {
+            "call_id": "call_1",
+            "name": "host_probe",
+            "arguments": "{\"note\":\"request 1\"}"
+          }
+        ],
+        "functionCallOutputs": [
+          {
+            "call_id": "call_1",
+            "output": "host result for call_1"
+          }
+        ],
+        "lastUser": "call:host_probe and hold",
+        "wanted": "host_probe",
+        "continued": true,
+        "reply": {
+          "text": "answer after call_1"
+        }
+      }
+    ],
+    "processes": [
+      {
+        "label": "p1",
+        "pid": 22,
+        "startedAt": 104,
+        "notifications": [
+          {
+            "at": 340,
+            "method": "configWarning",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+              "details": null
+            }
+          },
+          {
+            "at": 349,
+            "method": "remoteControl/status/changed",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 479,
+            "method": "thread/started",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": null
+          },
+          {
+            "at": 507,
+            "method": "warning",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": null,
+            "params": {
+              "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+              "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            }
+          },
+          {
+            "at": 578,
+            "method": "thread/status/changed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": null
+          },
+          {
+            "at": 579,
+            "method": "turn/started",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505"
+          },
+          {
+            "at": 600,
+            "method": "item/started",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "itemType": "userMessage",
+            "itemId": "01a1f06d-4c8a-7d71-a476-eb1fc2f2d2d0",
+            "itemStatus": null
+          },
+          {
+            "at": 609,
+            "method": "item/completed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "itemType": "userMessage",
+            "itemId": "01a1f06d-4c8a-7d71-a476-eb1fc2f2d2d0",
+            "itemStatus": null
+          },
+          {
+            "at": 638,
+            "method": "item/started",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_1",
+            "itemStatus": "inProgress",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": null,
+            "contentItems": null,
+            "arguments": {
+              "note": "request 1"
+            }
+          },
+          {
+            "at": 121662,
+            "method": "item/completed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_1",
+            "itemStatus": "completed",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "host result for call_1"
+              }
+            ],
+            "arguments": {
+              "note": "request 1"
+            }
+          },
+          {
+            "at": 121675,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 1013,
+                "inputTokens": 1001,
+                "cachedInputTokens": 1,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 1
+              },
+              "last": {
+                "totalTokens": 1013,
+                "inputTokens": 1001,
+                "cachedInputTokens": 1,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 12,
+                "reasoningOutputTokens": 1
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 121675,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 121685,
+            "method": "item/started",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "itemType": "agentMessage",
+            "itemId": "msg_2",
+            "itemStatus": null,
+            "text": ""
+          },
+          {
+            "at": 121685,
+            "method": "item/agentMessage/delta",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505"
+          },
+          {
+            "at": 121687,
+            "method": "item/completed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "itemType": "agentMessage",
+            "itemId": "msg_2",
+            "itemStatus": null,
+            "text": "answer after call_1"
+          },
+          {
+            "at": 121695,
+            "method": "thread/tokenUsage/updated",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 3036,
+                "inputTokens": 3002,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 34,
+                "reasoningOutputTokens": 3
+              },
+              "last": {
+                "totalTokens": 2023,
+                "inputTokens": 2001,
+                "cachedInputTokens": 2,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 22,
+                "reasoningOutputTokens": 2
+              },
+              "modelContextWindow": 258400
+            }
+          },
+          {
+            "at": 121695,
+            "method": "account/rateLimits/updated",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 121704,
+            "method": "thread/readState/changed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": null
+          },
+          {
+            "at": 121704,
+            "method": "thread/status/changed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": null
+          },
+          {
+            "at": 121704,
+            "method": "turn/completed",
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "status": "completed",
+            "error": null,
+            "fingerprint": {
+              "path": "sessions/2026/11/18/rollout-2026-11-18T20-50-57-01a1f06d-4bb4-7270-a0ec-30851d0d7c64.jsonl",
+              "bytes": 38540,
+              "sha256": "190c568237d227e7ef02622f010cd96d7f4587bed634f92289f41d19e57ef90c",
+              "lines": 19,
+              "mtimeMs": 1795035178394.6016,
+              "lastLine": {
+                "type": "event_msg",
+                "payloadType": "task_complete"
+              },
+              "lastTaskComplete": {
+                "line": 18,
+                "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505"
+              },
+              "rolloutTotals": {
+                "total": {
+                  "input_tokens": 3002,
+                  "cached_input_tokens": 3,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 34,
+                  "reasoning_output_tokens": 3,
+                  "total_tokens": 3036
+                },
+                "last": {
+                  "input_tokens": 2001,
+                  "cached_input_tokens": 2,
+                  "cache_write_input_tokens": 0,
+                  "output_tokens": 22,
+                  "reasoning_output_tokens": 2,
+                  "total_tokens": 2023
+                }
+              }
+            }
+          }
+        ],
+        "serverRequests": [
+          {
+            "method": "item/tool/call",
+            "idType": "number",
+            "receivedAt": 638,
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+            "callId": "call_1",
+            "namespace": null,
+            "tool": "host_probe",
+            "arguments": {
+              "note": "request 1"
+            },
+            "notificationsDuringHold": [],
+            "answeredAt": 121646,
+            "heldMs": 121008,
+            "answer": "host result for call_1"
+          }
+        ],
+        "rpc": [
+          {
+            "method": "initialize",
+            "at": 340,
+            "ok": true
+          },
+          {
+            "method": "thread/start",
+            "at": 469,
+            "ok": true
+          },
+          {
+            "method": "turn/start",
+            "at": 507,
+            "ok": true
+          }
+        ],
+        "stderrTail": "\u001b[2m2026-11-18T20:50:56.967355Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.\n",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 121730
+        },
+        "transportEnd": {
+          "at": 121721,
+          "reason": "caller-close",
+          "unsettled": {
+            "handlers": 0,
+            "observer": false,
+            "write": false
+          }
+        },
+        "stopMethod": "stdin-eof"
+      }
+    ],
+    "holdMs": 121000,
+    "initialize": "result",
+    "threadStart": {
+      "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64"
+    },
+    "result": {
+      "label": "p1",
+      "toolCalls": [
+        {
+          "method": "item/tool/call",
+          "tool": "host_probe",
+          "namespace": null,
+          "callId": "call_1",
+          "heldMs": 121008,
+          "answer": "host result for call_1",
+          "abortedAt": null,
+          "abortReason": null,
+          "notificationsDuringHold": []
+        }
+      ],
+      "dynamicToolItems": [
+        {
+          "at": 638,
+          "method": "item/started",
+          "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+          "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+          "itemType": "dynamicToolCall",
+          "itemId": "call_1",
+          "itemStatus": "inProgress",
+          "tool": "host_probe",
+          "namespace": null,
+          "success": null,
+          "contentItems": null,
+          "arguments": {
+            "note": "request 1"
+          }
+        },
+        {
+          "at": 121662,
+          "method": "item/completed",
+          "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+          "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+          "itemType": "dynamicToolCall",
+          "itemId": "call_1",
+          "itemStatus": "completed",
+          "tool": "host_probe",
+          "namespace": null,
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "host result for call_1"
+            }
+          ],
+          "arguments": {
+            "note": "request 1"
+          }
+        }
+      ],
+      "agentMessages": [
+        "answer after call_1"
+      ],
+      "turn": {
+        "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+        "status": "completed",
+        "error": null,
+        "turnStart": null
+      },
+      "usage": [
+        {
+          "at": 121675,
+          "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+          "total": {
+            "totalTokens": 1013,
+            "inputTokens": 1001,
+            "cachedInputTokens": 1,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 12,
+            "reasoningOutputTokens": 1
+          },
+          "last": {
+            "totalTokens": 1013,
+            "inputTokens": 1001,
+            "cachedInputTokens": 1,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 12,
+            "reasoningOutputTokens": 1
+          }
+        },
+        {
+          "at": 121695,
+          "turnId": "01a1f06d-4c19-75a1-be0e-d9964fa72505",
+          "total": {
+            "totalTokens": 3036,
+            "inputTokens": 3002,
+            "cachedInputTokens": 3,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 34,
+            "reasoningOutputTokens": 3
+          },
+          "last": {
+            "totalTokens": 2023,
+            "inputTokens": 2001,
+            "cachedInputTokens": 2,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 22,
+            "reasoningOutputTokens": 2
+          }
+        }
+      ],
+      "errors": [
+        {
+          "at": 340,
+          "method": "configWarning",
+          "threadId": null,
+          "turnId": null,
+          "params": {
+            "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+            "details": null
+          }
+        },
+        {
+          "at": 507,
+          "method": "warning",
+          "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+          "turnId": null,
+          "params": {
+            "threadId": "01a1f06d-4bb4-7270-a0ec-30851d0d7c64",
+            "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+          }
+        }
+      ],
+      "stopMethod": "stdin-eof",
+      "transportEnd": {
+        "at": 121721,
+        "reason": "caller-close",
+        "unsettled": {
+          "handlers": 0,
+          "observer": false,
+          "write": false
+        }
+      }
+    },
+    "transportEndBeforeStop": null,
+    "transportOpenAtTurnEnd": true,
+    "processAliveAtTurnEnd": true
+  }
+}

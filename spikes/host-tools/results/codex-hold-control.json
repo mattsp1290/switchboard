@@ -1,0 +1,355 @@
+{
+  "probe": "codex-hold-control",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-codex-hold-control-a12f4b59",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-SVWCdv,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "180",
+    "node",
+    "/probe/codex-probe.mjs",
+    "hold-control"
+  ],
+  "startedAt": "2026-11-18T20:50:55.591Z",
+  "finishedAt": "2026-11-18T20:52:36.202Z",
+  "docker": "29.2.1 linux/arm64",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "scenario": "hold-control",
+    "codex": "codex-cli 0.169.0",
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "transportBounds": {
+      "maxFrameBytes": 1048576,
+      "maxChunkBytes": 2097151,
+      "maxDiagnosticBytes": 65536,
+      "maxPending": 8,
+      "maxHandlers": 4,
+      "maxWrites": 8,
+      "observationCapacity": 4096,
+      "handlerTimeoutMs": 15000,
+      "observationTimeoutMs": 5000,
+      "writeTimeoutMs": 20000
+    },
+    "model": [
+      {
+        "n": 1,
+        "at": 200,
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "request_user_input",
+          "view_image",
+          "multi_agent_v1",
+          "get_goal",
+          "create_goal",
+          "update_goal",
+          "host_probe",
+          "(web_search)"
+        ],
+        "offered": [
+          {
+            "type": "function",
+            "name": "host_probe",
+            "description": "Host-run probe tool. Call it when asked.",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "inputTypes": [
+          "message",
+          "message",
+          "message",
+          "message"
+        ],
+        "functionCalls": [],
+        "functionCallOutputs": [],
+        "lastUser": "call:host_probe and hold",
+        "wanted": "host_probe",
+        "continued": false,
+        "reply": {
+          "functionCall": "call_1",
+          "name": "host_probe"
+        }
+      }
+    ],
+    "processes": [
+      {
+        "label": "p1",
+        "pid": 22,
+        "startedAt": 18,
+        "notifications": [
+          {
+            "at": 104,
+            "method": "configWarning",
+            "threadId": null,
+            "turnId": null,
+            "params": {
+              "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+              "details": null
+            }
+          },
+          {
+            "at": 104,
+            "method": "remoteControl/status/changed",
+            "threadId": null,
+            "turnId": null
+          },
+          {
+            "at": 123,
+            "method": "thread/started",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": null
+          },
+          {
+            "at": 129,
+            "method": "warning",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": null,
+            "params": {
+              "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+              "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+            }
+          },
+          {
+            "at": 173,
+            "method": "thread/status/changed",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": null
+          },
+          {
+            "at": 174,
+            "method": "turn/started",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22"
+          },
+          {
+            "at": 187,
+            "method": "item/started",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22",
+            "itemType": "userMessage",
+            "itemId": "01a1f06d-4831-7843-a660-239857a09b44",
+            "itemStatus": null
+          },
+          {
+            "at": 194,
+            "method": "item/completed",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22",
+            "itemType": "userMessage",
+            "itemId": "01a1f06d-4831-7843-a660-239857a09b44",
+            "itemStatus": null
+          },
+          {
+            "at": 210,
+            "method": "item/started",
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22",
+            "itemType": "dynamicToolCall",
+            "itemId": "call_1",
+            "itemStatus": "inProgress",
+            "tool": "host_probe",
+            "namespace": null,
+            "success": null,
+            "contentItems": null,
+            "arguments": {
+              "note": "request 1"
+            }
+          }
+        ],
+        "serverRequests": [
+          {
+            "method": "item/tool/call",
+            "idType": "number",
+            "receivedAt": 210,
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22",
+            "callId": "call_1",
+            "namespace": null,
+            "tool": "host_probe",
+            "arguments": {
+              "note": "request 1"
+            },
+            "notificationsDuringHold": [],
+            "abortedAt": 15214,
+            "abortReason": "handler-timeout"
+          }
+        ],
+        "rpc": [
+          {
+            "method": "initialize",
+            "at": 103,
+            "ok": true
+          },
+          {
+            "method": "thread/start",
+            "at": 123,
+            "ok": true
+          },
+          {
+            "method": "turn/start",
+            "at": 153,
+            "ok": true
+          }
+        ],
+        "stderrTail": "\u001b[2m2026-11-18T20:50:56.088870Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.\n",
+        "exit": {
+          "code": 0,
+          "signal": null,
+          "at": 90253
+        },
+        "transportEnd": {
+          "at": 15214,
+          "reason": "handler-timeout",
+          "unsettled": {
+            "handlers": 1,
+            "observer": false,
+            "write": false
+          }
+        },
+        "stopMethod": "stdin-eof"
+      }
+    ],
+    "holdMs": 30000,
+    "initialize": "result",
+    "threadStart": {
+      "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147"
+    },
+    "result": {
+      "label": "p1",
+      "toolCalls": [
+        {
+          "method": "item/tool/call",
+          "tool": "host_probe",
+          "namespace": null,
+          "callId": "call_1",
+          "heldMs": null,
+          "answer": null,
+          "abortedAt": 15214,
+          "abortReason": "handler-timeout",
+          "notificationsDuringHold": []
+        }
+      ],
+      "dynamicToolItems": [
+        {
+          "at": 210,
+          "method": "item/started",
+          "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+          "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22",
+          "itemType": "dynamicToolCall",
+          "itemId": "call_1",
+          "itemStatus": "inProgress",
+          "tool": "host_probe",
+          "namespace": null,
+          "success": null,
+          "contentItems": null,
+          "arguments": {
+            "note": "request 1"
+          }
+        }
+      ],
+      "agentMessages": [],
+      "turn": {
+        "turnId": "01a1f06d-47f7-7872-9c5d-7ec122ebfd22",
+        "status": null,
+        "error": null,
+        "turnStart": null
+      },
+      "usage": [],
+      "errors": [
+        {
+          "at": 104,
+          "method": "configWarning",
+          "threadId": null,
+          "turnId": null,
+          "params": {
+            "summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.",
+            "details": null
+          }
+        },
+        {
+          "at": 129,
+          "method": "warning",
+          "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+          "turnId": null,
+          "params": {
+            "threadId": "01a1f06d-47e4-7ab0-893a-c2bc04454147",
+            "message": "Model metadata for `fixture-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+          }
+        }
+      ],
+      "stopMethod": "stdin-eof",
+      "transportEnd": {
+        "at": 15214,
+        "reason": "handler-timeout",
+        "unsettled": {
+          "handlers": 1,
+          "observer": false,
+          "write": false
+        }
+      }
+    },
+    "transportEndBeforeStop": {
+      "at": 15214,
+      "reason": "handler-timeout",
+      "unsettled": {
+        "handlers": 1,
+        "observer": false,
+        "write": false
+      }
+    },
+    "transportOpenAtTurnEnd": false,
+    "processAliveAtTurnEnd": true
+  }
+}
