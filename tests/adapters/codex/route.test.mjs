@@ -33,8 +33,8 @@ const { codexRoutePrincipal, copyCodexRoute } = await import(new URL('adapters/c
 hook.deregister();
 
 const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1',
-  credentialPurpose: 'litellm-proxy', scope: { engine: 'codex', account: 'host-account-a' } });
-// SHA-256 of the UTF-8 of JSON.stringify([1, 'litellm', 'http://127.0.0.1:4000/v1', 'litellm-proxy', 'codex', 'host-account-a']).
+  credentialPurpose: 'litellm-proxy', model: 'team/gpt-5.1-codex', scope: { engine: 'codex', account: 'host-account-a' } });
+// SHA-256 of the UTF-8 of JSON.stringify([1, 'litellm', 'http://127.0.0.1:4000/v1', 'litellm-proxy', 'codex', 'host-account-a']): no model.
 const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
 const threadId = '0199aaaa-0000-7000-8000-000000000001';
 const bounds = { maxResults: 10, maxExamined: 10, maxDurationMs: 5000 };
@@ -193,6 +193,10 @@ test('the principal is stable per route, changes with provider, endpoint or host
   const variants = [of({ providerId: 'litellm2' }), of({ endpoint: 'http://127.0.0.1:4001/v1' }),
     of({ scope: { engine: 'codex', account: 'host-account-b' } }), of({ scope: { engine: 'codex2', account: 'host-account-a' } })];
   assert.equal(new Set([principal, ...variants]).size, 5);
+  // The model is not in the principal: one route principal serves sessions on different models (each app-server
+  // enforces its own), and ai7m principals are unchanged. A route without a valid model is not a route.
+  assert.equal(of({ model: 'other-model' }), principal);
+  for (const model of [undefined, '', ' m', 'a\nb', 'x'.repeat(257)]) assert.equal(copyCodexRoute({ ...route, model }), undefined);
   for (const value of [principal, ...variants]) {
     assert.match(value, /^litellm-proxy:sha256:[0-9a-f]{64}$/);
     assert(value !== 'apiKey' && !value.startsWith('chatgpt:'));

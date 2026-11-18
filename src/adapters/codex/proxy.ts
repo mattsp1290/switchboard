@@ -7,7 +7,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AuthError, AuthRoute, ScopedAuth } from '../../core/auth.js';
 import type { Outcome } from '../../core/contracts.js';
-import { checkCodexRoute } from './route.js';
+import { checkCodexRoute, plain as clean } from './route.js';
 
 /** The provider `auth.command` Codex runs for a token: never a secret, only the helper and its broker socket. */
 export interface CodexHelperCommand {
@@ -16,13 +16,13 @@ export interface CodexHelperCommand {
 }
 export interface CodexProxyOptions {
   /**
-   * The host's LiteLLM `AuthRoute`: `model` is the host-selected LiteLLM model name, sent verbatim. `headers` must be
-   * absent or empty: no native Codex provider header key is qualified, and static header values would sit in config.
+   * The host's LiteLLM `AuthRoute`, optional. `headers` must be absent or empty: no native Codex provider header key is
+   * qualified, and static header values would sit in config. The model is `route.model`; a different `model` is refused.
    */
-  readonly auth: Pick<AuthRoute, 'model' | 'headers'>;
+  readonly auth?: Partial<Pick<AuthRoute, 'model' | 'headers'>>;
   /** `CodexCredentialBroker.helper` of the broker that serves this app-server. */
   readonly helper: CodexHelperCommand;
-  /** Native `auth.timeout_ms`, 1-60000; default 5000. */
+  /** Native `auth.timeout_ms`, 1-10000 (the broker's `connectionTimeoutMs`, so native never waits on a dropped connection); default 5000. */
   readonly timeoutMs?: number;
   /** Native `auth.refresh_interval_ms`: proactive renewal, 1000-86400000; default 300000. A 401 always renews once. */
   readonly refreshIntervalMs?: number;
@@ -35,15 +35,6 @@ export interface CodexProxyConfig {
   readonly args: readonly string[];
 }
 
-function clean(value: unknown, limit = 4096): value is string {
-  // Lone surrogates would be JSON-escaped into invalid TOML.
-  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > limit || /\p{Cs}/u.test(value)) return false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || (code >= 127 && code <= 159)) return false;
-  }
-  return true;
-}
 const whole = (value: unknown, min: number, max: number, fallback: number): number | undefined =>
   value === undefined ? fallback : Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max
     ? value as number : undefined;
@@ -58,11 +49,10 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
   try {
     const checked = checkCodexRoute(route);
     if ('problem' in checked) return checked;
-    const { providerId, endpoint } = checked.route;
+    const { providerId, endpoint, model } = checked.route;
     const { auth, helper } = options;
-    const model = auth.model;
-    const headers = auth.headers;
-    if (!clean(model, 256)) return { problem: 'model must be a non-blank LiteLLM model name of at most 256 characters without control characters' };
+    const headers = auth?.headers;
+    if (auth?.model !== undefined && auth.model !== model) return { problem: 'auth model must equal the route model' };
     if (headers !== undefined && (typeof headers !== 'object' || headers === null || Object.keys(headers).length > 0)) {
       return { problem: 'auth headers are refused: no native Codex provider header key is qualified for a LiteLLM route' };
     }
@@ -71,7 +61,7 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
     if (!clean(command) || !isAbsolute(command) || !args || args.length > 8 || !args.every((arg) => clean(arg))) {
       return { problem: 'helper must be an absolute command with at most 8 plain arguments' };
     }
-    const timeout = whole(options.timeoutMs, 1, 60000, 5000);
+    const timeout = whole(options.timeoutMs, 1, codexBrokerLimits.connectionTimeoutMs, 5000);
     const refresh = whole(options.refreshIntervalMs, 1000, 86400000, 300000);
     if (timeout === undefined || refresh === undefined) return { problem: 'timeoutMs or refreshIntervalMs is out of range' };
     const at = `model_providers.${providerId}`;
@@ -99,19 +89,23 @@ const refused = (code: AuthError['code']): Outcome<never, AuthError> =>
 /**
  * Serves one host-resolved LiteLLM token per helper connection on a unix socket in a fresh 0700 directory. Each
  * connection is one native request boundary: `resolve` runs with a new `requestId`, never cached. A failed, aborted,
- * header-carrying or oversized resolution, or one for another endpoint or model than the app-server's (the `route.endpoint`
- * and model given to `codexProxyConfig`), writes nothing, so the helper fails. One broker per app-server: brokers share
- * nothing. Same-user processes that can reach the directory can ask for tokens; the host owns that boundary.
+ * header-carrying or oversized resolution, one for another endpoint or model than `route` (the route given to
+ * `codexProxyConfig`), or one that is not a `litellm-proxy` Responses credential, writes nothing, so the helper fails.
+ * The token must be printable ASCII without spaces: Codex trims helper stdout, and a newline in a header value makes it
+ * send no Authorization at all. One broker per app-server: brokers share nothing. Same-user processes that can reach the
+ * 0700 directory can ask for tokens, or hold all `maxConnections` until each idles out; the host owns that boundary.
  */
 export async function startCodexCredentialBroker(auth: ScopedAuth<unknown>,
-  options: { readonly invocationId: string; readonly endpoint: string; readonly model: string; readonly signal: AbortSignal }):
+  options: { readonly invocationId: string; readonly route: unknown; readonly signal: AbortSignal }):
 Promise<Outcome<CodexCredentialBroker, AuthError>> {
   let invocationId: string; let endpoint: string; let model: string; let signal: AbortSignal; let resolve: ScopedAuth<unknown>['resolve'];
   try {
-    ({ invocationId, endpoint, model, signal } = options);
+    const checked = checkCodexRoute(options.route);
+    ({ invocationId, signal } = options);
     resolve = auth.resolve;
-    if (!clean(invocationId, 1024) || !clean(endpoint, 8192) || !clean(model, 256) || !(signal instanceof AbortSignal)
+    if (!('route' in checked) || !clean(invocationId, 1024) || !(signal instanceof AbortSignal)
       || typeof resolve !== 'function') return refused('invalid-config');
+    ({ endpoint, model } = checked.route);
   } catch { return refused('invalid-config'); }
   if (signal.aborted) return refused('aborted');
   let dir: string;
@@ -131,8 +125,12 @@ Promise<Outcome<CodexCredentialBroker, AuthError>> {
       try {
         const resolved = await resolve.call(auth, { boundary: 'request', invocationId, requestId: randomUUID() }, requestSignal);
         const value = resolved.kind === 'ok' ? resolved.value : undefined;
-        if (value?.kind === 'litellm' && value.endpoint === endpoint && value.model === model && (value.headers === undefined || Object.keys(value.headers).length === 0)
-          && Buffer.byteLength(value.material.token) <= codexBrokerLimits.maxTokenBytes) token = value.material.token;
+        if (value?.kind === 'litellm' && value.endpoint === endpoint && value.model === model && value.protocol === 'responses'
+          && value.credentialPurpose === 'litellm-proxy' && value.material?.purpose === 'litellm-proxy'
+          && (value.headers === undefined || Object.keys(value.headers).length === 0) && typeof value.material.token === 'string'
+          && value.material.token.length <= codexBrokerLimits.maxTokenBytes && /^[\x21-\x7e]+$/u.test(value.material.token)) {
+          token = value.material.token;
+        }
       } catch { /* nothing is written */ }
       if (!socket.destroyed && !requestSignal.aborted) socket.end(token);
     })());

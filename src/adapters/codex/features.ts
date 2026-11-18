@@ -99,7 +99,7 @@ export const codexFeatureCapabilities = Object.freeze({
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
     `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified.`),
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
-    'Selects a native model name only; routing and model mapping are not decided here.'),
+    'Selects a native model name only. Under a proxy route only route.model is accepted (execution.ts); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
   'dynamic-tools': supported('fixture-only', { 'thread/start': ['dynamicTools'] },
     `Experimental thread/start.dynamicTools; requires ${gate}. The only evidence is the switchboard-bd21 diagnostic fixture `
@@ -107,7 +107,8 @@ export const codexFeatureCapabilities = Object.freeze({
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
   'routing': supported('fixture-only', { options: ['route'], 'app-server': ['codexProxyConfig'] },
     'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
-    + 'LiteLLM route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
+    + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. Live LiteLLM '
+    + 'qualification is owned by switchboard-ov4y.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
     + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),

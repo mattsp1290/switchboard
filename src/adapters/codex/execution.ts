@@ -290,14 +290,31 @@ function newTurn(): Turn {
 const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' }) } as const;
 /**
  * Under a route, a per-thread `modelProvider` or any `config` override redirects traffic off the route while the
- * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. `turn/start`
- * (TurnStartParams 0.169.0) has no provider or config field.
+ * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. The route also
+ * fixes the model: `model` (thread/start, thread/resume, turn/start) unless it strictly equals `route.model`,
+ * `collaborationMode` (turn/start; it takes precedence over `model`) unless its `settings.model` does, and
+ * `allowProviderModelFallback` (thread/start) unless `false` are refused. TurnStartParams 0.169.0 has no provider or
+ * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
  */
 const routeOverride = (route: CodexProxyRoute | undefined, target: string, params: Record<string, unknown>) => {
-  const key = route && ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
-  return key ? { kind: 'error', error: Object.freeze({ code: 'invalid-input', message:
-    `${target} ${key} is refused under a proxy route: a per-thread provider or config override can redirect traffic off the route` }) } as const
-    : undefined;
+  if (!route) return undefined;
+  const refuse = (key: string, why: string) => ({ kind: 'error', error: Object.freeze({ code: 'invalid-input',
+    message: `${target} ${key} is refused under a proxy route: ${why}` }) }) as const;
+  const key = ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  if (key) return refuse(key, 'a per-thread provider or config override can redirect traffic off the route');
+  if (Object.hasOwn(params, 'model') && params.model !== route.model) return refuse('model', 'it differs from the route model');
+  if (Object.hasOwn(params, 'allowProviderModelFallback') && params.allowProviderModelFallback !== false) {
+    return refuse('allowProviderModelFallback', 'it can replace the route model');
+  }
+  if (!Object.hasOwn(params, 'collaborationMode')) return undefined;
+  // Checked on a snapshot that replaces the host's object, so a later host mutation cannot change the sent model.
+  const raw = params.collaborationMode;
+  const mode = record(raw) && record(raw.settings) ? { ...raw, settings: { ...raw.settings } } : undefined;
+  if (target !== 'turn/start' || !mode || mode.settings.model !== route.model) {
+    return refuse('collaborationMode', 'its settings.model is not the route model');
+  }
+  params.collaborationMode = mode;
+  return undefined;
 };
 const fail = (code: CodexOpenError['code']) => ({ kind: 'error', error: Object.freeze({ code }) }) as const;
 
@@ -323,6 +340,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
   const { home, state: writers, bounds, signal, experimentalApi, route } = captured;
+  /**
+   * Under a route, a start or resume reply whose `model` is not `route.model` is never a session: natively (0.169.0) a
+   * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
+   */
+  const offModel = (value: unknown) => route !== undefined && (!record(value) || value.model !== route.model);
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
   const executionEvents = createEventStream<CodexExecutionEvent>(streamBounds);
   const sessions = new Set<Session>();
@@ -517,7 +539,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
       // A thread on another provider than the bound requester's (routed or direct) runs off it: never a session.
       if (!thread || !text(thread.id) || !uuid.test(thread.id) || thread.historyMode !== 'paginated' || thread.ephemeral !== false
-        || thread.modelProvider !== bound.value.provider) {
+        || thread.modelProvider !== bound.value.provider || offModel(reply.kind === 'result' ? reply.value : undefined)) {
         return fail('native-failure');
       }
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value.binding,
@@ -572,7 +594,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
         : thread?.id !== threadId ? 'identity-mismatch'
           // A thread native resumed on another provider than the requester's runs off it; it never becomes a session.
-          : thread.modelProvider !== provider ? 'native-failure' : closed ? 'closed' : undefined;
+          : thread.modelProvider !== provider || offModel(reply.value) ? 'native-failure' : closed ? 'closed' : undefined;
       if (refused) { keep(lease); return fail(refused); }
       return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
         reply.kind === 'result' ? reply.value : null) }) };
@@ -594,6 +616,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
+      const overridden = routeOverride(route, 'turn/start', params);
+      if (overridden) return overridden;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
       handle = createDispatchOperation<CodexTurnResult>({ mode: 'fresh', identity, recordIntent,
         signal: AbortSignal.any([hostSignal, session.abort.signal]), ...(lifecycle ? { events: lifecycle } : {}),

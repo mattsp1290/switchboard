@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,8 @@ const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/proxy.ts', src).href;
 // Broken controls: a config that adds a static env-key credential, and a broker that caches its first resolution.
 const call = "const resolved = await resolve.call(auth, { boundary: 'request', invocationId, requestId: randomUUID() }, requestSignal);";
-const mutations = new Map([['env-key', ["[`${at}.auth.command`]: command,", "[`${at}.env_key`]: 'LITELLM_API_KEY', [`${at}.auth.command`]: command,"]],
+// `fast` is not a broken control: a short connection lifetime so the idle and flood tests run in well under a second.
+const mutations = new Map([['fast', ['connectionTimeoutMs: 10000', 'connectionTimeoutMs: 1000']], ['env-key', ["[`${at}.auth.command`]: command,", "[`${at}.env_key`]: 'LITELLM_API_KEY', [`${at}.auth.command`]: command,"]],
   ['cached', [call, call.replace('await resolve.call(', 'await (globalThis.me4lCache ??= resolve.call(').replace(/;$/, ');')]]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
@@ -33,6 +34,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 const proxy = await import(target);
 const envKey = await import(`${target}?mutant=env-key`);
 const cached = await import(`${target}?mutant=cached`);
+const fast = await import(`${target}?mutant=fast`);
 const { codexSessions } = await import(new URL('adapters/codex/sessions.ts', src).href);
 const { createAuthContext } = await import(new URL('core/auth.ts', src).href);
 const { serializeDiagnostic, summarizeDiagnostic } = await import(new URL('core/diagnostics.ts', src).href);
@@ -40,9 +42,9 @@ hook.deregister();
 
 const endpoint = 'http://127.0.0.1:4000/v1';
 const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endpoint, credentialPurpose: 'litellm-proxy',
-  scope: { engine: 'codex', account: 'host-account-a' } });
+  model: 'team/gpt-5.1-codex', scope: { engine: 'codex', account: 'host-account-a' } });
 const helper = { command: '/usr/local/bin/node', args: ['/opt/sb/proxy-helper.js', '/tmp/sb-codex-broker-x/s'] };
-const options = { auth: { model: 'team/gpt-5.1-codex' }, helper };
+const options = { helper };
 const scope = { engine: 'codex', account: 'host-account-a', adapterInstanceId: 'adapter-1', sessionId: 'session-1' };
 
 /** A real `createAuthContext` LiteLLM resolver issuing `<prefix>-<n>`, recording every boundary it was called at. */
@@ -57,11 +59,14 @@ function auth(prefix, produce = (n) => ({ purpose: 'litellm-proxy', token: `${pr
 const run = (broker) => new Promise((done) => execFile(broker.helper.command, broker.helper.args, { env: {} },
   (error, stdout, stderr) => done({ code: error ? error.code : 0, stdout, stderr })));
 async function start(t, scoped, invocationId = 'invocation-1', signal = new AbortController().signal, module = proxy) {
-  const made = await module.startCodexCredentialBroker(scoped, { invocationId, endpoint, model: 'team/gpt-5.1-codex', signal });
+  const made = await module.startCodexCredentialBroker(scoped, { invocationId, route, signal });
   assert.equal(made.kind, 'ok');
   t.after(() => made.value.close());
   return made.value;
 }
+/** A resolver bypassing `createAuthContext` that answers a valid resolved LiteLLM value with `changes` applied. */
+const raw = (changes) => ({ resolve: async () => ({ kind: 'ok', value: { kind: 'litellm', endpoint, model: route.model, protocol: 'responses',
+  credentialPurpose: 'litellm-proxy', material: { purpose: 'litellm-proxy', token: 'tok' }, ...changes } }) });
 const unavailable = { code: 3, stdout: '', stderr: 'switchboard: proxy credential unavailable\n' };
 
 /** `-c key=value` args parsed back into the nested object `config/read` reports. */
@@ -124,16 +129,19 @@ test('invalid routes, models, helpers, timings and non-empty headers are refused
   assert.match(problem({ ...route, endpoint: 'http://127.0.0.1:4000/v2' }, options), /ending in \/v1/);
   assert.match(problem({ ...route, providerId: 'lite.llm' }, options), /providerId/);
   assert.match(problem(undefined, options), /route must be an object/);
-  for (const model of ['', ' padded', 'a\nb', 'x'.repeat(257), 7, 'lone\ud800']) assert.match(problem(route, { ...options, auth: { model } }), /model must be/);
+  for (const model of ['', ' padded', 'a\nb', 'x'.repeat(257), 7, 'lone\ud800', undefined]) assert.match(problem({ ...route, model }, options), /route model must be/);
+  assert.equal(problem(route, { ...options, auth: { model: 'other-model' } }), 'auth model must equal the route model');
+  assert.ok(proxy.codexProxyConfig(route, { ...options, auth: { model: route.model } }).config);
   for (const bad of [{ command: 'node', args: [] }, { command: '/n', args: ['a\u0000'] }, { command: '/n', args: 'x' }]) {
     assert.match(problem(route, { ...options, helper: bad }), /helper must be/);
   }
-  for (const timing of [{ timeoutMs: 0 }, { timeoutMs: 60001 }, { refreshIntervalMs: 0 }, { refreshIntervalMs: 1.5 }]) {
+  for (const timing of [{ timeoutMs: 0 }, { timeoutMs: 10001 }, { refreshIntervalMs: 0 }, { refreshIntervalMs: 1.5 }]) {
     assert.match(problem(route, { ...options, ...timing }), /out of range/);
   }
-  assert.equal(problem(route, { ...options, auth: { model: 'm', headers: { 'x-litellm-tag': 'a' } } }),
+  assert.equal(proxy.codexProxyConfig(route, { ...options, timeoutMs: 10000 }).config.overrides['model_providers.litellm.auth.timeout_ms'], 10000);
+  assert.equal(problem(route, { ...options, auth: { headers: { 'x-litellm-tag': 'a' } } }),
     'auth headers are refused: no native Codex provider header key is qualified for a LiteLLM route');
-  assert.ok(proxy.codexProxyConfig(route, { ...options, auth: { model: 'm', headers: {} } }).config);
+  assert.ok(proxy.codexProxyConfig(route, { ...options, auth: { headers: {} } }).config);
   assert.equal(problem(route, { get auth() { throw new Error('secret-token'); }, helper }), 'proxy options could not be read');
 });
 
@@ -160,13 +168,20 @@ test('a failed, thrown, header-carrying or oversized resolution gives no token a
   const failing = [auth('x', () => { throw new Error('secret-token-leak'); }).scoped,
     auth('x', () => ({ purpose: 'other', token: 'secret-token-leak' })).scoped,
     auth('x', undefined, { headers: { 'x-extra': 'secret-token-leak' } }).scoped,
-    { resolve: async () => ({ kind: 'ok', value: { kind: 'litellm', endpoint, model: 'team/gpt-5.1-codex', material: { token: 'é'.repeat(40000) } } }) },
+    // Not a printable-ASCII token: Codex trims stdout, and a newline in the header value suppresses Authorization.
+    ...['tok\n', ' tok', 'tok en', 'tök', 'é'.repeat(40000), 'a'.repeat(65537), '', 7].map((token) => raw({ material: { purpose: 'litellm-proxy', token } })),
+    // Not a litellm-proxy Responses credential.
+    raw({ protocol: 'chat' }), raw({ credentialPurpose: 'other' }), raw({ material: { purpose: 'other', token: 'tok' } }), raw({ material: undefined }),
     // A resolver for another endpoint or model would send its token to this app-server's proxy.
     auth('x', undefined, { endpoint: 'http://127.0.0.1:4001/v1' }).scoped, auth('x', undefined, { model: 'other-model' }).scoped,
+    auth('x', undefined, { protocol: 'chat' }).scoped,
     { resolve: async () => ({ kind: 'ok', value: { kind: 'direct', material: { token: 'secret-token-leak' } } }) }];
   for (const scoped of failing) assert.deepEqual(await run(await start(t, scoped)), unavailable);
-  const refused = await proxy.startCodexCredentialBroker({}, { invocationId: 'i', endpoint, model: 'm', signal: new AbortController().signal });
-  assert.deepEqual(refused, { kind: 'error', error: { code: 'invalid-config', message: 'The credential broker could not start.' } });
+  assert.deepEqual(await run(await start(t, raw({}))), { code: 0, stdout: 'tok', stderr: '' }, 'the raw control is served');
+  for (const [scoped, r] of [[{}, route], [auth('x').scoped, { ...route, model: undefined }]]) {
+    assert.deepEqual(await proxy.startCodexCredentialBroker(scoped, { invocationId: 'i', route: r, signal: new AbortController().signal }),
+      { kind: 'error', error: { code: 'invalid-config', message: 'The credential broker could not start.' } });
+  }
   assert.equal(serializeDiagnostic(summarizeDiagnostic('credentials', 'secret-token-leak')), '{"kind":"redacted","category":"credentials"}');
   // A connection that sends any payload is dropped unserved.
   const broker = await start(t, auth('quiet').scoped);
@@ -177,7 +192,7 @@ test('a failed, thrown, header-carrying or oversized resolution gives no token a
   for (const args of [[], ['a', 'b']]) assert.deepEqual(await run({ helper: { command: process.execPath, args: [broker.helper.args[0], ...args] } }), unavailable);
   // Closing while a resolution is pending aborts it and writes nothing, even if the resolver answers afterwards.
   let seen; const pending = await start(t, { resolve: (_, signal) => { seen = signal; return new Promise((done) => signal.addEventListener('abort',
-    () => done({ kind: 'ok', value: { kind: 'litellm', endpoint, model: 'team/gpt-5.1-codex', material: { token: 'late-token' } } }))); } });
+    () => done(raw({ material: { purpose: 'litellm-proxy', token: 'late-token' } }).resolve()))); } });
   const helperRun = run(pending);
   while (!seen) await new Promise((done) => setTimeout(done, 10));
   await pending.close();
@@ -200,6 +215,32 @@ test('concurrent brokers are isolated and close removes the socket and its direc
   controller.abort();
   await aborted.close();
   assert.equal(existsSync(dirname(aborted.helper.args[1])), false);
-  assert.deepEqual(await proxy.startCodexCredentialBroker(a.scoped, { invocationId: 'i', endpoint, model: 'm', signal: controller.signal }),
+  assert.deepEqual(await proxy.startCodexCredentialBroker(a.scoped, { invocationId: 'i', route, signal: controller.signal }),
     { kind: 'error', error: { code: 'aborted', message: 'The credential broker could not start.' } });
+});
+
+test('idle connections are reaped: a full broker fails fast, then serves again; a long socket path fails cleanly', async (t) => {
+  const flood = auth('flood');
+  const broker = await start(t, flood.scoped, 'invocation-1', new AbortController().signal, fast);
+  const idle = await new Promise((done) => { const socket = connect(broker.helper.args[1]); socket.on('error', () => {});
+    const at = Date.now(); socket.on('close', () => done(Date.now() - at)); });
+  assert(idle >= 900 && idle < 3000, `idle connection closed after ${idle} ms`);
+  // A same-user process holding every connection: the helper fails at once instead of hanging, and recovers after reaping.
+  const holders = Array.from({ length: proxy.codexBrokerLimits.maxConnections }, () => connect(broker.helper.args[1]).on('error', () => {}));
+  await Promise.all(holders.map((socket) => new Promise((done) => socket.once('connect', done))));
+  assert.deepEqual(await run(broker), unavailable);
+  assert.equal(flood.contexts.length, 0, 'refused before any resolution');
+  await Promise.all(holders.map((socket) => new Promise((done) => (socket.destroyed ? done() : socket.once('close', done)))));
+  assert.deepEqual(await run(broker), { code: 0, stdout: 'flood-1', stderr: '' });
+  // A socket path beyond the platform limit: credential-unavailable, and no broker directory is left behind.
+  const long = join(mkdtempSync(join(tmpdir(), 'me4l-long-')), 'x'.repeat(100));
+  mkdirSync(long);
+  t.after(() => rmSync(dirname(long), { recursive: true, force: true }));
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = long;
+  try {
+    assert.deepEqual(await proxy.startCodexCredentialBroker(auth('long').scoped, { invocationId: 'i', route, signal: new AbortController().signal }),
+      { kind: 'error', error: { code: 'credential-unavailable', message: 'The credential broker could not start.' } });
+  } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
+  assert.deepEqual(readdirSync(long), []);
 });
