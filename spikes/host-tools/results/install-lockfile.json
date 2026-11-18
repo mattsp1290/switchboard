@@ -1,0 +1,28 @@
+{
+  "volume": "sb-p0-host-tools-nm",
+  "packages": [],
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-install-6beb6c34",
+    "-e",
+    "HOME=/tmp/home",
+    "--mount",
+    "type=bind,source=<repo>,target=/work,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm,target=/work/node_modules",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "sh",
+    "-c",
+    "mkdir -p /tmp/home && cd /work && npm ci --ignore-scripts --no-audit --no-fund && npm --version"
+  ],
+  "at": "2026-11-18T21:31:18.475Z",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "outputTail": "\nadded 235 packages in 11s\n11.19.1\nnpm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @opentelemetry/sdk-trace-node@2.12.0: Use @opentelemetry/sdk-trace package\nnpm warn deprecated @opentelemetry/sdk-trace-base@2.12.0: Use @opentelemetry/sdk-trace package\nnpm notice\nnpm notice New major version of npm available! 11.19.1 -> 12.2.3\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.3\nnpm notice To update run: npm install -g npm@12.2.3\nnpm notice\n"
+}

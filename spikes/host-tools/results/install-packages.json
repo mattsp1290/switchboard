@@ -1,0 +1,29 @@
+{
+  "volume": "sb-p0-host-tools-nm-306",
+  "packages": [
+    "@anthropic-ai/claude-agent-sdk@0.3.306",
+    "@modelcontextprotocol/sdk@1.32.2"
+  ],
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-install-2443fd1f",
+    "-e",
+    "HOME=/tmp/home",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm-306,target=/i/node_modules",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "sh",
+    "-c",
+    "mkdir -p /tmp/home /i && cd /i && npm init -y >/dev/null && npm install --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-agent-sdk@0.3.306 @modelcontextprotocol/sdk@1.32.2 && npm --version"
+  ],
+  "at": "2026-11-18T21:31:27.167Z",
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "outputTail": "\nadded 105 packages in 8s\n11.19.1\n"
+}

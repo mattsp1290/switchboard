@@ -34,6 +34,8 @@ const SCENARIOS = {
     gated: [PROBE], others: 'deny', allowedTools: [] },
   'batch-both-gated': { calls: [{ id: 'toolu_01HostProbeBatch0000004', name: PROBE }, { id: 'toolu_01HostEchoBatch00000004', name: ECHO }],
     gated: [PROBE, ECHO], allowedTools: [] },
+  'batch-both-gated-reversed': { calls: [{ id: 'toolu_01HostEchoBatch00000007', name: ECHO }, { id: 'toolu_01HostProbeBatch0000007', name: PROBE }],
+    gated: [PROBE, ECHO], allowedTools: [] },
   'batch-both-gated-preallowed': { calls: [{ id: 'toolu_01HostProbeBatch0000005', name: PROBE }, { id: 'toolu_01HostEchoBatch00000005', name: ECHO }],
     gated: [PROBE, ECHO], allowedTools: [PROBE, ECHO] },
 };
@@ -52,7 +54,7 @@ async function orchestrate(scenario) {
   for (const dir of [CONFIG, PROJECT, STATE]) mkdirSync(dir, { recursive: true });
   const pkg = (name) => JSON.parse(readFileSync(`/node_modules/${name}/package.json`, 'utf8')).version;
   const report = { scenario, node: process.version, arch: process.arch, environmentKeys: Object.keys(process.env).sort(),
-    versions: { sdk: pkg('@anthropic-ai/claude-agent-sdk'), cli: pkg(`@anthropic-ai/claude-agent-sdk-linux-${process.arch}`),
+    versions: { sdk: pkg('@anthropic-ai/claude-agent-sdk'), cliPackage: pkg(`@anthropic-ai/claude-agent-sdk-linux-${process.arch}`),
       mcp: pkg('@modelcontextprotocol/sdk') }, model: [], phases: [] };
   // Synthetic Messages service: a request whose last message carries tool results gets text; a request whose tools
   // include the scenario's tool names gets those tool calls in one assistant message; anything else gets text.
@@ -198,7 +200,8 @@ async function phase(number, scenario, provider) {
   const options = {
     abortController,
     cwd: PROJECT, model: 'claude-sonnet-4-6', tools: [], allowedTools: SCENARIOS[scenario].allowedTools, strictMcpConfig: true,
-    settingSources: [], plugins: [], permissionMode: 'dontAsk',
+    // maxTurns 3 is what Crew's worker passes when the member has a tool (crew:src/service/claude-worker.ts).
+    settingSources: [], plugins: [], permissionMode: 'dontAsk', maxTurns: 3,
     mcpServers: { host: { type: 'http', url: `http://${host}/mcp`, headers: { Authorization: bearer }, alwaysLoad: true } },
     hooks: { PreToolUse: [{ hooks: [hook] }], PostToolUse: [{ hooks: [async (input) => {
       out.hooks.push({ at: now(), event: input.hook_event_name, tool_name: input.tool_name, tool_use_id: input.tool_use_id });
@@ -265,6 +268,5 @@ async function phase(number, scenario, provider) {
   await transport.close().catch(() => {});
   http.closeAllConnections();
   await new Promise((resolve) => http.close(resolve));
-  process.stdout.write(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));
 }

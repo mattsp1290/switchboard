@@ -6,7 +6,7 @@
     "run",
     "--rm",
     "--name",
-    "sb-host-tools-claude-solo-no-await-d80eb09a",
+    "sb-host-tools-claude-solo-no-await-3c42bc4e",
     "--network",
     "none",
     "--read-only",
@@ -29,7 +29,7 @@
     "--mount",
     "type=volume,source=sb-p0-host-tools-nm,target=/node_modules,readonly",
     "--mount",
-    "type=bind,source=<repo>/spikes/host-tools/.work/dist-2fIx2a,target=/dist,readonly",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-7iT55W,target=/dist,readonly",
     "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
     "timeout",
     "300",
@@ -37,9 +37,76 @@
     "/probe/claude-probe.mjs",
     "solo-no-await"
   ],
-  "startedAt": "2026-11-18T21:05:39.561Z",
-  "finishedAt": "2026-11-18T21:05:43.172Z",
-  "docker": "29.2.1 linux/arm64",
+  "startedAt": "2026-11-18T21:31:54.467Z",
+  "finishedAt": "2026-11-18T21:32:00.337Z",
+  "provenance": {
+    "gitHead": "6bc4d8d77e60087d6ffb2c2e600d7d8f98260c29",
+    "probeSources": {
+      "spikes/host-tools/claude-probe.mjs": "af4505f2494b5df7b821b139f105bf9262d0377f63cc9af9b9aa76cb1f66541d",
+      "spikes/host-tools/codex-probe.mjs": "9241c99d1fa69d39d6589c477051983adf97ea62c2932a8d43dcbd4edd236fae",
+      "spikes/host-tools/facts-probe.mjs": "c67d31a57408eeb8481a14e0a5da16dfdc80446f2fd35a79e3e82c56284e0c18",
+      "spikes/host-tools/pi-probe.mjs": "47a7d77e0bd658b33e59fcbb3c81bdf171ee7894845e00bd11a2cdfe5aff12df",
+      "spikes/host-tools/pi-seccomp.mjs": "e33732fad996b1628f65787d451e71e83dacb02df0168f3f343a0a6712532344",
+      "spikes/host-tools/run.mjs": "e8401829145548550aa3b3c3e13e4d80d77d5c9c899eda576757a82aab411b47"
+    },
+    "transportSources": {
+      "src/adapters/codex/transport.ts": "ae39146c6749070b0e364cfb3491a0838a54debfe988a0b98a166a33c5f3972c",
+      "src/adapters/codex/wire.ts": "394b244ecd7a71c16cba408a410c96b446ef7509891aa71ec470b95722efb6a6",
+      "src/core/events.ts": "6129339b4987f337d8114ebec498f264f9f6acebf2bbbbb45ebbe9bd6736b712"
+    },
+    "docker": {
+      "server": "29.2.1",
+      "arch": "arm64",
+      "os": "Ubuntu 24.04.4 LTS"
+    },
+    "runnerPlatform": "darwin/arm64",
+    "volume": {
+      "name": "sb-p0-host-tools-nm",
+      "npm": "11.19.1",
+      "packages": {
+        "@openai/codex": {
+          "version": "0.169.0",
+          "integrity": "sha512-KhzYlkKPxoNssR8CEm45IjqnFWn7UtlF4CiD3tOJPea51xBs7MaHy0UQG9GSbCqk6Lrjn5QdJDV0QD1/FgWlGw=="
+        },
+        "@openai/codex-linux-arm64": {
+          "version": "0.169.0-linux-arm64",
+          "integrity": "sha512-NZ/DaQUpcQmxmqee7Z9uC1rzw3GhSbooawcaTe1LN5Yk+WlinUKGdTXJgClRT/9ogQEEM9TWxYzvxPfj5G/xFg=="
+        },
+        "@openai/codex-sdk": {
+          "version": "0.169.0",
+          "integrity": "sha512-N2ZApXiOjjDiWKuoyaW3zdww9ggFtxKjeMp5qq+kW77UXDOxY2O6hg60ahip319Tlt6iwYEoDfPQzn9a6d3jFA=="
+        },
+        "@anthropic-ai/claude-agent-sdk": {
+          "version": "0.3.323",
+          "integrity": "sha512-GXIczMzzceNWB+bIImK59hWOQoBWZtSw+AESPc/qbAWmmHM8Wrqb5KvTwWZ07CmjyC/KcPC47nOLxxyHlWqKPA=="
+        },
+        "@anthropic-ai/claude-agent-sdk-linux-arm64": {
+          "version": "0.3.323",
+          "integrity": "sha512-ONhCJapk9UxpaZ3HY1GTZezMoiQ6Ab7fIubS+dJeXIyj8aQjGQALHQoEl9D1Hrr+q5ppZPOAt0hg69x8aGbTBA=="
+        },
+        "@modelcontextprotocol/sdk": {
+          "version": "1.32.2",
+          "integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw=="
+        },
+        "@earendil-works/pi-ai": {
+          "version": "1.5.2",
+          "integrity": "sha512-2tWPSnV3qzfiDIY3aWluBag3vC++Vs+VsXt/UquSU5onPMohPih72FUhIhaqmDdMYubOgB3Byl9uF4Vk40JLvQ=="
+        },
+        "@earendil-works/pi-coding-agent": {
+          "version": "1.5.2",
+          "integrity": "sha512-mUWI04rqF1Vd/m1q+Ps1XeWsTXEVvRUnsmRa83I3Dzua0Tx5bYS93imeqtIfrXf7PkkaR6ERz+AuQhIJlom5yA=="
+        },
+        "@earendil-works/pi-agent-core": {
+          "version": "1.5.2",
+          "integrity": "sha512-ie5mejS7mGfXt//9As7i3LfxVXdktZvF1JP4EQsUXTp4mU437h23MNGx7wXZ5VYs3YiG/Qnj3e7OZ2HC069OMw=="
+        },
+        "typescript": {
+          "version": "7.0.2",
+          "integrity": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="
+        }
+      }
+    }
+  },
   "exit": {
     "code": 0,
     "signal": null
@@ -59,13 +126,13 @@
     ],
     "versions": {
       "sdk": "0.3.323",
-      "cli": "0.3.323",
+      "cliPackage": "0.3.323",
       "mcp": "1.32.2"
     },
     "model": [
       {
         "n": 1,
-        "at": 1630,
+        "at": 2966,
         "phase": 1,
         "path": "/v1/messages",
         "tools": [
@@ -112,7 +179,7 @@
       },
       {
         "n": 2,
-        "at": 3056,
+        "at": 4601,
         "phase": 2,
         "path": "/v1/messages",
         "tools": [
@@ -192,7 +259,7 @@
         "hostStderrTail": "",
         "hooks": [
           {
-            "at": 1658,
+            "at": 3029,
             "event": "PreToolUse",
             "tool_name": "mcp__host__host_probe",
             "tool_use_id": "toolu_01HostProbeSolo00000002",
@@ -209,35 +276,35 @@
         ],
         "mcp": [
           {
-            "at": 1356,
+            "at": 2370,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 1384,
+            "at": 2537,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 1391,
+            "at": 2574,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 1399,
+            "at": 2588,
             "method": "GET",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 1404,
+            "at": 2599,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
@@ -247,10 +314,10 @@
         "handlers": [],
         "sdk": [
           {
-            "at": 1567,
+            "at": 2858,
             "type": "system",
             "subtype": "init",
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "tools": [
               "mcp__host__host_echo",
               "mcp__host__host_probe"
@@ -266,10 +333,10 @@
             "claude_code_version": "2.1.323"
           },
           {
-            "at": 1644,
+            "at": 3001,
             "type": "assistant",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "blocks": [
               {
                 "type": "tool_use",
@@ -282,10 +349,10 @@
             ]
           },
           {
-            "at": 1676,
+            "at": 3049,
             "type": "result",
             "subtype": "success",
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "is_error": false,
             "stop_reason": "tool_deferred",
             "terminal_reason": "tool_deferred",
@@ -304,7 +371,7 @@
         ],
         "cli": [
           {
-            "at": 835,
+            "at": 1161,
             "pid": 24,
             "command": "<node_modules>/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
             "args": [
@@ -313,11 +380,12 @@
               "--verbose",
               "--input-format",
               "stream-json",
+              "--max-turns=3",
               "--model=claude-sonnet-4-6",
               "--debug-file=/home/probe/debug-solo-no-await-1.log",
               "--tools=",
               "--mcp-config",
-              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:44955/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
+              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:36255/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
               "--setting-sources=",
               "--strict-mcp-config",
               "--permission-mode=dontAsk"
@@ -325,15 +393,15 @@
             "exit": {
               "code": 0,
               "signal": null,
-              "at": 1711
+              "at": 3093
             }
           }
         ],
         "result": {
-          "at": 1676,
+          "at": 3049,
           "type": "result",
           "subtype": "success",
-          "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+          "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
           "is_error": false,
           "stop_reason": "tool_deferred",
           "terminal_reason": "tool_deferred",
@@ -350,8 +418,8 @@
           "errors": null
         },
         "debugLines": [
-          "2026-11-18T21:05:41.713Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: defer",
-          "2026-11-18T21:05:41.714Z [DEBUG] Hook result has permissionBehavior=defer"
+          "2026-11-18T21:31:58.675Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: defer",
+          "2026-11-18T21:31:58.676Z [DEBUG] Hook result has permissionBehavior=defer"
         ],
         "transcript": [
           {
@@ -372,7 +440,7 @@
           },
           {
             "type": "user",
-            "uuid": "8f2094de-62ff-45f0-a348-ca1c27c6f76a",
+            "uuid": "f8660a41-5924-4f3a-a797-7056f7d291ce",
             "parentUuid": null,
             "role": "user",
             "blocks": [
@@ -385,8 +453,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "37ab1cb4-07a8-4596-aba5-60699d4ee3e4",
-            "parentUuid": "8f2094de-62ff-45f0-a348-ca1c27c6f76a",
+            "uuid": "4b86ed3d-8a22-45ed-aec1-5302d8330a08",
+            "parentUuid": "f8660a41-5924-4f3a-a797-7056f7d291ce",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -396,8 +464,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "08aa1cad-e6d6-49f9-b58c-8524148f2514",
-            "parentUuid": "37ab1cb4-07a8-4596-aba5-60699d4ee3e4",
+            "uuid": "19426132-635c-4de2-b26a-9eeb07fddf40",
+            "parentUuid": "4b86ed3d-8a22-45ed-aec1-5302d8330a08",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -407,8 +475,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "019d8cf7-ded1-4bf9-afc5-7d8c5ed68071",
-            "parentUuid": "08aa1cad-e6d6-49f9-b58c-8524148f2514",
+            "uuid": "8f61b996-7a36-4adb-89e3-fa1b9fd17478",
+            "parentUuid": "19426132-635c-4de2-b26a-9eeb07fddf40",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -426,8 +494,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "bdc77741-5032-42f5-87e1-d60206a79437",
-            "parentUuid": "019d8cf7-ded1-4bf9-afc5-7d8c5ed68071",
+            "uuid": "85e91401-5369-4b4d-a65d-4868800c167b",
+            "parentUuid": "8f61b996-7a36-4adb-89e3-fa1b9fd17478",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -437,8 +505,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "7c315b40-21df-4317-a9ce-a18ee9200455",
-            "parentUuid": "bdc77741-5032-42f5-87e1-d60206a79437",
+            "uuid": "fdcdc25d-153e-41f4-a270-c40144d65fc0",
+            "parentUuid": "85e91401-5369-4b4d-a65d-4868800c167b",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -448,8 +516,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "3b5cc48a-1d9e-410c-a370-a210e570086e",
-            "parentUuid": "7c315b40-21df-4317-a9ce-a18ee9200455",
+            "uuid": "be80f7dd-65ee-4778-bc12-ccdab4bafdc1",
+            "parentUuid": "fdcdc25d-153e-41f4-a270-c40144d65fc0",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -512,8 +580,8 @@
           },
           {
             "type": "assistant",
-            "uuid": "21e8ac4c-d28d-4d0f-82d6-2f665273ac08",
-            "parentUuid": "3b5cc48a-1d9e-410c-a370-a210e570086e",
+            "uuid": "050714c9-d863-41f5-9c3b-7a80f8ba47e5",
+            "parentUuid": "be80f7dd-65ee-4778-bc12-ccdab4bafdc1",
             "role": "assistant",
             "blocks": [
               {
@@ -525,8 +593,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "2a91b5f4-6320-4711-a685-7f0a7bb9e332",
-            "parentUuid": "21e8ac4c-d28d-4d0f-82d6-2f665273ac08",
+            "uuid": "a28662ad-c421-4d43-9dc6-d19b01c37528",
+            "parentUuid": "050714c9-d863-41f5-9c3b-7a80f8ba47e5",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -536,8 +604,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "9f1b0cc1-1908-4046-8013-27d0ef8625df",
-            "parentUuid": "2a91b5f4-6320-4711-a685-7f0a7bb9e332",
+            "uuid": "791e9669-3275-48f9-8322-bce6b7342805",
+            "parentUuid": "a28662ad-c421-4d43-9dc6-d19b01c37528",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -562,7 +630,7 @@
             "attachment": null
           }
         ],
-        "mcpPort": 44955
+        "mcpPort": 36255
       },
       {
         "phase": 2,
@@ -573,7 +641,7 @@
         "hostStderrTail": "",
         "hooks": [
           {
-            "at": 2997,
+            "at": 4516,
             "event": "PreToolUse",
             "tool_name": "mcp__host__host_probe",
             "tool_use_id": "toolu_01HostProbeSolo00000002",
@@ -588,7 +656,7 @@
             "decision": "allow"
           },
           {
-            "at": 3013,
+            "at": 4538,
             "event": "PostToolUse",
             "tool_name": "mcp__host__host_probe",
             "tool_use_id": "toolu_01HostProbeSolo00000002"
@@ -596,42 +664,42 @@
         ],
         "mcp": [
           {
-            "at": 2719,
+            "at": 4291,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 2749,
+            "at": 4333,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 2765,
+            "at": 4347,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 2777,
+            "at": 4357,
             "method": "GET",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 2779,
+            "at": 4362,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
             "hostHeader": true
           },
           {
-            "at": 3004,
+            "at": 4525,
             "method": "POST",
             "url": "/mcp",
             "authorized": true,
@@ -640,7 +708,7 @@
         ],
         "handlers": [
           {
-            "at": 3007,
+            "at": 4528,
             "name": "host_probe",
             "arguments": {
               "note": "solo-no-await"
@@ -651,22 +719,22 @@
         ],
         "sdk": [
           {
-            "at": 2929,
+            "at": 4458,
             "type": "command_lifecycle",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac"
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb"
           },
           {
-            "at": 3018,
+            "at": 4540,
             "type": "attachment",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac"
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb"
           },
           {
-            "at": 3023,
+            "at": 4543,
             "type": "user",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "blocks": [
               {
                 "type": "tool_result",
@@ -676,16 +744,16 @@
             ]
           },
           {
-            "at": 3023,
+            "at": 4543,
             "type": "attachment",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac"
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb"
           },
           {
-            "at": 3033,
+            "at": 4566,
             "type": "system",
             "subtype": "init",
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "tools": [
               "mcp__host__host_echo",
               "mcp__host__host_probe"
@@ -701,10 +769,10 @@
             "claude_code_version": "2.1.323"
           },
           {
-            "at": 3060,
+            "at": 4611,
             "type": "assistant",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "blocks": [
               {
                 "type": "text",
@@ -713,10 +781,10 @@
             ]
           },
           {
-            "at": 3074,
+            "at": 4620,
             "type": "result",
             "subtype": "success",
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
             "is_error": false,
             "stop_reason": "end_turn",
             "terminal_reason": "completed",
@@ -727,16 +795,16 @@
             "errors": null
           },
           {
-            "at": 3076,
+            "at": 4624,
             "type": "command_lifecycle",
             "subtype": null,
-            "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac"
+            "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb"
           }
         ],
         "cli": [
           {
-            "at": 2371,
-            "pid": 41,
+            "at": 3887,
+            "pid": 45,
             "command": "<node_modules>/@anthropic-ai/claude-agent-sdk-linux-arm64/claude",
             "args": [
               "--output-format",
@@ -744,12 +812,13 @@
               "--verbose",
               "--input-format",
               "stream-json",
+              "--max-turns=3",
               "--model=claude-sonnet-4-6",
               "--debug-file=/home/probe/debug-solo-no-await-2.log",
-              "--resume=02baba21-ddb4-4a51-b440-b1997030ddac",
+              "--resume=72a95dc8-d385-49e7-ac04-ff69f30132eb",
               "--tools=",
               "--mcp-config",
-              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:39455/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
+              "{\"mcpServers\":{\"host\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:35925/mcp\",\"headers\":{\"Authorization\":\"Bearer <redacted>\"},\"alwaysLoad\":true}}}",
               "--setting-sources=",
               "--strict-mcp-config",
               "--permission-mode=dontAsk"
@@ -757,15 +826,15 @@
             "exit": {
               "code": 0,
               "signal": null,
-              "at": 3103
+              "at": 4651
             }
           }
         ],
         "result": {
-          "at": 3074,
+          "at": 4620,
           "type": "result",
           "subtype": "success",
-          "session_id": "02baba21-ddb4-4a51-b440-b1997030ddac",
+          "session_id": "72a95dc8-d385-49e7-ac04-ff69f30132eb",
           "is_error": false,
           "stop_reason": "end_turn",
           "terminal_reason": "completed",
@@ -776,11 +845,11 @@
           "errors": null
         },
         "debugLines": [
-          "2026-11-18T21:05:42.942Z [DEBUG] [print.ts] Auto-resuming deferred tool: mcp__host__host_probe (toolu_01HostProbeSolo00000002)",
-          "2026-11-18T21:05:43.033Z [DEBUG] Deferred tool resume: re-emitting mcp__host__host_probe (toolu_01HostProbeSolo00000002) through PreToolUse",
-          "2026-11-18T21:05:43.044Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: allow",
-          "2026-11-18T21:05:43.046Z [INFO] [Stall] tool_dispatch_start tool=mcp_tool toolUseId=toolu_01HostProbeSolo00000002 permissionDecisionMs=1",
-          "2026-11-18T21:05:43.055Z [INFO] [Stall] tool_dispatch_end tool=mcp_tool toolUseId=toolu_01HostProbeSolo00000002 outcome=ok durationMs=9"
+          "2026-11-18T21:32:00.075Z [DEBUG] [print.ts] Auto-resuming deferred tool: mcp__host__host_probe (toolu_01HostProbeSolo00000002)",
+          "2026-11-18T21:32:00.139Z [DEBUG] Deferred tool resume: re-emitting mcp__host__host_probe (toolu_01HostProbeSolo00000002) through PreToolUse",
+          "2026-11-18T21:32:00.153Z [DEBUG] Hook PreToolUse (callback) returned permissionDecision: allow",
+          "2026-11-18T21:32:00.156Z [INFO] [Stall] tool_dispatch_start tool=mcp_tool toolUseId=toolu_01HostProbeSolo00000002 permissionDecisionMs=1",
+          "2026-11-18T21:32:00.167Z [INFO] [Stall] tool_dispatch_end tool=mcp_tool toolUseId=toolu_01HostProbeSolo00000002 outcome=ok durationMs=11"
         ],
         "transcript": [
           {
@@ -801,7 +870,7 @@
           },
           {
             "type": "user",
-            "uuid": "8f2094de-62ff-45f0-a348-ca1c27c6f76a",
+            "uuid": "f8660a41-5924-4f3a-a797-7056f7d291ce",
             "parentUuid": null,
             "role": "user",
             "blocks": [
@@ -814,8 +883,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "37ab1cb4-07a8-4596-aba5-60699d4ee3e4",
-            "parentUuid": "8f2094de-62ff-45f0-a348-ca1c27c6f76a",
+            "uuid": "4b86ed3d-8a22-45ed-aec1-5302d8330a08",
+            "parentUuid": "f8660a41-5924-4f3a-a797-7056f7d291ce",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -825,8 +894,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "08aa1cad-e6d6-49f9-b58c-8524148f2514",
-            "parentUuid": "37ab1cb4-07a8-4596-aba5-60699d4ee3e4",
+            "uuid": "19426132-635c-4de2-b26a-9eeb07fddf40",
+            "parentUuid": "4b86ed3d-8a22-45ed-aec1-5302d8330a08",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -836,8 +905,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "019d8cf7-ded1-4bf9-afc5-7d8c5ed68071",
-            "parentUuid": "08aa1cad-e6d6-49f9-b58c-8524148f2514",
+            "uuid": "8f61b996-7a36-4adb-89e3-fa1b9fd17478",
+            "parentUuid": "19426132-635c-4de2-b26a-9eeb07fddf40",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -855,8 +924,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "bdc77741-5032-42f5-87e1-d60206a79437",
-            "parentUuid": "019d8cf7-ded1-4bf9-afc5-7d8c5ed68071",
+            "uuid": "85e91401-5369-4b4d-a65d-4868800c167b",
+            "parentUuid": "8f61b996-7a36-4adb-89e3-fa1b9fd17478",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -866,8 +935,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "7c315b40-21df-4317-a9ce-a18ee9200455",
-            "parentUuid": "bdc77741-5032-42f5-87e1-d60206a79437",
+            "uuid": "fdcdc25d-153e-41f4-a270-c40144d65fc0",
+            "parentUuid": "85e91401-5369-4b4d-a65d-4868800c167b",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -877,8 +946,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "3b5cc48a-1d9e-410c-a370-a210e570086e",
-            "parentUuid": "7c315b40-21df-4317-a9ce-a18ee9200455",
+            "uuid": "be80f7dd-65ee-4778-bc12-ccdab4bafdc1",
+            "parentUuid": "fdcdc25d-153e-41f4-a270-c40144d65fc0",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -941,8 +1010,8 @@
           },
           {
             "type": "assistant",
-            "uuid": "21e8ac4c-d28d-4d0f-82d6-2f665273ac08",
-            "parentUuid": "3b5cc48a-1d9e-410c-a370-a210e570086e",
+            "uuid": "050714c9-d863-41f5-9c3b-7a80f8ba47e5",
+            "parentUuid": "be80f7dd-65ee-4778-bc12-ccdab4bafdc1",
             "role": "assistant",
             "blocks": [
               {
@@ -954,8 +1023,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "2a91b5f4-6320-4711-a685-7f0a7bb9e332",
-            "parentUuid": "21e8ac4c-d28d-4d0f-82d6-2f665273ac08",
+            "uuid": "a28662ad-c421-4d43-9dc6-d19b01c37528",
+            "parentUuid": "050714c9-d863-41f5-9c3b-7a80f8ba47e5",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -965,8 +1034,8 @@
           },
           {
             "type": "attachment",
-            "uuid": "9f1b0cc1-1908-4046-8013-27d0ef8625df",
-            "parentUuid": "2a91b5f4-6320-4711-a685-7f0a7bb9e332",
+            "uuid": "791e9669-3275-48f9-8322-bce6b7342805",
+            "parentUuid": "a28662ad-c421-4d43-9dc6-d19b01c37528",
             "role": null,
             "blocks": null,
             "attachment": {
@@ -1008,8 +1077,8 @@
           },
           {
             "type": "user",
-            "uuid": "2c44501b-121c-4be2-9c94-c9c1911453fd",
-            "parentUuid": "21e8ac4c-d28d-4d0f-82d6-2f665273ac08",
+            "uuid": "68a0b864-ed06-43e3-80fb-cccc2ee85f29",
+            "parentUuid": "050714c9-d863-41f5-9c3b-7a80f8ba47e5",
             "role": "user",
             "blocks": [
               {
@@ -1021,8 +1090,8 @@
           },
           {
             "type": "user",
-            "uuid": "f8648b57-e996-4c31-9e10-aab30cd523d1",
-            "parentUuid": "2c44501b-121c-4be2-9c94-c9c1911453fd",
+            "uuid": "7a9d1975-6d1f-4fdc-b8af-6588be973365",
+            "parentUuid": "68a0b864-ed06-43e3-80fb-cccc2ee85f29",
             "role": "user",
             "blocks": null,
             "attachment": null
@@ -1037,8 +1106,8 @@
           },
           {
             "type": "assistant",
-            "uuid": "fe3ef3de-f6fa-4937-8561-69a3ab61364c",
-            "parentUuid": "f8648b57-e996-4c31-9e10-aab30cd523d1",
+            "uuid": "ab8cf001-42b5-4e0d-b43b-70fde742b39f",
+            "parentUuid": "7a9d1975-6d1f-4fdc-b8af-6588be973365",
             "role": "assistant",
             "blocks": [
               {
@@ -1073,7 +1142,7 @@
             "attachment": null
           }
         ],
-        "mcpPort": 39455
+        "mcpPort": 35925
       }
     ]
   }

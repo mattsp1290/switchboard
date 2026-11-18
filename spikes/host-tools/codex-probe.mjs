@@ -10,9 +10,13 @@ import { openCodexTransport } from '/dist/adapters/codex/transport.js';
 // Switchboard's compiled transport, answers `item/tool/call` itself and records what native does. It never asserts;
 // run.mjs saves the report and the qualification document reads it.
 // hold-control passes the 15 s handler bound of the native interaction proof, below its own hold, to show that the
-// probe sees a hold cut short; the bound, not native, ends it.
+// probe sees a hold cut short; the bound, not native, ends it. `namespace` declares the tool inside a namespace, as
+// Crew's trusted lane does (crew:src/service/trusted-codex.ts:139). `resumed` holds in a second process after
+// thread/resume. `freshIndex` gives every process its own empty sqlite_home, so only CODEX_HOME carries the thread.
 const SCENARIOS = { 'hold-121': { holdMs: 121_000 }, 'hold-151': { holdMs: 151_000 }, 'hold-171': { holdMs: 171_000 },
-  'hold-control': { holdMs: 30_000, handlerTimeoutMs: 15_000 }, resume: { holdMs: 0 } };
+  'hold-control': { holdMs: 30_000, handlerTimeoutMs: 15_000 },
+  'hold-171-resumed-namespace': { holdMs: 171_000, resumed: true, namespace: true },
+  resume: { resume: true }, 'resume-namespace': { resume: true, namespace: true }, 'resume-fresh-index': { resume: true, freshIndex: true } };
 const [scenario] = process.argv.slice(2);
 if (!(scenario in SCENARIOS)) throw new Error(`Unknown scenario ${scenario}`);
 
@@ -25,8 +29,11 @@ for (const dir of [CODEX_HOME, PROJECT]) mkdirSync(dir, { recursive: true });
 const t0 = Date.now();
 const now = () => Date.now() - t0;
 const TOOL = 'host_probe';
-const toolSpec = (name) => ({ type: 'function', name, description: 'Host-run probe tool. Call it when asked.',
+const { namespace = false, freshIndex = false } = SCENARIOS[scenario];
+const fn = (name) => ({ type: 'function', name, description: 'Host-run probe tool. Call it when asked.',
   inputSchema: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'], additionalProperties: false } });
+const toolSpec = (name) => (namespace ? { type: 'namespace', name: 'application', description: 'Host application tools',
+  tools: [{ ...fn(name), deferLoading: false }] } : fn(name));
 
 // The bounds a host passes to Switchboard's transport. `handlerTimeoutMs` bounds how long any server request may be held
 // for the whole transport (docs/architecture/boundaries.md), so a host that holds a tool call for Crew's longest live
@@ -76,9 +83,11 @@ const server = createServer(async (request, response) => {
   emit({ type: 'response.created', response: { id, status: 'in_progress' } });
   let item;
   if (!continued && wanted) {
-    item = { type: 'function_call', id: `fc_${n}`, call_id: `call_${n}`, name: wanted, status: 'completed',
-      arguments: JSON.stringify({ note: `request ${n}` }) };
-    entry.reply = { functionCall: item.call_id, name: wanted };
+    // A namespaced tool is called with its namespace, as the Responses wire carries it.
+    const space = (input.tools ?? []).find((tool) => tool?.type === 'namespace' && JSON.stringify(tool.tools ?? []).includes(`"${wanted}"`));
+    item = { type: 'function_call', id: `fc_${n}`, call_id: `call_${n}`, name: wanted, ...(space && { namespace: space.name }),
+      status: 'completed', arguments: JSON.stringify({ note: `request ${n}` }) };
+    entry.reply = { functionCall: item.call_id, name: wanted, namespace: space?.name ?? null };
   } else {
     const text = continued ? `answer after ${last.call_id}` : 'plain answer';
     item = { type: 'message', id: `msg_${n}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
@@ -98,6 +107,7 @@ const config = { model_provider: 'fixture', model: 'fixture-model', check_for_up
   'model_providers.fixture.requires_openai_auth': false, 'model_providers.fixture.supports_websockets': false,
   'model_providers.fixture.request_max_retries': 0, 'model_providers.fixture.stream_max_retries': 0,
   sqlite_home: join(HOME, 'index'), log_dir: join(HOME, 'logs') };
+let processes = 0;
 
 function walk(dir) {
   try {
@@ -111,7 +121,9 @@ function fingerprint(threadId) {
   const files = walk(join(CODEX_HOME, 'sessions')).filter((file) => file.endsWith(`-${threadId}.jsonl`));
   if (files.length !== 1) return { rollouts: files.length };
   const bytes = readFileSync(files[0]);
-  const lines = bytes.toString('utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+  let lines;
+  try { lines = bytes.toString('utf8').trimEnd().split('\n').map((line) => JSON.parse(line)); }
+  catch (error) { return { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), parseError: String(error.message) }; }
   const lastLine = lines.at(-1);
   const completeAt = lines.findLastIndex((line) => line.type === 'event_msg' && line.payload?.type === 'task_complete');
   const tokenCounts = lines.filter((line) => line.type === 'event_msg' && line.payload?.type === 'token_count' && line.payload.info);
@@ -125,9 +137,11 @@ function fingerprint(threadId) {
 
 /** One app-server owned by the probe, with Switchboard's transport over its stdio. */
 function appServer(label, holdMs) {
-  const child = spawn(CODEX, ['app-server', ...Object.entries(config).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])],
+  const own = { ...config, ...(freshIndex && { sqlite_home: join(HOME, `index-${++processes}`) }) };
+  const child = spawn(CODEX, ['app-server', ...Object.entries(own).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])],
     { cwd: PROJECT, env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME, CODEX_HOME }, stdio: ['pipe', 'pipe', 'pipe'] });
-  const proc = { label, pid: child.pid, startedAt: now(), notifications: [], serverRequests: [], rpc: [], stderrTail: '', exit: null };
+  const proc = { label, pid: child.pid, startedAt: now(), sqliteHome: own.sqlite_home, notifications: [], terminals: [], serverRequests: [],
+    rpc: [], stderrTail: '', exit: null };
   report.processes.push(proc);
   proc.exited = new Promise((resolve) => child.once('close', (code, signal) => { proc.exit = { code, signal, at: now() }; resolve(); }));
   const channel = {
@@ -172,6 +186,7 @@ function appServer(label, holdMs) {
       fingerprint: entry.threadId ? fingerprint(entry.threadId) : null });
     if (method === 'thread/tokenUsage/updated') entry.tokenUsage = params.tokenUsage;
     if (['error', 'warning', 'configWarning', 'deprecationNotice'].includes(method)) entry.params = params;
+    if (method === 'turn/completed') proc.terminals.push(entry);
     if (proc.notifications.length < 400) proc.notifications.push(entry);
     if (proc.holding) proc.holding.notificationsDuringHold.push({ at: entry.at, method, itemType: entry.itemType ?? null });
   };
@@ -199,9 +214,9 @@ function appServer(label, holdMs) {
     if (!turnId) return { turnStart: reply };
     const end = Date.now() + ms;
     while (Date.now() < end) {
-      const done = proc.notifications.find((entry) => entry.method === 'turn/completed' && entry.turnId === turnId);
+      const done = proc.terminals.find((entry) => entry.turnId === turnId);
       if (done) return { turnId, completed: done };
-      if (proc.exit) break;
+      if (proc.exit || proc.transportEnd) break;
       await delay(50);
     }
     return { turnId, completed: null };
@@ -237,13 +252,25 @@ const summary = (proc, turn) => ({
 
 try {
   if (scenario.startsWith('hold-')) {
-    const { holdMs } = SCENARIOS[scenario];
+    const { holdMs, resumed = false } = SCENARIOS[scenario];
     report.holdMs = holdMs;
-    const proc = appServer('p1', holdMs);
+    let threadId = null;
+    if (resumed) {
+      // A first process starts the thread with the tool and answers one call at once, then exits.
+      const first = appServer('p0-start', 0);
+      await first.initialize();
+      const started = await first.call('thread/start', { cwd: PROJECT, approvalPolicy: 'never', sandbox: 'read-only', dynamicTools: [toolSpec(TOOL)] });
+      threadId = started.kind === 'result' ? started.value.thread.id : null;
+      report.firstSegment = threadId ? summary(first, await first.turn(threadId, `call:${TOOL} at once`, 60_000)) : started;
+      await first.stop();
+      report.firstSegment.stopMethod = first.stopMethod;
+    }
+    const proc = appServer(resumed ? 'p1-resume' : 'p1', holdMs);
     report.initialize = (await proc.initialize()).kind;
-    const started = await proc.call('thread/start', { cwd: PROJECT, approvalPolicy: 'never', sandbox: 'read-only', dynamicTools: [toolSpec(TOOL)] });
-    const threadId = started.kind === 'result' ? started.value.thread.id : null;
-    report.threadStart = started.kind === 'result' ? { threadId } : started;
+    const opened = resumed ? await proc.call('thread/resume', { threadId })
+      : await proc.call('thread/start', { cwd: PROJECT, approvalPolicy: 'never', sandbox: 'read-only', dynamicTools: [toolSpec(TOOL)] });
+    threadId = opened.kind === 'result' ? opened.value.thread.id : null;
+    report.threadOpen = opened.kind === 'result' ? { method: resumed ? 'thread/resume' : 'thread/start', threadId } : opened;
     const turn = threadId ? await proc.turn(threadId, `call:${TOOL} and hold`, holdMs + 60_000) : null;
     report.result = summary(proc, turn);
     report.transportEndBeforeStop = proc.transportEnd ?? null;
@@ -253,8 +280,9 @@ try {
     report.result.stopMethod = proc.stopMethod;
     report.result.transportEnd = proc.transportEnd ?? null;
   } else {
-    // A2 to A4: start with the tool declared, then three plain resumes in fresh processes, then one resume that tries
-    // to declare a second tool. Fingerprints are taken at segment end (process alive), after exit, and at next open.
+    // A2 to A4: start with the tool declared, then three plain resumes in fresh processes, then (plain variant only) one
+    // resume that tries to declare a second tool. Fingerprints are taken when the turn completes, after the turn, after
+    // exit, and in the next process before and after it opens the thread.
     const segments = [];
     let threadId;
     const plan = [
@@ -262,7 +290,7 @@ try {
       { label: 'p2-resume', method: 'thread/resume', tool: TOOL },
       { label: 'p3-resume', method: 'thread/resume', tool: TOOL },
       { label: 'p4-resume', method: 'thread/resume', tool: TOOL },
-      { label: 'p5-resume-declaring', method: 'thread/resume', tool: 'host_probe_late', declare: true },
+      ...(scenario === 'resume' ? [{ label: 'p5-resume-declaring', method: 'thread/resume', tool: 'host_probe_late', declare: true }] : []),
     ];
     for (const step of plan) {
       const proc = appServer(step.label, 0);
@@ -303,4 +331,4 @@ try {
   server.close();
   server.closeAllConnections();
 }
-process.stdout.write(JSON.stringify(report));
+process.stdout.write(JSON.stringify(report), () => process.exit(0));

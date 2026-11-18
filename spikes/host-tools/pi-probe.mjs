@@ -103,5 +103,4 @@ if (report.load.ok) {
     catch (error) { report.turns[kind] = { ok: false, code: error.code ?? null, message: String(error.stack ?? error).slice(0, 1500) }; }
   }
 }
-process.stdout.write(JSON.stringify(report));
-process.exit(0);
+process.stdout.write(JSON.stringify(report), () => process.exit(0));

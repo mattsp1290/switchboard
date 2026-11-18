@@ -1,0 +1,207 @@
+{
+  "probe": "facts",
+  "label": "claude-sdk-0.3.306",
+  "image": "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--name",
+    "sb-host-tools-facts-c5cbd60d",
+    "--network",
+    "none",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,size=256m",
+    "--tmpfs",
+    "/home/probe:rw,size=512m",
+    "--pids-limit",
+    "512",
+    "--memory",
+    "3g",
+    "--security-opt",
+    "no-new-privileges",
+    "-e",
+    "HOME=/home/probe",
+    "-w",
+    "/home/probe",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools,target=/probe,readonly",
+    "--mount",
+    "type=volume,source=sb-p0-host-tools-nm-306,target=/node_modules,readonly",
+    "--mount",
+    "type=bind,source=<repo>/spikes/host-tools/.work/dist-tCsOHI,target=/dist,readonly",
+    "node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54",
+    "timeout",
+    "120",
+    "node",
+    "/probe/facts-probe.mjs"
+  ],
+  "startedAt": "2026-11-18T21:34:47.801Z",
+  "finishedAt": "2026-11-18T21:34:48.707Z",
+  "provenance": {
+    "gitHead": "6bc4d8d77e60087d6ffb2c2e600d7d8f98260c29",
+    "probeSources": {
+      "spikes/host-tools/claude-probe.mjs": "af4505f2494b5df7b821b139f105bf9262d0377f63cc9af9b9aa76cb1f66541d",
+      "spikes/host-tools/codex-probe.mjs": "9241c99d1fa69d39d6589c477051983adf97ea62c2932a8d43dcbd4edd236fae",
+      "spikes/host-tools/facts-probe.mjs": "c67d31a57408eeb8481a14e0a5da16dfdc80446f2fd35a79e3e82c56284e0c18",
+      "spikes/host-tools/pi-probe.mjs": "47a7d77e0bd658b33e59fcbb3c81bdf171ee7894845e00bd11a2cdfe5aff12df",
+      "spikes/host-tools/pi-seccomp.mjs": "e33732fad996b1628f65787d451e71e83dacb02df0168f3f343a0a6712532344",
+      "spikes/host-tools/run.mjs": "e8401829145548550aa3b3c3e13e4d80d77d5c9c899eda576757a82aab411b47"
+    },
+    "transportSources": {
+      "src/adapters/codex/transport.ts": "ae39146c6749070b0e364cfb3491a0838a54debfe988a0b98a166a33c5f3972c",
+      "src/adapters/codex/wire.ts": "394b244ecd7a71c16cba408a410c96b446ef7509891aa71ec470b95722efb6a6",
+      "src/core/events.ts": "6129339b4987f337d8114ebec498f264f9f6acebf2bbbbb45ebbe9bd6736b712"
+    },
+    "docker": {
+      "server": "29.2.1",
+      "arch": "arm64",
+      "os": "Ubuntu 24.04.4 LTS"
+    },
+    "runnerPlatform": "darwin/arm64",
+    "volume": {
+      "name": "sb-p0-host-tools-nm-306",
+      "npm": "11.19.1",
+      "packages": {
+        "@anthropic-ai/claude-agent-sdk": {
+          "version": "0.3.306",
+          "integrity": "sha512-kmxcd+4WNhqhqnzODRPM5aOKb1EH2EdlRsf7ZeMx8uQsC1tHAHgHftQGFXGT8yMaYaYlDP9BGYJy1/aYv7IhkQ=="
+        },
+        "@anthropic-ai/claude-agent-sdk-linux-arm64": {
+          "version": "0.3.306",
+          "integrity": "sha512-Vee1MIEqd7I8NKF2GOLxLJOuCghf/k4poEk7E/p6zXCIt7MmmtrK7ph9/WiYqOgEpOagXm8D6fRgEJvxWYGIXg=="
+        },
+        "@modelcontextprotocol/sdk": {
+          "version": "1.32.2",
+          "integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw=="
+        }
+      }
+    }
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "stderrTail": "",
+  "report": {
+    "node": "v24.22.3",
+    "arch": "arm64",
+    "environmentKeys": [
+      "HOME",
+      "HOSTNAME",
+      "NODE_VERSION",
+      "PATH",
+      "PWD",
+      "YARN_VERSION"
+    ],
+    "versions": {
+      "claudeSdk": "0.3.306",
+      "claudeCli": "2.1.306 (Claude Code)",
+      "codexSdk": {
+        "absent": "ENOENT: no such file or directory, open '/node_modules/@openai/codex-sdk/package.json'"
+      },
+      "codex": {
+        "absent": "spawnSync /node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex ENOENT"
+      },
+      "piCodingAgent": {
+        "absent": "ENOENT: no such file or directory, open '/node_modules/@earendil-works/pi-coding-agent/package.json'"
+      },
+      "piAgentCore": {
+        "absent": "ENOENT: no such file or directory, open '/node_modules/@earendil-works/pi-agent-core/package.json'"
+      }
+    },
+    "claudeTypes": {
+      "hookPermissionDecision": [
+        {
+          "line": 1001,
+          "text": "export declare type HookPermissionDecision = 'allow' | 'deny' | 'ask' | 'defer';"
+        }
+      ],
+      "preToolUseInput": [
+        {
+          "line": 2520,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2538,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2696,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2714,
+          "text": "mcp_server?: McpServerProvenance;"
+        },
+        {
+          "line": 2787,
+          "text": "export declare type PreToolUseHookInput = BaseHookInput & {"
+        },
+        {
+          "line": 2792,
+          "text": "mcp_server?: McpServerProvenance;"
+        }
+      ],
+      "mcpServerProvenance": [
+        {
+          "line": 1253,
+          "text": "export declare type McpServerProvenance = {"
+        }
+      ],
+      "sdkServerConfig": [
+        {
+          "line": 1222,
+          "text": "type: 'sdk';"
+        }
+      ],
+      "mcpToolNaming": [
+        {
+          "line": 4856,
+          "text": "* Fully-qualified MCP tool name, e.g. mcp__server__tool_name. Plugin-hosted servers are ordinary MCP servers here — e.g. mcp__plugin_documents_docs__doc_export (server names are normalized: non-[a-zA-Z0-9_-] becomes _)."
+        }
+      ],
+      "deferredToolUse": [
+        {
+          "line": 5359,
+          "text": "export declare type SDKDeferredToolUse = {"
+        },
+        {
+          "line": 6050,
+          "text": "deferred_tool_use?: SDKDeferredToolUse;"
+        }
+      ],
+      "terminalReason": [
+        {
+          "line": 10013,
+          "text": "export declare type TerminalReason = 'blocking_limit' | 'rapid_refill_breaker' | 'prompt_too_long' | 'image_error' | 'model_error' | 'api_error' | 'malformed_tool_use_exhausted' | 'aborted_streaming' | 'aborted_tools' | 'stop_hook_prevented' | 'hook_stopped' | 'tool_deferred' | 'max_turns' | 'background_requested' | 'completed' | 'budget_exhausted' | 'structured_output_retry_exhausted' | 'tool_deferred_unavailable' | 'turn_setup_failed';"
+        }
+      ]
+    },
+    "claudeAwaitInitialize": {
+      "condition": null,
+      "use": null
+    },
+    "claudeBinary": {
+      "returned permissionDecision=defer in interactive mode; ignoring (defer is print-mode only)": true,
+      "tool calls are in this batch; ignoring (defer is solo-only \\u2014 siblings would be orphaned on resume)": true,
+      "tool calls are in this batch; ignoring (defer is solo-only — siblings would be orphaned on resume)": false,
+      "returned permissionDecision=defer for a served call; refusing (no resume machinery)": true,
+      "tool_deferred_unavailable": true,
+      "Auto-resuming deferred tool": true
+    },
+    "codexProtocol": {
+      "absent": "spawnSync /node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex ENOENT"
+    },
+    "codexBinary": {
+      "absent": "ENOENT: no such file or directory, open '/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex'"
+    },
+    "codexSdk": {
+      "absent": "ENOENT: no such file or directory, open '/node_modules/@openai/codex-sdk/dist/index.js'"
+    },
+    "pi": {
+      "absent": "ENOENT: no such file or directory, open '/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts'"
+    }
+  }
+}
