@@ -50,3 +50,21 @@ All generated files and `consumer.ts` pass TypeScript 7.0.2 with `strict`, NodeN
 Broader adapter qualification still requires live direct and both LiteLLM journeys, approval acceptance and file-change approval journeys, permission and user-question round trips, and explicit outcome-unknown handling after ambiguous process loss. Strict fail-closed behavior after native helper failure is required only when the host selects that stronger policy. Tool execution acceptance remains untested because this fixture only declines the native command request. The host still owns durable admission, writer exclusivity, and the decision to reconcile an uncertain accepted effect instead of retrying it.
 
 Official documentation corroborates the public generator, request lifecycle, and command approval protocol in [Codex app-server](https://learn.chatgpt.com/docs/app-server). The [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) documents command credentials, the refresh interval, and its zero-value semantics. The executable assertions establish the exact pinned behavior described above. Documentation was read on 2026-11-13; current documentation is not an immutable substitute for the pinned run.
+
+## Native feature settings
+
+`src/adapters/codex/features.ts` validates typed host settings against the 0.169.0 bindings and these native rules, observed with 0.169.0 against a real `codex app-server` and a scratch `CODEX_HOME`:
+
+- Experimental fields fail natively with the binary's `<field> requires experimentalApi capability` error unless `initialize.capabilities.experimentalApi` is `true`. Observed: `thread/start.permissions requires experimentalApi capability` and `askForApproval.granular requires experimentalApi capability`. `permissions` appears on `thread/start`, `thread/resume` and `turn/start` only in the `generate-ts --experimental` bindings, and `dynamicTools` only on experimental `thread/start`. With typed features present, the adapter refuses `permissions`, a granular `approvalPolicy` and `thread/start.dynamicTools` before sending when the capability is absent.
+- Defaulted fields may be omitted, as in the `generate-json-schema --experimental` required lists: a granular policy without `skill_approval` and `request_permissions` was accepted, and every `SandboxPolicy` field except `type` has a native default.
+- Dynamic tool names follow the binary's own error strings: `dynamic tool name must not be empty`, `dynamic tool name has leading/trailing whitespace`, `duplicate dynamic tool name`, `duplicate dynamic tool name in namespace`, `dynamic tool namespace must contain at least one tool` and `deferred dynamic tool must include a namespace`. The adapter checks these on typed `dynamicTools` only. Reserved names and the Responses API name pattern remain native checks.
+- The legacy dynamic tool form `{name, description, inputSchema}` without `type` was accepted, so raw `dynamicTools` pass unchanged.
+- A relative `cwd` resolved against the app-server's own directory, so typed `cwd` and `writableRoots` must be absolute.
+
+### Using typed features
+
+- Pass `features` on `create`, `resume` or `turn`. Raw `params` keep engine-specific keys unchanged and are never re-validated. A typed field equal to its raw key is accepted. A different one fails as `invalid-input` naming the field ("remove it from raw params or make the values equal"), and nothing is sent. Without `features`, raw params pass exactly as before.
+- `null` means unset, as natively: a typed `null` adds nothing, and conflicts with a non-null raw value.
+- `codexFeatureCapabilities` labels each feature `qualified`, `fixture-only`, `typed-unqualified` or `passthrough-unqualified` with its carriers per request, and marks dynamic tools after start and routing `unsupported`.
+- `permissions`, a granular `approvalPolicy` and `dynamicTools` need `experimentalApi: true` in the connection's `initialize`, read once when the connection opens.
+- Dynamic tools are fixed at `thread/start`: neither `thread/resume` nor `turn/start` can add or change them.
