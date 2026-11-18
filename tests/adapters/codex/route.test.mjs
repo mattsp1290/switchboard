@@ -130,6 +130,7 @@ test('a routed requester refuses unless native multi-agent is pinned off', async
     { ...sandbox, sandbox_workspace_write: { network_access: true } }, { ...sandbox, sandbox_workspace_write: null }]) {
     assert.deepEqual(await bind(server(home(t), { sandboxing })), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(sandboxing));
   }
+  for (const sandbox_mode of ['read-only', 'workspace-write']) assert.equal((await bind(server(home(t), { sandboxing: { ...sandbox, sandbox_mode } }))).value?.account, principal);
   // Broken control: without the pin check a host that omitted the generated args binds a bypassable route.
   assert.equal((await bind(server(home(t), { features: { memories: false } }), unpinned)).value?.account, principal);
   // Direct mode does not consult the pins.

@@ -17,7 +17,7 @@ const mutations = new Map([['fast', ['connectionTimeoutMs: 10000', 'connectionTi
   ['cached', [call, call.replace('await resolve.call(', 'await (globalThis.me4lCache ??= resolve.call(').replace(/;$/, ');')]],
   // Broken control: a routed config that leaves native multi-agent on, so a sub-agent can pick its own model.
   ['multi-agent', ["'features.multi_agent': false, 'features.multi_agent_v2': false,", '']],
-  ['sandbox', ["sandbox_mode: 'workspace-write', 'sandbox_workspace_write.network_access': false };", '};']]]);
+  ['sandbox', ["sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false };", '};']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -105,7 +105,7 @@ test('the proxy config is the exact provider override map with command auth and 
     'model_providers.litellm.stream_max_retries': 0, 'model_providers.litellm.requires_openai_auth': false,
     'model_providers.litellm.auth.command': helper.command, 'model_providers.litellm.auth.args': helper.args,
     'model_providers.litellm.auth.timeout_ms': 5000, 'model_providers.litellm.auth.refresh_interval_ms': 300000,
-    'features.multi_agent': false, 'features.multi_agent_v2': false, sandbox_mode: 'workspace-write',
+    'features.multi_agent': false, 'features.multi_agent_v2': false, sandbox_mode: 'read-only',
     'sandbox_workspace_write.network_access': false };
   assert.deepEqual(config.overrides, overrides);
   assert.deepEqual(config.args, Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]));

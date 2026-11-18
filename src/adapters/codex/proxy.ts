@@ -43,7 +43,7 @@ const whole = (value: unknown, min: number, max: number, fallback: number): numb
  * The `-c` overrides that put a Codex app-server on `route` with host-resolved command auth (codex-native-api.md,
  * LiteLLM route). Exactly what sessions.ts `routedProvider` admits: no `env_key`, bearer token, ChatGPT or forced
  * login, or `openai_base_url`, so no subscription or stored-key passthrough; no retries, so a 401 renews once and fails.
- * Multi-agent (v1 and v2) is off and the sandbox is workspace-write without network: explicit route restrictions
+ * Multi-agent (v1 and v2) is off and the sandbox is read-only without network: explicit route restrictions
  * (features.ts `multi-agent-under-route`, `networked-shell-under-route`), not defaults.
  */
 export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
@@ -78,7 +78,7 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
       // pinned for the same reason: a config.toml `sandbox_mode`, `default_permissions` or `network_access` would
       // otherwise give the shell the broker socket (features.ts `networked-shell-under-route`).
       'features.multi_agent': false, 'features.multi_agent_v2': false,
-      sandbox_mode: 'workspace-write', 'sandbox_workspace_write.network_access': false };
+      sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false };
     return { config: Object.freeze({ overrides: Object.freeze(overrides),
       args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
   } catch { return { problem: 'proxy options could not be read' }; }

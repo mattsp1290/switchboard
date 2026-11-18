@@ -99,7 +99,7 @@ export const codexFeatureCapabilities = Object.freeze({
     `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission journeys are unqualified.`),
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
     `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
-    + 'shell is refused (networked-shell-under-route) and routed config pins a workspace-write sandbox without network.'),
+    + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network.'),
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
     'Selects a native model name only. Under a proxy route only route.model is accepted (execution.ts); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
@@ -120,7 +120,7 @@ export const codexFeatureCapabilities = Object.freeze({
   'networked-shell-under-route': unavailable('Under a proxy route, a shell with network could run the credential helper '
     + 'against the broker socket for a fresh route token and send requests on any model. Always refused, with no opt-in: '
     + 'sandbox danger-full-access, a sandboxPolicy other than readOnly or workspaceWrite without networkAccess, and any '
-    + 'permissions profile are invalid-input, unsent; codexProxyConfig pins sandbox_mode workspace-write with '
+    + 'permissions profile are invalid-input, unsent; codexProxyConfig pins sandbox_mode read-only with '
     + 'network_access false. The host must decline approvals that would run a command unsandboxed or grant network.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '

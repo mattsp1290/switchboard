@@ -232,7 +232,7 @@ const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endp
 const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
   env_key: null, experimental_bearer_token: null };
 const pinned = { multi_agent: false, multi_agent_v2: false };
-const sandboxPin = { sandbox_mode: 'workspace-write', sandbox_workspace_write: { network_access: false } };
+const sandboxPin = { sandbox_mode: 'read-only', sandbox_workspace_write: { network_access: false } };
 const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider },
   features: pinned, ...sandboxPin },
   account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
