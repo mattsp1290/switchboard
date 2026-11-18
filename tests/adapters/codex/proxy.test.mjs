@@ -17,7 +17,9 @@ const mutations = new Map([['fast', ['connectionTimeoutMs: 10000', 'connectionTi
   ['cached', [call, call.replace('await resolve.call(', 'await (globalThis.me4lCache ??= resolve.call(').replace(/;$/, ');')]],
   // Broken control: a routed config that leaves native multi-agent on, so a sub-agent can pick its own model.
   ['multi-agent', ["'features.multi_agent': false, 'features.multi_agent_v2': false,", '']],
-  ['sandbox', ["sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false };", '};']]]);
+  ['sandbox', ["sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false,", '']],
+  // Broken control: a routed config that leaves approvals to config.toml, so an approved escalation runs unsandboxed.
+  ['approvals', [", approval_policy: 'never' };", ' };']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -41,6 +43,7 @@ const cached = await import(`${target}?mutant=cached`);
 const fast = await import(`${target}?mutant=fast`);
 const multiAgent = await import(`${target}?mutant=multi-agent`);
 const unsandboxed = await import(`${target}?mutant=sandbox`);
+const approving = await import(`${target}?mutant=approvals`);
 const { codexSessions } = await import(new URL('adapters/codex/sessions.ts', src).href);
 const { createAuthContext } = await import(new URL('core/auth.ts', src).href);
 const { serializeDiagnostic, summarizeDiagnostic } = await import(new URL('core/diagnostics.ts', src).href);
@@ -106,7 +109,7 @@ test('the proxy config is the exact provider override map with command auth and 
     'model_providers.litellm.auth.command': helper.command, 'model_providers.litellm.auth.args': helper.args,
     'model_providers.litellm.auth.timeout_ms': 5000, 'model_providers.litellm.auth.refresh_interval_ms': 300000,
     'features.multi_agent': false, 'features.multi_agent_v2': false, sandbox_mode: 'read-only',
-    'sandbox_workspace_write.network_access': false };
+    'sandbox_workspace_write.network_access': false, approval_policy: 'never' };
   assert.deepEqual(config.overrides, overrides);
   assert.deepEqual(config.args, Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]));
   assert(Object.isFrozen(config) && Object.isFrozen(config.overrides) && Object.isFrozen(config.args));
@@ -134,6 +137,12 @@ test('the generated config round-trips through config/read into a routed bind; d
   const open = appServer(configRead(unsandboxed.codexProxyConfig(route, options).config.args), routed);
   t.after(() => rmSync(open.home, { recursive: true, force: true }));
   assert.deepEqual(await bind(open, true), { kind: 'error', error: { code: 'inaccessible' } });
+  // And the approval pin: config/read reports `-c approval_policy="never"` as the top-level string (pvvq-native cfgread).
+  assert.equal(configRead(proxy.codexProxyConfig(route, options).config.args).approval_policy, 'never');
+  const asks = appServer(configRead(approving.codexProxyConfig(route, options).config.args), routed);
+  t.after(() => rmSync(asks.home, { recursive: true, force: true }));
+  assert.equal(configRead(approving.codexProxyConfig(route, options).config.args).approval_policy, undefined);
+  assert.deepEqual(await bind(asks, true), { kind: 'error', error: { code: 'inaccessible' } });
   // No route: provider command auth has no native login to bind, so there is no subscription or stored-key passthrough.
   assert.deepEqual(await bind(fake, false), { kind: 'error', error: { code: 'inaccessible' } });
   // Broken control: a static env-key credential in the generated entry is refused by the routed check.

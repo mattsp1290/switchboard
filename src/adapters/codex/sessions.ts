@@ -128,8 +128,11 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses the route model.
  * The sandbox must be `read-only` (the `codexProxyConfig` pin) or `workspace-write`, never `danger-full-access`, with
  * `network_access` `false` and no `default_permissions`, since a networked shell can take route tokens from the broker.
+ * `approval_policy` must be exactly `"never"` (native reports `-c approval_policy="never"` as that string and an unset
+ * policy as `null`), since an approved escalated command runs outside the sandbox.
  */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
+  if (settings.approval_policy !== 'never') return false;
   if (!record(settings.features) || settings.features.multi_agent !== false
     || settings.features.multi_agent_v2 !== false) return false;
   if (!['read-only', 'workspace-write'].includes(String(settings.sandbox_mode)) || !record(settings.sandbox_workspace_write)

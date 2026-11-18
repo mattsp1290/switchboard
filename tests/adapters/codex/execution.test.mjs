@@ -8,7 +8,11 @@ const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/execution.ts', src).href;
 // Broken controls are source mutations of the real module (precedent: tests/spikes/codex-bindings.test.mjs).
 // early-release frees the writer at cleanup start; cleanup-release frees it once cleanup ends, as a turn-conclusion release did.
-const mutations = new Map([['networked-shell', ['  const shell =', '  if (params.sandbox) return undefined;\n  const shell =']], ['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
+// approvals drops the approvalPolicy refusal and the never default, as before pvvq. resume-sandbox drops the resume
+// read-only default; reply-confinement drops the start and resume reply sandbox and approval check.
+const mutations = new Map([['resume-sandbox', [/ {2}if \(target === 'thread\/resume' && params\.sandbox == null[^\n]*\n/u, '']],
+  ['reply-confinement', ['    if (route === undefined) return undefined;\n    const sandbox', '    return undefined;\n    const sandbox']],['networked-shell', ['  const shell =', '  if (params.sandbox) return undefined;\n  const shell =']],
+  ['approvals', [/ {2}if \(Object\.hasOwn\(params, 'approvalPolicy'\)[^]*?params\.approvalPolicy = 'never';\n/u, '']], ['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
   ['cleanup-release', ['deadline));\n    return Object.freeze({ interrupt', 'deadline));\n    release(session.lease);\n    return Object.freeze({ interrupt']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
@@ -32,6 +36,9 @@ const real = await import(target);
 const mutant = await import(`${target}?mutant=early-release`);
 const cleanupMutant = await import(`${target}?mutant=cleanup-release`);
 const shellMutant = await import(`${target}?mutant=networked-shell`);
+const approvalsMutant = await import(`${target}?mutant=approvals`);
+const resumeSandboxMutant = await import(`${target}?mutant=resume-sandbox`);
+const confinementMutant = await import(`${target}?mutant=reply-confinement`);
 hook.deregister();
 
 const home = '/fixture/codex-home';
@@ -55,6 +62,10 @@ function world(...ids) {
   for (const id of ids) w.threads.set(id, { writer: null, holder: null, provider: 'openai' });
   return w;
 }
+/** The native (0.169.0) thread reply `sandbox` for a `SandboxMode`, under the route config pin (no network). */
+const profile = (mode) => ({ 'read-only': { type: 'readOnly', networkAccess: false },
+  'workspace-write': { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+  'danger-full-access': { type: 'dangerFullAccess' } })[mode];
 /**
  * Inert, permissive fake app-server over a borrowed channel. It answers only the methods this module and pg51 send and
  * records every request. As natively (X4, X5), a thread stays loaded by its app-server until that process exits, even
@@ -62,7 +73,7 @@ function world(...ids) {
  * holds the thread or a turn is in progress.
  */
 function appServer(t, w, script = {}) {
-  const f = { sent: [], loaded: new Set(), holds: new Map(), detached: 0 };
+  const f = { sent: [], requests: [], loaded: new Set(), holds: new Map(), detached: 0 };
   const send = (value) => { if (f.sink && !f.gone) f.sink.data(Buffer.from(`${JSON.stringify(value)}\n`)); };
   f.notify = (method, params) => send({ method, params });
   f.complete = (threadId, turnId, status = 'completed') => {
@@ -95,13 +106,16 @@ function appServer(t, w, script = {}) {
       const provider = 'provider' in script ? script.provider : script.config?.model_provider ?? 'openai';
       // Natively the thread keeps its start model (params, else config); resume reports it unless `model` is passed.
       const model = params?.model ?? script.config?.model ?? 'fixture-model';
-      w.threads.set(id, { writer: null, holder: f, provider, model });
+      // Natively the thread persists the profile it starts with: the params sandbox, else the config pin.
+      const sandbox = profile(params?.sandbox ?? 'read-only');
+      w.threads.set(id, { writer: null, holder: f, provider, model, sandbox, approvalPolicy: params?.approvalPolicy ?? 'never' });
       f.loaded.add(id);
       return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' },
         ...(provider === undefined ? {} : { modelProvider: provider }) },
-        model };
+        model, sandbox: 'sandbox' in script ? script.sandbox : sandbox,
+        approvalPolicy: 'approvalPolicy' in script ? script.approvalPolicy : w.threads.get(id).approvalPolicy };
     },
-    'thread/resume': ({ threadId, model }) => {
+    'thread/resume': ({ threadId, model, sandbox, approvalPolicy }) => {
       const thread = w.threads.get(threadId);
       if (thread.writer || (thread.holder && thread.holder !== f)) w.overlaps.push(`resume ${threadId}`);
       thread.holder = f;
@@ -109,7 +123,10 @@ function appServer(t, w, script = {}) {
       // Native resumes a thread on its own provider, whatever this app-server's default.
       return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }],
         ...('provider' in script ? (script.provider === undefined ? {} : { modelProvider: script.provider }) : { modelProvider: thread.provider }) },
-        model: model ?? thread.model ?? script.config?.model ?? 'fixture-model' };
+        model: model ?? thread.model ?? script.config?.model ?? 'fixture-model',
+        // Natively (pvvq-review s-dfa-*) a resumed thread reports its persisted profile unless `sandbox` is passed.
+        sandbox: 'sandbox' in script ? script.sandbox : sandbox == null ? thread.sandbox ?? profile('read-only') : profile(sandbox),
+        approvalPolicy: 'approvalPolicy' in script ? script.approvalPolicy : approvalPolicy ?? thread.approvalPolicy ?? 'never' };
     },
     'turn/start': ({ threadId }) => {
       const thread = w.threads.get(threadId);
@@ -132,6 +149,7 @@ function appServer(t, w, script = {}) {
       if (message.method === undefined || message.id === undefined) return Promise.resolve();
       f.sent.push(message.method);
       f.last = message;
+      f.requests.push(message);
       const held = f.holds.get(message.method);
       void (held?.promise ?? Promise.resolve()).then((mode) => {
         if (mode === 'drop') return;
@@ -232,7 +250,7 @@ const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endp
 const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
   env_key: null, experimental_bearer_token: null };
 const pinned = { multi_agent: false, multi_agent_v2: false };
-const sandboxPin = { sandbox_mode: 'read-only', sandbox_workspace_write: { network_access: false } };
+const sandboxPin = { sandbox_mode: 'read-only', sandbox_workspace_write: { network_access: false }, approval_policy: 'never' };
 const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider },
   features: pinned, ...sandboxPin },
   account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
@@ -264,9 +282,11 @@ test('a routed execution refuses provider and config overrides unsent and any th
   assert.equal((await execution.create({ ...access, features: { sandbox: 'danger-full-access' } })).error?.code, 'invalid-input');
   assert.deepEqual(f.sent, ['initialize'], 'nothing is sent for a refused override');
   assert.equal(writers.held(), 0);
-  // Broken control: without the refusal the networked sandbox is sent.
-  const leaky = await open(t, shellMutant, appServer(t, w, routedServer()), shellMutant.createCodexWriters(1), { route });
-  assert.equal((await leaky.create({ ...access, params: { sandbox: 'danger-full-access' } })).kind, 'ok');
+  // Broken control: without the refusal the networked sandbox is sent; only the reply check then refuses the thread.
+  const leakyServer = appServer(t, w, routedServer());
+  const leaky = await open(t, shellMutant, leakyServer, shellMutant.createCodexWriters(1), { route });
+  assert.equal((await leaky.create({ ...access, params: { sandbox: 'danger-full-access' } })).error?.code, 'native-failure');
+  assert.equal(leakyServer.last.params.sandbox, 'danger-full-access');
   // Direct mode still passes `config` through unchanged.
   const direct = await open(t, real, appServer(t, w), writers);
   const directSession = await direct.create({ ...access, params: { config: { model: 'x' }, model: 'x', allowProviderModelFallback: true,
@@ -306,6 +326,160 @@ test('a routed execution refuses provider and config overrides unsent and any th
   const pinned = await (await open(t, real, appServer(t, w, routedServer()), writers, { route })).resume({ ...staleRef, params: { model: route.model } });
   assert.equal(pinned.value?.kind, 'resumed', JSON.stringify(pinned));
   await pinned.value.session.close();
+});
+
+test('a routed execution refuses every approval policy but never, unsent, and sends never when none is given', async (t) => {
+  const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
+  const id = randomUUID();
+  const w = world(id);
+  w.threads.get(id).provider = 'litellm';
+  w.threads.get(id).model = route.model;
+  const writers = real.createCodexWriters(4);
+  const f = appServer(t, w, routedServer());
+  const execution = await open(t, real, f, writers, { route });
+  const routedRef = { ...access, binding: { ...binding, account: principal }, reference: reference(id, { account: principal }) };
+  // Owner decision: approvals are always off under a route (features.ts approvals-under-route).
+  const granular = { granular: { sandbox_approval: true, rules: true, mcp_elicitations: true } };
+  const shapes = ['on-request', 'untrusted', granular, { granular: { ...granular.granular, sandbox_approval: false } }, null, 'Never', {}];
+  const sent = f.sent.length;
+  for (const approvalPolicy of shapes) {
+    for (const result of [await execution.create({ ...access, params: { approvalPolicy } }),
+      await execution.resume({ ...routedRef, params: { approvalPolicy } })]) {
+      assert.equal(result.error?.code, 'invalid-input', JSON.stringify(approvalPolicy));
+      assert.match(result.error.message, /^thread\/(start|resume) approvalPolicy is refused under a proxy route: an approved escalated command/u);
+    }
+  }
+  // A typed feature is merged first, so it is refused the same way.
+  assert.equal((await execution.create({ ...access, features: { approvalPolicy: 'on-request' } })).error?.code, 'invalid-input');
+  assert.deepEqual(f.sent.slice(sent), [], 'nothing is sent for a refused approval policy');
+  // never is sent as given; an absent policy is sent as never, since natively a resumed thread keeps its persisted
+  // policy over the config pin (pvvq-native resume-phase2-new). approvalsReviewer passes: under never native asks no reviewer.
+  const created = await execution.create({ ...access, params: { approvalPolicy: 'never', approvalsReviewer: 'auto_review' } });
+  assert.equal(created.kind, 'ok', JSON.stringify(created));
+  assert.deepEqual([f.last.method, f.last.params.approvalPolicy, f.last.params.approvalsReviewer], ['thread/start', 'never', 'auto_review']);
+  const turned = created.value.turn({ hostOperationId: 'never', input, params: { approvalsReviewer: 'guardian_subagent' },
+    signal: new AbortController().signal, recordIntent: () => {} });
+  assert.equal((await turned.value.completion).kind, 'terminal');
+  assert.deepEqual(f.requests.findLast((m) => m.method === 'turn/start').params.approvalPolicy, 'never');
+  const turnSent = f.sent.length;
+  for (const approvalPolicy of shapes) {
+    const refused = created.value.turn({ hostOperationId: `op-${JSON.stringify(approvalPolicy)}`, input, params: { approvalPolicy },
+      signal: new AbortController().signal, recordIntent: () => {} });
+    assert.equal(refused.error?.code, 'invalid-input', JSON.stringify(approvalPolicy));
+    assert.match(refused.error.message, /^turn\/start approvalPolicy is refused under a proxy route/u);
+  }
+  assert.equal(created.value.turn({ hostOperationId: 'typed', input, features: { approvalPolicy: 'untrusted' },
+    signal: new AbortController().signal, recordIntent: () => {} }).error?.code, 'invalid-input');
+  assert.equal(f.sent.length, turnSent, 'nothing is sent for a refused turn');
+  await created.value.close();
+  const g = appServer(t, w, routedServer());
+  const resumed = await (await open(t, real, g, writers, { route })).resume(routedRef);
+  assert.equal(resumed.value?.kind, 'resumed', JSON.stringify(resumed));
+  assert.equal(g.requests.find((m) => m.method === 'thread/resume').params.approvalPolicy, 'never');
+  await resumed.value.session.close();
+  // Broken control: without the refusal a host-chosen policy is sent; only the reply check then refuses the thread.
+  const h = appServer(t, w, routedServer());
+  const leaky = await open(t, approvalsMutant, h, approvalsMutant.createCodexWriters(1), { route });
+  const opened = await leaky.create({ ...access, params: { approvalPolicy: 'on-request' } });
+  assert.equal(opened.error?.code, 'native-failure');
+  assert.equal(h.last.params.approvalPolicy, 'on-request');
+  // Direct mode passes approvalPolicy through unchanged and adds none.
+  const d = appServer(t, w);
+  const direct = await open(t, real, d, real.createCodexWriters(4));
+  for (const approvalPolicy of ['on-request', granular, undefined]) {
+    const session = await direct.create({ ...access, params: approvalPolicy === undefined ? {} : { approvalPolicy } });
+    assert.equal(session.kind, 'ok', JSON.stringify(session));
+    assert.deepEqual(d.last.params.approvalPolicy, approvalPolicy);
+    await session.value.close();
+  }
+  assert.deepEqual(w.overlaps, []);
+});
+
+test('a routed resume is sent read-only unless it names a sandbox, and an unconfined thread reply is never a session', async (t) => {
+  const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
+  const routedRef = (id) => ({ ...access, binding: { ...binding, account: principal }, reference: reference(id, { account: principal }) });
+  // Natively (pvvq-review s-dfa-ro) an out-of-band danger-full-access resume persists an unsandboxed profile that a
+  // later resume without `sandbox` reports and a turn without `sandboxPolicy` runs on, outside the config pin.
+  const dfa = randomUUID();
+  const w = world(dfa);
+  Object.assign(w.threads.get(dfa), { provider: 'litellm', model: route.model, sandbox: profile('danger-full-access') });
+  const writers = real.createCodexWriters(4);
+  const f = appServer(t, w, routedServer());
+  const resumed = await (await open(t, real, f, writers, { route })).resume(routedRef(dfa));
+  assert.equal(resumed.value?.kind, 'resumed', JSON.stringify(resumed));
+  assert.equal(f.requests.find((m) => m.method === 'thread/resume').params.sandbox, 'read-only');
+  await resumed.value.session.close();
+  f.exit();
+  await settle();
+  // A named sandbox is sent as given: workspace-write stays without network under the pin.
+  const g = appServer(t, w, routedServer());
+  const named = await (await open(t, real, g, writers, { route })).resume({ ...routedRef(dfa), params: { sandbox: 'workspace-write' } });
+  assert.equal(named.value?.kind, 'resumed', JSON.stringify(named));
+  assert.equal(g.requests.find((m) => m.method === 'thread/resume').params.sandbox, 'workspace-write');
+  await named.value.session.close();
+  g.exit();
+  await settle();
+  assert.equal(writers.held(), 0);
+  // Broken control: without the default the persisted profile is reported; the reply check still refuses it.
+  const h = appServer(t, w, routedServer());
+  const leaky = await (await open(t, resumeSandboxMutant, h, resumeSandboxMutant.createCodexWriters(1), { route })).resume(routedRef(dfa));
+  assert.equal(h.requests.find((m) => m.method === 'thread/resume').params.sandbox, undefined);
+  assert.deepEqual(leaky, { kind: 'error', error: { code: 'native-failure',
+    message: 'the thread resumed outside the route sandbox (read-only or workspace-write without network)' } });
+  h.exit();
+  await settle();
+  // A reply off the confinement is native-failure: start holds no writer, resume keeps the lease to process exit.
+  const networked = { ...profile('workspace-write'), networkAccess: true };
+  const granular = { granular: { sandbox_approval: false, rules: false, skill_approval: false, request_permissions: false, mcp_elicitations: false } };
+  const outside = '(read-only or workspace-write without network)';
+  for (const [reply, problem] of [[{ sandbox: profile('danger-full-access') }, `outside the route sandbox ${outside}`],
+    [{ sandbox: networked }, `outside the route sandbox ${outside}`], [{ sandbox: { type: 'readOnly', networkAccess: true } }, `outside the route sandbox ${outside}`],
+    [{ sandbox: { type: 'externalSandbox', networkAccess: 'restricted' } }, `outside the route sandbox ${outside}`], [{ sandbox: null }, `outside the route sandbox ${outside}`],
+    [{ approvalPolicy: 'on-request' }, 'with approvals on'], [{ approvalPolicy: granular }, 'with approvals on'], [{ approvalPolicy: null }, 'with approvals on']]) {
+    const x = appServer(t, w, routedServer(reply));
+    const execution = await open(t, real, x, writers, { route });
+    assert.deepEqual(await execution.create(access), { kind: 'error', error: { code: 'native-failure', message: `the thread started ${problem}` } },
+      JSON.stringify(reply));
+    assert.equal(writers.held(), 0);
+    assert.deepEqual(await execution.resume(routedRef(dfa)), { kind: 'error', error: { code: 'native-failure', message: `the thread resumed ${problem}` } });
+    assert.equal(writers.held(), 1, 'the native thread may be loaded, so the reservation follows process exit');
+    x.exit();
+    await settle();
+    assert.equal(writers.held(), 0);
+  }
+  // readOnly and workspaceWrite without network are confined, with or without networkAccess.
+  for (const sandbox of [{ type: 'readOnly' }, profile('read-only'), profile('workspace-write'), { type: 'workspaceWrite' }]) {
+    const x = appServer(t, w, routedServer({ sandbox }));
+    const execution = await open(t, real, x, writers, { route });
+    const created = await execution.create(access);
+    assert.equal(created.kind, 'ok', JSON.stringify(created));
+    await created.value.close();
+    const again = await execution.resume(routedRef(dfa));
+    assert.equal(again.value?.kind, 'resumed', JSON.stringify(again));
+    await again.value.session.close();
+    x.exit();
+    await settle();
+  }
+  // Broken control: without the reply check a networked thread becomes a session.
+  const y = appServer(t, w, routedServer({ sandbox: networked }));
+  const unchecked = await open(t, confinementMutant, y, confinementMutant.createCodexWriters(1), { route });
+  const escaped = await unchecked.create(access);
+  assert.equal(escaped.kind, 'ok');
+  await escaped.value.close();
+  // Direct mode sends no sandbox default and checks no reply profile.
+  const d = appServer(t, w, { sandbox: profile('danger-full-access'), approvalPolicy: 'on-request' });
+  const direct = await open(t, real, d, real.createCodexWriters(4));
+  const directCreated = await direct.create(access);
+  assert.equal(directCreated.kind, 'ok', JSON.stringify(directCreated));
+  assert.equal(d.last.params.sandbox, undefined);
+  await directCreated.value.close();
+  const plain = randomUUID();
+  w.threads.set(plain, { writer: null, holder: null, provider: 'openai', model: 'fixture-model' });
+  const directResumed = await direct.resume({ ...access, binding, reference: reference(plain) });
+  assert.equal(directResumed.value?.kind, 'resumed', JSON.stringify(directResumed));
+  assert.equal(d.requests.find((m) => m.method === 'thread/resume').params.sandbox, undefined);
+  await directResumed.value.session.close();
+  assert.deepEqual(w.overlaps, []);
 });
 
 test('a direct execution refuses a routed thread and any start or resume reply on another provider', async (t) => {

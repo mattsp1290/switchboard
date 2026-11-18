@@ -76,9 +76,11 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
       // namespace under multi_agent_v2) sends requests on a model the model picked, bypassing route.model. -c outranks a
       // home or project config.toml, and routed thread config is refused, so nothing re-enables either. The sandbox is
       // pinned for the same reason: a config.toml `sandbox_mode`, `default_permissions` or `network_access` would
-      // otherwise give the shell the broker socket (features.ts `networked-shell-under-route`).
+      // otherwise give the shell the broker socket (features.ts `networked-shell-under-route`). Approvals are pinned off
+      // too: an approved escalated command runs outside that sandbox, and native rejects escalation under `never`
+      // without asking the host (features.ts `approvals-under-route`).
       'features.multi_agent': false, 'features.multi_agent_v2': false,
-      sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false };
+      sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false, approval_policy: 'never' };
     return { config: Object.freeze({ overrides: Object.freeze(overrides),
       args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
   } catch { return { problem: 'proxy options could not be read' }; }

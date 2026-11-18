@@ -70,13 +70,14 @@ export interface CodexExecutionOptions {
    * with a `message` naming the failing rule. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct execution over one home would not exclude each other's writers.
    * A thread that starts or resumes on another model than `route.model` is `native-failure` with a `message`: natively a
-   * resumed thread keeps its persisted model, so resume it with `params.model = route.model`.
+   * resumed thread keeps its persisted model, so resume it with `params.model = route.model`. So is one whose reply
+   * reports a sandbox other than read-only or workspace-write without network, or an approval policy other than never.
    */
   readonly route?: CodexProxyRoute;
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
- * routeOverride, checkCodexRoute), naming the rejected setting or rule, and on a routed off-model `native-failure`.
+ * routeOverride, checkCodexRoute), naming the rejected setting or rule, and on a routed off-model or unconfined `native-failure`.
  */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
@@ -299,6 +300,12 @@ const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' })
  * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
  * A networked shell is always refused (features.ts `networked-shell-under-route`): `sandbox` `danger-full-access`, any
  * `permissions` profile, and a `sandboxPolicy` other than `readOnly` or `workspaceWrite` without `networkAccess` (snapshot).
+ * Approvals are always off (features.ts `approvals-under-route`): an `approvalPolicy` other than `"never"`, granular and
+ * `null` included, is refused, since an approved escalated command runs outside the sandbox. An absent one is sent as
+ * `"never"`: natively a resumed thread keeps its persisted policy over the `codexProxyConfig` pin. `approvalsReviewer`
+ * passes: under `never` native rejects an escalation before any reviewer or host is asked.
+ * A thread/resume with neither `sandbox` nor `sandboxPolicy` is sent `sandbox: "read-only"`: natively a resumed thread
+ * keeps a persisted unsandboxed profile (an out-of-band `danger-full-access` resume) over the `codexProxyConfig` pin.
  */
 const routeOverride = (route: CodexProxyRoute | undefined, target: string, params: Record<string, unknown>) => {
   if (!route) return undefined;
@@ -313,6 +320,11 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   const shell = 'a networked shell can take route tokens from the broker and use them on any model';
   if (params.sandbox === 'danger-full-access') return refuse('sandbox', shell);
   if (params.permissions != null) return refuse('permissions', shell);
+  if (Object.hasOwn(params, 'approvalPolicy') && params.approvalPolicy !== 'never') {
+    return refuse('approvalPolicy', 'an approved escalated command runs outside the sandbox and can take route tokens');
+  }
+  params.approvalPolicy = 'never';
+  if (target === 'thread/resume' && params.sandbox == null && params.sandboxPolicy == null) params.sandbox = 'read-only';
   if (params.sandboxPolicy != null) {
     const policy = record(params.sandboxPolicy) ? { ...params.sandboxPolicy } : {};
     if (!['readOnly', 'workspaceWrite'].includes(policy.type as string) || (policy.networkAccess ?? false) !== false) {
@@ -360,6 +372,19 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
    */
   const offModel = (value: unknown) => route !== undefined && (!record(value) || value.model !== route.model);
+  /**
+   * Under a route, a start or resume reply whose `sandbox` is not `readOnly` or `workspaceWrite` without network, or whose
+   * `approvalPolicy` is not `"never"`, is never a session: defence in depth behind the resume `read-only` default, since a
+   * turn without `sandboxPolicy` runs on the thread's reported profile (codex-native-api.md, Proxy-routed requester).
+   */
+  const unconfined = (value: unknown, verb: string) => {
+    if (route === undefined) return undefined;
+    const sandbox = record(value) && record(value.sandbox) ? value.sandbox : undefined;
+    if (!sandbox || !['readOnly', 'workspaceWrite'].includes(sandbox.type as string) || (sandbox.networkAccess ?? false) !== false) {
+      return `the thread ${verb} outside the route sandbox (read-only or workspace-write without network)`;
+    }
+    return record(value) && value.approvalPolicy === 'never' ? undefined : `the thread ${verb} with approvals on`;
+  };
   // Natively a resumed thread keeps its persisted model unless thread/resume names one.
   const resumeOffModel = 'the thread is on another model than the route; resume it with params.model = route.model';
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
@@ -562,6 +587,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (offModel(reply.kind === 'result' ? reply.value : undefined)) {
         return fail('native-failure', 'the thread started on another model than the route model');
       }
+      const escaped = unconfined(reply.kind === 'result' ? reply.value : undefined, 'started');
+      if (escaped) return fail('native-failure', escaped);
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value.binding,
         opaque: thread.id });
       const lease = acquire(writers, reference);
@@ -610,14 +637,17 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (reply.kind === 'error') return fail('native-failure');
       // Unrejected entry: this app-server may now hold the thread loaded, so the reservation follows its exit.
       held = true;
-      const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
+      const value = reply.kind === 'result' ? reply.value : undefined;
+      const thread = record(value) && record(value.thread) ? value.thread : undefined;
+      const escaped = unconfined(value, 'resumed');
       const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
         : thread?.id !== threadId ? 'identity-mismatch'
           // A thread native resumed on another provider than the requester's runs off it; it never becomes a session.
-          : thread.modelProvider !== provider || offModel(reply.value) ? 'native-failure' : closed ? 'closed' : undefined;
+          : thread.modelProvider !== provider || offModel(value) || escaped ? 'native-failure' : closed ? 'closed' : undefined;
       if (refused) {
         keep(lease);
-        return fail(refused, refused === 'native-failure' && thread?.modelProvider === provider ? resumeOffModel : undefined);
+        return fail(refused, refused !== 'native-failure' || thread?.modelProvider !== provider ? undefined
+          : offModel(value) ? resumeOffModel : escaped);
       }
       return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
         reply.kind === 'result' ? reply.value : null) }) };
