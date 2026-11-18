@@ -1,80 +1,10 @@
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { ownedContainer } from './lifecycle.mjs';
+import { concludeNativeProof, runNativeProof } from './native-proof.mjs';
 
 // 118i native proof: the compiled private Codex interaction bridge over the execution module against the pinned app-server
-// and a synthetic loopback Responses service that emits a real command approval (N1-N9, N6 folded into N1). Separate from execution-proof.mjs
-// so its pin, sources and guarded closure stay unchanged.
-const here = dirname(fileURLToPath(import.meta.url));
-const repo = resolve(here, '../..');
-const pins = JSON.parse(readFileSync(join(here, 'pins.json'), 'utf8'));
-const [archive, architecture = process.arch] = process.argv.slice(2);
-assert(archive, 'Usage: node spikes/codex-native/interaction-proof.mjs <official-codex.tgz> [arm64|x64]');
-const pin = pins.artifacts[architecture];
-assert(pin, 'Only pinned Linux arm64 and x64 artifacts are supported');
-assert.equal(process.versions.node, pins.node);
-assert(statSync(archive).size <= 200 * 1024 * 1024, 'Bounded native archive');
-for (const [name, version] of [['typescript', '7.0.2'], ['@types/node', '24.19.2']]) {
-  assert.equal(JSON.parse(readFileSync(join(repo, 'node_modules', name, 'package.json'), 'utf8')).version, version);
-}
-const digest = createHash('sha512');
-for await (const chunk of createReadStream(archive)) digest.update(chunk);
-assert.equal(digest.digest('base64'), pin.sha512, 'Native archive integrity');
-const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
-const SOURCES = ['src/adapters/codex/execution.ts', 'src/adapters/codex/sessions.ts', 'src/adapters/codex/transport.ts',
-  'src/adapters/codex/wire.ts', 'src/core/dispatch.ts', 'src/core/sessions.ts', 'src/core/discovery.ts', 'src/core/events.ts',
-  'src/core/contracts.ts', 'src/adapters/codex/interaction.ts', 'src/core/interaction.ts'];
-const SCENARIOS = ['N1', 'N2', 'N3', 'N4', 'N5', 'N7', 'N8', 'N9'];
-mkdirSync(join(here, '.work'), { recursive: true });
-const work = mkdtempSync(join(here, '.work/interaction-'));
-const name = `switchboard-codex-interaction-${randomUUID()}`;
-const run = (command, args, options = {}) => execFileSync(command, args, { timeout: 45000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', ...options });
-let cleanupUncertain = false;
-let result;
-try {
-  const binary = join(work, 'codex');
-  const fd = openSync(binary, 'wx');
-  try { run('tar', ['-xOf', resolve(archive), `package/vendor/${pin.target}/bin/codex`], { stdio: ['ignore', fd, 'pipe'] }); }
-  finally { closeSync(fd); }
-  chmodSync(binary, 0o500);
-  const dist = join(work, 'dist');
-  const before = Object.fromEntries(SOURCES.map((file) => [file, sha256(join(repo, file))]));
-  run(process.execPath, [join(repo, 'node_modules/typescript/bin/tsc'), '-p', join(repo, 'tsconfig.json'), '--outDir', dist]);
-  assert.deepEqual(Object.fromEntries(SOURCES.map((file) => [file, sha256(join(repo, file))])), before, 'Sources unchanged during compilation');
-  writeFileSync(join(dist, 'package.json'), JSON.stringify({ type: 'module' }));
-  const compiled = { executionSha256: sha256(join(dist, 'adapters/codex/execution.js')),
-    interactionSha256: sha256(join(dist, 'adapters/codex/interaction.js')), sources: before };
-  const docker = (command) => {
-    const mounts = ['--mount', `type=bind,source=${binary},target=/opt/codex,readonly`,
-      '--mount', `type=bind,source=${dist},target=/dist,readonly`];
-    for (const helper of ['interaction-reader.mjs', 'account-reads.mjs', 'inventory.mjs']) {
-      mounts.push('--mount', `type=bind,source=${join(here, helper)},target=/opt/${helper},readonly`);
-    }
-    try {
-      return ownedContainer(run, ['run', '--rm', '--name', name, '--platform', pin.platform, '--network', 'none',
-        '--read-only', '--pids-limit', '128', '--cpus', '2', '--memory', '768m',
-        '--tmpfs', '/tmp:rw,size=128m', '--tmpfs', '/root:rw,size=64m', ...mounts,
-        pins.image, 'timeout', '40', ...command], name);
-    } catch (error) {
-      cleanupUncertain ||= error.cleanupUncertain;
-      console.error(JSON.stringify({ containerFailure: name, stdout: error.stdout, stderr: error.stderr }));
-      throw error;
-    }
-  };
-  assert.equal(docker(['/opt/codex', '--version']).trim(), `codex-cli ${pins.native}`);
-  // One fresh container (fresh home, fresh registry) per scenario; a scenario seeds any durable thread it needs.
-  const reports = {};
-  for (const scenario of SCENARIOS) reports[scenario] = JSON.parse(docker(['node', '/opt/interaction-reader.mjs', scenario]));
-  result = { native: pins.native, image: pins.image, platform: pin.platform, archiveIntegrity: 'verified', compiled, reports };
-} finally {
-  if (cleanupUncertain) console.error(JSON.stringify({ cleanupUncertain, container: name, retainedWork: work }));
-  else { rmSync(work, { recursive: true, force: true }); assert(!existsSync(work), 'Owned work removed'); }
-}
-console.log(JSON.stringify(result, null, 2));
+// and a synthetic loopback Responses service that emits a real command approval (N1-N9, N6 folded into N1). Separate from
+// execution-proof.mjs so its pin and guarded closure stay unchanged.
+const result = await runNativeProof({ kind: 'interaction', scenarios: ['N1', 'N2', 'N3', 'N4', 'N5', 'N7', 'N8', 'N9'],
+  sources: ['src/adapters/codex/interaction.ts', 'src/core/interaction.ts'], compiled: ['execution', 'interaction'] });
 // The only conclusion site, after the full report is printed and cleanup is proved. Checks cover only what the bridge
 // claims: one decision frame per host reply and none otherwise, single use, declined-only no-effect, lost/expired/
 // withdrawn without a decision, interrupt requested, transport survival and writer release only on exit. Native reactions
@@ -101,7 +31,6 @@ const pinned = {
   N8: { candidates: N8.candidates, notAdvertised: N8.notAdvertised ?? false, reactions: N8.reactions, refusedMethods: N8.refusedMethods },
   N9: { terminalWithin5s: N9.terminalWithin5s, terminal: N9.terminal, item: N9.item },
 };
-console.log(JSON.stringify({ pinned }));
 const statuses = ['completed', 'interrupted', 'failed'];
 const decisionNames = (request) => (request?.availableDecisions ?? [])
   .map((d, index) => (typeof d === 'string' ? d : `${Object.keys(d)[0]}:${index}`));
@@ -127,10 +56,4 @@ const checks = {
   N9: N9.settlements?.join() === 'expired' && N9.decisionFrames === 0 && N9.errorFrames?.includes(-32000) && N9.marker === false
     && N9.independent === 'completed',
 };
-console.log(JSON.stringify({ checks }));
-// A large report can still be queued on a pipe; an assertion exit would drop it and the lines above.
-await new Promise((resolve) => process.stdout.write('', resolve));
-for (const [check, passed] of Object.entries(checks)) assert(passed, `Native interaction proof ${check}`);
-const recorded = JSON.parse(readFileSync(join(here, 'interaction-proof-result.json'), 'utf8'));
-// A recorded outcome enforces the pin; a pending record (outcome null) only reports, as the execution proof first did.
-if (recorded.outcome !== null) assert.deepEqual(pinned, recorded.pinned, 'Recorded native interaction proof');
+await concludeNativeProof('interaction', pinned, checks);

@@ -132,6 +132,11 @@ const fail = <E>(error: E) => Object.freeze({ kind: 'error', error: Object.freez
 /** The file-change request carries no `availableDecisions` in the 0.169 bindings; its decision enum is this set. */
 const fileChangeDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
 const unanswered = (entry: Entry) => entry.state === 'live' || entry.state === 'reserved';
+type RefusalReason = Extract<CodexInteractionEvent, { kind: 'refused' }>['reason'];
+const refusals: Readonly<Record<RefusalReason, readonly [number, string]>> = Object.freeze({
+  malformed: [-32602, 'Malformed server request'], capacity: [-32000, 'Too many pending approvals'],
+  unsupported: [-32601, 'Unsupported by switchboard Codex interaction'],
+  unattached: [-32601, 'Unsupported by switchboard Codex interaction'] });
 
 /**
  * Choices are exactly the request's own `availableDecisions` (0.169 command approvals under `untrusted`/`read-only` offer
@@ -188,14 +193,13 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   }
   const withdraw = (entry: Entry, by: Extract<CodexSettlement, { kind: 'withdrawn' }>['by']) =>
     settle(entry, { kind: 'withdrawn', by, evidence: 'unqualified' }, withdrawnReply);
-  function refuse(request: IncomingCall, reason: Extract<CodexInteractionEvent, { kind: 'refused' }>['reason']): RpcReply {
-    const code = reason === 'malformed' ? -32602 : reason === 'capacity' ? -32000 : -32601;
+  function refuse(request: IncomingCall, reason: RefusalReason): RpcReply {
+    const [code, message] = refusals[reason];
     const threadId = record(request.params) && typeof request.params.threadId === 'string' ? request.params.threadId : null;
     publish({ kind: 'refused', method: request.method, threadId, reason, code,
       request: Object.freeze({ namespace: 'codex-app-server/server-request', schemaVersion: 1,
         data: { method: request.method, id: request.id, params: request.params } }) });
-    return refusal(code, reason === 'malformed' ? 'Malformed server request' : reason === 'capacity'
-      ? 'Too many pending approvals' : 'Unsupported by switchboard Codex interaction');
+    return refusal(code, message);
   }
 
   /** Native evidence routed to the attached session by execution (thread, turn, item and request IDs, never order). */
@@ -204,7 +208,9 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (event.kind === 'turn-completed') {
       attached.ended.push(event.turnId);
       if (attached.ended.length > 4) attached.ended.shift();
-      for (const entry of entries()) if (unanswered(entry) && entry.turnId === event.turnId) withdraw(entry, 'turn/completed');
+      for (const entry of [...live.values()]) {
+        if (entry.threadId === threadId && entry.turnId === event.turnId) withdraw(entry, 'turn/completed');
+      }
       return;
     }
     if (event.kind !== 'native' || !record(event.params)) return;
@@ -244,13 +250,12 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     // Typed and lossless: the JSON-RPC id keeps its type, and the turn makes it unique across app-server generations.
     const id = JSON.stringify([request.id, turnId, itemId, approvalId]);
     const choices = decisions(method, params);
-    if (!choices) return refuse(request, 'malformed');
+    if (!choices || choices.size > interactionLimits.maxChoices) return refuse(request, 'malformed');
     const target: ApprovalTarget = Object.freeze({ kind: 'approval', session: attached.session.reference, nativeApprovalId: id,
       tool: Object.freeze({ nativeToolCallId: itemId }) });
     const pending: PendingApproval = Object.freeze({ kind: 'approval', target, nativePolicy: attached.policy,
       request: Object.freeze({ namespace: 'codex-app-server/server-request', schemaVersion: 1, data: { method, id: request.id, params } }),
-      choices: Object.freeze([...choices.keys()].slice(0, interactionLimits.maxChoices + 1)
-        .map((nativeChoiceId) => Object.freeze({ nativeChoiceId, label: nativeChoiceId }))) });
+      choices: Object.freeze([...choices.keys()].map((nativeChoiceId) => Object.freeze({ nativeChoiceId, label: nativeChoiceId }))) });
     // Self-check through the core validator: a pending record the host could never answer is refused now, not held.
     const first = pending.choices[0]?.nativeChoiceId;
     const checked = parseInteractionContinuation({ value: { formatVersion: 1, kind: 'approval', target, nativeChoiceId: first },
