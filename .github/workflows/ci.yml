@@ -90,3 +90,5 @@ jobs:
         run: node spikes/codex-native/sessions-proof.mjs spikes/codex-native/.work/codex-linux-x64.tgz x64
       - name: Verify native turn execution
         run: node spikes/codex-native/execution-proof.mjs spikes/codex-native/.work/codex-linux-x64.tgz x64
+      - name: Verify native approvals
+        run: node spikes/codex-native/interaction-proof.mjs spikes/codex-native/.work/codex-linux-x64.tgz x64

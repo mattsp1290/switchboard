@@ -780,3 +780,50 @@ test('a written turn/start is bounded only by its acknowledgement deadline and i
   assert.equal(f.sent.filter((method) => method === 'turn/start').length, 1);
   assert.equal(writers.held(), 1, 'uncertain entry retains the writer');
 });
+
+test('interrupt cancels a streaming turn without closing the session, releasing the writer or resending', async (t) => {
+  const id = randomUUID();
+  const w = world(id);
+  const writers = real.createCodexWriters(4);
+  const streaming = (server, threadId, turnId) => server.notify('item/agentMessage/delta', { threadId, turnId, itemId: 'm', delta: 'partial' });
+  const f = appServer(t, w, { turn: streaming });
+  const execution = await open(t, real, f, writers);
+  const session = await resumed(execution, id);
+  assert.equal(await session.interrupt(), 'not-needed', 'no active turn');
+  const events = collect(session.events);
+  const turn = await turnOn(session);
+  await turn.run();
+  await settle();
+  const observer = session.events.subscribe(() => {});
+  observer.value.dispose();
+  await settle();
+  assert.equal(f.sent.includes('turn/interrupt'), false, 'observer detach is not cancellation');
+  const [first, second] = await Promise.all([session.interrupt(), session.interrupt()]);
+  assert.deepEqual([first, second], ['replied', 'replied']);
+  assert.equal((await turn.completion).terminal.status, 'interrupted');
+  assert.ok(events.some((event) => event.kind === 'text-delta'));
+  assert.equal(await session.interrupt(), 'not-needed', 'after the terminal');
+  assert.equal(writers.held(), 1);
+  const next = await turnOn(session, 'after');
+  await next.run();
+  f.complete(id, w.threads.get(id).writer.turnId);
+  assert.equal((await next.completion).kind, 'terminal', 'the session stays open');
+  assert.equal(f.sent.filter((method) => method === 'turn/interrupt').length, 1, 'single-flight per turn');
+});
+
+test('close reuses an in-flight interrupt and never sends a second turn/interrupt', async (t) => {
+  const id = randomUUID();
+  const f = appServer(t, world(id), { turn: hold });
+  const execution = await open(t, real, f, real.createCodexWriters(4));
+  const session = await resumed(execution, id);
+  const turn = await turnOn(session);
+  await turn.run();
+  const gated = f.hold('turn/interrupt');
+  const interrupting = session.interrupt();
+  while (!f.sent.includes('turn/interrupt')) await settle();
+  const closing = session.close();
+  gated.open();
+  assert.equal(await interrupting, 'replied');
+  assert.deepEqual(await closing, { interrupt: 'replied', unsubscribe: 'replied', released: false });
+  assert.equal(f.sent.filter((method) => method === 'turn/interrupt').length, 1);
+});

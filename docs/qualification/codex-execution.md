@@ -52,4 +52,4 @@ Every report records each native error reply raw (`raw.nativeErrors`: method, co
 
 ## Not covered
 
-Cross-process and durable admission, uncooperative external writers, route-policy compatibility (z8tq/me4l), approvals and cancellation acceptance (118i), live providers and macOS.
+Cross-process and durable admission, uncooperative external writers, route-policy compatibility (z8tq/me4l), approvals and cancellation acceptance ([Codex interaction qualification](codex-interaction.md)), live providers and macOS.
