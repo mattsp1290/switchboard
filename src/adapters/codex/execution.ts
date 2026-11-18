@@ -284,10 +284,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     if (![maxSessions, maxObservers, eventCapacity, maxEarlyNotifications].every((value) => positive(value))
       || ![cleanupTimeoutMs, acknowledgementTimeoutMs].every((value) => positive(value, 2147483647))
       || !positive(maxObservers * eventCapacity)) return invalid;
-    captured = { channel, transportBounds, home, initialize: { ...initialize }, onServerRequest, signal, processExit, state,
+    // Read once: a later host mutation of `initialize.capabilities` cannot change the features gate (features.ts).
+    const experimentalApi = record(initialize.capabilities) && initialize.capabilities.experimentalApi === true;
+    captured = { channel, transportBounds, home, initialize: { ...initialize }, experimentalApi, onServerRequest, signal, processExit, state,
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
-  const { home, state: writers, bounds, signal, initialize } = captured;
+  const { home, state: writers, bounds, signal, experimentalApi } = captured;
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
   const executionEvents = createEventStream<CodexExecutionEvent>(streamBounds);
   const sessions = new Set<Session>();
@@ -457,7 +459,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     try {
       params = passthrough(access.params, ['ephemeral']);
       if (!params || !(access.signal instanceof AbortSignal)) return invalid;
-      const resolved = resolveCodexFeatures('thread/start', access.features, params, initialize);
+      const resolved = resolveCodexFeatures('thread/start', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
       wait = AbortSignal.any([access.signal, opening.signal]);
@@ -494,7 +496,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const binding = copyBinding(access.binding);
       params = passthrough(access.params, ['threadId', 'history', 'path']);
       if (!binding || !params || !(access.signal instanceof AbortSignal)) return invalid;
-      const resolved = resolveCodexFeatures('thread/resume', access.features, params, initialize);
+      const resolved = resolveCodexFeatures('thread/resume', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
       parsed = parseSessionReference({ value: access.reference, expected: binding });
@@ -542,7 +544,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const { hostOperationId, input, params: extra, features, signal: hostSignal, recordIntent, lifecycle } = options;
       const raw = passthrough(extra, ['threadId', 'input']);
       if (!Array.isArray(input) || !raw || !(hostSignal instanceof AbortSignal)) return invalid;
-      const resolved = resolveCodexFeatures('turn/start', features, raw, initialize);
+      const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
