@@ -54,16 +54,17 @@ const entry = { name: 'LiteLLM', base_url: 'http://127.0.0.1:4000/v1', env_key: 
   wire_api: 'responses', requires_openai_auth: false };
 // `config/read` reports `-c features.multi_agent=false` nested under `features` and omits an unset feature (me4l-pin out.json).
 const pinned = { multi_agent_v2: false, network_proxy: null, multi_agent: false, memories: false };
+const sandbox = { sandbox_mode: 'workspace-write', default_permissions: null, sandbox_workspace_write: { writable_roots: [], network_access: false } };
 /** Fake app-server: the native projections observed with provider command auth (codex-native-api.md). */
 function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route, providers = { litellm: entry },
-  threads = {}, threadProviders = {}, features = pinned } = {}) {
+  threads = {}, threadProviders = {}, features = pinned, sandboxing = sandbox } = {}) {
   const calls = [];
   const request = async (call) => {
     calls.push(call.method);
     const id = call.params.threadId ?? threads[call.params.rolloutPath];
     const value = call.method === 'config/read'
       ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_providers: providers,
-        ...(features === 'absent' ? {} : { features }),
+        ...(features === 'absent' ? {} : { features }), ...sandboxing,
         ...(provider === 'absent' ? {} : { model_provider: provider }) } }
       : call.method === 'account/read' ? account
         : call.method === 'getConversationSummary' ? { summary: { path: call.params.rolloutPath, conversationId: id } }
@@ -123,6 +124,11 @@ test('a routed requester refuses unless native multi-agent is pinned off', async
     const fake = server(home(t), { features });
     assert.deepEqual(await bind(fake), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(features));
     assert.deepEqual(fake.calls, ['config/read']);
+  }
+  // A sandbox that config.toml can open to the network (or a default permissions profile) never binds either.
+  for (const sandboxing of [{}, { ...sandbox, sandbox_mode: 'danger-full-access' }, { ...sandbox, default_permissions: ':workspace' },
+    { ...sandbox, sandbox_workspace_write: { network_access: true } }, { ...sandbox, sandbox_workspace_write: null }]) {
+    assert.deepEqual(await bind(server(home(t), { sandboxing })), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(sandboxing));
   }
   // Broken control: without the pin check a host that omitted the generated args binds a bypassable route.
   assert.equal((await bind(server(home(t), { features: { memories: false } }), unpinned)).value?.account, principal);

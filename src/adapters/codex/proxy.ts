@@ -43,7 +43,8 @@ const whole = (value: unknown, min: number, max: number, fallback: number): numb
  * The `-c` overrides that put a Codex app-server on `route` with host-resolved command auth (codex-native-api.md,
  * LiteLLM route). Exactly what sessions.ts `routedProvider` admits: no `env_key`, bearer token, ChatGPT or forced
  * login, or `openai_base_url`, so no subscription or stored-key passthrough; no retries, so a 401 renews once and fails.
- * Multi-agent (v1 and v2) is off: an explicit route restriction (features.ts `multi-agent-under-route`), not a default.
+ * Multi-agent (v1 and v2) is off and the sandbox is workspace-write without network: explicit route restrictions
+ * (features.ts `multi-agent-under-route`, `networked-shell-under-route`), not defaults.
  */
 export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
 { readonly config: CodexProxyConfig } | { readonly problem: string } {
@@ -73,8 +74,11 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
       [`${at}.auth.timeout_ms`]: timeout, [`${at}.auth.refresh_interval_ms`]: refresh,
       // A sub-agent's spawn_agent `model` argument (multi_agent_v1 namespace, on by default in 0.169.0; collaboration
       // namespace under multi_agent_v2) sends requests on a model the model picked, bypassing route.model. -c outranks a
-      // home or project config.toml, and routed thread config is refused, so nothing re-enables either.
-      'features.multi_agent': false, 'features.multi_agent_v2': false };
+      // home or project config.toml, and routed thread config is refused, so nothing re-enables either. The sandbox is
+      // pinned for the same reason: a config.toml `sandbox_mode`, `default_permissions` or `network_access` would
+      // otherwise give the shell the broker socket (features.ts `networked-shell-under-route`).
+      'features.multi_agent': false, 'features.multi_agent_v2': false,
+      sandbox_mode: 'workspace-write', 'sandbox_workspace_write.network_access': false };
     return { config: Object.freeze({ overrides: Object.freeze(overrides),
       args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
   } catch { return { problem: 'proxy options could not be read' }; }

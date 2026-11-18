@@ -288,12 +288,15 @@ test('the capability table labels evidence honestly, with carriers per target an
   assert.equal(table['dynamic-tools-after-start'].kind, 'unsupported');
   assert.equal(table.routing.api.qualification, 'fixture-only');
   assert.deepEqual(table.routing.api.carriers, { options: ['route'], 'app-server': ['codexProxyConfig'] });
-  assert.match(table.routing.api.note, /synthetic loopback only.*params\.model = route\.model.*disables multi-agent.*switchboard-ov4y/);
+  assert.match(table.routing.api.note, /synthetic loopback only.*params\.model = route\.model.*disables multi-agent.*networked shells.*switchboard-ov4y/);
   // An explicit route restriction (boundaries.md `unavailable`), never a silent disable.
   const multi = table['multi-agent-under-route'];
   assert.equal(multi.kind, 'unavailable');
   assert.equal(Object.isFrozen(multi), true);
   assert.match(multi.reason, /features\.multi_agent and features\.multi_agent_v2.*spawn_agent model argument.*bypassing the route model.*cannot re-enable/);
+  const shell = table['networked-shell-under-route'];
+  assert.deepEqual([shell.kind, Object.isFrozen(shell)], ['unavailable', true]);
+  assert.match(shell.reason, /broker socket.*any model.*no opt-in.*danger-full-access.*permissions profile.*network_access false.*decline approvals/);
   for (const name of ['config-overrides', 'plugins-and-capability-roots', 'environments', 'opaque-events']) {
     assert.equal(table[name].api.qualification, 'passthrough-unqualified', name);
   }

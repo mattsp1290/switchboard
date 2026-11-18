@@ -8,7 +8,7 @@ const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/execution.ts', src).href;
 // Broken controls are source mutations of the real module (precedent: tests/spikes/codex-bindings.test.mjs).
 // early-release frees the writer at cleanup start; cleanup-release frees it once cleanup ends, as a turn-conclusion release did.
-const mutations = new Map([['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
+const mutations = new Map([['networked-shell', ['  const shell =', '  if (params.sandbox) return undefined;\n  const shell =']], ['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
   ['cleanup-release', ['deadline));\n    return Object.freeze({ interrupt', 'deadline));\n    release(session.lease);\n    return Object.freeze({ interrupt']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
@@ -31,6 +31,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 const real = await import(target);
 const mutant = await import(`${target}?mutant=early-release`);
 const cleanupMutant = await import(`${target}?mutant=cleanup-release`);
+const shellMutant = await import(`${target}?mutant=networked-shell`);
 hook.deregister();
 
 const home = '/fixture/codex-home';
@@ -231,7 +232,9 @@ const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endp
 const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
   env_key: null, experimental_bearer_token: null };
 const pinned = { multi_agent: false, multi_agent_v2: false };
-const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider }, features: pinned },
+const sandboxPin = { sandbox_mode: 'workspace-write', sandbox_workspace_write: { network_access: false } };
+const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider },
+  features: pinned, ...sandboxPin },
   account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
 
 test('a routed execution refuses provider and config overrides unsent and any thread native puts on another provider', async (t) => {
@@ -248,19 +251,26 @@ test('a routed execution refuses provider and config overrides unsent and any th
     // The host cannot re-enable multi-agent, whose spawn_agent model argument would bypass the route model.
     { config: { 'features.multi_agent': true } }, { config: { features: { multi_agent_v2: true } } },
     { model: 'other-model' }, { model: null }, { model: ` ${route.model}` }, { allowProviderModelFallback: true },
-    { collaborationMode: { mode: 'plan', settings: { model: route.model, reasoning_effort: null, developer_instructions: null } } }]) {
+    { collaborationMode: { mode: 'plan', settings: { model: route.model, reasoning_effort: null, developer_instructions: null } } },
+    // Owner decision: a networked shell is always refused under a route (features.ts networked-shell-under-route).
+    { sandbox: 'danger-full-access' }, { permissions: ':workspace' }, { sandboxPolicy: { type: 'workspaceWrite', networkAccess: true } }]) {
     for (const result of [await execution.create({ ...access, params }), await execution.resume({ ...routedRef, params })]) {
       assert.equal(result.error?.code, 'invalid-input', JSON.stringify(params));
-      assert.match(result.error.message, /^thread\/(start|resume) (modelProvider|config|model|allowProviderModelFallback|collaborationMode) is refused under a proxy route/u);
+      assert.match(result.error.message, /^thread\/(start|resume) (modelProvider|config|model|allowProviderModelFallback|collaborationMode|sandbox|permissions|sandboxPolicy) is refused under a proxy route/u);
     }
   }
   // A typed model feature is merged first, so it is refused the same way.
   assert.equal((await execution.create({ ...access, features: { model: 'other-model' } })).error?.code, 'invalid-input');
+  assert.equal((await execution.create({ ...access, features: { sandbox: 'danger-full-access' } })).error?.code, 'invalid-input');
   assert.deepEqual(f.sent, ['initialize'], 'nothing is sent for a refused override');
   assert.equal(writers.held(), 0);
+  // Broken control: without the refusal the networked sandbox is sent.
+  const leaky = await open(t, shellMutant, appServer(t, w, routedServer()), shellMutant.createCodexWriters(1), { route });
+  assert.equal((await leaky.create({ ...access, params: { sandbox: 'danger-full-access' } })).kind, 'ok');
   // Direct mode still passes `config` through unchanged.
   const direct = await open(t, real, appServer(t, w), writers);
-  const directSession = await direct.create({ ...access, params: { config: { model: 'x' }, model: 'x', allowProviderModelFallback: true } });
+  const directSession = await direct.create({ ...access, params: { config: { model: 'x' }, model: 'x', allowProviderModelFallback: true,
+    sandbox: 'danger-full-access' } });
   assert.equal(directSession.kind, 'ok');
   const directTurn = directSession.value.turn({ hostOperationId: 'direct-model', input, params: { model: 'other-model',
     collaborationMode: { mode: 'plan', settings: { model: 'other-model', reasoning_effort: null, developer_instructions: null } } },
@@ -335,7 +345,8 @@ test('a direct execution refuses a routed thread and any start or resume reply o
 
 test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
   const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
-  const routed = { config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider }, features: pinned },
+  const routed = { config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider }, features: pinned,
+    ...sandboxPin },
     account: { account: null, userId: null, requiresOpenaiAuth: false } };
   const w = world();
   const writers = real.createCodexWriters(4);
@@ -346,7 +357,7 @@ test('a routed execution binds create and resume to the route principal, turns, 
   hostRoute.providerId = 'other';
   hostRoute.scope.account = 'host-account-b';
   assert.equal(execution.scope.route.endpoint, route.endpoint);
-  const created = await execution.create(access);
+  const created = await execution.create({ ...access, params: { sandbox: 'workspace-write' } });
   assert.equal(created.kind, 'ok', JSON.stringify(created));
   assert.deepEqual(created.value.reference.binding, { ...binding, account: principal });
   // The route fixes the model: another model, or a collaborationMode not on it, is refused before turn/start is sent.
@@ -356,19 +367,25 @@ test('a routed execution binds create and resume to the route principal, turns, 
   const sent = f.sent.length;
   for (const [params, features] of [[{ model: 'other-model' }], [{ model: null }], [{}, { model: 'other-model' }],
     [{ collaborationMode: mode('other-model') }], [{ collaborationMode: null }], [{ collaborationMode: { mode: 'plan' } }],
-    [{ model: route.model, collaborationMode: mode('other-model') }]]) {
+    [{ model: route.model, collaborationMode: mode('other-model') }], [{ permissions: ':workspace' }],
+    ...[{ type: 'dangerFullAccess' }, { type: 'externalSandbox', networkAccess: 'enabled' }, { type: 'externalSandbox' },
+      { type: 'readOnly', networkAccess: true }, 'workspaceWrite'].map((sandboxPolicy) => [{ sandboxPolicy }]),
+    [{}, { sandboxPolicy: { type: 'workspaceWrite', networkAccess: true } }]]) {
     const refused = turnWith(params, features);
     assert.equal(refused.error?.code, 'invalid-input', JSON.stringify(params));
-    assert.match(refused.error.message, /^turn\/start (model|collaborationMode) is refused under a proxy route/u);
+    assert.match(refused.error.message, /^turn\/start (model|collaborationMode|permissions|sandboxPolicy) is refused under a proxy route/u);
   }
   assert.equal(f.sent.length, sent, 'nothing is sent for a refused turn');
   // The route's own model, directly or through a collaborationMode, is sent; it is checked on a snapshot, so a host
   // mutation after the turn starts cannot change what is sent.
   const hostMode = mode(route.model);
-  const same = turnWith({ model: route.model, collaborationMode: hostMode });
+  const policy = { type: 'workspaceWrite', networkAccess: false };
+  const same = turnWith({ model: route.model, collaborationMode: hostMode, sandboxPolicy: policy });
   hostMode.settings.model = 'other-model';
+  policy.networkAccess = true;
   assert.equal((await same.value.completion).kind, 'terminal');
-  assert.deepEqual([f.last.method, f.last.params.model, f.last.params.collaborationMode.settings.model], ['turn/start', route.model, route.model]);
+  assert.deepEqual([f.last.method, f.last.params.model, f.last.params.collaborationMode.settings.model, f.last.params.sandboxPolicy.networkAccess],
+    ['turn/start', route.model, route.model, false]);
   assert.equal((await (await turnOn(created.value)).completion).kind, 'terminal');
   const { threadId } = created.value;
   f.exit();

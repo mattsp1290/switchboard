@@ -16,7 +16,8 @@ const call = "const resolved = await resolve.call(auth, { boundary: 'request', i
 const mutations = new Map([['fast', ['connectionTimeoutMs: 10000', 'connectionTimeoutMs: 1000']], ['env-key', ["[`${at}.auth.command`]: command,", "[`${at}.env_key`]: 'LITELLM_API_KEY', [`${at}.auth.command`]: command,"]],
   ['cached', [call, call.replace('await resolve.call(', 'await (globalThis.me4lCache ??= resolve.call(').replace(/;$/, ');')]],
   // Broken control: a routed config that leaves native multi-agent on, so a sub-agent can pick its own model.
-  ['multi-agent', ["'features.multi_agent': false, 'features.multi_agent_v2': false };", '};']]]);
+  ['multi-agent', ["'features.multi_agent': false, 'features.multi_agent_v2': false,", '']],
+  ['sandbox', ["sandbox_mode: 'workspace-write', 'sandbox_workspace_write.network_access': false };", '};']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -39,6 +40,7 @@ const envKey = await import(`${target}?mutant=env-key`);
 const cached = await import(`${target}?mutant=cached`);
 const fast = await import(`${target}?mutant=fast`);
 const multiAgent = await import(`${target}?mutant=multi-agent`);
+const unsandboxed = await import(`${target}?mutant=sandbox`);
 const { codexSessions } = await import(new URL('adapters/codex/sessions.ts', src).href);
 const { createAuthContext } = await import(new URL('core/auth.ts', src).href);
 const { serializeDiagnostic, summarizeDiagnostic } = await import(new URL('core/diagnostics.ts', src).href);
@@ -103,7 +105,8 @@ test('the proxy config is the exact provider override map with command auth and 
     'model_providers.litellm.stream_max_retries': 0, 'model_providers.litellm.requires_openai_auth': false,
     'model_providers.litellm.auth.command': helper.command, 'model_providers.litellm.auth.args': helper.args,
     'model_providers.litellm.auth.timeout_ms': 5000, 'model_providers.litellm.auth.refresh_interval_ms': 300000,
-    'features.multi_agent': false, 'features.multi_agent_v2': false };
+    'features.multi_agent': false, 'features.multi_agent_v2': false, sandbox_mode: 'workspace-write',
+    'sandbox_workspace_write.network_access': false };
   assert.deepEqual(config.overrides, overrides);
   assert.deepEqual(config.args, Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]));
   assert(Object.isFrozen(config) && Object.isFrozen(config.overrides) && Object.isFrozen(config.args));
@@ -126,6 +129,11 @@ test('the generated config round-trips through config/read into a routed bind; d
   const unpinned = appServer(configRead(multiAgent.codexProxyConfig(route, options).config.args), routed);
   t.after(() => rmSync(unpinned.home, { recursive: true, force: true }));
   assert.deepEqual(await bind(unpinned, true), { kind: 'error', error: { code: 'inaccessible' } });
+  // Likewise the sandbox pin: config/read nests it (me4l-net pin-out.json), and a config without it never binds.
+  assert.deepEqual(configRead(proxy.codexProxyConfig(route, options).config.args).sandbox_workspace_write, { network_access: false });
+  const open = appServer(configRead(unsandboxed.codexProxyConfig(route, options).config.args), routed);
+  t.after(() => rmSync(open.home, { recursive: true, force: true }));
+  assert.deepEqual(await bind(open, true), { kind: 'error', error: { code: 'inaccessible' } });
   // No route: provider command auth has no native login to bind, so there is no subscription or stored-key passthrough.
   assert.deepEqual(await bind(fake, false), { kind: 'error', error: { code: 'inaccessible' } });
   // Broken control: a static env-key credential in the generated entry is refused by the routed check.

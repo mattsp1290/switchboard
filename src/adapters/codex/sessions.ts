@@ -126,10 +126,14 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * built-in id, another endpoint, another wire API, or an env-key or static bearer credential is refused. Native
  * multi-agent must be pinned off as `codexProxyConfig` sets it (`config.features.multi_agent` and `multi_agent_v2`
  * both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses the route model.
+ * The sandbox must be pinned as `codexProxyConfig` sets it (`sandbox_mode` `workspace-write`, `network_access` `false`)
+ * with no `default_permissions`, since a networked shell can take route tokens from the broker.
  */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
   if (!record(settings.features) || settings.features.multi_agent !== false
     || settings.features.multi_agent_v2 !== false) return false;
+  if (settings.sandbox_mode !== 'workspace-write' || !record(settings.sandbox_workspace_write)
+    || settings.sandbox_workspace_write.network_access !== false || settings.default_permissions != null) return false;
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)
     || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
   const entry = settings.model_providers[route.providerId];

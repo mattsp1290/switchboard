@@ -297,6 +297,8 @@ const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' })
  * `collaborationMode` (turn/start; it takes precedence over `model`) unless its `settings.model` does, and
  * `allowProviderModelFallback` (thread/start) unless `false` are refused. TurnStartParams 0.169.0 has no provider or
  * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
+ * A networked shell is always refused (features.ts `networked-shell-under-route`): `sandbox` `danger-full-access`, any
+ * `permissions` profile, and a `sandboxPolicy` other than `readOnly` or `workspaceWrite` without `networkAccess` (snapshot).
  */
 const routeOverride = (route: CodexProxyRoute | undefined, target: string, params: Record<string, unknown>) => {
   if (!route) return undefined;
@@ -307,6 +309,16 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   if (Object.hasOwn(params, 'model') && params.model !== route.model) return refuse('model', 'it differs from the route model');
   if (Object.hasOwn(params, 'allowProviderModelFallback') && params.allowProviderModelFallback !== false) {
     return refuse('allowProviderModelFallback', 'it can replace the route model');
+  }
+  const shell = 'a networked shell can take route tokens from the broker and use them on any model';
+  if (params.sandbox === 'danger-full-access') return refuse('sandbox', shell);
+  if (params.permissions != null) return refuse('permissions', shell);
+  if (params.sandboxPolicy != null) {
+    const policy = record(params.sandboxPolicy) ? { ...params.sandboxPolicy } : {};
+    if (!['readOnly', 'workspaceWrite'].includes(policy.type as string) || (policy.networkAccess ?? false) !== false) {
+      return refuse('sandboxPolicy', shell);
+    }
+    params.sandboxPolicy = policy;
   }
   if (!Object.hasOwn(params, 'collaborationMode')) return undefined;
   // Checked on a snapshot that replaces the host's object, so a later host mutation cannot change the sent model.

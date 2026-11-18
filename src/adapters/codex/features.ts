@@ -98,7 +98,8 @@ export const codexFeatureCapabilities = Object.freeze({
   'approval-policy': supported('typed-unqualified', everyTarget(['approvalPolicy', 'approvalsReviewer']),
     `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission journeys are unqualified.`),
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
-    `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified.`),
+    `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
+    + 'shell is refused (networked-shell-under-route) and routed config pins a workspace-write sandbox without network.'),
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
     'Selects a native model name only. Under a proxy route only route.model is accepted (execution.ts); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
@@ -110,11 +111,17 @@ export const codexFeatureCapabilities = Object.freeze({
     'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
     + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. A thread that '
     + 'starts or resumes on another model is native-failure: resume it with params.model = route.model. Routed config '
-    + 'disables multi-agent (multi-agent-under-route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
+    + 'disables multi-agent (multi-agent-under-route) and networked shells (networked-shell-under-route). Live LiteLLM '
+    + 'qualification is owned by switchboard-ov4y.'),
   'multi-agent-under-route': unavailable('Under a proxy route, codexProxyConfig sets features.multi_agent and '
     + 'features.multi_agent_v2 to false: a sub-agent spawn_agent model argument would send requests on a model the model '
     + 'chose, bypassing the route model. The host cannot re-enable it: routed thread config is refused. Direct mode keeps '
     + 'native multi-agent.'),
+  'networked-shell-under-route': unavailable('Under a proxy route, a shell with network could run the credential helper '
+    + 'against the broker socket for a fresh route token and send requests on any model. Always refused, with no opt-in: '
+    + 'sandbox danger-full-access, a sandboxPolicy other than readOnly or workspaceWrite without networkAccess, and any '
+    + 'permissions profile are invalid-input, unsent; codexProxyConfig pins sandbox_mode workspace-write with '
+    + 'network_access false. The host must decline approvals that would run a command unsandboxed or grant network.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
     + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),
