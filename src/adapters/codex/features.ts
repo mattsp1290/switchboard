@@ -77,7 +77,7 @@ export type CodexFeatureTarget = 'thread/start' | 'thread/resume' | 'turn/start'
  */
 export type CodexFeatureQualification = 'qualified' | 'fixture-only' | 'typed-unqualified' | 'passthrough-unqualified';
 /** Native fields carrying the feature, per request or channel; a target that is absent has no such field. */
-export type CodexFeatureCarriers = Readonly<Partial<Record<CodexFeatureTarget | 'onServerRequest' | 'notifications',
+export type CodexFeatureCarriers = Readonly<Partial<Record<CodexFeatureTarget | 'onServerRequest' | 'notifications' | 'options' | 'app-server',
   readonly string[]>>>;
 export interface CodexFeatureSupport {
   readonly qualification: CodexFeatureQualification;
@@ -88,6 +88,7 @@ const supported = (qualification: CodexFeatureQualification, carriers: CodexFeat
 Capability<CodexFeatureSupport> => Object.freeze({ kind: 'supported', api: Object.freeze({ qualification, note,
   carriers: Object.freeze(Object.fromEntries(Object.entries(carriers).map(([at, keys]) => [at, Object.freeze([...keys])]))) }) });
 const unsupported = (reason: string): Capability<CodexFeatureSupport> => Object.freeze({ kind: 'unsupported', reason });
+const unavailable = (reason: string): Capability<CodexFeatureSupport> => Object.freeze({ kind: 'unavailable', reason });
 const everyTarget = (start: readonly string[], resume = start, turn = start): CodexFeatureCarriers =>
   ({ 'thread/start': start, 'thread/resume': resume, 'turn/start': turn });
 const gate = 'initialize capabilities.experimentalApi === true';
@@ -97,15 +98,30 @@ export const codexFeatureCapabilities = Object.freeze({
   'approval-policy': supported('typed-unqualified', everyTarget(['approvalPolicy', 'approvalsReviewer']),
     `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission journeys are unqualified.`),
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
-    `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified.`),
+    `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
+    + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network.'),
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
-    'Selects a native model name only; routing and model mapping are not decided here.'),
+    'Selects a native model name only. Under a proxy route only route.model is accepted (execution.ts); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
   'dynamic-tools': supported('fixture-only', { 'thread/start': ['dynamicTools'] },
     `Experimental thread/start.dynamicTools; requires ${gate}. The only evidence is the switchboard-bd21 diagnostic fixture `
     + 'recorded at src/core/frontend-restore.ts:168-169: a warm item/tool/call reply observation, not production qualification.'),
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
-  'routing': unsupported('Provider, endpoint and model mapping are owned by switchboard-me4l.'),
+  'routing': supported('fixture-only', { options: ['route'], 'app-server': ['codexProxyConfig'] },
+    'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
+    + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. A thread that '
+    + 'starts or resumes on another model is native-failure: resume it with params.model = route.model. Routed config '
+    + 'disables multi-agent (multi-agent-under-route) and networked shells (networked-shell-under-route). Live LiteLLM '
+    + 'qualification is owned by switchboard-ov4y.'),
+  'multi-agent-under-route': unavailable('Under a proxy route, codexProxyConfig sets features.multi_agent and '
+    + 'features.multi_agent_v2 to false: a sub-agent spawn_agent model argument would send requests on a model the model '
+    + 'chose, bypassing the route model. The host cannot re-enable it: routed thread config is refused. Direct mode keeps '
+    + 'native multi-agent.'),
+  'networked-shell-under-route': unavailable('Under a proxy route, a shell with network could run the credential helper '
+    + 'against the broker socket for a fresh route token and send requests on any model. Always refused, with no opt-in: '
+    + 'sandbox danger-full-access, a sandboxPolicy other than readOnly or workspaceWrite without networkAccess, and any '
+    + 'permissions profile are invalid-input, unsent; codexProxyConfig pins sandbox_mode read-only with '
+    + 'network_access false. The host must decline approvals that would run a command unsandboxed or grant network.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
     + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),

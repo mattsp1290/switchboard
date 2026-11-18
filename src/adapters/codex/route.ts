@@ -19,6 +19,11 @@ export interface CodexProxyRoute {
    */
   readonly endpoint: string;
   readonly credentialPurpose: 'litellm-proxy';
+  /**
+   * Host-selected LiteLLM model name, sent verbatim (`plain`, at most 256). The only model a routed session may use:
+   * execution.ts refuses any other `model` or `collaborationMode` unsent. Not part of the principal (codexRoutePrincipal).
+   */
+  readonly model: string;
   /** Stable host auth scope (`AuthScope.engine` and `.account`); session and adapter instance ids are not stable. */
   readonly scope: { readonly engine: string; readonly account: string };
 }
@@ -27,6 +32,15 @@ export interface CodexProxyRoute {
 const providerKey = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/** Trimmed, non-blank, at most `limit`, no control characters or lone surrogates (JSON-escaped into invalid TOML). */
+export function plain(value: unknown, limit = 4096): value is string {
+  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > limit || /\p{Cs}/u.test(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
+  }
+  return true;
 }
 function text(value: unknown): value is string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > sessionLimits.identifierLength) return false;
@@ -44,7 +58,7 @@ function text(value: unknown): value is string {
 export function checkCodexRoute(value: unknown): { readonly route: CodexProxyRoute } | { readonly problem: string } {
   try {
     if (!record(value) || !record(value.scope)) return { problem: 'route must be an object with a scope object' };
-    const { kind, providerId, endpoint, credentialPurpose, scope: { engine, account } } = value;
+    const { kind, providerId, endpoint, credentialPurpose, model, scope: { engine, account } } = value;
     if (kind !== 'litellm-proxy' || credentialPurpose !== 'litellm-proxy') {
       return { problem: 'route kind and credentialPurpose must be "litellm-proxy"' };
     }
@@ -54,10 +68,13 @@ export function checkCodexRoute(value: unknown): { readonly route: CodexProxyRou
     if (!endpointValid(endpoint) || new URL(endpoint).href !== endpoint || !/\/v1$/u.test(new URL(endpoint).pathname)) {
       return { problem: 'route endpoint must be a canonical http(s) URL ending in /v1, with no credentials, query or fragment' };
     }
+    if (!plain(model, 256)) {
+      return { problem: 'route model must be a non-blank LiteLLM model name of at most 256 characters without control characters' };
+    }
     if (!text(engine) || !text(account)) {
       return { problem: 'route scope engine and account must be non-blank identifiers without control characters' };
     }
-    return { route: Object.freeze({ kind, providerId, endpoint, credentialPurpose, scope: Object.freeze({ engine, account }) }) };
+    return { route: Object.freeze({ kind, providerId, endpoint, credentialPurpose, model, scope: Object.freeze({ engine, account }) }) };
   } catch { return { problem: 'route could not be read' }; }
 }
 /** `checkCodexRoute` without the reason: `undefined` for any invalid route. */
@@ -69,7 +86,9 @@ export function copyCodexRoute(value: unknown): CodexProxyRoute | undefined {
 /**
  * Session principal of a routed app-server: the `litellm-proxy:sha256:` prefix can never equal a direct requester
  * (`apiKey`, `chatgpt:<userId>`), and the hash bounds the length and keeps the endpoint out of references. Any change
- * of provider, endpoint, purpose or host scope is a different principal. Field order is explicit and versioned.
+ * of provider, endpoint, purpose or host scope is a different principal. Field order is explicit and versioned. `model`
+ * is deliberately excluded: one route principal serves sessions on different models, each app-server enforcing its own
+ * (execution.ts), and ai7m principals stay unchanged.
  */
 export function codexRoutePrincipal(route: CodexProxyRoute): string {
   const material = JSON.stringify([1, route.providerId, route.endpoint, route.credentialPurpose, route.scope.engine,

@@ -69,12 +69,14 @@ export interface CodexExecutionOptions {
    * host-asserted route principal instead of a native login (sessions.ts); absent is direct mode. Invalid: `invalid-input`
    * with a `message` naming the failing rule. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct execution over one home would not exclude each other's writers.
+   * A thread that starts or resumes on another model than `route.model` is `native-failure` with a `message`: natively a
+   * resumed thread keeps its persisted model, so resume it with `params.model = route.model`.
    */
   readonly route?: CodexProxyRoute;
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
- * routeOverride, checkCodexRoute), naming the rejected setting or rule.
+ * routeOverride, checkCodexRoute), naming the rejected setting or rule, and on a routed off-model `native-failure`.
  */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
@@ -290,16 +292,46 @@ function newTurn(): Turn {
 const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' }) } as const;
 /**
  * Under a route, a per-thread `modelProvider` or any `config` override redirects traffic off the route while the
- * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. `turn/start`
- * (TurnStartParams 0.169.0) has no provider or config field.
+ * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. The route also
+ * fixes the model: `model` (thread/start, thread/resume, turn/start) unless it strictly equals `route.model`,
+ * `collaborationMode` (turn/start; it takes precedence over `model`) unless its `settings.model` does, and
+ * `allowProviderModelFallback` (thread/start) unless `false` are refused. TurnStartParams 0.169.0 has no provider or
+ * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
+ * A networked shell is always refused (features.ts `networked-shell-under-route`): `sandbox` `danger-full-access`, any
+ * `permissions` profile, and a `sandboxPolicy` other than `readOnly` or `workspaceWrite` without `networkAccess` (snapshot).
  */
 const routeOverride = (route: CodexProxyRoute | undefined, target: string, params: Record<string, unknown>) => {
-  const key = route && ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
-  return key ? { kind: 'error', error: Object.freeze({ code: 'invalid-input', message:
-    `${target} ${key} is refused under a proxy route: a per-thread provider or config override can redirect traffic off the route` }) } as const
-    : undefined;
+  if (!route) return undefined;
+  const refuse = (key: string, why: string) => ({ kind: 'error', error: Object.freeze({ code: 'invalid-input',
+    message: `${target} ${key} is refused under a proxy route: ${why}` }) }) as const;
+  const key = ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  if (key) return refuse(key, 'a per-thread provider or config override can redirect traffic off the route');
+  if (Object.hasOwn(params, 'model') && params.model !== route.model) return refuse('model', 'it differs from the route model');
+  if (Object.hasOwn(params, 'allowProviderModelFallback') && params.allowProviderModelFallback !== false) {
+    return refuse('allowProviderModelFallback', 'it can replace the route model');
+  }
+  const shell = 'a networked shell can take route tokens from the broker and use them on any model';
+  if (params.sandbox === 'danger-full-access') return refuse('sandbox', shell);
+  if (params.permissions != null) return refuse('permissions', shell);
+  if (params.sandboxPolicy != null) {
+    const policy = record(params.sandboxPolicy) ? { ...params.sandboxPolicy } : {};
+    if (!['readOnly', 'workspaceWrite'].includes(policy.type as string) || (policy.networkAccess ?? false) !== false) {
+      return refuse('sandboxPolicy', shell);
+    }
+    params.sandboxPolicy = policy;
+  }
+  if (!Object.hasOwn(params, 'collaborationMode')) return undefined;
+  // Checked on a snapshot that replaces the host's object, so a later host mutation cannot change the sent model.
+  const raw = params.collaborationMode;
+  const mode = record(raw) && record(raw.settings) ? { ...raw, settings: { ...raw.settings } } : undefined;
+  if (target !== 'turn/start' || !mode || mode.settings.model !== route.model) {
+    return refuse('collaborationMode', 'its settings.model is not the route model');
+  }
+  params.collaborationMode = mode;
+  return undefined;
 };
-const fail = (code: CodexOpenError['code']) => ({ kind: 'error', error: Object.freeze({ code }) }) as const;
+const fail = (code: CodexOpenError['code'], message?: string) =>
+  ({ kind: 'error', error: Object.freeze(message === undefined ? { code } : { code, message }) }) as const;
 
 export async function openCodexExecution(options: CodexExecutionOptions):
 Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'native-failure'; readonly message?: string }>> {
@@ -323,6 +355,13 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
   const { home, state: writers, bounds, signal, experimentalApi, route } = captured;
+  /**
+   * Under a route, a start or resume reply whose `model` is not `route.model` is never a session: natively (0.169.0) a
+   * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
+   */
+  const offModel = (value: unknown) => route !== undefined && (!record(value) || value.model !== route.model);
+  // Natively a resumed thread keeps its persisted model unless thread/resume names one.
+  const resumeOffModel = 'the thread is on another model than the route; resume it with params.model = route.model';
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
   const executionEvents = createEventStream<CodexExecutionEvent>(streamBounds);
   const sessions = new Set<Session>();
@@ -520,6 +559,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         || thread.modelProvider !== bound.value.provider) {
         return fail('native-failure');
       }
+      if (offModel(reply.kind === 'result' ? reply.value : undefined)) {
+        return fail('native-failure', 'the thread started on another model than the route model');
+      }
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value.binding,
         opaque: thread.id });
       const lease = acquire(writers, reference);
@@ -572,8 +614,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
         : thread?.id !== threadId ? 'identity-mismatch'
           // A thread native resumed on another provider than the requester's runs off it; it never becomes a session.
-          : thread.modelProvider !== provider ? 'native-failure' : closed ? 'closed' : undefined;
-      if (refused) { keep(lease); return fail(refused); }
+          : thread.modelProvider !== provider || offModel(reply.value) ? 'native-failure' : closed ? 'closed' : undefined;
+      if (refused) {
+        keep(lease);
+        return fail(refused, refused === 'native-failure' && thread?.modelProvider === provider ? resumeOffModel : undefined);
+      }
       return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
         reply.kind === 'result' ? reply.value : null) }) };
     } finally {
@@ -594,6 +639,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
+      const overridden = routeOverride(route, 'turn/start', params);
+      if (overridden) return overridden;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
       handle = createDispatchOperation<CodexTurnResult>({ mode: 'fresh', identity, recordIntent,
         signal: AbortSignal.any([hostSignal, session.abort.signal]), ...(lifecycle ? { events: lifecycle } : {}),

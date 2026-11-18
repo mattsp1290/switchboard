@@ -8,7 +8,7 @@ const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/execution.ts', src).href;
 // Broken controls are source mutations of the real module (precedent: tests/spikes/codex-bindings.test.mjs).
 // early-release frees the writer at cleanup start; cleanup-release frees it once cleanup ends, as a turn-conclusion release did.
-const mutations = new Map([['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
+const mutations = new Map([['networked-shell', ['  const shell =', '  if (params.sandbox) return undefined;\n  const shell =']], ['early-release', ['session.abort.abort();\n    const deadline', 'session.abort.abort();\n    release(session.lease);\n    const deadline']],
   ['cleanup-release', ['deadline));\n    return Object.freeze({ interrupt', 'deadline));\n    release(session.lease);\n    return Object.freeze({ interrupt']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
@@ -31,6 +31,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 const real = await import(target);
 const mutant = await import(`${target}?mutant=early-release`);
 const cleanupMutant = await import(`${target}?mutant=cleanup-release`);
+const shellMutant = await import(`${target}?mutant=networked-shell`);
 hook.deregister();
 
 const home = '/fixture/codex-home';
@@ -87,25 +88,28 @@ function appServer(t, w, script = {}) {
       return { thread: { id: threadId, historyMode: 'paginated', status: { type: f.loaded.has(threadId) ? 'idle' : 'notLoaded' },
         modelProvider: thread.provider } };
     },
-    'thread/start': () => {
+    'thread/start': (params) => {
       // Natively a thread runs on `config/read` `model_provider`, or `openai` when it is absent; `script.provider` is a
       // reply that puts it elsewhere.
       const id = randomUUID();
       const provider = 'provider' in script ? script.provider : script.config?.model_provider ?? 'openai';
-      w.threads.set(id, { writer: null, holder: f, provider });
+      // Natively the thread keeps its start model (params, else config); resume reports it unless `model` is passed.
+      const model = params?.model ?? script.config?.model ?? 'fixture-model';
+      w.threads.set(id, { writer: null, holder: f, provider, model });
       f.loaded.add(id);
       return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' },
         ...(provider === undefined ? {} : { modelProvider: provider }) },
-        model: 'fixture-model' };
+        model };
     },
-    'thread/resume': ({ threadId }) => {
+    'thread/resume': ({ threadId, model }) => {
       const thread = w.threads.get(threadId);
       if (thread.writer || (thread.holder && thread.holder !== f)) w.overlaps.push(`resume ${threadId}`);
       thread.holder = f;
       f.loaded.add(threadId);
       // Native resumes a thread on its own provider, whatever this app-server's default.
       return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }],
-        ...('provider' in script ? (script.provider === undefined ? {} : { modelProvider: script.provider }) : { modelProvider: thread.provider }) } };
+        ...('provider' in script ? (script.provider === undefined ? {} : { modelProvider: script.provider }) : { modelProvider: thread.provider }) },
+        model: model ?? thread.model ?? script.config?.model ?? 'fixture-model' };
     },
     'turn/start': ({ threadId }) => {
       const thread = w.threads.get(threadId);
@@ -224,10 +228,13 @@ test('resume reserves before preparation, sends only the exact thread id and rej
 });
 
 const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1',
-  credentialPurpose: 'litellm-proxy', scope: { engine: 'codex', account: 'host-account-a' } });
+  credentialPurpose: 'litellm-proxy', model: 'team/gpt-5.1-codex', scope: { engine: 'codex', account: 'host-account-a' } });
 const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
   env_key: null, experimental_bearer_token: null };
-const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model_providers: { litellm: routedProvider } },
+const pinned = { multi_agent: false, multi_agent_v2: false };
+const sandboxPin = { sandbox_mode: 'read-only', sandbox_workspace_write: { network_access: false } };
+const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider },
+  features: pinned, ...sandboxPin },
   account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
 
 test('a routed execution refuses provider and config overrides unsent and any thread native puts on another provider', async (t) => {
@@ -240,17 +247,35 @@ test('a routed execution refuses provider and config overrides unsent and any th
   const execution = await open(t, real, f, writers, { route });
   const routedRef = { ...access, binding: { ...binding, account: principal }, reference: reference(id, { account: principal }) };
   for (const params of [{ modelProvider: 'openai' }, { config: { model_provider: 'other' } },
-    { config: { 'model_providers.litellm.base_url': 'http://127.0.0.1:4000/evil/v1' } }, { modelProvider: null }]) {
+    { config: { 'model_providers.litellm.base_url': 'http://127.0.0.1:4000/evil/v1' } }, { modelProvider: null },
+    // The host cannot re-enable multi-agent, whose spawn_agent model argument would bypass the route model.
+    { config: { 'features.multi_agent': true } }, { config: { features: { multi_agent_v2: true } } },
+    { model: 'other-model' }, { model: null }, { model: ` ${route.model}` }, { allowProviderModelFallback: true },
+    { collaborationMode: { mode: 'plan', settings: { model: route.model, reasoning_effort: null, developer_instructions: null } } },
+    // Owner decision: a networked shell is always refused under a route (features.ts networked-shell-under-route).
+    { sandbox: 'danger-full-access' }, { permissions: ':workspace' }, { sandboxPolicy: { type: 'workspaceWrite', networkAccess: true } }]) {
     for (const result of [await execution.create({ ...access, params }), await execution.resume({ ...routedRef, params })]) {
       assert.equal(result.error?.code, 'invalid-input', JSON.stringify(params));
-      assert.match(result.error.message, /(modelProvider|config) is refused under a proxy route/u);
+      assert.match(result.error.message, /^thread\/(start|resume) (modelProvider|config|model|allowProviderModelFallback|collaborationMode|sandbox|permissions|sandboxPolicy) is refused under a proxy route/u);
     }
   }
+  // A typed model feature is merged first, so it is refused the same way.
+  assert.equal((await execution.create({ ...access, features: { model: 'other-model' } })).error?.code, 'invalid-input');
+  assert.equal((await execution.create({ ...access, features: { sandbox: 'danger-full-access' } })).error?.code, 'invalid-input');
   assert.deepEqual(f.sent, ['initialize'], 'nothing is sent for a refused override');
   assert.equal(writers.held(), 0);
+  // Broken control: without the refusal the networked sandbox is sent.
+  const leaky = await open(t, shellMutant, appServer(t, w, routedServer()), shellMutant.createCodexWriters(1), { route });
+  assert.equal((await leaky.create({ ...access, params: { sandbox: 'danger-full-access' } })).kind, 'ok');
   // Direct mode still passes `config` through unchanged.
   const direct = await open(t, real, appServer(t, w), writers);
-  assert.equal((await direct.create({ ...access, params: { config: { model: 'x' } } })).kind, 'ok');
+  const directSession = await direct.create({ ...access, params: { config: { model: 'x' }, model: 'x', allowProviderModelFallback: true,
+    sandbox: 'danger-full-access' } });
+  assert.equal(directSession.kind, 'ok');
+  const directTurn = directSession.value.turn({ hostOperationId: 'direct-model', input, params: { model: 'other-model',
+    collaborationMode: { mode: 'plan', settings: { model: 'other-model', reasoning_effort: null, developer_instructions: null } } },
+  signal: new AbortController().signal, recordIntent: () => {} });
+  assert.equal((await directTurn.value.completion).kind, 'terminal', 'direct mode passes model and collaborationMode through');
   // A reply that puts the thread on another provider never becomes a session; resume keeps the lease to exit as on a
   // mismatched thread id, since the thread may be loaded.
   const g = appServer(t, w, routedServer({ provider: 'openai' }));
@@ -262,6 +287,25 @@ test('a routed execution refuses provider and config overrides unsent and any th
   g.exit();
   await settle();
   assert.equal(writers.held(), held, 'process exit releases it');
+  // Natively a resumed thread keeps its persisted model: a reply off the route model never becomes a session and keeps
+  // the lease like a provider mismatch; passing the route model resumes it on the route.
+  const stale = randomUUID();
+  w.threads.set(stale, { writer: null, holder: null, provider: 'litellm', model: 'old-model' });
+  const staleRef = { ...routedRef, reference: reference(stale, { account: principal }) };
+  const h = appServer(t, w, routedServer());
+  assert.deepEqual(await (await open(t, real, h, writers, { route })).resume(staleRef), { kind: 'error', error: { code: 'native-failure',
+    message: 'the thread is on another model than the route; resume it with params.model = route.model' } });
+  assert.equal(writers.held(), held + 1);
+  h.exit();
+  await settle();
+  // A start native puts on another model is refused with the same named rule, holding no writer.
+  const offStart = appServer(t, w, routedServer({ config: { ...routedServer().config, model: 'old-model' } }));
+  assert.deepEqual(await (await open(t, real, offStart, writers, { route })).create(access), { kind: 'error', error: {
+    code: 'native-failure', message: 'the thread started on another model than the route model' } });
+  assert.equal(writers.held(), held);
+  const pinned = await (await open(t, real, appServer(t, w, routedServer()), writers, { route })).resume({ ...staleRef, params: { model: route.model } });
+  assert.equal(pinned.value?.kind, 'resumed', JSON.stringify(pinned));
+  await pinned.value.session.close();
 });
 
 test('a direct execution refuses a routed thread and any start or resume reply on another provider', async (t) => {
@@ -301,7 +345,8 @@ test('a direct execution refuses a routed thread and any start or resume reply o
 
 test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
   const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
-  const routed = { config: { model_provider: 'litellm', model_providers: { litellm: routedProvider } },
+  const routed = { config: { model_provider: 'litellm', model: route.model, model_providers: { litellm: routedProvider }, features: pinned,
+    ...sandboxPin },
     account: { account: null, userId: null, requiresOpenaiAuth: false } };
   const w = world();
   const writers = real.createCodexWriters(4);
@@ -312,9 +357,35 @@ test('a routed execution binds create and resume to the route principal, turns, 
   hostRoute.providerId = 'other';
   hostRoute.scope.account = 'host-account-b';
   assert.equal(execution.scope.route.endpoint, route.endpoint);
-  const created = await execution.create(access);
+  const created = await execution.create({ ...access, params: { sandbox: 'workspace-write' } });
   assert.equal(created.kind, 'ok', JSON.stringify(created));
   assert.deepEqual(created.value.reference.binding, { ...binding, account: principal });
+  // The route fixes the model: another model, or a collaborationMode not on it, is refused before turn/start is sent.
+  const mode = (model) => ({ mode: 'plan', settings: { model, reasoning_effort: null, developer_instructions: null } });
+  const turnWith = (params, features) => created.value.turn({ hostOperationId: `op-${JSON.stringify(params)}`, input, params,
+    ...(features ? { features } : {}), signal: new AbortController().signal, recordIntent: () => {} });
+  const sent = f.sent.length;
+  for (const [params, features] of [[{ model: 'other-model' }], [{ model: null }], [{}, { model: 'other-model' }],
+    [{ collaborationMode: mode('other-model') }], [{ collaborationMode: null }], [{ collaborationMode: { mode: 'plan' } }],
+    [{ model: route.model, collaborationMode: mode('other-model') }], [{ permissions: ':workspace' }],
+    ...[{ type: 'dangerFullAccess' }, { type: 'externalSandbox', networkAccess: 'enabled' }, { type: 'externalSandbox' },
+      { type: 'readOnly', networkAccess: true }, 'workspaceWrite'].map((sandboxPolicy) => [{ sandboxPolicy }]),
+    [{}, { sandboxPolicy: { type: 'workspaceWrite', networkAccess: true } }]]) {
+    const refused = turnWith(params, features);
+    assert.equal(refused.error?.code, 'invalid-input', JSON.stringify(params));
+    assert.match(refused.error.message, /^turn\/start (model|collaborationMode|permissions|sandboxPolicy) is refused under a proxy route/u);
+  }
+  assert.equal(f.sent.length, sent, 'nothing is sent for a refused turn');
+  // The route's own model, directly or through a collaborationMode, is sent; it is checked on a snapshot, so a host
+  // mutation after the turn starts cannot change what is sent.
+  const hostMode = mode(route.model);
+  const policy = { type: 'workspaceWrite', networkAccess: false };
+  const same = turnWith({ model: route.model, collaborationMode: hostMode, sandboxPolicy: policy });
+  hostMode.settings.model = 'other-model';
+  policy.networkAccess = true;
+  assert.equal((await same.value.completion).kind, 'terminal');
+  assert.deepEqual([f.last.method, f.last.params.model, f.last.params.collaborationMode.settings.model, f.last.params.sandboxPolicy.networkAccess],
+    ['turn/start', route.model, route.model, false]);
   assert.equal((await (await turnOn(created.value)).completion).kind, 'terminal');
   const { threadId } = created.value;
   f.exit();

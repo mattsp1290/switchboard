@@ -123,9 +123,17 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
 /**
  * The native provider entry must be exactly the host route with command auth only (codex-native-api.md, Proxy-routed
  * requester): `config/read` echoes `base_url` verbatim and lists no built-in provider (`ollama`, `openai`), so a
- * built-in id, another endpoint, another wire API, or an env-key or static bearer credential is refused.
+ * built-in id, another endpoint, another wire API, or an env-key or static bearer credential is refused. Native
+ * multi-agent must be pinned off as `codexProxyConfig` sets it (`config.features.multi_agent` and `multi_agent_v2`
+ * both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses the route model.
+ * The sandbox must be `read-only` (the `codexProxyConfig` pin) or `workspace-write`, never `danger-full-access`, with
+ * `network_access` `false` and no `default_permissions`, since a networked shell can take route tokens from the broker.
  */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
+  if (!record(settings.features) || settings.features.multi_agent !== false
+    || settings.features.multi_agent_v2 !== false) return false;
+  if (!['read-only', 'workspace-write'].includes(String(settings.sandbox_mode)) || !record(settings.sandbox_workspace_write)
+    || settings.sandbox_workspace_write.network_access !== false || settings.default_permissions != null) return false;
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)
     || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
   const entry = settings.model_providers[route.providerId];
@@ -152,8 +160,9 @@ type Requester = { readonly principal: string; readonly provider: string };
  *
  * Routed (`run.route`): native reports no login for provider command auth (codex-native-api.md, Proxy-routed requester),
  * so the requester is the route principal, admitted only while `config/read` names the route's provider with an entry
- * matching the route (routedProvider) and `account/read` reports no account and `requiresOpenaiAuth: false`. A native
- * login under a route is refused, never used as a fallback: the prefix keeps routed and direct principals disjoint.
+ * matching the route with multi-agent pinned off (routedProvider) and `account/read` reports no account and
+ * `requiresOpenaiAuth: false`. A native login under a route is refused, never used as a fallback: the prefix keeps
+ * routed and direct principals disjoint.
  *
  * Both modes also yield the effective provider. Native resumes and runs a thread on its own `Thread.modelProvider`
  * whatever the app-server's default, with that provider's credentials, so every caller admits only threads on it: a

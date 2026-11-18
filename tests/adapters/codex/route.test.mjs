@@ -7,8 +7,10 @@ import test from 'node:test';
 
 const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/sessions.ts', src).href;
-// Broken control: a routed requester that falls back to the native login instead of refusing it.
-const mutations = new Map([['native-fallback', ['if (run.route) {', 'if (run.route && account === null) {']]]);
+// Broken controls: a routed requester that falls back to the native login instead of refusing it, and one that binds
+// without checking the multi-agent pins.
+const mutations = new Map([['native-fallback', ['if (run.route) {', 'if (run.route && account === null) {']],
+  ['unpinned', ['|| settings.features.multi_agent_v2 !== false) return false;', '|| settings.features.multi_agent_v2 !== false) {}']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -29,12 +31,13 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 } });
 const { codexSessions } = await import(target);
 const fallback = (await import(`${target}?mutant=native-fallback`)).codexSessions;
+const unpinned = (await import(`${target}?mutant=unpinned`)).codexSessions;
 const { codexRoutePrincipal, copyCodexRoute } = await import(new URL('adapters/codex/route.ts', src).href);
 hook.deregister();
 
 const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1',
-  credentialPurpose: 'litellm-proxy', scope: { engine: 'codex', account: 'host-account-a' } });
-// SHA-256 of the UTF-8 of JSON.stringify([1, 'litellm', 'http://127.0.0.1:4000/v1', 'litellm-proxy', 'codex', 'host-account-a']).
+  credentialPurpose: 'litellm-proxy', model: 'team/gpt-5.1-codex', scope: { engine: 'codex', account: 'host-account-a' } });
+// SHA-256 of the UTF-8 of JSON.stringify([1, 'litellm', 'http://127.0.0.1:4000/v1', 'litellm-proxy', 'codex', 'host-account-a']): no model.
 const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
 const threadId = '0199aaaa-0000-7000-8000-000000000001';
 const bounds = { maxResults: 10, maxExamined: 10, maxDurationMs: 5000 };
@@ -49,15 +52,19 @@ function home(t) {
 const entry = { name: 'LiteLLM', base_url: 'http://127.0.0.1:4000/v1', env_key: null, experimental_bearer_token: null,
   auth: { command: '/usr/bin/node', args: ['helper.mjs'], timeout_ms: 5000, refresh_interval_ms: 300000, cwd: '/w' },
   wire_api: 'responses', requires_openai_auth: false };
+// `config/read` reports `-c features.multi_agent=false` nested under `features` and omits an unset feature (me4l-pin out.json).
+const pinned = { multi_agent_v2: false, network_proxy: null, multi_agent: false, memories: false };
+const sandbox = { sandbox_mode: 'workspace-write', default_permissions: null, sandbox_workspace_write: { writable_roots: [], network_access: false } };
 /** Fake app-server: the native projections observed with provider command auth (codex-native-api.md). */
 function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route, providers = { litellm: entry },
-  threads = {}, threadProviders = {} } = {}) {
+  threads = {}, threadProviders = {}, features = pinned, sandboxing = sandbox } = {}) {
   const calls = [];
   const request = async (call) => {
     calls.push(call.method);
     const id = call.params.threadId ?? threads[call.params.rolloutPath];
     const value = call.method === 'config/read'
       ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_providers: providers,
+        ...(features === 'absent' ? {} : { features }), ...sandboxing,
         ...(provider === 'absent' ? {} : { model_provider: provider }) } }
       : call.method === 'account/read' ? account
         : call.method === 'getConversationSummary' ? { summary: { path: call.params.rolloutPath, conversationId: id } }
@@ -107,6 +114,28 @@ test('a routed requester refuses a provider entry that is not exactly the route 
   // A built-in provider (ollama) is absent from model_providers yet reports no login: never a route.
   const ollama = server(home(t), { route: { ...route, providerId: 'ollama' }, provider: 'ollama' });
   assert.deepEqual(await bind(ollama), { kind: 'error', error: { code: 'inaccessible' } });
+});
+
+test('a routed requester refuses unless native multi-agent is pinned off', async (t) => {
+  const { multi_agent: _v1, ...noV1 } = pinned;
+  const { multi_agent_v2: _v2, ...noV2 } = pinned;
+  for (const features of [noV1, noV2, { ...pinned, multi_agent: true }, { ...pinned, multi_agent_v2: true },
+    { ...pinned, multi_agent: 'false' }, { memories: false }, 'absent', null]) {
+    const fake = server(home(t), { features });
+    assert.deepEqual(await bind(fake), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(features));
+    assert.deepEqual(fake.calls, ['config/read']);
+  }
+  // A sandbox that config.toml can open to the network (or a default permissions profile) never binds either.
+  for (const sandboxing of [{}, { ...sandbox, sandbox_mode: 'danger-full-access' }, { ...sandbox, default_permissions: ':workspace' },
+    { ...sandbox, sandbox_workspace_write: { network_access: true } }, { ...sandbox, sandbox_workspace_write: null }]) {
+    assert.deepEqual(await bind(server(home(t), { sandboxing })), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(sandboxing));
+  }
+  for (const sandbox_mode of ['read-only', 'workspace-write']) assert.equal((await bind(server(home(t), { sandboxing: { ...sandbox, sandbox_mode } }))).value?.account, principal);
+  // Broken control: without the pin check a host that omitted the generated args binds a bypassable route.
+  assert.equal((await bind(server(home(t), { features: { memories: false } }), unpinned)).value?.account, principal);
+  // Direct mode does not consult the pins.
+  const direct = server(home(t), { route: null, features: 'absent', account: { account: { type: 'apiKey' } } });
+  assert.equal((await bind(direct)).value.account, 'apiKey');
 });
 
 test('a routed resume and discovery admit only threads native ran on the route provider', async (t) => {
@@ -193,6 +222,10 @@ test('the principal is stable per route, changes with provider, endpoint or host
   const variants = [of({ providerId: 'litellm2' }), of({ endpoint: 'http://127.0.0.1:4001/v1' }),
     of({ scope: { engine: 'codex', account: 'host-account-b' } }), of({ scope: { engine: 'codex2', account: 'host-account-a' } })];
   assert.equal(new Set([principal, ...variants]).size, 5);
+  // The model is not in the principal: one route principal serves sessions on different models (each app-server
+  // enforces its own), and ai7m principals are unchanged. A route without a valid model is not a route.
+  assert.equal(of({ model: 'other-model' }), principal);
+  for (const model of [undefined, '', ' m', 'a\nb', 'x'.repeat(257)]) assert.equal(copyCodexRoute({ ...route, model }), undefined);
   for (const value of [principal, ...variants]) {
     assert.match(value, /^litellm-proxy:sha256:[0-9a-f]{64}$/);
     assert(value !== 'apiKey' && !value.startsWith('chatgpt:'));
