@@ -107,7 +107,8 @@ export const codexFeatureCapabilities = Object.freeze({
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
   'routing': unsupported('Provider, endpoint and model mapping are owned by switchboard-me4l.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
-    'Native config overrides, including MCP servers and features, pass through unchanged.'),
+    'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
+    + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),
   'plugins-and-capability-roots': supported('passthrough-unqualified',
     { 'thread/start': ['selectedCapabilityRoots'], 'turn/start': ['disabledPluginIds'] },
     'Passed through unchanged; nothing is disabled by the adapter.'),

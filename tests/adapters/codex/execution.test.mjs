@@ -83,20 +83,22 @@ function appServer(t, w, script = {}) {
     'thread/read': ({ threadId }) => {
       const thread = w.threads.get(threadId);
       if (!thread) return { error: { code: -32600, message: `thread not loaded: ${threadId}` } };
-      return { thread: { id: threadId, historyMode: 'paginated', status: { type: f.loaded.has(threadId) ? 'idle' : 'notLoaded' } } };
+      return { thread: { id: threadId, historyMode: 'paginated', status: { type: f.loaded.has(threadId) ? 'idle' : 'notLoaded' },
+        modelProvider: 'litellm' } };
     },
     'thread/start': () => {
       const id = randomUUID();
       w.threads.set(id, { writer: null, holder: f });
       f.loaded.add(id);
-      return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' } }, model: 'fixture-model' };
+      return { thread: { id, historyMode: 'paginated', ephemeral: false, status: { type: 'idle' }, modelProvider: script.provider ?? 'litellm' },
+        model: 'fixture-model' };
     },
     'thread/resume': ({ threadId }) => {
       const thread = w.threads.get(threadId);
       if (thread.writer || (thread.holder && thread.holder !== f)) w.overlaps.push(`resume ${threadId}`);
       thread.holder = f;
       f.loaded.add(threadId);
-      return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }] } };
+      return { thread: { id: script.resumeAs ?? threadId, turns: [{ id: 'saved' }], modelProvider: script.provider ?? 'litellm' } };
     },
     'turn/start': ({ threadId }) => {
       const thread = w.threads.get(threadId);
@@ -214,11 +216,50 @@ test('resume reserves before preparation, sends only the exact thread id and rej
   await session.close();
 });
 
-test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
-  const route = { kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1', credentialPurpose: 'litellm-proxy',
-    scope: { engine: 'codex', account: 'host-account-a' } };
+const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1',
+  credentialPurpose: 'litellm-proxy', scope: { engine: 'codex', account: 'host-account-a' } });
+const routedProvider = { base_url: route.endpoint, wire_api: 'responses', auth: { command: '/usr/bin/node' }, requires_openai_auth: false,
+  env_key: null, experimental_bearer_token: null };
+const routedServer = (script = {}) => ({ config: { model_provider: 'litellm', model_providers: { litellm: routedProvider } },
+  account: { account: null, userId: null, requiresOpenaiAuth: false }, ...script });
+
+test('a routed execution refuses provider and config overrides unsent and any thread native puts on another provider', async (t) => {
   const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
-  const routed = { config: { model_provider: 'litellm' }, account: { account: null, userId: null, requiresOpenaiAuth: false } };
+  const id = randomUUID();
+  const w = world(id);
+  const writers = real.createCodexWriters(4);
+  const f = appServer(t, w, routedServer());
+  const execution = await open(t, real, f, writers, { route });
+  const routedRef = { ...access, binding: { ...binding, account: principal }, reference: reference(id, { account: principal }) };
+  for (const params of [{ modelProvider: 'openai' }, { config: { model_provider: 'other' } },
+    { config: { 'model_providers.litellm.base_url': 'http://127.0.0.1:4000/evil/v1' } }, { modelProvider: null }]) {
+    for (const result of [await execution.create({ ...access, params }), await execution.resume({ ...routedRef, params })]) {
+      assert.equal(result.error?.code, 'invalid-input', JSON.stringify(params));
+      assert.match(result.error.message, /(modelProvider|config) is refused under a proxy route/u);
+    }
+  }
+  assert.deepEqual(f.sent, ['initialize'], 'nothing is sent for a refused override');
+  assert.equal(writers.held(), 0);
+  // Direct mode still passes `config` through unchanged.
+  const direct = await open(t, real, appServer(t, w), writers);
+  assert.equal((await direct.create({ ...access, params: { config: { model: 'x' } } })).kind, 'ok');
+  // A reply that puts the thread on another provider never becomes a session; resume keeps the lease to exit as on a
+  // mismatched thread id, since the thread may be loaded.
+  const g = appServer(t, w, routedServer({ provider: 'openai' }));
+  const off = await open(t, real, g, writers, { route });
+  assert.deepEqual(await off.create(access), { kind: 'error', error: { code: 'native-failure' } });
+  const held = writers.held();
+  assert.deepEqual(await off.resume(routedRef), { kind: 'error', error: { code: 'native-failure' } });
+  assert.equal(writers.held(), held + 1);
+  g.exit();
+  await settle();
+  assert.equal(writers.held(), held, 'process exit releases it');
+});
+
+test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
+  const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
+  const routed = { config: { model_provider: 'litellm', model_providers: { litellm: routedProvider } },
+    account: { account: null, userId: null, requiresOpenaiAuth: false } };
   const w = world();
   const writers = real.createCodexWriters(4);
   const f = appServer(t, w, routed);

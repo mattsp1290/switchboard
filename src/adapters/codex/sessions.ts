@@ -119,6 +119,19 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
   stop === 'cancelled' ? 'cancelled' : stop === 'duration' ? 'bounds-exceeded' : 'native-failure';
 
 /**
+ * The native provider entry must be exactly the host route with command auth only (codex-native-api.md, Proxy-routed
+ * requester): `config/read` echoes `base_url` verbatim and lists no built-in provider (`ollama`, `openai`), so a
+ * built-in id, another endpoint, another wire API, or an env-key or static bearer credential is refused.
+ */
+function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
+  if (settings.model_provider !== route.providerId || !record(settings.model_providers)
+    || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
+  const entry = settings.model_providers[route.providerId];
+  return record(entry) && entry.base_url === route.endpoint && entry.wire_api === 'responses' && record(entry.auth)
+    && typeof entry.auth.command === 'string' && entry.requires_openai_auth === false
+    && entry.env_key == null && entry.experimental_bearer_token == null;
+}
+/**
  * Write-safety and requester precondition. Discovery writes nothing to history only with a private index
  * (codex-discovery.md, Storage and authorization boundary). The requester is the current native login
  * (`chatgpt:<userId>` or `apiKey`); it never attributes a thread's creator. Every API key is the one principal `apiKey`,
@@ -126,9 +139,9 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * symlink and case aliasing of the index stay host obligations.
  *
  * Routed (`run.route`): native reports no login for provider command auth (codex-native-api.md, Proxy-routed requester),
- * so the requester is the route principal, admitted only while `config/read` names the route's provider and
- * `account/read` reports no account and `requiresOpenaiAuth: false`. A native login under a route is refused, never
- * used as a fallback: the prefix keeps routed and direct principals disjoint.
+ * so the requester is the route principal, admitted only while `config/read` names the route's provider with an entry
+ * matching the route (routedProvider) and `account/read` reports no account and `requiresOpenaiAuth: false`. A native
+ * login under a route is refused, never used as a fallback: the prefix keeps routed and direct principals disjoint.
  */
 async function requester(run: Run): Promise<Outcome<string, SessionOperationError>> {
   const config = await call(run, 'config/read', { includeLayers: false });
@@ -139,7 +152,7 @@ async function requester(run: Run): Promise<Outcome<string, SessionOperationErro
     const path = settings[key];
     if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
-  if (run.route && settings.model_provider !== run.route.providerId) return failure('inaccessible');
+  if (run.route && !routedProvider(settings, run.route)) return failure('inaccessible');
   const reply = await call(run, 'account/read', { refreshToken: false });
   if (typeof reply === 'string') return failure(operation(reply));
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
@@ -153,13 +166,14 @@ async function requester(run: Run): Promise<Outcome<string, SessionOperationErro
   return text(principal) ? { kind: 'ok', value: principal } : failure('inaccessible');
 }
 
-type Thread = { readonly format: CodexNativeFormat; readonly loaded: boolean };
+type Thread = { readonly format: CodexNativeFormat; readonly loaded: boolean; readonly provider: unknown };
 function thread(value: unknown, id: string): Thread | undefined {
   const item = record(value) ? value.thread : undefined;
   if (!record(item) || item.id !== id || typeof item.historyMode !== 'string' || !record(item.status)) return undefined;
   const format = Object.hasOwn(historyModes, item.historyMode) ? historyModes[item.historyMode] : undefined;
   const status = item.status.type;
-  return format && typeof status === 'string' && statuses.has(status) ? { format, loaded: status !== 'notLoaded' } : undefined;
+  return format && typeof status === 'string' && statuses.has(status) ? { format, loaded: status !== 'notLoaded', provider: item.modelProvider }
+    : undefined;
 }
 const reference = (binding: SessionBinding, opaque: string): SessionReference =>
   Object.freeze({ kind: 'session', formatVersion: 1, binding, opaque });
@@ -240,7 +254,10 @@ async function discover(options: Access): Promise<Outcome<SessionDiscoveryPage, 
       const found = read.kind === 'result' ? thread(read.value, id) : undefined;
       if (!found) { diagnose(); continue; }
       seen.add(id);
-      if (found.format === binding.nativeFormat) sessions.push(reference(binding, id));
+      // Routed: only threads native ran on the route's provider; a direct thread in the same home is not listed.
+      if (found.format === binding.nativeFormat && (!run.route || found.provider === run.route.providerId)) {
+        sessions.push(reference(binding, id));
+      }
     }
   }
   return page(ending, listed.examined, listed.skipped.inaccessible);
@@ -265,6 +282,8 @@ Promise<Outcome<SessionInspectionResult, SessionOperationError | SessionReferenc
   }
   const found = thread(read.value, threadId);
   if (!found) return failure('native-failure');
+  // Routed: a thread native created on another provider would resume there (Thread.modelProvider), off the route.
+  if (run.route && found.provider !== run.route.providerId) return failure('inaccessible');
   if (found.format !== binding.nativeFormat) {
     return { kind: 'ok', value: Object.freeze({ kind: 'incompatible', reason: 'native-format' }) };
   }

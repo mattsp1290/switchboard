@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,15 +45,22 @@ function home(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
+// The `config/read` provider entry observed for command auth (ai7m-review out.json), trimmed to the checked fields.
+const entry = { name: 'LiteLLM', base_url: 'http://127.0.0.1:4000/v1', env_key: null, experimental_bearer_token: null,
+  auth: { command: '/usr/bin/node', args: ['helper.mjs'], timeout_ms: 5000, refresh_interval_ms: 300000, cwd: '/w' },
+  wire_api: 'responses', requires_openai_auth: false };
 /** Fake app-server: the native projections observed with provider command auth (codex-native-api.md). */
-function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route } = {}) {
+function server(dir, { provider = 'litellm', account = routed, route: scopeRoute = route, providers = { litellm: entry },
+  threads = {} } = {}) {
   const calls = [];
   const request = async (call) => {
     calls.push(call.method);
+    const id = call.params.threadId ?? threads[call.params.rolloutPath];
     const value = call.method === 'config/read'
-      ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_provider: provider } }
+      ? { config: { sqlite_home: '/private/index', log_dir: '/private/logs', model_provider: provider, model_providers: providers } }
       : call.method === 'account/read' ? account
-        : { thread: { id: call.params.threadId, historyMode: 'paginated', status: { type: 'notLoaded' } } };
+        : call.method === 'getConversationSummary' ? { summary: { path: call.params.rolloutPath, conversationId: id } }
+          : { thread: { id, historyMode: 'paginated', status: { type: 'notLoaded' }, modelProvider: id.endsWith('2') ? 'openai' : 'litellm' } };
     return { kind: 'reply', envelope: { id: 1, raw: {}, reply: { kind: 'result', value } } };
   };
   const scope = { home: dir, request, initialize: { codexHome: dir }, ...(scopeRoute ? { route: scopeRoute } : {}) };
@@ -83,6 +90,37 @@ test('a routed requester refuses any native login, required OpenAI auth or anoth
   const fake = server(home(t), { account: { ...routed, account: { type: 'apiKey' } } });
   assert.equal((await bind(fake, fallback)).value?.account, 'apiKey');
   assert.equal((await bind(server(home(t)), fallback)).value?.account, principal, 'The mutant still binds a clean route');
+});
+
+test('a routed requester refuses a provider entry that is not exactly the route with command auth only', async (t) => {
+  const noAuth = { ...entry, auth: undefined };
+  for (const providers of [{ litellm: { ...entry, base_url: 'http://127.0.0.1:4000/evil/v1' } },
+    { litellm: { ...entry, base_url: 'http://127.0.0.1:4000/v1/' } }, {}, { litellm: noAuth }, { litellm: { ...entry, auth: {} } },
+    { litellm: { ...entry, env_key: 'LITELLM_KEY' } }, { litellm: { ...entry, experimental_bearer_token: 'sk-x' } },
+    { litellm: { ...entry, wire_api: 'chat' } }, { litellm: { ...entry, requires_openai_auth: true } }, null]) {
+    const fake = server(home(t), { providers });
+    assert.deepEqual(await bind(fake), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(providers));
+    assert.deepEqual(fake.calls, ['config/read']);
+  }
+  // A built-in provider (ollama) is absent from model_providers yet reports no login: never a route.
+  const ollama = server(home(t), { route: { ...route, providerId: 'ollama' }, provider: 'ollama' });
+  assert.deepEqual(await bind(ollama), { kind: 'error', error: { code: 'inaccessible' } });
+});
+
+test('a routed resume and discovery admit only threads native ran on the route provider', async (t) => {
+  const dir = home(t);
+  const other = threadId.replace(/1$/, '2');
+  const fake = server(dir);
+  const access = { ...options(fake), binding: binding(dir, principal) };
+  const offRoute = { ...reference(dir, principal), opaque: other };
+  assert.deepEqual(await codexSessions.prepareResume({ ...access, reference: offRoute }), { kind: 'error', error: { code: 'inaccessible' } });
+  assert.deepEqual(await codexSessions.inspect({ ...access, reference: offRoute }), { kind: 'error', error: { code: 'inaccessible' } });
+  mkdirSync(join(dir, 'sessions'));
+  for (const id of [threadId, other]) writeFileSync(join(dir, 'sessions', `${id}.jsonl`), '');
+  const threads = Object.fromEntries([threadId, other].map((id) => [join(dir, 'sessions', `${id}.jsonl`), id]));
+  const page = await codexSessions.discover({ ...options(server(dir, { threads })), binding: binding(dir, principal) });
+  assert.deepEqual(page.value.sessions.map((item) => item.opaque), [threadId]);
+  assert.equal(page.value.examined, 2);
 });
 
 test('direct mode is unchanged: a null native account is still inaccessible', async (t) => {

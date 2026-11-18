@@ -70,7 +70,7 @@ export interface CodexExecutionOptions {
    */
   readonly route?: CodexProxyRoute;
 }
-/** `message` is present only on a typed-feature `invalid-input` (features.ts), naming the rejected setting. */
+/** `message` is present only on a typed-feature or proxy-route `invalid-input` (features.ts, routeOverride), naming the rejected setting. */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
 export type CodexEvidence = 'qualified' | 'unqualified';
@@ -276,6 +276,17 @@ function newTurn(): Turn {
   return turn;
 }
 const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' }) } as const;
+/**
+ * Under a route, a per-thread `modelProvider` or any `config` override redirects traffic off the route while the
+ * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. `turn/start`
+ * (TurnStartParams 0.169.0) has no provider or config field.
+ */
+const routeOverride = (route: CodexProxyRoute | undefined, target: string, params: Record<string, unknown>) => {
+  const key = route && ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  return key ? { kind: 'error', error: Object.freeze({ code: 'invalid-input', message:
+    `${target} ${key} is refused under a proxy route: a per-thread provider or config override can redirect traffic off the route` }) } as const
+    : undefined;
+};
 const fail = (code: CodexOpenError['code']) => ({ kind: 'error', error: Object.freeze({ code }) }) as const;
 
 export async function openCodexExecution(options: CodexExecutionOptions):
@@ -472,6 +483,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('thread/start', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
+      const overridden = routeOverride(route, 'thread/start', params);
+      if (overridden) return overridden;
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
     const refused = admit(wait);
@@ -485,7 +498,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (reply.kind === 'not-sent') return fail(closed ? 'closed' : 'cancelled');
       if (reply.kind === 'uncertain') return fail('outcome-unknown');
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
-      if (!thread || !text(thread.id) || !uuid.test(thread.id) || thread.historyMode !== 'paginated' || thread.ephemeral !== false) {
+      if (!thread || !text(thread.id) || !uuid.test(thread.id) || thread.historyMode !== 'paginated' || thread.ephemeral !== false
+        || (route && thread.modelProvider !== route.providerId)) {
         return fail('native-failure');
       }
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value, opaque: thread.id });
@@ -509,6 +523,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('thread/resume', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
+      const overridden = routeOverride(route, 'thread/resume', params);
+      if (overridden) return overridden;
       parsed = parseSessionReference({ value: access.reference, expected: binding });
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
@@ -535,7 +551,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       held = true;
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
       const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
-        : thread?.id !== threadId ? 'identity-mismatch' : closed ? 'closed' : undefined;
+        : thread?.id !== threadId ? 'identity-mismatch'
+          // Routed: a thread native resumed on another provider runs off the route; it never becomes a session.
+          : route && thread.modelProvider !== route.providerId ? 'native-failure' : closed ? 'closed' : undefined;
       if (refused) { keep(lease); return fail(refused); }
       return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
         reply.kind === 'result' ? reply.value : null) }) };
