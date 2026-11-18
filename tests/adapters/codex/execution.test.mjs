@@ -78,8 +78,8 @@ function appServer(t, w, script = {}) {
   f.hold = (method) => { const held = gate(); f.holds.set(method, held); return held; };
   const answer = {
     'initialize': () => ({ codexHome: home, userAgent: 'fake/0.169.0' }),
-    'config/read': () => ({ config: { sqlite_home: '/private/index', log_dir: '/private/logs' } }),
-    'account/read': () => ({ account: { type: 'apiKey' } }),
+    'config/read': () => ({ config: { sqlite_home: '/private/index', log_dir: '/private/logs', ...script.config } }),
+    'account/read': () => script.account ?? ({ account: { type: 'apiKey' } }),
     'thread/read': ({ threadId }) => {
       const thread = w.threads.get(threadId);
       if (!thread) return { error: { code: -32600, message: `thread not loaded: ${threadId}` } };
@@ -212,6 +212,51 @@ test('resume reserves before preparation, sends only the exact thread id and rej
   const forbidden = await replacement.resume({ ...access, binding, reference: reference(id), params: { path: '/x' } });
   assert.deepEqual(forbidden, { kind: 'error', error: { code: 'invalid-input' } });
   await session.close();
+});
+
+test('a routed execution binds create and resume to the route principal, turns, and refuses direct references', async (t) => {
+  const route = { kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1', credentialPurpose: 'litellm-proxy',
+    scope: { engine: 'codex', account: 'host-account-a' } };
+  const principal = 'litellm-proxy:sha256:e4cdf2841b0dd4b832471ebc154497192a380f641664cfa1ac614817a2a78b54';
+  const routed = { config: { model_provider: 'litellm' }, account: { account: null, userId: null, requiresOpenaiAuth: false } };
+  const w = world();
+  const writers = real.createCodexWriters(4);
+  const f = appServer(t, w, routed);
+  const hostRoute = structuredClone(route);
+  const execution = await open(t, real, f, writers, { route: hostRoute });
+  // The route is copied once at open: a later host mutation cannot change the principal.
+  hostRoute.providerId = 'other';
+  hostRoute.scope.account = 'host-account-b';
+  assert.equal(execution.scope.route.endpoint, route.endpoint);
+  const created = await execution.create(access);
+  assert.equal(created.kind, 'ok', JSON.stringify(created));
+  assert.deepEqual(created.value.reference.binding, { ...binding, account: principal });
+  assert.equal((await (await turnOn(created.value)).completion).kind, 'terminal');
+  const { threadId } = created.value;
+  f.exit();
+  await settle();
+  const g = appServer(t, w, routed);
+  const again = await open(t, real, g, writers, { route });
+  const routedBinding = { ...binding, account: principal };
+  const result = await again.resume({ ...access, binding: routedBinding, reference: reference(threadId, { account: principal }) });
+  assert.equal(result.value?.kind, 'resumed', JSON.stringify(result));
+  assert.equal((await (await turnOn(result.value.session)).completion).kind, 'terminal');
+  assert.deepEqual(g.sent.slice(1), ['config/read', 'account/read', 'thread/read', 'thread/resume', 'turn/start']);
+  // A direct reference under the route, and the routed reference on a direct app-server, are binding mismatches.
+  const id = randomUUID();
+  w.threads.set(id, { writer: null, holder: null });
+  assert.deepEqual(await again.resume({ ...access, binding, reference: reference(id) }), { kind: 'error', error: { code: 'binding-mismatch' } });
+  const direct = await open(t, real, appServer(t, w), writers);
+  assert.deepEqual(await direct.resume({ ...access, binding: routedBinding, reference: reference(id, { account: principal }) }),
+    { kind: 'error', error: { code: 'binding-mismatch' } });
+  // A route that the app-server does not report, or an invalid route, never binds.
+  const unrouted = await open(t, real, appServer(t, w, { account: routed.account }), writers, { route });
+  assert.deepEqual(await unrouted.create(access), { kind: 'error', error: { code: 'inaccessible' } });
+  const bad = await real.openCodexExecution({ channel: appServer(t, w).channel, transport, bounds, home, writers, initialize: {},
+    onServerRequest: () => ({}), signal: new AbortController().signal, processExit: new Promise(() => {}),
+    route: { ...route, endpoint: 'http://127.0.0.1:4000' } });
+  assert.deepEqual(bad, { kind: 'error', error: { code: 'invalid-input' } });
+  assert.deepEqual(w.overlaps, []);
 });
 
 test('a second open of the same reference is busy before any native request while independent sessions progress', async (t) => {

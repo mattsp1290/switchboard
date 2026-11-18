@@ -10,6 +10,8 @@ import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, Ses
   SessionReferenceError } from '../../core/sessions.js';
 import { resolveCodexFeatures } from './features.js';
 import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
+import { copyCodexRoute } from './route.js';
+import type { CodexProxyRoute } from './route.js';
 import { codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
@@ -62,6 +64,11 @@ export interface CodexExecutionOptions {
    * after `close()` detaches the channel, a later channel `process-exit` can no longer be observed.
    */
   readonly processExit: PromiseLike<unknown>;
+  /**
+   * The LiteLLM proxy route the host configured this app-server with, copied once at open. Sessions then bind to the
+   * host-asserted route principal instead of a native login (sessions.ts); absent is direct mode. Invalid: `invalid-input`.
+   */
+  readonly route?: CodexProxyRoute;
 }
 /** `message` is present only on a typed-feature `invalid-input` (features.ts), naming the rejected setting. */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
@@ -275,8 +282,10 @@ export async function openCodexExecution(options: CodexExecutionOptions):
 Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'native-failure' }>> {
   let captured;
   try {
-    const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit } = options;
+    const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit, route: rawRoute } = options;
     const state = registries.get(options.writers ?? processWriters);
+    const route = rawRoute === undefined ? undefined : copyCodexRoute(rawRoute);
+    if (rawRoute !== undefined && !route) return invalid;
     if (!state || !record(bounds) || !record(initialize) || typeof onServerRequest !== 'function'
       || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0
       || typeof (processExit as { then?: unknown } | null)?.then !== 'function') return invalid;
@@ -286,10 +295,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       || !positive(maxObservers * eventCapacity)) return invalid;
     // Read once: a later host mutation of `initialize.capabilities` cannot change the features gate (features.ts).
     const experimentalApi = record(initialize.capabilities) && initialize.capabilities.experimentalApi === true;
-    captured = { channel, transportBounds, home, initialize: { ...initialize }, experimentalApi, onServerRequest, signal, processExit, state,
+    captured = { channel, transportBounds, home, initialize: { ...initialize }, experimentalApi, onServerRequest, signal, processExit, state, route,
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
-  const { home, state: writers, bounds, signal, experimentalApi } = captured;
+  const { home, state: writers, bounds, signal, experimentalApi, route } = captured;
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
   const executionEvents = createEventStream<CodexExecutionEvent>(streamBounds);
   const sessions = new Set<Session>();
@@ -435,7 +444,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       return { kind: 'error', error: Object.freeze({ code: 'closed' }) };
     }
   } finally { abortStartup[Symbol.dispose](); }
-  const scope: CodexSessionScope = Object.freeze({ home, request: transport.request, initialize: Object.freeze({ codexHome: home }) });
+  const scope: CodexSessionScope = Object.freeze({ home, request: transport.request, initialize: Object.freeze({ codexHome: home }),
+    ...(route ? { route } : {}) });
 
   function admit(signalled: AbortSignal): CodexOpenError['code'] | undefined {
     if (closed) return 'closed';

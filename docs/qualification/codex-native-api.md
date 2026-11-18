@@ -51,6 +51,18 @@ Broader adapter qualification still requires live direct and both LiteLLM journe
 
 Official documentation corroborates the public generator, request lifecycle, and command approval protocol in [Codex app-server](https://learn.chatgpt.com/docs/app-server). The [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) documents command credentials, the refresh interval, and its zero-value semantics. The executable assertions establish the exact pinned behavior described above. Documentation was read on 2026-11-13; current documentation is not an immutable substitute for the pinned run.
 
+## Proxy-routed requester
+
+Observed locally with 0.169.0 on macOS against a loopback Responses fixture, not in the qualifier or CI. A custom provider `model_providers.litellm` with `base_url` on the fixture's `/v1`, `wire_api = "responses"` and an `auth.command` helper produced these facts:
+
+- `account/read` returns `{account: null, userId: null, requiresOpenaiAuth: false, workspaceRouting: null}`, with `refreshToken` false or true, before and after a resume in a new process. Turns complete with the helper's bearer.
+- `config/read` reports `model_provider: "litellm"`.
+- Combining `requires_openai_auth = true` with provider `auth` is a startup error: `provider auth cannot be combined with requires_openai_auth`.
+- A stored `apiKey` login (`account/login/start`) leaves `account/read` unchanged and is not used for requests; the helper's bearer still is.
+- Without `auth.command`, `requires_openai_auth = true` plus an `apiKey` login projects `{account: {type: "apiKey"}, requiresOpenaiAuth: true}` and does not renew after a 401.
+
+The direct requester therefore cannot bind a command-auth routed app-server. `src/adapters/codex/sessions.ts` binds it, when the host supplies a validated `CodexProxyRoute`, to the host-asserted route principal (boundaries.md, Private Codex sessions). An adapter-level check then ran `openCodexExecution` with that route against the same kind of fixture: routed `create` bound `litellm-proxy:sha256:<hex>` and its turn completed, a direct-mode open of the same home refused `create` and the routed resume as `inaccessible`, and a routed resume in a new process returned the same thread and its turn completed. The probes ran outside the repository from a session scratchpad (`me4l-probe/probe.mjs` with `run2-out.json`, and `ai7m-native/check.mjs`); they are evidence for this decision, not a reproducible qualifier, and they do not cover a live LiteLLM proxy.
+
 ## Native feature settings
 
 `src/adapters/codex/features.ts` validates typed host settings against the 0.169.0 bindings and these native rules, observed with 0.169.0 against a real `codex app-server` and a scratch `CODEX_HOME`:

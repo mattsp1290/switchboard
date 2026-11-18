@@ -7,6 +7,8 @@ import { copyBinding, parseSessionReference, sessionLimits, validateSessionDisco
 import type { SessionAccess, SessionBinding, SessionDiscovery, SessionDiscoveryBounds, SessionDiscoveryDiagnostic,
   SessionDiscoveryPage, SessionInspection, SessionInspectionResult, SessionOperationError, SessionReference,
   SessionReferenceError } from '../../core/sessions.js';
+import { codexRoutePrincipal, copyCodexRoute } from './route.js';
+import type { CodexProxyRoute } from './route.js';
 import type { CodexTransport } from './transport.js';
 
 /**
@@ -23,6 +25,12 @@ export interface CodexSessionScope {
    * only inside the untyped `userAgent` text, so it is not checked here; `nativeVersion` is pinned by the binding.
    */
   readonly initialize: { readonly codexHome: string };
+  /**
+   * The host-selected LiteLLM proxy route this app-server runs under, if any. Absent: direct mode, the requester is the
+   * native login. Present: the requester is the host-asserted route principal (route.ts); an invalid route is
+   * `invalid-input` before any native request.
+   */
+  readonly route?: CodexProxyRoute;
 }
 /** The only app-server methods this module sends. Every one is a read; none dispatches, resumes or writes. */
 export const codexSessionMethods = Object.freeze(['config/read', 'account/read', 'getConversationSummary', 'thread/read'] as const);
@@ -33,7 +41,7 @@ export type CodexResumePreparation =
   | Exclude<SessionInspectionResult, { readonly kind: 'available' }>;
 type Access = SessionAccess<CodexSessionScope>;
 type Run = { readonly home: string; readonly request: CodexSessionScope['request']; readonly bounds: SessionDiscoveryBounds;
-  readonly signal: AbortSignal; readonly deadline: number };
+  readonly signal: AbortSignal; readonly deadline: number; readonly route: CodexProxyRoute | undefined };
 type Reply = { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly code: number; readonly message: string };
 type Stop = 'cancelled' | 'duration' | 'failed';
 type Ending = { readonly kind: 'complete' } | { readonly kind: 'cancelled' }
@@ -69,12 +77,14 @@ function within(path: string, home: string): boolean {
 function admit(options: unknown): Run | undefined {
   try {
     if (!record(options) || !record(options.scope)) return undefined;
-    const { scope: { home, request, initialize }, bounds: rawBounds, signal } = options;
+    const { scope: { home, request, initialize, route: rawRoute }, bounds: rawBounds, signal } = options;
     const bounds = validateSessionDiscoveryBounds(rawBounds);
+    const route = rawRoute === undefined ? undefined : copyCodexRoute(rawRoute);
+    if (rawRoute !== undefined && !route) return undefined;
     if (!text(home) || !isAbsolute(home) || home !== resolve(home)
       || !record(initialize) || initialize.codexHome !== home || typeof request !== 'function' || !(signal instanceof AbortSignal) || bounds.kind === 'error') return undefined;
     return { home, request: request as Run['request'], bounds: bounds.value, signal,
-      deadline: performance.now() + bounds.value.maxDurationMs };
+      deadline: performance.now() + bounds.value.maxDurationMs, route };
   } catch { return undefined; }
 }
 const isFormat = (value: unknown): value is CodexNativeFormat => Object.values(historyModes).includes(value as CodexNativeFormat);
@@ -114,6 +124,11 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * (`chatgpt:<userId>` or `apiKey`); it never attributes a thread's creator. Every API key is the one principal `apiKey`,
  * so a change between API keys has no native signal and is unqualified. Native paths are compared after `resolve`;
  * symlink and case aliasing of the index stay host obligations.
+ *
+ * Routed (`run.route`): native reports no login for provider command auth (codex-native-api.md, Proxy-routed requester),
+ * so the requester is the route principal, admitted only while `config/read` names the route's provider and
+ * `account/read` reports no account and `requiresOpenaiAuth: false`. A native login under a route is refused, never
+ * used as a fallback: the prefix keeps routed and direct principals disjoint.
  */
 async function requester(run: Run): Promise<Outcome<string, SessionOperationError>> {
   const config = await call(run, 'config/read', { includeLayers: false });
@@ -124,10 +139,15 @@ async function requester(run: Run): Promise<Outcome<string, SessionOperationErro
     const path = settings[key];
     if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
+  if (run.route && settings.model_provider !== run.route.providerId) return failure('inaccessible');
   const reply = await call(run, 'account/read', { refreshToken: false });
   if (typeof reply === 'string') return failure(operation(reply));
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
-  const { account, userId } = reply.value;
+  const { account, userId, requiresOpenaiAuth } = reply.value;
+  if (run.route) {
+    return account === null && requiresOpenaiAuth === false ? { kind: 'ok', value: codexRoutePrincipal(run.route) }
+      : failure('inaccessible');
+  }
   const principal = !record(account) ? undefined : account.type === 'apiKey' ? 'apiKey'
     : account.type === 'chatgpt' && text(userId) ? `chatgpt:${userId}` : undefined;
   return text(principal) ? { kind: 'ok', value: principal } : failure('inaccessible');
