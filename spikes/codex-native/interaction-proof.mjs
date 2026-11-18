@@ -75,15 +75,11 @@ try {
   else { rmSync(work, { recursive: true, force: true }); assert(!existsSync(work), 'Owned work removed'); }
 }
 console.log(JSON.stringify(result, null, 2));
-// The only conclusion site, after the full report is printed and cleanup is proved. Checks cover what the module claims
-// from qualified native evidence, including usage and the error-reply mapping that X1 and X7 qualified on both
-// architectures. Opaque signals (turn/started, error willRetry) are pinned but never asserted here; the native resume while
-// another app-server holds the thread is recorded raw only. Every native error reply is in each report's raw.nativeErrors.
 // The only conclusion site, after the full report is printed and cleanup is proved. Checks cover only what the bridge
 // claims: one decision frame per host reply and none otherwise, single use, declined-only no-effect, lost/expired/
 // withdrawn without a decision, interrupt requested, transport survival and writer release only on exit. Native reactions
-// (terminal after interrupt or expiry, resolved order, accept or cancel item status, replay after resume, advertised
-// tools) are recorded and pinned raw, never asserted. Every native error reply is in each report's raw.nativeErrors.
+// (terminal after interrupt or expiry, accept or cancel item status, replay after resume, advertised tools) are pinned,
+// never asserted; native notification order is recorded raw only. Every native error reply is in each report's raw.nativeErrors.
 const { N1, N2, N3, N4, N5, N7, N8, N9 } = result.reports;
 const statuses = ['completed', 'interrupted', 'failed'];
 const decisionNames = (request) => (request?.availableDecisions ?? [])
@@ -109,25 +105,27 @@ const checks = {
   N9: N9.settlements.join() === 'expired' && N9.decisionFrames === 0 && N9.errorFrames.includes(-32000) && N9.marker === false
     && N9.independent === 'completed',
 };
-console.log(JSON.stringify({ checks }));
-for (const [check, passed] of Object.entries(checks)) assert(passed, `Native interaction proof ${check}`);
-// Architecture-independent pin: outcomes, statuses, counts, booleans and native orderings only; never IDs, paths or timestamps.
+// Architecture-independent pin: outcomes, statuses, counts and booleans only; never IDs, paths or timestamps. Printed before
+// any assertion so a failing run still shows the object to compare. Arrival order stays raw (report.order, withdrawnBy):
+// serverRequest/resolved, item/completed and turn/completed come from separate native sources, and 0.169 already showed
+// unstable cross-source order (execution X1 thread/started), so order is evidence, not a pinned claim.
 const requests = (report) => report.serverRequests.map(({ method, idType, approvalId, availableDecisions }) =>
   ({ method, idType, approvalId, offered: availableDecisions?.map((d) => (typeof d === 'string' ? d : Object.keys(d)[0])) ?? null }));
 const pinned = {
-  N1: { choices: N1.choices, item: N1.item, terminal: N1.terminal, order: N1.order, requests: requests(N1),
-    markerInference: N1.markerInference },
-  N2: { terminal: N2.terminal, item: N2.item, marker: N2.marker, order: N2.order, markerInference: N2.markerInference },
+  N1: { choices: N1.choices, item: N1.item, terminal: N1.terminal, requests: requests(N1), markerInference: N1.markerInference },
+  N2: { terminal: N2.terminal, item: N2.item, marker: N2.marker, markerInference: N2.markerInference },
   N3: { concurrentA: N3.concurrentA, a: N3.a },
-  N4: { terminalWithin5s: N4.terminalWithin5s, terminal: N4.terminal, settlements: N4.settlements, withdrawnBy: N4.withdrawnBy,
-    item: N4.item, order: N4.order, markerInference: N4.markerInference },
+  N4: { terminalWithin5s: N4.terminalWithin5s, terminal: N4.terminal, settlements: N4.settlements, item: N4.item,
+    markerInference: N4.markerInference },
   N5: { completion: N5.completion, resumedLastTurn: N5.resumedLastTurn, resumedItems: N5.resumedItems,
     requestsAfterResume: N5.requestsAfterResume, reappeared: N5.reappeared ?? null },
   N7: { commandStarted: N7.commandStarted, terminal: N7.terminal, item: N7.item, marker: N7.marker },
   N8: { candidates: N8.candidates, notAdvertised: N8.notAdvertised ?? false, reactions: N8.reactions, refusedMethods: N8.refusedMethods },
-  N9: { terminalWithin5s: N9.terminalWithin5s, terminal: N9.terminal, item: N9.item, order: N9.order },
+  N9: { terminalWithin5s: N9.terminalWithin5s, terminal: N9.terminal, item: N9.item },
 };
 console.log(JSON.stringify({ pinned }));
+console.log(JSON.stringify({ checks }));
+for (const [check, passed] of Object.entries(checks)) assert(passed, `Native interaction proof ${check}`);
 const recorded = JSON.parse(readFileSync(join(here, 'interaction-proof-result.json'), 'utf8'));
 // A recorded outcome enforces the pin; a pending record (outcome null) only reports, as the execution proof first did.
 if (recorded.outcome !== null) assert.deepEqual(pinned, recorded.pinned, 'Recorded native interaction proof');

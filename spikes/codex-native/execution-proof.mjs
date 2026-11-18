@@ -95,16 +95,19 @@ const checks = {
   X8: X8.terminal === 'failed' && X8.deltaSeen && X8.disconnectInference === 1,
   X9: X9.aborted === 'error:closed' && X9.detached === 1 && X9.heldAfterAbort === 0 && X9.freshCreate === 'ok',
 };
-console.log(JSON.stringify({ checks }));
-for (const [check, passed] of Object.entries(checks)) assert(passed, `Native execution proof ${check}`);
 // Architecture-independent pin: outcomes, counts, booleans and native-reported usage only; never IDs, paths, timestamps or hashes.
-const pinned = { X1: { snapshot: X1.snapshot, eventKinds: X1.eventKinds, nativeMethods: X1.nativeMethods, turnStartedSeen: X1.turnStartedSeen,
-  usageSeen: X1.usageSeen, usage: X1.usage }, X2: { resumeTurns: X2.resumeTurns }, X5: { unsubscribe: X5.close?.unsubscribe ?? null,
-  reopen: X5.reopen, afterReopen: X5.afterReopen ?? null }, X6: { completion: X6.completion, inferenceBeforeExit: X6.inferenceBeforeExit },
-  // Timing-dependent counts (events within 500 ms of the rejection) differ across hosts; they stay raw, never pinned.
-  X7: { snapshot: X7.snapshot, completion: X7.completion, error: X7.raw.error },
+// Printed before any assertion so a failing run still shows the object to compare. Arrival-order and timing facts stay raw:
+// X1.snapshot is conclusive only when turn/completed beats the turn/start reply; thread/started reaches the session only when
+// read after attach() registers the thread from the thread/start reply, else it is published unrouted on the execution
+// stream; X6.inferenceBeforeExit counts inference inside a 500 ms window; X7's event count was that same thread/started race.
+const pinned = { X1: { eventKinds: X1.eventKinds, nativeMethods: X1.nativeMethods.filter((method) => method !== 'thread/started'),
+  turnStartedSeen: X1.turnStartedSeen, usageSeen: X1.usageSeen, usage: X1.usage }, X2: { resumeTurns: X2.resumeTurns },
+  X5: { unsubscribe: X5.close?.unsubscribe ?? null, reopen: X5.reopen, afterReopen: X5.afterReopen ?? null },
+  X6: { completion: X6.completion }, X7: { snapshot: X7.snapshot, completion: X7.completion, error: X7.raw.error },
   X8: { errorNotification: X8.errorNotification } };
 console.log(JSON.stringify({ pinned }));
+console.log(JSON.stringify({ checks }));
+for (const [check, passed] of Object.entries(checks)) assert(passed, `Native execution proof ${check}`);
 const recorded = JSON.parse(readFileSync(join(here, 'execution-proof-result.json'), 'utf8'));
 // A recorded outcome enforces the pin; a pending record (outcome null) only reports, as the sessions proof first did.
 if (recorded.outcome !== null) assert.deepEqual(pinned, recorded.pinned, 'Recorded native execution proof');

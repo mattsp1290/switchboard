@@ -4,7 +4,7 @@
 
 ## Status
 
-**Native proof recorded.** [execution-proof-result.json](../../spikes/codex-native/execution-proof-result.json) has outcome `execution-outcomes-confirmed`: identical pinned objects on linux/arm64 (coordinator, local) and linux/x64 (CI job 134407401390) at 08810ca, with harness and X1–X9 true on both; the arm64 cleanup left no container and an empty `.work`. Every later run, including CI x64 on every PR, fails on any other pinned value. After that run, usage was promoted to `qualified`; the pin differs from the 08810ca reports only in `X1.usage.evidence`.
+**Native proof recorded.** [execution-proof-result.json](../../spikes/codex-native/execution-proof-result.json) has outcome `execution-outcomes-confirmed`: identical pinned objects on linux/arm64 (coordinator, local) and linux/x64 (CI job 134407401390) at 08810ca, with harness and X1–X9 true on both; the arm64 cleanup left no container and an empty `.work`. Every later run, including CI x64 on every PR, fails on any other pinned value. After that run, usage was promoted to `qualified`; the pin differs from the 08810ca reports only in `X1.usage.evidence`. The 118i pin audit then dropped the fields that follow arrival order or timing, not a module claim: `X1.snapshot`, `thread/started` in `X1.nativeMethods`, `X6.inferenceBeforeExit` and X7's event count (see below); they stay in every report.
 
 Observed natively on both architectures:
 
@@ -38,17 +38,17 @@ Each decoded session event carries `evidence` from `codexNotificationEvidence`. 
 
 | ID | Scenario | Checked | Recorded (pinned unless noted) |
 | --- | --- | --- | --- |
-| X1 | create, one answered turn | terminal `completed`, accepted/conclusive, one inference, `qualified` usage seen | event kinds, native methods, `turn/started` seen, usage values and raw payload |
+| X1 | create, one answered turn | terminal `completed`, accepted/conclusive, one inference, `qualified` usage seen | event kinds, native methods except `thread/started`, `turn/started` seen, usage values; snapshot and raw payload not pinned |
 | X2 | resume in a fresh process, one turn | same ID, no resume inference, prefix preserved | saved turns on resume |
 | X3 | two held sessions in one app-server | B completes while A is pending, then A | — |
 | X4 | ownership release across app-servers on one home and registry; `thread/unsubscribe` gated by the host channel | `interrupted`, reopen `busy` with zero native requests during the hold and again after close (not released), independent turn completes, host stops A, one reservation released, then admission and a completed turn, one held inference | raw native `thread/resume` on a third app-server while A lives (not pinned) |
 | X5 | same-process reopen after close | not released; reopen `busy` with zero native requests | unsubscribe status, reopen outcome |
-| X6 | channel `eof` right after `turn/start`, then SIGKILL | `outcome-unknown`, one write, retained until exit, released after, resume without resubmission | completion, inference before exit |
-| X7 | invalid `UserInput` | one write; `conclusive` `rejected` | snapshot, completion, error code, turn events |
+| X6 | channel `eof` right after `turn/start`, then SIGKILL | `outcome-unknown`, one write, retained until exit, released after, resume without resubmission | completion; inference before exit not pinned |
+| X7 | invalid `UserInput` | one write; `conclusive` `rejected` | snapshot, completion, error code; turn events not pinned |
 | X8 | accepted stream disconnect | `failed`, delta seen, one inference | error notification and `willRetry` |
 | X9 | abort during `initialize` (stdout buffered) | `closed`, one detach, nothing reserved, fresh open creates | — |
 
-Every report records each native error reply raw (`raw.nativeErrors`: method, code, message), and X7 its session events within 500 ms of the rejection (`turnEventsWithin500ms`, `raw.turnEvents`). That count is timing-dependent (1 on the first arm64 run, 0 on a later x64 CI run), so it is recorded but not pinned. Module-only (inert tests, not native): the broken early-release controls (release at cleanup start, release after cleanup), early-notification overflow, late cleanup from an earlier generation, slow-observer isolation and bound refusals.
+Every report records each native error reply raw (`raw.nativeErrors`: method, code, message), and X7 its session events within 500 ms of the rejection (`turnEventsWithin500ms`, `raw.turnEvents`). Recorded but not pinned, because they follow arrival order or timing: `thread/started` reaches the session stream only when it is read after `attach()` registers the thread from the `thread/start` reply, and is otherwise published unrouted on the execution stream (present in X1 on arm64 and x64 at da20172, absent on x64 at 883e803; it was X7's whole event count, 1 on arm64 and 0 on x64); `X1.snapshot` is `conclusive` only when `turn/completed` beats the `turn/start` reply, which the check already admits; `X6.inferenceBeforeExit` counts inference inside a 500 ms window, while the check keeps it at most one and unchanged after resume. Module-only (inert tests, not native): the broken early-release controls (release at cleanup start, release after cleanup), early-notification overflow, late cleanup from an earlier generation, slow-observer isolation and bound refusals.
 
 ## Not covered
 

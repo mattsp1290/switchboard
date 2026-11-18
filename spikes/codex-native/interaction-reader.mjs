@@ -37,7 +37,7 @@ const server = createServer(async (request, response) => {
     if (body.length > 4 * 1024 * 1024) { response.writeHead(413).end(); return; }
   }
   if (request.url !== '/v1/responses') { response.writeHead(404).end(); return; }
-  const marker = [...body.matchAll(/marker:([a-z0-9-]+)/g)].at(-1)?.[1] ?? 'none';
+  const marker = [...body.matchAll(/marker:([a-z0-9_-]+)/g)].at(-1)?.[1] ?? 'none';
   report.inference[marker] = (report.inference[marker] ?? 0) + 1;
   let input = {};
   try { input = JSON.parse(body); } catch {}
