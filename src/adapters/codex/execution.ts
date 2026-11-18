@@ -157,6 +157,12 @@ export interface CodexSession {
   readonly turn: (options: CodexTurnOptions) => Outcome<CodexTurn, { readonly code: 'busy' | 'closed' | 'invalid-input'; readonly message?: string }>;
   /** The session's event stream keeps delivering its thread's notifications until the transport ends. */
   readonly close: () => Promise<CodexSessionCloseReport>;
+  /**
+   * Cancel without close: at most one native `turn/interrupt` per turn, shared with `close`. Reports the request only;
+   * termination is the turn's `completion`. `not-needed`: no active turn, it settled, or no native turn id within
+   * `cleanupTimeoutMs`. Never closes the session, releases the writer or resends; unsubscribing is not cancellation.
+   */
+  readonly interrupt: () => Promise<CleanupStep>;
 }
 export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: CodexSession }
   | Exclude<CodexResumePreparation, { readonly kind: 'ready' }>;
@@ -233,6 +239,7 @@ type Turn = {
   readonly done: Promise<CodexTurnCompletion>;
   /** Settles when the native turn id is known or the turn settled without one. */
   readonly identified: Deferred<void>;
+  interrupting: Promise<CleanupStep> | undefined;
 };
 type Session = {
   readonly threadId: string;
@@ -271,7 +278,7 @@ function passthrough(value: unknown, refused: readonly string[]): Record<string,
 }
 function newTurn(): Turn {
   const { promise, resolve } = deferred<CodexTurnCompletion>();
-  const turn: Turn = { phase: { kind: 'prepared' }, settled: false, done: promise,
+  const turn: Turn = { phase: { kind: 'prepared' }, settled: false, done: promise, interrupting: undefined,
     identified: deferred<void>(), settle: (completion) => {
       if (turn.settled) return;
       turn.settled = true;
@@ -478,7 +485,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     byThread.set(threadId, session);
     return Object.freeze({ reference, threadId, origin, native, events: Object.freeze({ subscribe: session.stream.subscribe }),
       turn: (turnOptions: CodexTurnOptions) => startTurn(session, reference, turnOptions),
-      close: () => (session.closing ??= shutdown(session)) });
+      close: () => (session.closing ??= shutdown(session)),
+      interrupt: async () => {
+        const turn = session.active;
+        return turn ? interrupt(session, turn, AbortSignal.timeout(bounds.cleanupTimeoutMs)) : 'not-needed';
+      } });
   }
   async function create(access: Access<CodexStartFeatures>): Promise<Outcome<CodexSession, CodexOpenError>> {
     let params;
@@ -644,30 +655,40 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     return { kind: 'outcome-unknown' };
   }
 
+  const until = (promise: Promise<unknown>, deadline: AbortSignal) => new Promise<void>((resolve) => {
+    if (deadline.aborted) { resolve(); return; }
+    const listener = addAbortListener(deadline, () => resolve());
+    void promise.then(() => { listener[Symbol.dispose](); resolve(); });
+  });
+  /** `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel). */
+  async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CleanupStep> {
+    const result = await (turn.interrupting ??= until(turn.identified.promise, deadline).then(async () => {
+      const { phase } = turn;
+      if (phase.kind !== 'identified' || turn.settled || deadline.aborted) {
+        // Nothing was written: a still-pending turn may yet be identified, so a later interrupt or close tries again.
+        if (!turn.settled && phase.kind !== 'orphaned') turn.interrupting = undefined;
+        return 'not-needed';
+      }
+      return step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
+    }));
+    // A joined attempt ran on its starter's deadline; if that expired unwritten, retry within this caller's own.
+    const retry = result === 'not-needed' && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
+    return retry ? interrupt(session, turn, deadline) : result;
+  }
   async function shutdown(session: Session): Promise<CodexSessionCloseReport> {
     if (session.state === 'open') session.state = 'closing';
     session.abort.abort();
     const deadline = AbortSignal.timeout(bounds.cleanupTimeoutMs);
-    const until = (promise: Promise<unknown>) => new Promise<void>((resolve) => {
-      if (deadline.aborted) { resolve(); return; }
-      const listener = addAbortListener(deadline, () => resolve());
-      void promise.then(() => { listener[Symbol.dispose](); resolve(); });
-    });
-    let interrupt: CleanupStep = 'not-needed';
+    let interrupted: CleanupStep = 'not-needed';
     const turn = session.active;
     if (turn) {
-      await until(turn.identified.promise);
-      // `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel).
-      const { phase } = turn;
-      if (phase.kind === 'identified' && !turn.settled) {
-        interrupt = step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
-      }
+      interrupted = await interrupt(session, turn, deadline);
       // An orphaned turn settles only when the transport ends; waiting would only spend the cleanup deadline.
-      if (turn.phase.kind !== 'orphaned') await until(turn.done);
+      if (turn.phase.kind !== 'orphaned') await until(turn.done, deadline);
     }
     // Stops this session's subscription only: natively the thread stays loaded until process exit (X5).
     const unsubscribe = step(await request('thread/unsubscribe', { threadId: session.threadId }, deadline));
-    return Object.freeze({ interrupt, unsubscribe, released: session.lease.released });
+    return Object.freeze({ interrupt: interrupted, unsubscribe, released: session.lease.released });
   }
 
   async function closeAll(): ReturnType<CodexExecution['close']> {
