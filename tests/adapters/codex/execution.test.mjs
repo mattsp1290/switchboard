@@ -244,6 +244,8 @@ test('a routed execution refuses provider and config overrides unsent and any th
   const routedRef = { ...access, binding: { ...binding, account: principal }, reference: reference(id, { account: principal }) };
   for (const params of [{ modelProvider: 'openai' }, { config: { model_provider: 'other' } },
     { config: { 'model_providers.litellm.base_url': 'http://127.0.0.1:4000/evil/v1' } }, { modelProvider: null },
+    // The host cannot re-enable multi-agent, whose spawn_agent model argument would bypass the route model.
+    { config: { 'features.multi_agent': true } }, { config: { features: { multi_agent_v2: true } } },
     { model: 'other-model' }, { model: null }, { model: ` ${route.model}` }, { allowProviderModelFallback: true },
     { collaborationMode: { mode: 'plan', settings: { model: route.model, reasoning_effort: null, developer_instructions: null } } }]) {
     for (const result of [await execution.create({ ...access, params }), await execution.resume({ ...routedRef, params })]) {
@@ -280,10 +282,16 @@ test('a routed execution refuses provider and config overrides unsent and any th
   w.threads.set(stale, { writer: null, holder: null, provider: 'litellm', model: 'old-model' });
   const staleRef = { ...routedRef, reference: reference(stale, { account: principal }) };
   const h = appServer(t, w, routedServer());
-  assert.deepEqual(await (await open(t, real, h, writers, { route })).resume(staleRef), { kind: 'error', error: { code: 'native-failure' } });
+  assert.deepEqual(await (await open(t, real, h, writers, { route })).resume(staleRef), { kind: 'error', error: { code: 'native-failure',
+    message: 'the thread is on another model than the route; resume it with params.model = route.model' } });
   assert.equal(writers.held(), held + 1);
   h.exit();
   await settle();
+  // A start native puts on another model is refused with the same named rule, holding no writer.
+  const offStart = appServer(t, w, routedServer({ config: { ...routedServer().config, model: 'old-model' } }));
+  assert.deepEqual(await (await open(t, real, offStart, writers, { route })).create(access), { kind: 'error', error: {
+    code: 'native-failure', message: 'the thread started on another model than the route model' } });
+  assert.equal(writers.held(), held);
   const pinned = await (await open(t, real, appServer(t, w, routedServer()), writers, { route })).resume({ ...staleRef, params: { model: route.model } });
   assert.equal(pinned.value?.kind, 'resumed', JSON.stringify(pinned));
   await pinned.value.session.close();

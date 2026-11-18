@@ -69,12 +69,14 @@ export interface CodexExecutionOptions {
    * host-asserted route principal instead of a native login (sessions.ts); absent is direct mode. Invalid: `invalid-input`
    * with a `message` naming the failing rule. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct execution over one home would not exclude each other's writers.
+   * A thread that starts or resumes on another model than `route.model` is `native-failure` with a `message`: natively a
+   * resumed thread keeps its persisted model, so resume it with `params.model = route.model`.
    */
   readonly route?: CodexProxyRoute;
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
- * routeOverride, checkCodexRoute), naming the rejected setting or rule.
+ * routeOverride, checkCodexRoute), naming the rejected setting or rule, and on a routed off-model `native-failure`.
  */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
@@ -316,7 +318,8 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   params.collaborationMode = mode;
   return undefined;
 };
-const fail = (code: CodexOpenError['code']) => ({ kind: 'error', error: Object.freeze({ code }) }) as const;
+const fail = (code: CodexOpenError['code'], message?: string) =>
+  ({ kind: 'error', error: Object.freeze(message === undefined ? { code } : { code, message }) }) as const;
 
 export async function openCodexExecution(options: CodexExecutionOptions):
 Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'native-failure'; readonly message?: string }>> {
@@ -345,6 +348,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
    */
   const offModel = (value: unknown) => route !== undefined && (!record(value) || value.model !== route.model);
+  // Natively a resumed thread keeps its persisted model unless thread/resume names one.
+  const resumeOffModel = 'the thread is on another model than the route; resume it with params.model = route.model';
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
   const executionEvents = createEventStream<CodexExecutionEvent>(streamBounds);
   const sessions = new Set<Session>();
@@ -539,8 +544,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
       // A thread on another provider than the bound requester's (routed or direct) runs off it: never a session.
       if (!thread || !text(thread.id) || !uuid.test(thread.id) || thread.historyMode !== 'paginated' || thread.ephemeral !== false
-        || thread.modelProvider !== bound.value.provider || offModel(reply.kind === 'result' ? reply.value : undefined)) {
+        || thread.modelProvider !== bound.value.provider) {
         return fail('native-failure');
+      }
+      if (offModel(reply.kind === 'result' ? reply.value : undefined)) {
+        return fail('native-failure', 'the thread started on another model than the route model');
       }
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value.binding,
         opaque: thread.id });
@@ -595,7 +603,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         : thread?.id !== threadId ? 'identity-mismatch'
           // A thread native resumed on another provider than the requester's runs off it; it never becomes a session.
           : thread.modelProvider !== provider || offModel(reply.value) ? 'native-failure' : closed ? 'closed' : undefined;
-      if (refused) { keep(lease); return fail(refused); }
+      if (refused) {
+        keep(lease);
+        return fail(refused, refused === 'native-failure' && thread?.modelProvider === provider ? resumeOffModel : undefined);
+      }
       return { kind: 'ok', value: Object.freeze({ kind: 'resumed', session: attach(threadId, reference, lease, 'resumed',
         reply.kind === 'result' ? reply.value : null) }) };
     } finally {

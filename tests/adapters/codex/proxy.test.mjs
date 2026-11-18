@@ -6,6 +6,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 
 const src = new URL('../../../src/', import.meta.url).href;
 const target = new URL('adapters/codex/proxy.ts', src).href;
@@ -13,7 +14,9 @@ const target = new URL('adapters/codex/proxy.ts', src).href;
 const call = "const resolved = await resolve.call(auth, { boundary: 'request', invocationId, requestId: randomUUID() }, requestSignal);";
 // `fast` is not a broken control: a short connection lifetime so the idle and flood tests run in well under a second.
 const mutations = new Map([['fast', ['connectionTimeoutMs: 10000', 'connectionTimeoutMs: 1000']], ['env-key', ["[`${at}.auth.command`]: command,", "[`${at}.env_key`]: 'LITELLM_API_KEY', [`${at}.auth.command`]: command,"]],
-  ['cached', [call, call.replace('await resolve.call(', 'await (globalThis.me4lCache ??= resolve.call(').replace(/;$/, ');')]]]);
+  ['cached', [call, call.replace('await resolve.call(', 'await (globalThis.me4lCache ??= resolve.call(').replace(/;$/, ');')]],
+  // Broken control: a routed config that leaves native multi-agent on, so a sub-agent can pick its own model.
+  ['multi-agent', ["'features.multi_agent': false, 'features.multi_agent_v2': false };", '};']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
@@ -35,6 +38,7 @@ const proxy = await import(target);
 const envKey = await import(`${target}?mutant=env-key`);
 const cached = await import(`${target}?mutant=cached`);
 const fast = await import(`${target}?mutant=fast`);
+const multiAgent = await import(`${target}?mutant=multi-agent`);
 const { codexSessions } = await import(new URL('adapters/codex/sessions.ts', src).href);
 const { createAuthContext } = await import(new URL('core/auth.ts', src).href);
 const { serializeDiagnostic, summarizeDiagnostic } = await import(new URL('core/diagnostics.ts', src).href);
@@ -98,7 +102,8 @@ test('the proxy config is the exact provider override map with command auth and 
     'model_providers.litellm.supports_websockets': false, 'model_providers.litellm.request_max_retries': 0,
     'model_providers.litellm.stream_max_retries': 0, 'model_providers.litellm.requires_openai_auth': false,
     'model_providers.litellm.auth.command': helper.command, 'model_providers.litellm.auth.args': helper.args,
-    'model_providers.litellm.auth.timeout_ms': 5000, 'model_providers.litellm.auth.refresh_interval_ms': 300000 };
+    'model_providers.litellm.auth.timeout_ms': 5000, 'model_providers.litellm.auth.refresh_interval_ms': 300000,
+    'features.multi_agent': false, 'features.multi_agent_v2': false };
   assert.deepEqual(config.overrides, overrides);
   assert.deepEqual(config.args, Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]));
   assert(Object.isFrozen(config) && Object.isFrozen(config.overrides) && Object.isFrozen(config.args));
@@ -112,6 +117,11 @@ test('the generated config round-trips through config/read into a routed bind; d
   const fake = appServer(configRead(proxy.codexProxyConfig(route, options).config.args), routed);
   t.after(() => rmSync(fake.home, { recursive: true, force: true }));
   assert.match((await bind(fake, true)).value.account, /^litellm-proxy:sha256:[0-9a-f]{64}$/);
+  // Multi-agent is off as config/read reports it: a sub-agent's spawn_agent model would bypass the route model.
+  const multiAgentOff = (args) => isDeepStrictEqual(configRead(args).features, { multi_agent: false, multi_agent_v2: false });
+  assert.equal(multiAgentOff(proxy.codexProxyConfig(route, options).config.args), true);
+  // Broken control: without the pin the routed config leaves native multi-agent on.
+  assert.equal(multiAgentOff(multiAgent.codexProxyConfig(route, options).config.args), false);
   // No route: provider command auth has no native login to bind, so there is no subscription or stored-key passthrough.
   assert.deepEqual(await bind(fake, false), { kind: 'error', error: { code: 'inaccessible' } });
   // Broken control: a static env-key credential in the generated entry is refused by the routed check.

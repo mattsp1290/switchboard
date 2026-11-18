@@ -88,6 +88,7 @@ const supported = (qualification: CodexFeatureQualification, carriers: CodexFeat
 Capability<CodexFeatureSupport> => Object.freeze({ kind: 'supported', api: Object.freeze({ qualification, note,
   carriers: Object.freeze(Object.fromEntries(Object.entries(carriers).map(([at, keys]) => [at, Object.freeze([...keys])]))) }) });
 const unsupported = (reason: string): Capability<CodexFeatureSupport> => Object.freeze({ kind: 'unsupported', reason });
+const unavailable = (reason: string): Capability<CodexFeatureSupport> => Object.freeze({ kind: 'unavailable', reason });
 const everyTarget = (start: readonly string[], resume = start, turn = start): CodexFeatureCarriers =>
   ({ 'thread/start': start, 'thread/resume': resume, 'turn/start': turn });
 const gate = 'initialize capabilities.experimentalApi === true';
@@ -107,8 +108,13 @@ export const codexFeatureCapabilities = Object.freeze({
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
   'routing': supported('fixture-only', { options: ['route'], 'app-server': ['codexProxyConfig'] },
     'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
-    + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. Live LiteLLM '
-    + 'qualification is owned by switchboard-ov4y.'),
+    + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. A thread that '
+    + 'starts or resumes on another model is native-failure: resume it with params.model = route.model. Routed config '
+    + 'disables multi-agent (multi-agent-under-route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
+  'multi-agent-under-route': unavailable('Under a proxy route, codexProxyConfig sets features.multi_agent and '
+    + 'features.multi_agent_v2 to false: a sub-agent spawn_agent model argument would send requests on a model the model '
+    + 'chose, bypassing the route model. The host cannot re-enable it: routed thread config is refused. Direct mode keeps '
+    + 'native multi-agent.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
     + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),

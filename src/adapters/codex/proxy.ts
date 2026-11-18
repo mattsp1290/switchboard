@@ -43,6 +43,7 @@ const whole = (value: unknown, min: number, max: number, fallback: number): numb
  * The `-c` overrides that put a Codex app-server on `route` with host-resolved command auth (codex-native-api.md,
  * LiteLLM route). Exactly what sessions.ts `routedProvider` admits: no `env_key`, bearer token, ChatGPT or forced
  * login, or `openai_base_url`, so no subscription or stored-key passthrough; no retries, so a 401 renews once and fails.
+ * Multi-agent (v1 and v2) is off: an explicit route restriction (features.ts `multi-agent-under-route`), not a default.
  */
 export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
 { readonly config: CodexProxyConfig } | { readonly problem: string } {
@@ -69,7 +70,11 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
       [`${at}.name`]: 'LiteLLM', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
       [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
       [`${at}.requires_openai_auth`]: false, [`${at}.auth.command`]: command, [`${at}.auth.args`]: Object.freeze(args as string[]),
-      [`${at}.auth.timeout_ms`]: timeout, [`${at}.auth.refresh_interval_ms`]: refresh };
+      [`${at}.auth.timeout_ms`]: timeout, [`${at}.auth.refresh_interval_ms`]: refresh,
+      // A sub-agent's spawn_agent `model` argument (multi_agent_v1 namespace, on by default in 0.169.0; collaboration
+      // namespace under multi_agent_v2) sends requests on a model the model picked, bypassing route.model. -c outranks a
+      // home or project config.toml, and routed thread config is refused, so nothing re-enables either.
+      'features.multi_agent': false, 'features.multi_agent_v2': false };
     return { config: Object.freeze({ overrides: Object.freeze(overrides),
       args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
   } catch { return { problem: 'proxy options could not be read' }; }
