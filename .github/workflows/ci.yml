@@ -66,7 +66,8 @@ jobs:
   codex-native:
     name: Linux native Codex fixtures
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Ran 8m26s at f877ab5; 20 leaves headroom over the 10-minute limit it nearly hit.
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803

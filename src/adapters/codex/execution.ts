@@ -625,16 +625,19 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     void promise.then(() => { listener[Symbol.dispose](); resolve(); });
   });
   /** `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel). */
-  function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CleanupStep> {
-    return (turn.interrupting ??= until(turn.identified.promise, deadline).then(async () => {
+  async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CleanupStep> {
+    const result = await (turn.interrupting ??= until(turn.identified.promise, deadline).then(async () => {
       const { phase } = turn;
-      if (phase.kind !== 'identified' || turn.settled) {
+      if (phase.kind !== 'identified' || turn.settled || deadline.aborted) {
         // Nothing was written: a still-pending turn may yet be identified, so a later interrupt or close tries again.
         if (!turn.settled && phase.kind !== 'orphaned') turn.interrupting = undefined;
         return 'not-needed';
       }
       return step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
     }));
+    // A joined attempt ran on its starter's deadline; if that expired unwritten, retry within this caller's own.
+    const retry = result === 'not-needed' && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
+    return retry ? interrupt(session, turn, deadline) : result;
   }
   async function shutdown(session: Session): Promise<CodexSessionCloseReport> {
     if (session.state === 'open') session.state = 'closing';

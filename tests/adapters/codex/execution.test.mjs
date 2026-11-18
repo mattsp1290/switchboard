@@ -830,6 +830,28 @@ test('an interrupt that expires before the turn is identified does not stop clos
   assert.equal(f.sent.filter((method) => method === 'turn/start').length, 1);
 });
 
+test('close that joins a waiting interrupt keeps its own deadline for a turn identified after the earlier one', async (t) => {
+  const id = randomUUID();
+  const f = appServer(t, world(id), { turn: hold });
+  const execution = await open(t, real, f, real.createCodexWriters(4), { bounds: { ...bounds, cleanupTimeoutMs: 400 } });
+  const session = await resumed(execution, id);
+  const acknowledged = f.hold('turn/start');
+  const turn = await turnOn(session);
+  const running = turn.run();
+  while (!f.sent.includes('turn/start')) await settle();
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const interrupting = session.interrupt();
+  await delay(200);
+  const closing = session.close();
+  assert.equal(await interrupting, 'not-needed', 'the earlier deadline ran out before the turn had a native id');
+  await delay(50);
+  acknowledged.open();
+  await running;
+  assert.deepEqual(await closing, { interrupt: 'replied', unsubscribe: 'replied', released: false });
+  assert.equal((await turn.completion).terminal.status, 'interrupted');
+  assert.equal(f.sent.filter((method) => method === 'turn/interrupt').length, 1);
+});
+
 test('close reuses an in-flight interrupt and never sends a second turn/interrupt', async (t) => {
   const id = randomUUID();
   const f = appServer(t, world(id), { turn: hold });
