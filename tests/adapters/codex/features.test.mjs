@@ -64,9 +64,9 @@ function appServer() {
     'initialize': () => ({ codexHome: home, userAgent: 'fake/0.169.0' }),
     'config/read': () => ({ config: { sqlite_home: '/private/index', log_dir: '/private/logs' } }),
     'account/read': () => ({ account: { type: 'apiKey' } }),
-    'thread/start': () => ({ thread: { id: randomUUID(), historyMode: 'paginated', ephemeral: false, status: { type: 'idle' } } }),
-    'thread/read': ({ threadId }) => ({ thread: { id: threadId, historyMode: 'paginated', status: { type: 'notLoaded' } } }),
-    'thread/resume': ({ threadId }) => ({ thread: { id: threadId, turns: [] } }),
+    'thread/start': () => ({ thread: { id: randomUUID(), historyMode: 'paginated', ephemeral: false, status: { type: 'idle' }, modelProvider: 'openai' } }),
+    'thread/read': ({ threadId }) => ({ thread: { id: threadId, historyMode: 'paginated', status: { type: 'notLoaded' }, modelProvider: 'openai' } }),
+    'thread/resume': ({ threadId }) => ({ thread: { id: threadId, turns: [], modelProvider: 'openai' } }),
     'turn/start': ({ threadId }) => {
       const id = randomUUID();
       queueMicrotask(() => send({ method: 'turn/completed', params: { threadId, turn: { id, status: 'completed', items: [], error: null } } }));

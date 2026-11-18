@@ -99,7 +99,8 @@ function keys(value: object, allowed: readonly string[]): boolean {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-function endpointValid(value: unknown): value is string {
+/** Proxy endpoint rules shared with adapter route validation (codex/route.ts): http(s), no credentials, query or fragment. */
+export function endpointValid(value: unknown): value is string {
   if (!text(value, 8192) || value.trim() !== value
     || !/^https?:\/\/[^/?#\\@]+(?:[/?#]|$)/iu.test(value) || value.includes('\\')) return false;
   try {

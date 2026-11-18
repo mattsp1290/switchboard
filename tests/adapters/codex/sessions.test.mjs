@@ -34,7 +34,7 @@ const hang = (signal) => new Promise((resolve) => signal.addEventListener('abort
   () => resolve({ kind: 'uncertain', reason: 'aborted' }), { once: true }));
 const thread = (threadId, historyMode = 'paginated', status = 'notLoaded') =>
   ({ result: { thread: { id: threadId, historyMode, status: status === 'active' ? { type: status, activeFlags: [] } : { type: status },
-    path: null, cwd: '/tmp/project', cliVersion: '0.169.0', turns: [], extra: true } } });
+    path: null, cwd: '/tmp/project', cliVersion: '0.169.0', modelProvider: 'openai', turns: [], extra: true } } });
 
 function makeHome(t, files) {
   const dir = mkdtempSync(join(tmpdir(), 'pg51-'));
@@ -387,7 +387,7 @@ test('prepareResume rechecks binding, requester and availability on every call w
   const fake = server(home, { threads, account: () => requester });
   const persisted = JSON.parse(JSON.stringify(session(home, id(1))));
   const ready = await codexSessions.prepareResume({ ...access(fake), reference: persisted });
-  assert.deepEqual(ready, { kind: 'ok', value: { kind: 'ready', reference: session(home, id(1)), threadId: id(1) } });
+  assert.deepEqual(ready, { kind: 'ok', value: { kind: 'ready', reference: session(home, id(1)), threadId: id(1), provider: 'openai' } });
   assert(Object.isFrozen(ready.value.reference) && ready.value.reference !== persisted);
   const again = await codexSessions.prepareResume({ ...access(fake), reference: persisted });
   assert.deepEqual(again, ready, 'Repeat preparation succeeds: nothing is reserved');
