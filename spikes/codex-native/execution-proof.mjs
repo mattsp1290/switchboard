@@ -101,7 +101,8 @@ for (const [check, passed] of Object.entries(checks)) assert(passed, `Native exe
 const pinned = { X1: { snapshot: X1.snapshot, eventKinds: X1.eventKinds, nativeMethods: X1.nativeMethods, turnStartedSeen: X1.turnStartedSeen,
   usageSeen: X1.usageSeen, usage: X1.usage }, X2: { resumeTurns: X2.resumeTurns }, X5: { unsubscribe: X5.close?.unsubscribe ?? null,
   reopen: X5.reopen, afterReopen: X5.afterReopen ?? null }, X6: { completion: X6.completion, inferenceBeforeExit: X6.inferenceBeforeExit },
-  X7: { snapshot: X7.snapshot, completion: X7.completion, error: X7.raw.error, turnEventsWithin500ms: X7.turnEventsWithin500ms },
+  // Timing-dependent counts (events within 500 ms of the rejection) differ across hosts; they stay raw, never pinned.
+  X7: { snapshot: X7.snapshot, completion: X7.completion, error: X7.raw.error },
   X8: { errorNotification: X8.errorNotification } };
 console.log(JSON.stringify({ pinned }));
 const recorded = JSON.parse(readFileSync(join(here, 'execution-proof-result.json'), 'utf8'));

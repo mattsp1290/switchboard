@@ -48,7 +48,7 @@ Each decoded session event carries `evidence` from `codexNotificationEvidence`. 
 | X8 | accepted stream disconnect | `failed`, delta seen, one inference | error notification and `willRetry` |
 | X9 | abort during `initialize` (stdout buffered) | `closed`, one detach, nothing reserved, fresh open creates | — |
 
-Every report records each native error reply raw (`raw.nativeErrors`: method, code, message), and X7 the session events behind its pinned count (`raw.turnEvents`). Module-only (inert tests, not native): the broken early-release controls (release at cleanup start, release after cleanup), early-notification overflow, late cleanup from an earlier generation, slow-observer isolation and bound refusals.
+Every report records each native error reply raw (`raw.nativeErrors`: method, code, message), and X7 its session events within 500 ms of the rejection (`turnEventsWithin500ms`, `raw.turnEvents`). That count is timing-dependent (1 on the first arm64 run, 0 on a later x64 CI run), so it is recorded but not pinned. Module-only (inert tests, not native): the broken early-release controls (release at cleanup start, release after cleanup), early-notification overflow, late cleanup from an earlier generation, slow-observer isolation and bound refusals.
 
 ## Not covered
 
