@@ -8,6 +8,8 @@ import type { EventObserver, EventStream } from '../../core/events.js';
 import { copyBinding, parseSessionReference, sessionLimits } from '../../core/sessions.js';
 import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, SessionReference,
   SessionReferenceError } from '../../core/sessions.js';
+import { resolveCodexFeatures } from './features.js';
+import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
 import { codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
@@ -61,8 +63,9 @@ export interface CodexExecutionOptions {
    */
   readonly processExit: PromiseLike<unknown>;
 }
+/** `message` is present only on a typed-feature `invalid-input` (features.ts), naming the rejected setting. */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
-  | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch' };
+  | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
 export type CodexEvidence = 'qualified' | 'unqualified';
 /**
  * Per-method label carried on every decoded event. `qualified`: the pinned 0.169.0 binary emitted the method with this
@@ -115,6 +118,8 @@ export interface CodexTurnOptions {
   readonly input: readonly unknown[];
   /** Other `TurnStartParams`, passed through; `threadId` and `input` are refused. */
   readonly params?: Readonly<Record<string, unknown>>;
+  /** Typed `turn/start` overrides merged into `params` (features.ts); a conflict is `invalid-input` and nothing is sent. */
+  readonly features?: CodexTurnFeatures;
   readonly signal: AbortSignal;
   readonly recordIntent: FreshDispatchOptions<CodexTurnResult>['recordIntent'];
   readonly lifecycle?: Pick<EventStream<DispatchLifecycle>, 'publish'>;
@@ -137,7 +142,7 @@ export interface CodexSession {
   readonly origin: 'created' | 'resumed';
   readonly native: unknown;
   readonly events: EventObserver<CodexSessionEvent>;
-  readonly turn: (options: CodexTurnOptions) => Outcome<CodexTurn, { readonly code: 'busy' | 'closed' | 'invalid-input' }>;
+  readonly turn: (options: CodexTurnOptions) => Outcome<CodexTurn, { readonly code: 'busy' | 'closed' | 'invalid-input'; readonly message?: string }>;
   /** The session's event stream keeps delivering its thread's notifications until the transport ends. */
   readonly close: () => Promise<CodexSessionCloseReport>;
   /**
@@ -149,13 +154,14 @@ export interface CodexSession {
 }
 export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: CodexSession }
   | Exclude<CodexResumePreparation, { readonly kind: 'ready' }>;
-type Access = { readonly bounds: SessionDiscoveryBounds; readonly signal: AbortSignal;
-  readonly params?: Readonly<Record<string, unknown>> };
+/** `features` are typed native settings merged into `params` (features.ts); a conflict is `invalid-input`, unsent. */
+type Access<Features = CodexThreadFeatures> = { readonly bounds: SessionDiscoveryBounds; readonly signal: AbortSignal;
+  readonly params?: Readonly<Record<string, unknown>>; readonly features?: Features };
 export interface CodexExecution {
   /** pg51 scope over this connection, for `codexSessions` reads. Writer methods go only through this module. */
   readonly scope: CodexSessionScope;
   readonly events: EventObserver<CodexExecutionEvent>;
-  readonly create: (options: Access) => Promise<Outcome<CodexSession, CodexOpenError>>;
+  readonly create: (options: Access<CodexStartFeatures>) => Promise<Outcome<CodexSession, CodexOpenError>>;
   readonly resume: (options: Access & { readonly binding: SessionBinding; readonly reference: unknown })
     => Promise<Outcome<CodexResumeResult, CodexOpenError>>;
   readonly close: () => Promise<{ readonly transport: CloseReport; readonly retained: number }>;
@@ -285,10 +291,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     if (![maxSessions, maxObservers, eventCapacity, maxEarlyNotifications].every((value) => positive(value))
       || ![cleanupTimeoutMs, acknowledgementTimeoutMs].every((value) => positive(value, 2147483647))
       || !positive(maxObservers * eventCapacity)) return invalid;
-    captured = { channel, transportBounds, home, initialize: { ...initialize }, onServerRequest, signal, processExit, state,
+    // Read once: a later host mutation of `initialize.capabilities` cannot change the features gate (features.ts).
+    const experimentalApi = record(initialize.capabilities) && initialize.capabilities.experimentalApi === true;
+    captured = { channel, transportBounds, home, initialize: { ...initialize }, experimentalApi, onServerRequest, signal, processExit, state,
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
-  const { home, state: writers, bounds, signal } = captured;
+  const { home, state: writers, bounds, signal, experimentalApi } = captured;
   const streamBounds = { maxObservers: bounds.maxObservers, capacity: bounds.eventCapacity };
   const executionEvents = createEventStream<CodexExecutionEvent>(streamBounds);
   const sessions = new Set<Session>();
@@ -456,12 +464,15 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         return turn ? interrupt(session, turn, AbortSignal.timeout(bounds.cleanupTimeoutMs)) : 'not-needed';
       } });
   }
-  async function create(access: Access): Promise<Outcome<CodexSession, CodexOpenError>> {
+  async function create(access: Access<CodexStartFeatures>): Promise<Outcome<CodexSession, CodexOpenError>> {
     let params;
     let wait;
     try {
       params = passthrough(access.params, ['ephemeral']);
       if (!params || !(access.signal instanceof AbortSignal)) return invalid;
+      const resolved = resolveCodexFeatures('thread/start', access.features, params, experimentalApi);
+      if (resolved.kind === 'error') return resolved;
+      params = resolved.value;
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
     const refused = admit(wait);
@@ -496,6 +507,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const binding = copyBinding(access.binding);
       params = passthrough(access.params, ['threadId', 'history', 'path']);
       if (!binding || !params || !(access.signal instanceof AbortSignal)) return invalid;
+      const resolved = resolveCodexFeatures('thread/resume', access.features, params, experimentalApi);
+      if (resolved.kind === 'error') return resolved;
+      params = resolved.value;
       parsed = parseSessionReference({ value: access.reference, expected: binding });
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
@@ -538,9 +552,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     let handle: DispatchHandle<CodexTurnResult>;
     const turn = newTurn();
     try {
-      const { hostOperationId, input, params: extra, signal: hostSignal, recordIntent, lifecycle } = options;
-      const params = passthrough(extra, ['threadId', 'input']);
-      if (!Array.isArray(input) || !params || !(hostSignal instanceof AbortSignal)) return invalid;
+      const { hostOperationId, input, params: extra, features, signal: hostSignal, recordIntent, lifecycle } = options;
+      const raw = passthrough(extra, ['threadId', 'input']);
+      if (!Array.isArray(input) || !raw || !(hostSignal instanceof AbortSignal)) return invalid;
+      const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
+      if (resolved.kind === 'error') return resolved;
+      const params = resolved.value;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
       handle = createDispatchOperation<CodexTurnResult>({ mode: 'fresh', identity, recordIntent,
         signal: AbortSignal.any([hostSignal, session.abort.signal]), ...(lifecycle ? { events: lifecycle } : {}),
