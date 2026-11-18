@@ -125,6 +125,8 @@ const pinned = {
 };
 console.log(JSON.stringify({ pinned }));
 console.log(JSON.stringify({ checks }));
+// A large report can still be queued on a pipe; an assertion exit would drop it and the lines above.
+await new Promise((resolve) => process.stdout.write('', resolve));
 for (const [check, passed] of Object.entries(checks)) assert(passed, `Native interaction proof ${check}`);
 const recorded = JSON.parse(readFileSync(join(here, 'interaction-proof-result.json'), 'utf8'));
 // A recorded outcome enforces the pin; a pending record (outcome null) only reports, as the execution proof first did.
