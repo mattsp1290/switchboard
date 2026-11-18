@@ -286,7 +286,9 @@ test('the capability table labels evidence honestly, with carriers per target an
   assert.deepEqual(table.model.api.carriers['turn/start'], ['model', 'effort']);
   assert.equal(table.model.api.carriers['thread/start'].includes('effort'), false);
   assert.equal(table['dynamic-tools-after-start'].kind, 'unsupported');
-  assert.deepEqual(table.routing, { kind: 'unsupported', reason: 'Provider, endpoint and model mapping are owned by switchboard-me4l.' });
+  assert.equal(table.routing.api.qualification, 'fixture-only');
+  assert.deepEqual(table.routing.api.carriers, { options: ['route'], 'app-server': ['codexProxyConfig'] });
+  assert.match(table.routing.api.note, /synthetic loopback only.*switchboard-ov4y/);
   for (const name of ['config-overrides', 'plugins-and-capability-roots', 'environments', 'opaque-events']) {
     assert.equal(table[name].api.qualification, 'passthrough-unqualified', name);
   }

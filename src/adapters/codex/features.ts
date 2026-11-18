@@ -77,7 +77,7 @@ export type CodexFeatureTarget = 'thread/start' | 'thread/resume' | 'turn/start'
  */
 export type CodexFeatureQualification = 'qualified' | 'fixture-only' | 'typed-unqualified' | 'passthrough-unqualified';
 /** Native fields carrying the feature, per request or channel; a target that is absent has no such field. */
-export type CodexFeatureCarriers = Readonly<Partial<Record<CodexFeatureTarget | 'onServerRequest' | 'notifications',
+export type CodexFeatureCarriers = Readonly<Partial<Record<CodexFeatureTarget | 'onServerRequest' | 'notifications' | 'options' | 'app-server',
   readonly string[]>>>;
 export interface CodexFeatureSupport {
   readonly qualification: CodexFeatureQualification;
@@ -105,7 +105,9 @@ export const codexFeatureCapabilities = Object.freeze({
     `Experimental thread/start.dynamicTools; requires ${gate}. The only evidence is the switchboard-bd21 diagnostic fixture `
     + 'recorded at src/core/frontend-restore.ts:168-169: a warm item/tool/call reply observation, not production qualification.'),
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
-  'routing': unsupported('Provider, endpoint and model mapping are owned by switchboard-me4l.'),
+  'routing': supported('fixture-only', { options: ['route'], 'app-server': ['codexProxyConfig'] },
+    'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
+    + 'LiteLLM route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
     + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),
