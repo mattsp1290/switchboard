@@ -178,19 +178,29 @@ export function codexHostRouteConfig(route: unknown): { readonly config: CodexPr
   try {
     const checked = copyCodexHostRoute(route);
     if (!checked) return { problem: 'host route is invalid' };
-    const { providerId, endpoint, model, credentialForm, envKey, headerEnv, helperCommand, sqliteHome, logDir } = checked;
+    const { providerId, endpoint, model, sqliteHome, logDir } = checked;
     const at = `model_providers.${providerId}`;
     const overrides: Record<string, CodexProxyValue> = { model_provider: providerId, model,
       [`${at}.name`]: 'Host', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
       [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
       [`${at}.requires_openai_auth`]: false, sqlite_home: sqliteHome, log_dir: logDir };
-    if (credentialForm === 'bearer' && envKey !== undefined) overrides[`${at}.env_key`] = envKey;
-    if (headerEnv) for (const [name, variable] of Object.entries(headerEnv)) overrides[`${at}.env_http_headers.${name}`] = variable;
-    if (credentialForm === 'helper' && helperCommand) {
-      overrides[`${at}.auth.command`] = helperCommand.command;
-      overrides[`${at}.auth.args`] = helperCommand.args;
-      overrides[`${at}.auth.timeout_ms`] = 5000;
-      overrides[`${at}.auth.refresh_interval_ms`] = 300000;
+    switch (checked.credentialForm) {
+      case 'bearer':
+        overrides[`${at}.env_key`] = checked.envKey;
+        if (checked.headerEnv) for (const [name, variable] of Object.entries(checked.headerEnv)) overrides[`${at}.env_http_headers.${name}`] = variable;
+        break;
+      case 'helper':
+        overrides[`${at}.auth.command`] = checked.helperCommand.command;
+        overrides[`${at}.auth.args`] = checked.helperCommand.args;
+        overrides[`${at}.auth.timeout_ms`] = 5000;
+        overrides[`${at}.auth.refresh_interval_ms`] = 300000;
+        break;
+      case 'none':
+        break;
+      default: {
+        const leftover: never = checked;
+        void leftover;
+      }
     }
     return { config: Object.freeze({ overrides: Object.freeze(overrides),
       args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };

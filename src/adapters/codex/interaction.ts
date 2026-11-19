@@ -30,6 +30,12 @@ export const codexServerRequestSupport = Object.freeze({
   'execCommandApproval': 'refused',
   'currentTime/read': 'refused',
 } as const satisfies Record<string, 'approval' | 'refused'>);
+/** `item/tool/call` and `item/tool/requestUserInput` stay refused in the table unless the host admits them. */
+function admittedHostMethod(method: string, admitted: { readonly tools: boolean; readonly userInput: boolean }): 'host' | undefined {
+  if (admitted.tools && method === 'item/tool/call') return 'host';
+  if (admitted.userInput && method === 'item/tool/requestUserInput') return 'host';
+  return undefined;
+}
 /** `qualified`: the pinned binary sent this request to a v2 client in a native run (probe.mjs decline). */
 export const codexApprovalEvidence = Object.freeze({
   'item/commandExecution/requestApproval': 'qualified',
@@ -236,8 +242,8 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   const settled = new Map<string, Entry>();
   const hostTools = options.declaredTools !== undefined || userInput;
   function supportFor(method: string): 'approval' | 'host' | 'refused' {
-    if (options.declaredTools !== undefined && method === 'item/tool/call') return 'host';
-    if (userInput && method === 'item/tool/requestUserInput') return 'host';
+    const admitted = admittedHostMethod(method, { tools: options.declaredTools !== undefined, userInput });
+    if (admitted) return admitted;
     return Object.hasOwn(codexServerRequestSupport, method)
       ? codexServerRequestSupport[method as keyof typeof codexServerRequestSupport] : 'refused';
   }
@@ -324,7 +330,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
 
   /** Native evidence routed to the attached session by execution (thread, turn, item and request IDs, never order). */
   function observe(threadId: string, attached: Attached, event: CodexSessionEvent): void {
-    onHostEvidence(threadId, event);
+    hostLedger.onEvent(threadId, event);
     const entries = () => [...live.values(), ...settled.values()].filter((entry) => entry.threadId === threadId);
     if (event.kind === 'turn-completed') {
       attached.ended.push(event.turnId);
@@ -358,7 +364,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
 
   async function onServerRequest(request: IncomingCall, signal: AbortSignal): Promise<RpcReply> {
     const support = supportFor(request.method);
-    if (support === 'host') return hostServerRequest(request, signal);
+    if (support === 'host') return hostLedger.take(request, signal);
     if (support !== 'approval') return refuse(request, 'unsupported');
     const method = request.method as Entry['method'];
     const params = record(request.params) ? request.params : {};
@@ -383,7 +389,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       expected: pending });
     if (checked.kind === 'error' || live.has(id) || settled.has(id)) return refuse(request, 'malformed');
     // Refused while a transport handler slot remains (maxPending < maxHandlers), so a burst never reaches overflow.
-    if (live.size + hostLive.size >= maxPending) return refuse(request, 'capacity');
+    if (live.size + hostLedger.size >= maxPending) return refuse(request, 'capacity');
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
@@ -449,7 +455,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       id = target?.nativeApprovalId;
     } catch { return fail({ code: 'invalid-input' }); }
     if (typeof recordIntent !== 'function' || !(signal instanceof AbortSignal)) return fail({ code: 'invalid-input' });
-    if (kind === 'tool') return hostTools ? replyHost(value, recordIntent, signal) : fail({ code: 'unsupported', feature: 'tool' });
+    if (kind === 'tool') return hostTools ? hostLedger.reply(value, recordIntent, signal) : fail({ code: 'unsupported', feature: 'tool' });
     if (kind === 'delegation') return fail({ code: 'unsupported', feature: 'delegation' });
     if (kind !== 'approval' || typeof id !== 'string') return fail({ code: 'invalid-input' });
     // Lookup is by native identity only; a host correlation ID never names a target.
@@ -482,7 +488,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (!user && !declared.has(`${namespace ?? ''}\0${name}`)) return refuse(request, 'unsupported');
     const id = JSON.stringify([request.id, turnId, callId]);
     if (hostLive.has(id) || hostSettled.has(id)) return refuse(request, 'malformed');
-    if (live.size + hostLive.size >= maxPending) return refuse(request, 'capacity');
+    if (live.size + hostLedger.size >= maxPending) return refuse(request, 'capacity');
     if (attached.ended.includes(turnId)) return withdrawnReply;
     const target: ToolTarget = Object.freeze({ kind: 'tool', session: attached.session.reference, nativeToolCallId: id });
     const call: CodexHostCall = Object.freeze({ method: user ? 'item/tool/requestUserInput' : 'item/tool/call', name,
@@ -521,6 +527,12 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     entry.finish(replyValue);
     return { kind: 'ok', value: Object.freeze({ nativeChoiceId: entry.id, delivery: unknown }) };
   }
+  const hostLedger = {
+    get size() { return hostLive.size; },
+    onEvent: onHostEvidence,
+    take: hostServerRequest,
+    reply: replyHost,
+  };
 
   return { kind: 'ok', value: Object.freeze({ onServerRequest, attach, reply, events: Object.freeze({ subscribe: stream.subscribe }),
     pending: () => Object.freeze([...live.values()].map((entry) => entry.pending)),

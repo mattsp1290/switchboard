@@ -26,10 +26,12 @@ export interface CodexSessionScope {
    */
   readonly initialize: { readonly codexHome: string };
   /**
-   * The host-selected LiteLLM proxy route this app-server runs under, if any. Absent: direct mode, the requester is the
-   * native login. Present: the requester is the host-asserted route principal (route.ts); an invalid route is
+   * The route this app-server runs under, `litellm-proxy` or `host-route`, if any. Absent: direct mode, the requester is
+   * the native login. Present: the requester is the host-asserted route principal (route.ts); an invalid route is
    * `invalid-input` before any native request. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct app-server over one home would not exclude each other's writers.
+   * An off-model refusal is `litellm-proxy` only. A host route refuses `modelProvider` and `config` and does not pin
+   * sandbox or approvals in its config.
    */
   readonly route?: CodexProxyRoute | CodexHostRoute;
 }
@@ -138,13 +140,21 @@ function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute):
   if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
     || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
   if (!stacksClear(entry)) return false;
-  if (route.credentialForm === 'none') return emptyValue(entry.env_key) && emptyValue(entry.auth) && headersMatch(entry, {});
-  if (route.credentialForm === 'bearer') {
-    return entry.env_key === route.envKey && emptyValue(entry.auth) && headersMatch(entry, route.headerEnv ?? {});
+  switch (route.credentialForm) {
+    case 'none':
+      return emptyValue(entry.env_key) && emptyValue(entry.auth) && headersMatch(entry, {});
+    case 'bearer':
+      return entry.env_key === route.envKey && emptyValue(entry.auth) && headersMatch(entry, route.headerEnv ?? {});
+    case 'helper':
+      return record(entry.auth) && entry.auth.command === route.helperCommand.command
+        && JSON.stringify(entry.auth.args) === JSON.stringify(route.helperCommand.args)
+        && emptyValue(entry.env_key) && headersMatch(entry, {});
+    default: {
+      const leftover: never = route;
+      void leftover;
+      return false;
+    }
   }
-  const command = route.helperCommand;
-  return command !== undefined && record(entry.auth) && entry.auth.command === command.command
-    && JSON.stringify(entry.auth.args) === JSON.stringify(command.args) && emptyValue(entry.env_key) && headersMatch(entry, {});
 }
 const emptyValue = (value: unknown) => value == null || (record(value) && Object.keys(value).length === 0);
 const providerStacks = ['http_headers', 'query_params', 'gateway_oauth', 'aws', 'credential_file'] as const;

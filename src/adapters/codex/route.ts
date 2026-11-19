@@ -102,25 +102,23 @@ export function codexRoutePrincipal(route: CodexProxyRoute): string {
  * `sqliteHome` and `logDir` are the host's paths, absolute and outside `CODEX_HOME`. The helper form is the existing
  * command auth; `bearer` names environment variables and never carries a secret; `none` is an unauthenticated loopback.
  */
-export interface CodexHostRoute {
+type CodexHostRouteBase = {
   readonly kind: 'host-route';
   readonly providerId: string;
   readonly endpoint: string;
   readonly protocol: 'responses';
-  readonly credentialForm: 'none' | 'helper' | 'bearer';
   readonly principal: string;
   readonly loopbackRelay: boolean;
   readonly model: string;
   readonly scope: { readonly engine: string; readonly account: string };
   readonly sqliteHome: string;
   readonly logDir: string;
-  /** Bearer only: the environment variable name Codex reads. Never the secret. */
-  readonly envKey?: string;
-  /** Header name to environment variable name. Values stay in the host environment. */
-  readonly headerEnv?: Readonly<Record<string, string>>;
-  /** Helper only: the native command the host configured. */
-  readonly helperCommand?: { readonly command: string; readonly args: readonly string[] };
-}
+};
+export type CodexHostRoute = CodexHostRouteBase & (
+  | { readonly credentialForm: 'none' }
+  | { readonly credentialForm: 'bearer'; readonly envKey: string; readonly headerEnv?: Readonly<Record<string, string>> }
+  | { readonly credentialForm: 'helper'; readonly helperCommand: { readonly command: string; readonly args: readonly string[] } }
+);
 const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 const headerName = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$/u;
 const loopbackHost = (hostname: string) => {
@@ -166,21 +164,23 @@ export function checkCodexHostRoute(value: unknown): { readonly route: CodexHost
     if (credentialForm === 'none' && !(loopbackRelay && loopbackHost(url.hostname))) {
       return { problem: 'no-auth is only a loopback relay the host marked' };
     }
-    let copiedEnv: string | undefined;
-    let copiedHeaders: Readonly<Record<string, string>> | undefined;
-    let copiedHelper: CodexHostRoute['helperCommand'];
+    const base = Object.freeze({ kind, providerId, endpoint, protocol, principal, loopbackRelay, model,
+      scope: Object.freeze({ engine, account }), sqliteHome, logDir });
     if (credentialForm === 'bearer') {
       if (typeof envKey !== 'string' || !envName.test(envKey)) return { problem: 'bearer envKey must be an environment variable name' };
-      copiedEnv = envKey;
+      if (helperCommand !== undefined) return { problem: 'helperCommand is only admitted on the helper form' };
+      let headerEnvCopy: Readonly<Record<string, string>> | undefined;
       if (headerEnv !== undefined) {
         if (!record(headerEnv)) return { problem: 'bearer headerEnv must be an object of header names to variable names' };
         const entries = Object.entries(headerEnv);
         if (!entries.every(([name, variable]) => headerName.test(name) && typeof variable === 'string' && envName.test(variable))) {
           return { problem: 'bearer headerEnv entries must be header names and environment variable names' };
         }
-        copiedHeaders = Object.freeze(Object.fromEntries(entries.filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
+        headerEnvCopy = Object.freeze(Object.fromEntries(entries.filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
       }
-    } else if (envKey !== undefined || headerEnv !== undefined) {
+      return { route: Object.freeze({ ...base, credentialForm, envKey, ...(headerEnvCopy === undefined ? {} : { headerEnv: headerEnvCopy }) }) };
+    }
+    if (envKey !== undefined || headerEnv !== undefined) {
       return { problem: 'envKey and headerEnv are only admitted on the bearer form' };
     }
     if (credentialForm === 'helper') {
@@ -188,15 +188,10 @@ export function checkCodexHostRoute(value: unknown): { readonly route: CodexHost
         || !Array.isArray(helperCommand.args) || !helperCommand.args.every((arg) => plain(arg))) {
         return { problem: 'helper command must be an absolute path and plain arguments' };
       }
-      copiedHelper = Object.freeze({ command: helperCommand.command, args: Object.freeze([...helperCommand.args]) });
-    } else if (helperCommand !== undefined) {
-      return { problem: 'helperCommand is only admitted on the helper form' };
+      return { route: Object.freeze({ ...base, credentialForm, helperCommand: Object.freeze({ command: helperCommand.command,
+        args: Object.freeze([...helperCommand.args]) }) }) };
     }
-    return { route: Object.freeze({ kind, providerId, endpoint, protocol, credentialForm, principal, loopbackRelay, model,
-      scope: Object.freeze({ engine, account }), sqliteHome, logDir,
-      ...(copiedEnv === undefined ? {} : { envKey: copiedEnv }),
-      ...(copiedHeaders === undefined ? {} : { headerEnv: copiedHeaders }),
-      ...(copiedHelper === undefined ? {} : { helperCommand: copiedHelper }) }) };
+    return { route: Object.freeze({ ...base, credentialForm: 'none' }) };
   } catch { return { problem: 'host route could not be read' }; }
 }
 export function copyCodexHostRoute(value: unknown): CodexHostRoute | undefined {

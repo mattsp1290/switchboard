@@ -243,7 +243,7 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       const routed = options.route != null;
       let prepared: PreparedRoute = { args: featureArgs(enabled, options.subagents, routed) };
       if (routed && native.sandbox === 'danger-full-access') {
-        return fail({ code: 'invalid-input', message: 'a host route refuses danger-full-access' });
+        return fail({ code: 'invalid-input', message: 'a routed session refuses danger-full-access' });
       }
       const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
       if (!timerBound(handlerTimeoutMs)) return fail({ code: 'invalid-input', message: 'handlerTimeoutMs is outside 1..2147483647' });
@@ -413,7 +413,7 @@ async function openAdapter(ready: {
   async function credentialOk(hostSignal: AbortSignal): Promise<HostAdapterError | undefined> {
     const route = options.route;
     const host = ready.prepared.host;
-    if (!route || !host || host.credentialForm !== 'bearer' || !host.envKey) return undefined;
+    if (!route || !host || host.credentialForm !== 'bearer') return undefined;
     const auth = createAuthContext({ config: route.config, scope: { ...route.scope, sessionId: session?.threadId ?? 'new', adapterInstanceId: identity.adapter } });
     if (auth.kind === 'error') return { code: 'unavailable', feature: 'credential', message: 'bearer credential is unavailable' };
     const invocationId = createHash('sha256').update(session?.threadId ?? native.home).digest('hex');
