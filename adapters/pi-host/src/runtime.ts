@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { InMemoryCredentialStore, InMemoryModelsStore, PI_AI_VERSION } from '@earendil-works/pi-ai';
@@ -15,14 +15,8 @@ import type {
 } from '#switchboard';
 import { piHostIdentity, piHostLimits, validatePiHostSessionState } from './contract.js';
 import type { PiHostAdapter, PiHostModelEvent, PiHostOpenOptions, PiHostSessionState, PiHostTurn } from './contract.js';
-
-interface HostRequestBody {
-  readonly model: string;
-  readonly protocol: string;
-  readonly instructions: string;
-  readonly turns: readonly PiHostTurn[];
-  readonly tools: readonly HostToolDeclaration[];
-}
+import { admitPiHostTransport } from './route.js';
+import type { PiHostRouteBody, PiHostTransport } from './route.js';
 
 const providerId = 'switchboard-host';
 const modelId = 'host';
@@ -200,7 +194,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
-function hostProvider(load: (body: HostRequestBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, sink: Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure'] }): Provider {
+function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, sink: Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
   const model: Model<string> = {
     id: modelId, name: 'host', api: providerId, provider: providerId, baseUrl: 'http://127.0.0.1:9', reasoning: false,
     input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
@@ -209,7 +203,7 @@ function hostProvider(load: (body: HostRequestBody, signal: AbortSignal) => Prom
     const stream = new AssistantMessageEventStream();
     void (async () => {
       try {
-        const body: HostRequestBody = { model: modelId, protocol: 'switchboard-host', instructions,
+        const body: PiHostRouteBody = { model: modelId, protocol: 'switchboard-host', instructions,
           turns: turnsFrom(messages, segment()), tools };
         const requestSignal = signal ?? new AbortController().signal;
         const loaded = await load(body, requestSignal);
@@ -221,7 +215,8 @@ function hostProvider(load: (body: HostRequestBody, signal: AbortSignal) => Prom
         const collected = collectEvents(loaded, names, answered);
         note.failure = collected.failure;
         emitAssistant(stream, collected, sink);
-      } catch {
+      } catch (error) {
+        if (error instanceof OpenRefusal) note.refusal = error.failure;
         const failed: AssistantMessage = { ...modelMessage(), stopReason: 'error', errorMessage: 'The host stream failed.' };
         stream.push({ type: 'error', reason: 'error', error: failed });
       }
@@ -245,7 +240,7 @@ function modelMessage(): AssistantMessage {
     usage: usageCounters(), stopReason: 'error', timestamp: Date.now() };
 }
 
-async function eventsFromStream(stream: NonNullable<PiHostOpenOptions['stream']>, body: HostRequestBody, signal: AbortSignal): Promise<readonly PiHostModelEvent[]> {
+async function eventsFromStream(stream: NonNullable<PiHostOpenOptions['stream']>, body: PiHostRouteBody, signal: AbortSignal): Promise<readonly PiHostModelEvent[]> {
   const events: PiHostModelEvent[] = [];
   for await (const event of stream({ instructions: body.instructions, turns: body.turns, tools: body.tools, signal })) {
     if (signal.aborted) break;
@@ -261,6 +256,12 @@ function identifier(value: string, limit: number): boolean {
     if (code <= 31 || (code >= 127 && code <= 159)) return false;
   }
   return true;
+}
+
+async function eventsFromRoute(transport: Extract<PiHostTransport, { kind: 'route' }>, body: PiHostRouteBody, signal: AbortSignal): Promise<readonly PiHostModelEvent[]> {
+  const result = await transport.request(body, signal);
+  if (result.kind === 'error') throw new OpenRefusal(result.error);
+  return result.events;
 }
 
 function requireOptions(options: PiHostOpenOptions, signal: AbortSignal): {
@@ -314,21 +315,25 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
   let directory: string | undefined;
   try {
     const admitted = requireOptions(options, signal);
-    if (options.route !== undefined) {
-      return { kind: 'error', error: { code: 'invalid-input', message: 'A host stream admits no route.' } };
-    }
-    if (options.stream === undefined) {
-      return { kind: 'error', error: { code: 'invalid-input', message: 'The host stream is missing.' } };
-    }
-    const stream = options.stream;
+    const transportResult = admitPiHostTransport({
+      stream: options.stream !== undefined, route: options.route, invocationId: randomUUID(),
+    });
+    if (transportResult.kind === 'error') return transportResult;
+    const active = options.stream !== undefined
+      ? { kind: 'stream' as const, stream: options.stream }
+      : transportResult.value.kind === 'route' ? transportResult.value
+        : undefined;
+    if (active === undefined) return { kind: 'error', error: { code: 'invalid-input', message: 'The host stream is missing.' } };
     directory = await mkdtemp(join(admitted.tempRoot, 'pi-host-'));
     const names = new Set(admitted.tools.map((tool) => tool.name));
     const answered = new Set<string>();
     const executed: string[] = [];
-    const note: { failure?: Collected['failure'] } = {};
+    const note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined } = { refusal: undefined };
     let segmentNumber = admitted.state === undefined ? 1
       : admitted.state.turns.reduce((max, turn) => Math.max(max, turn.segment), 0) + 1;
-    const load = (body: HostRequestBody, requestSignal: AbortSignal) => eventsFromStream(stream, body, requestSignal);
+    const load = (body: PiHostRouteBody, requestSignal: AbortSignal) => active.kind === 'stream'
+      ? eventsFromStream(active.stream, body, requestSignal)
+      : eventsFromRoute(active, body, requestSignal);
     const sink = {
       text: (delta: string) => { publish({ kind: 'text-delta', nativeItemId: 'assistant', text: delta }); },
       tool: (call: { id: string; name: string; arguments: unknown }, phase: 'start' | 'end') => {
@@ -386,8 +391,8 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     };
     const binding: SessionBinding = {
       engine: 'pi', nativeVersion: PI_AI_VERSION,
-      account: 'host',
-      authorizedScope: 'host-stream',
+      account: options.route?.scope.account ?? 'host',
+      authorizedScope: active.kind === 'route' ? active.principal : 'host-stream',
       nativeFormat: 'pi-host-state-v1',
     };
     const parsed = parseSessionReference({
@@ -432,8 +437,11 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       if (signal.aborted) throw new OpenRefusal({ code: 'native-failure', message: 'The segment was aborted.' });
       const assistant = session.messages.findLast((message) => message.role === 'assistant');
       const failure = note.failure;
+      const refusal = note.refusal;
       note.failure = undefined;
+      note.refusal = undefined;
       const usage = hostUsage(assistant?.role === 'assistant' ? assistant.usage.input : 0, assistant?.role === 'assistant' ? assistant.usage.output : 0);
+      if (refusal) return { kind: 'model-failed', error: refusal };
       if (failure === 'limit') return { kind: 'model-failed', error: { code: 'pending-limit', message: 'The assistant message asked for more host calls than the pending limit.' } };
       if (failure === 'mixed') return { kind: 'model-failed', error: { code: 'invalid-input', message: 'A mixed tool batch is not a host-tool set.' } };
       if (failure === 'duplicate') return { kind: 'model-failed', error: { code: 'invalid-input', message: 'One call identifier cannot have two results.' } };

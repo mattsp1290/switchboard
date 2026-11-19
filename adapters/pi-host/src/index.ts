@@ -10,7 +10,7 @@ export type {
 
 /**
  * In-process Pi host adapter. A host stream reaches the model with no socket and no credential.
- * Subscription passthrough is absent. This adapter does not admit a host route.
+ * A host-declared route is admitted only when the host supplies no stream. Subscription passthrough is absent.
  */
 export const piHostAdapter = Object.freeze({
   identity: piHostIdentity,
