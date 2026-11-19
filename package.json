@@ -39,6 +39,16 @@
     "./observability": {
       "types": "./dist/observability/index.d.ts",
       "import": "./dist/observability/index.js"
+    },
+    "./host/pi": {
+      "types": "./dist/host/pi/index.d.ts",
+      "import": "./dist/host/pi/index.js"
+    }
+  },
+  "imports": {
+    "#switchboard": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [
@@ -54,10 +64,11 @@
   "packageManager": "npm@11.19.1",
   "scripts": {
     "clean": "node --input-type=module -e 'import { rmSync } from \"node:fs\"; rmSync(\"dist\", { recursive: true, force: true });'",
-    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex && npm run build:claude",
+    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex && npm run build:claude && npm run build:pi-host",
     "lint": "oxlint --deny-warnings .",
-    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude",
-    "test": "node --test \"tests/**/*.test.mjs\"",
+    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude && npm run check:pi-host",
+    "test": "node --import ./tests/support/native-sdk-tripwire.mjs --test \"tests/**/*.test.mjs\"",
+    "test:native-isolated": "node scripts/isolated-native-tests.mjs",
     "test:codex-guarded": "node scripts/codex-guarded-tests.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:compiler": "node spikes/native-compiler/support/run.mjs \"$npm_execpath\"",
@@ -68,6 +79,8 @@
     "check:codex": "tsc -p adapters/codex/tsconfig.json --noEmit",
     "build:claude": "tsc -p adapters/claude/tsconfig.json",
     "check:claude": "tsc -p adapters/claude/tsconfig.json --noEmit",
+    "build:pi-host": "tsc -p adapters/pi-host/tsconfig.json",
+    "check:pi-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/pi-host/tsconfig.json --noEmit",
     "verify:observability:lotel": "node scripts/verify-observability-lotel.mjs",
     "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
   },

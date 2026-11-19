@@ -65,6 +65,7 @@ try {
     './host/codex': { types: './dist/adapters/codex/index.d.ts', import: './dist/adapters/codex/index.js' },
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
     './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
+    './host/pi': { types: './dist/host/pi/index.d.ts', import: './dist/host/pi/index.js' },
   });
   assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@opentelemetry/api': '1.9.0' });
   assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
@@ -74,6 +75,9 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
   for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
   assert.doesNotMatch(readFileSync(join(installed, 'dist/pi/index.d.ts'), 'utf8'), /@earendil-works/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.d.ts'), 'utf8'), /@earendil-works/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/contract.d.ts'), 'utf8'), /@earendil-works/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.js'), 'utf8'), /from ['"]\.\/runtime\.js['"]/);
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 declare const runtime: PiRuntime;
@@ -100,6 +104,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return resolved;
 } });
 const switchboard = await import('${manifest.name}');
+const hostPi = await import('${manifest.name}/host/pi');
+assert.equal(hostPi.piHostAdapter.identity.adapter, 'pi-host');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.throws(() => createRequire(import.meta.url).resolve('@opentelemetry/api'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
@@ -227,15 +233,18 @@ void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedR
   assert(!/\/@(?:openai|anthropic-ai|earendil-works)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'readiness-types.json'], consumer);
 
-  const piConsumer = join(temporary, 'pi');
-  mkdirSync(piConsumer);
-  writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  process.stdout.write(runNpm([
-    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-    `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
-    `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
-  ], piConsumer));
-  writeFileSync(join(piConsumer, 'runtime.mjs'), `
+  // These two consumers execute the packed adapters, which load the Pi and Codex SDKs.
+  // The ordinary test preloads the tripwire and must not. `npm run verify:package` does not, and runs them.
+  function verifyPackagedNativeRuntimes() {
+    const piConsumer = join(temporary, 'pi');
+    mkdirSync(piConsumer);
+    writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    process.stdout.write(runNpm([
+      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+      `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
+      `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
+    ], piConsumer));
+    writeFileSync(join(piConsumer, 'runtime.mjs'), `
 import assert from 'node:assert/strict';
 const pi = await import('${manifest.name}/pi');
 assert.equal(typeof pi.createPiRuntime, 'function');
@@ -249,18 +258,18 @@ try {
   assert.match(session.sessionFile, /\\.jsonl$/);
 } finally { await runtime.close(); }
 `);
-  run(process.execPath, ['runtime.mjs'], piConsumer);
+    run(process.execPath, ['runtime.mjs'], piConsumer);
 
-  const codexConsumer = join(temporary, 'codex');
-  mkdirSync(codexConsumer);
-  writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  process.stdout.write(runNpm([
-    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-    `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
-  ], codexConsumer));
-  const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
-  writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
-  writeFileSync(join(codexConsumer, 'runtime.mjs'), `
+    const codexConsumer = join(temporary, 'codex');
+    mkdirSync(codexConsumer);
+    writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    process.stdout.write(runNpm([
+      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+      `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
+    ], codexConsumer));
+    const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
+    writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
+    writeFileSync(join(codexConsumer, 'runtime.mjs'), `
 import { strict as assert } from 'node:assert';
 import { createCodexRuntime } from '${manifest.name}/codex';
 const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
@@ -272,7 +281,14 @@ try {
   assert.equal((await turn.finished).outcome, 'completed');
 } finally { await runtime.close(); }
 `);
-  run(process.execPath, ['runtime.mjs'], codexConsumer);
+    run(process.execPath, ['runtime.mjs'], codexConsumer);
+  }
+
+  if (process.execArgv.some((arg) => arg.includes('native-sdk-tripwire'))) {
+    console.log('Skipping packaged Pi and Codex runtime consumers while the native SDK tripwire is loaded.');
+  } else {
+    verifyPackagedNativeRuntimes();
+  }
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });
