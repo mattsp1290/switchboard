@@ -2,7 +2,7 @@
 
 Switchboard supplies reusable interfaces and native adapters for a Node host.
 The foundation supplies public adapter contracts, session envelope validation, bounded event streams, and package verification.
-Native adapters ship for the SDK text lanes. Codex session discovery, resume preparation and turn execution exist only as private app-server components (below); the packed Codex app-server adapter remains future work.
+Native adapters ship for the SDK text lanes. The Codex host adapter is the `./host/codex` entry and is built on the private app-server components below. It does not replace the `./codex` text adapter.
 The private core package has no mandatory runtime dependencies.
 The optional `./agui` integration requires the exact peer `@ag-ui/core@1.0.4`.
 The optional `./testkit` entry supplies controlled qualification scenarios without an AG-UI peer.
