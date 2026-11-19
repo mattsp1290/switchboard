@@ -10,7 +10,7 @@ import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, Ses
   SessionReferenceError } from '../../core/sessions.js';
 import { resolveCodexFeatures } from './features.js';
 import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
-import { checkCodexRoute, copyCodexHostRoute } from './route.js';
+import { checkCodexHostRoute, checkCodexRoute } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester, codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
@@ -373,8 +373,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const state = registries.get(options.writers ?? processWriters);
     let route: CodexProxyRoute | CodexHostRoute | undefined;
     if (rawRoute !== undefined && record(rawRoute) && rawRoute.kind === 'host-route') {
-      route = copyCodexHostRoute(rawRoute);
-      if (!route) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: 'host route is invalid' }) };
+      const checked = checkCodexHostRoute(rawRoute);
+      if ('problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
+      route = checked.route;
     } else {
       const checked = rawRoute === undefined ? undefined : checkCodexRoute(rawRoute);
       if (checked && 'problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
@@ -401,9 +402,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    */
   const offModel = (value: unknown) => proxy !== undefined && (!record(value) || value.model !== proxy.model);
   /**
-   * Under a route, a start or resume reply whose `sandbox` is not `readOnly` or `workspaceWrite` without network, or whose
-   * `approvalPolicy` is not `"never"`, is never a session: defence in depth behind the resume `read-only` default, since a
-   * turn without `sandboxPolicy` runs on the thread's reported profile (codex-native-api.md, Proxy-routed requester).
+   * Reply confinement for both route kinds. A host route still does not rewrite model, sandbox, or approvals
+   * on the way out; `refuseHostRedirect` only blocks `modelProvider` and `config`. A start or resume reply whose
+   * `sandbox` is outside `readOnly` or `workspaceWrite` without network, or whose `approvalPolicy` is not `"never"`,
+   * is never a session.
    */
   const unconfined = (value: unknown, verb: string) => {
     if (route === undefined) return undefined;

@@ -530,6 +530,31 @@ test('a blind bridge observer is reported and its live approvals stay answerable
   assert.deepEqual(ctx.f.replies, [{ id: 'blind-1', result: { decision: 'decline' } }]);
 });
 
+test('a second host tool reply is duplicate-interaction and a completion without a string turn id does not deliver', async (t) => {
+  const ctx = await setup(t, { declaredTools: [{ name: 'lookup', namespace: 'application' }] });
+  const [session] = ctx.sessions;
+  await turnOn(session);
+  const turnId = ctx.f.turns.get(session.threadId);
+  ctx.f.request('tool-1', 'item/tool/call', { threadId: session.threadId, turnId, callId: 'call-1', namespace: 'application',
+    tool: 'lookup', arguments: { city: 'Paris' } });
+  await settle();
+  const call = ctx.events.find((event) => event.kind === 'host-call');
+  assert.ok(call);
+  const value = { formatVersion: 1, kind: 'tool', outcome: { target: call.call.pending.target,
+    result: { kind: 'ok', value: { namespace: 'host', schemaVersion: 1, data: { text: 'ok' } } },
+    effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } };
+  assert.equal((await reply(ctx, value)).kind, 'ok');
+  assert.deepEqual(await reply(ctx, value), refusedError('duplicate-interaction'));
+  const before = ctx.events.filter((event) => event.kind === 'host-delivery').length;
+  ctx.f.notify('item/completed', { threadId: session.threadId, item: { id: 'call-1', type: 'dynamicToolCall' } });
+  ctx.f.notify('item/completed', { threadId: session.threadId, turnId: 'other-turn', item: { id: 'call-1', type: 'dynamicToolCall' } });
+  await settle();
+  assert.equal(ctx.events.filter((event) => event.kind === 'host-delivery').length, before);
+  ctx.f.notify('item/completed', { threadId: session.threadId, turnId, item: { id: 'call-1', type: 'dynamicToolCall' } });
+  await settle();
+  assert.equal(ctx.events.filter((event) => event.kind === 'host-delivery').length, before + 1);
+});
+
 test('an evicted settled approval answers stale instead of duplicate', async (t) => {
   const ctx = await setup(t, { maxSettled: 1 });
   const [session] = ctx.sessions;

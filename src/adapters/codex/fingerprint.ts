@@ -30,7 +30,7 @@ async function rollouts(root: string, dir: string, suffix: string, found: string
     const real = resolve(path);
     if (!inside(real, root)) continue;
     if (stat.isDirectory()) await rollouts(root, path, suffix, found, depth + 1);
-    else if (stat.isFile() && entry.name.endsWith(suffix) && stat.size <= limitBytes) found.push(path);
+    else if (stat.isFile() && entry.name.endsWith(suffix)) found.push(path);
   }
 }
 

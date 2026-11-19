@@ -122,15 +122,12 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
   stop === 'cancelled' ? 'cancelled' : stop === 'duration' ? 'bounds-exceeded' : 'native-failure';
 
 /**
- * The native provider entry must be exactly the host route with command auth only (codex-native-api.md, Proxy-routed
- * requester): `config/read` echoes `base_url` verbatim and lists no built-in provider (`ollama`, `openai`), so a
- * built-in id, another endpoint, another wire API, or an env-key or static bearer credential is refused. Native
- * multi-agent must be pinned off as `codexProxyConfig` sets it (`config.features.multi_agent` and `multi_agent_v2`
- * both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses the route model.
- * The sandbox must be `read-only` (the `codexProxyConfig` pin) or `workspace-write`, never `danger-full-access`, with
- * `network_access` `false` and no `default_permissions`, since a networked shell can take route tokens from the broker.
- * `approval_policy` must be exactly `"never"` (native reports `-c approval_policy="never"` as that string and an unset
- * policy as `null`), since an approved escalated command runs outside the sandbox.
+ * Host-route provider entry. `none`, `bearer`, and `helper` stay distinct.
+ * Bearer is `env_key` plus `env_http_headers` names, never a secret and never `auth.command`.
+ * No-auth is an empty env key, empty auth, and no headers. Helper is the absolute command and its args.
+ * Static stacks (`http_headers`, `query_params`, `gateway_oauth`, `aws`, `credential_file`,
+ * `experimental_bearer_token`) are refused. Confinement is `routeConfined`, the same predicate
+ * `routedProvider` uses; this function does not become command-auth-only.
  */
 function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute): boolean {
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)
@@ -169,6 +166,18 @@ function routeConfined(settings: Record<string, unknown>): boolean {
     && ['read-only', 'workspace-write'].includes(String(settings.sandbox_mode))
     && workspace?.network_access === false && settings.default_permissions == null;
 }
+/**
+ * The native provider entry must be exactly the LiteLLM route with command auth only (codex-native-api.md,
+ * Proxy-routed requester): `config/read` echoes `base_url` verbatim and lists no built-in provider (`ollama`,
+ * `openai`), so a built-in id, another endpoint, another wire API, or an env-key or static bearer credential is
+ * refused. Native multi-agent must be pinned off as `codexProxyConfig` sets it (`config.features.multi_agent` and
+ * `multi_agent_v2` both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses
+ * the route model. The sandbox must be `read-only` (the `codexProxyConfig` pin) or `workspace-write`, never
+ * `danger-full-access`, with `network_access` `false` and no `default_permissions`, since a networked shell can take
+ * route tokens from the broker. `approval_policy` must be exactly `"never"` (native reports
+ * `-c approval_policy="never"` as that string and an unset policy as `null`), since an approved escalated command
+ * runs outside the sandbox.
+ */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
   if (!routeConfined(settings)) return false;
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)

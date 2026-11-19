@@ -18,7 +18,7 @@ import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
 import { createCodexInteraction } from './interaction.js';
 import type { CodexHostCall, CodexInteraction } from './interaction.js';
 import { codexHostRouteConfig, codexProxyConfig } from './proxy.js';
-import { checkCodexRoute, copyCodexHostRoute } from './route.js';
+import { checkCodexHostRoute, checkCodexRoute } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester } from './sessions.js';
 import { openCodexTransport } from './transport.js';
@@ -61,8 +61,12 @@ export type CodexHostLaunch = HostLaunch<
   BorrowedChannel>;
 
 const identity = Object.freeze({ engine: 'codex' as const, adapter: 'codex-host', version: '1', contractVersion: 1 as const });
-/** In-process memory of the declarations sent at thread/start. A fresh process starts empty. */
+/** One pending set per assistant message. The bridge refuses the next call at this same limit. */
+const maxPendingPerMessage = 8;
+const hostCallQuietMs = 30;
+/** In-process memory of the declarations sent at thread/start, keyed by home and thread. A fresh process starts empty. */
 const remembered = new Map<string, string>();
+const declarationKey = (home: string, threadId: string) => `${home}\0${threadId}`;
 const discovery = Object.freeze({ maxResults: 10, maxExamined: 10, maxDurationMs: 5000 });
 const featurePins = [
   { keys: ['shell_tool', 'unified_exec', 'shell_snapshot'], on: (enabled: ReadonlySet<string>) => enabled.has('shell') || enabled.has('shell_tool'),
@@ -134,13 +138,14 @@ function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, nati
   }
   const providerId = native.providerId ?? 'host';
   const helper = config.credentialForm === 'helper' && native.helper !== 'unavailable' && native.helper !== undefined ? native.helper : undefined;
-  const built = copyCodexHostRoute({ kind: 'host-route', providerId, endpoint: config.endpoint, protocol: config.protocol,
+  const checked = checkCodexHostRoute({ kind: 'host-route', providerId, endpoint: config.endpoint, protocol: config.protocol,
     credentialForm: config.credentialForm, principal: config.principal, loopbackRelay: native.loopbackRelay === true,
     model: config.model, scope: { engine: scope.engine, account: scope.account },
     sqliteHome: native.sqliteHome, logDir: native.logDir,
     ...(config.credentialForm === 'bearer' ? { envKey: native.envKey, headerEnv: native.headerEnv } : {}),
     ...(helper ? { helperCommand: helper } : {}) });
-  if (!built) return { problem: 'host route is invalid' };
+  if ('problem' in checked) return { problem: checked.problem };
+  const built = checked.route;
   const configured = codexHostRouteConfig(built);
   if ('problem' in configured) return configured;
   return { route: { host: built, args: configured.config.args } };
@@ -173,7 +178,7 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       }
       const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
       if (!timerBound(handlerTimeoutMs)) return fail({ code: 'invalid-input', message: 'handlerTimeoutMs is outside 1..2147483647' });
-      const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: 9,
+      const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: maxPendingPerMessage,
         transport: { maxHandlers: 16, handlerTimeoutMs }, userInput: enabled.has('request_user_input'),
         declaredTools: (options.tools ?? []).map((tool) => ({ name: tool.name, namespace: 'application' as const })) });
       if (bridgeResult.kind === 'error') return fail({ code: 'invalid-input', message: 'interaction bounds were rejected' });
@@ -227,7 +232,7 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       if (pinned) { await execution.close(); return fail({ code: 'invalid-input', message: pinned }); }
       const bound = await bindCodexRequester({ scope: opened.value.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
       if (bound.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'Codex requester was not admitted' }); }
-      return await finishOpen({ options, signal, native, enabled, prepared, bridge, execution: opened.value, binding: bound.value.binding, variables });
+      return await openAdapter({ options, signal, native, enabled, prepared, bridge, execution: opened.value, binding: bound.value.binding, variables });
     } catch {
       if (execution) await execution.close();
       else if (channel && transportBounds) await releaseSpawned(channel, transportBounds);
@@ -257,17 +262,16 @@ async function pinnedFeatures(request: (call: { method: string; params?: unknown
   return undefined;
 }
 
-function finishOpen(ready: {
+type OpenedExecution = Awaited<ReturnType<typeof openCodexExecution>> extends infer T
+  ? T extends { kind: 'ok'; value: infer V } ? V : never : never;
+
+async function openAdapter(ready: {
   readonly options: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>;
   readonly signal: AbortSignal; readonly native: CodexHostNativeConfig; readonly enabled: ReadonlySet<string>;
   readonly prepared: PreparedRoute; readonly bridge: CodexInteraction;
-  readonly execution: Awaited<ReturnType<typeof openCodexExecution>> extends infer T ? T extends { kind: 'ok'; value: infer V } ? V : never : never;
+  readonly execution: OpenedExecution;
   readonly binding: SessionBinding; readonly variables: Readonly<Record<string, string>>;
 }) {
-  return openAdapter(ready);
-}
-
-async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
   const { options, signal, native, bridge, execution, binding, variables } = ready;
   const tools = options.tools ?? [];
   const canonical = canonicalTools(tools);
@@ -294,7 +298,8 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
   });
   const resume = options.resume;
-  if (resume && remembered.has(resume.session.opaque) && remembered.get(resume.session.opaque) !== canonical) {
+  const resumedKey = resume ? declarationKey(native.home, resume.session.opaque) : undefined;
+  if (resumedKey && remembered.has(resumedKey) && remembered.get(resumedKey) !== canonical) {
     await execution.close();
     return fail({ code: 'invalid-input', message: 'tool declarations are fixed at session creation' });
   }
@@ -314,7 +319,7 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     session = resumed.value.session;
     if (bridge.attach(session).kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'interaction attach failed' }); }
     watch(session);
-    remembered.set(session.threadId, canonical);
+    remembered.set(declarationKey(native.home, session.threadId), canonical);
   }
   function watch(current: CodexSession): void {
     current.events.subscribe((event) => {
@@ -365,32 +370,54 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     const current = segment;
     const active = session;
     if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
-    let quiet = 0;
-    while (true) {
-      const sampled = hostSignal.aborted || turnResult || !turnCompletion ? turnResult
-        : await Promise.race([turnCompletion.then((value) => value), delay(20).then(() => undefined)]);
-      const pending = bridge.hostCalls();
-      quiet = pending.length > 0 ? quiet + 1 : 0;
-      const choice = decideSettle({ aborted: hostSignal.aborted, pending: pending.length, completion: sampled !== undefined, quiet, capacityRefused });
-      switch (choice) {
-        case 'limit':
-          return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-            { kind: 'accepted', evidence: accepted });
-        case 'pending':
-          return pendingSegment(active, current, pending);
-        case 'completion':
-          return sampled ? completionResult(active, current, sampled, accepted, pending)
-            : failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
-        case 'aborted':
-          return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
-        case 'wait':
-          await delay(10);
-          break;
-        default: {
-          const leftover: never = choice;
-          void leftover;
-          return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
-        }
+    const choice = await new Promise<SettleChoice>((resolve) => {
+      let quietTimer: ReturnType<typeof setTimeout> | undefined;
+      let done = false;
+      let dispose = () => {};
+      const finish = (quiet: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(quietTimer);
+        hostSignal.removeEventListener('abort', onAbort);
+        dispose();
+        resolve(decideSettle({ aborted: hostSignal.aborted, pending: bridge.hostCalls().length,
+          completion: turnResult !== undefined, quiet, capacityRefused }));
+      };
+      const onAbort = () => finish(false);
+      const arm = () => {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => finish(true), hostCallQuietMs);
+      };
+      const subscribed = bridge.events.subscribe((event) => {
+        if (event.kind === 'host-call') arm();
+        else if (event.kind === 'refused' && event.reason === 'capacity') finish(false);
+      });
+      if (subscribed.kind === 'ok') dispose = () => subscribed.value.dispose();
+      if (turnResult !== undefined || capacityRefused || hostSignal.aborted || subscribed.kind === 'error') finish(false);
+      else {
+        if (turnCompletion) void turnCompletion.then(() => finish(false));
+        if (bridge.hostCalls().length > 0) arm();
+        hostSignal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+    const pending = bridge.hostCalls();
+    switch (choice) {
+      case 'limit':
+        return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
+          { kind: 'accepted', evidence: accepted });
+      case 'pending':
+        return pendingSegment(active, current, pending);
+      case 'completion':
+        return turnResult ? completionResult(active, current, turnResult, accepted, pending)
+          : failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+      case 'aborted':
+        return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
+      case 'wait':
+        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+      default: {
+        const leftover: never = choice;
+        void leftover;
+        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
       }
     }
   }
@@ -438,7 +465,7 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
         features: threadFeatures(native, options) });
       if (created.kind === 'error') return { kind: 'outcome-unknown' as const };
       session = created.value;
-      remembered.set(session.threadId, canonical);
+      remembered.set(declarationKey(native.home, session.threadId), canonical);
       if (bridge.attach(session).kind === 'error') return { kind: 'outcome-unknown' as const };
       watch(session);
     }
@@ -508,7 +535,7 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     } finally { segment = undefined; }
   }
   const adapter: HostAdapter<'codex'> = { identity, capabilities: Object.freeze({
-    maxPendingPerMessage: 8, continuation: 'same-process', usage: 'cumulative', toolDeclarations: 'fixed-at-creation',
+    maxPendingPerMessage, continuation: 'same-process', usage: 'cumulative', toolDeclarations: 'fixed-at-creation',
     inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: Object.freeze(calls()) }) } },
     fingerprint: { kind: 'supported' as const, api: { validity: 'segment-end' as const, read: async () => {
       if (!session) return fail({ code: 'unavailable', feature: 'fingerprint', message: 'no session is open' });
@@ -527,15 +554,21 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
       const step = await Promise.race([active.interrupt(), delay(timeoutMs).then(() => 'timeout' as const)]);
       return interruptResult(step, turnResult);
     },
-    close: () => closing ??= (async () => { await execution.close(); stream.close(); return { kind: 'ok' as const, value: undefined }; })() };
+    close: () => closing ??= (async () => {
+      const threadId = session?.threadId;
+      await execution.close();
+      if (threadId) remembered.delete(declarationKey(native.home, threadId));
+      stream.close();
+      return { kind: 'ok' as const, value: undefined };
+    })() };
   return { kind: 'ok' as const, value: adapter };
 }
 type SettleChoice = 'limit' | 'completion' | 'pending' | 'wait' | 'aborted';
-function decideSettle(facts: { readonly aborted: boolean; readonly pending: number; readonly completion: boolean; readonly quiet: number; readonly capacityRefused: boolean }): SettleChoice {
+function decideSettle(facts: { readonly aborted: boolean; readonly pending: number; readonly completion: boolean; readonly quiet: boolean; readonly capacityRefused: boolean }): SettleChoice {
   if (facts.aborted) return facts.completion ? 'completion' : 'aborted';
-  if (facts.pending > 8 || facts.capacityRefused) return 'limit';
+  if (facts.pending > maxPendingPerMessage || facts.capacityRefused) return 'limit';
   if (facts.completion) return 'completion';
-  if (facts.pending > 0 && facts.quiet >= 2) return 'pending';
+  if (facts.pending > 0 && facts.quiet) return 'pending';
   return 'wait';
 }
 function interruptResult(step: CleanupStep | 'timeout', completion: CodexTurnCompletion | undefined) {
