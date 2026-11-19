@@ -106,9 +106,10 @@ export const codexFeatureCapabilities = Object.freeze({
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
     'Selects a native model name only. Under a proxy route only route.model is accepted (execution.ts); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
-  'dynamic-tools': supported('fixture-only', { 'thread/start': ['dynamicTools'] },
-    `Experimental thread/start.dynamicTools; requires ${gate}. The only evidence is the switchboard-bd21 diagnostic fixture `
-    + 'recorded at src/core/frontend-restore.ts:168-169: a warm item/tool/call reply observation, not production qualification.'),
+  'dynamic-tools': supported('typed-unqualified', { 'thread/start': ['dynamicTools'] },
+    `Experimental thread/start.dynamicTools; requires ${gate}. The host adapter sends the host's declarations here and `
+    + 'refuses item/tool/call for any tool that was not declared. thread/resume ignores dynamicTools (host-tool-probes A2). '
+    + 'The wire was probed; a production native proof is still typed-unqualified until the host-adapter job records it.'),
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
   'routing': supported('fixture-only', { options: ['route'], 'app-server': ['codexProxyConfig'] },
     'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '

@@ -277,9 +277,9 @@ test('the capability table labels evidence honestly, with carriers per target an
   assert.ok(Object.isFrozen(table));
   assert.equal(table['command-approval-decline'].api.qualification, 'qualified');
   const dynamic = table['dynamic-tools'].api;
-  assert.equal(dynamic.qualification, 'fixture-only');
+  assert.equal(dynamic.qualification, 'typed-unqualified');
   assert.deepEqual(dynamic.carriers, { 'thread/start': ['dynamicTools'] });
-  assert.match(dynamic.note, /experimentalApi.*switchboard-bd21.*frontend-restore\.ts:168-169.*not production qualification/);
+  assert.match(dynamic.note, /experimentalApi.*host adapter.*thread\/resume ignores dynamicTools/);
   for (const name of ['sandbox', 'approval-policy']) assert.match(table[name].api.note, /experimentalApi/);
   assert.deepEqual(table.sandbox.api.carriers, { 'thread/start': ['sandbox', 'permissions'], 'thread/resume': ['sandbox', 'permissions'],
     'turn/start': ['sandboxPolicy', 'permissions'] });

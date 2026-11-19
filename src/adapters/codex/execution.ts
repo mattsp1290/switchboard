@@ -10,8 +10,8 @@ import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, Ses
   SessionReferenceError } from '../../core/sessions.js';
 import { resolveCodexFeatures } from './features.js';
 import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
-import { checkCodexRoute } from './route.js';
-import type { CodexProxyRoute } from './route.js';
+import { checkCodexRoute, copyCodexHostRoute } from './route.js';
+import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester, codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
@@ -73,7 +73,7 @@ export interface CodexExecutionOptions {
    * resumed thread keeps its persisted model, so resume it with `params.model = route.model`. So is one whose reply
    * reports a sandbox other than read-only or workspace-write without network, or an approval policy other than never.
    */
-  readonly route?: CodexProxyRoute;
+  readonly route?: CodexProxyRoute | CodexHostRoute;
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
@@ -171,7 +171,9 @@ export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: Co
   | Exclude<CodexResumePreparation, { readonly kind: 'ready' }>;
 /** `features` are typed native settings merged into `params` (features.ts); a conflict is `invalid-input`, unsent. */
 type Access<Features = CodexThreadFeatures> = { readonly bounds: SessionDiscoveryBounds; readonly signal: AbortSignal;
-  readonly params?: Readonly<Record<string, unknown>>; readonly features?: Features };
+  readonly params?: Readonly<Record<string, unknown>>; readonly features?: Features;
+  /** Placed as native `developerInstructions` on thread/start and thread/resume. */
+  readonly instructions?: string };
 export interface CodexExecution {
   /** pg51 scope over this connection, for `codexSessions` reads. Writer methods go only through this module. */
   readonly scope: CodexSessionScope;
@@ -342,6 +344,16 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   params.collaborationMode = mode;
   return undefined;
 };
+/** Host `instructions` become native `developerInstructions`. An empty string leaves the native default. */
+function placeInstructions(target: string, params: Record<string, unknown>, instructions: unknown) {
+  if (instructions === undefined) return undefined;
+  if (typeof instructions !== 'string') return fail('invalid-input', `${target} instructions must be a string`);
+  if (params.developerInstructions != null && params.developerInstructions !== instructions) {
+    return fail('invalid-input', `${target} developerInstructions conflicts with instructions`);
+  }
+  if (instructions.length > 0) params.developerInstructions = instructions;
+  return undefined;
+}
 const fail = (code: CodexOpenError['code'], message?: string) =>
   ({ kind: 'error', error: Object.freeze(message === undefined ? { code } : { code, message }) }) as const;
 
@@ -351,9 +363,15 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   try {
     const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit, route: rawRoute } = options;
     const state = registries.get(options.writers ?? processWriters);
-    const checked = rawRoute === undefined ? undefined : checkCodexRoute(rawRoute);
-    if (checked && 'problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
-    const route = checked?.route;
+    let route: CodexProxyRoute | CodexHostRoute | undefined;
+    if (rawRoute !== undefined && record(rawRoute) && rawRoute.kind === 'host-route') {
+      route = copyCodexHostRoute(rawRoute);
+      if (!route) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: 'host route is invalid' }) };
+    } else {
+      const checked = rawRoute === undefined ? undefined : checkCodexRoute(rawRoute);
+      if (checked && 'problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
+      route = checked?.route;
+    }
     if (!state || !record(bounds) || !record(initialize) || typeof onServerRequest !== 'function'
       || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0
       || typeof (processExit as { then?: unknown } | null)?.then !== 'function') return invalid;
@@ -367,17 +385,20 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
   const { home, state: writers, bounds, signal, experimentalApi, route } = captured;
+  /** LiteLLM pins apply only to that route. A host route keeps the host's sandbox, model and approvals. */
+  const proxy = route?.kind === 'litellm-proxy' ? route : undefined;
   /**
    * Under a route, a start or resume reply whose `model` is not `route.model` is never a session: natively (0.169.0) a
    * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
    */
-  const offModel = (value: unknown) => route !== undefined && (!record(value) || value.model !== route.model);
+  const offModel = (value: unknown) => proxy !== undefined && (!record(value) || value.model !== proxy.model);
   /**
    * Under a route, a start or resume reply whose `sandbox` is not `readOnly` or `workspaceWrite` without network, or whose
    * `approvalPolicy` is not `"never"`, is never a session: defence in depth behind the resume `read-only` default, since a
    * turn without `sandboxPolicy` runs on the thread's reported profile (codex-native-api.md, Proxy-routed requester).
    */
   const unconfined = (value: unknown, verb: string) => {
+    if (route?.kind === 'host-route') return undefined;
     if (route === undefined) return undefined;
     const sandbox = record(value) && record(value.sandbox) ? value.sandbox : undefined;
     if (!sandbox || !['readOnly', 'workspaceWrite'].includes(sandbox.type as string) || (sandbox.networkAccess ?? false) !== false) {
@@ -564,7 +585,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('thread/start', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
-      const overridden = routeOverride(route, 'thread/start', params);
+      const placed = placeInstructions('thread/start', params, access.instructions);
+      if (placed) return placed;
+      const overridden = routeOverride(proxy, 'thread/start', params);
       if (overridden) return overridden;
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
@@ -611,7 +634,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('thread/resume', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
-      const overridden = routeOverride(route, 'thread/resume', params);
+      const placed = placeInstructions('thread/resume', params, access.instructions);
+      if (placed) return placed;
+      const overridden = routeOverride(proxy, 'thread/resume', params);
       if (overridden) return overridden;
       parsed = parseSessionReference({ value: access.reference, expected: binding });
       wait = AbortSignal.any([access.signal, opening.signal]);
@@ -669,7 +694,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
-      const overridden = routeOverride(route, 'turn/start', params);
+      const overridden = routeOverride(proxy, 'turn/start', params);
       if (overridden) return overridden;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
       handle = createDispatchOperation<CodexTurnResult>({ mode: 'fresh', identity, recordIntent,

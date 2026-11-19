@@ -7,8 +7,8 @@ import { copyBinding, parseSessionReference, sessionLimits, validateSessionDisco
 import type { SessionAccess, SessionBinding, SessionDiscovery, SessionDiscoveryBounds, SessionDiscoveryDiagnostic,
   SessionDiscoveryPage, SessionInspection, SessionInspectionResult, SessionOperationError, SessionReference,
   SessionReferenceError } from '../../core/sessions.js';
-import { codexRoutePrincipal, copyCodexRoute } from './route.js';
-import type { CodexProxyRoute } from './route.js';
+import { codexHostRoutePrincipal, codexRoutePrincipal, copyCodexHostRoute, copyCodexRoute } from './route.js';
+import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import type { CodexTransport } from './transport.js';
 
 /**
@@ -31,7 +31,7 @@ export interface CodexSessionScope {
    * `invalid-input` before any native request. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct app-server over one home would not exclude each other's writers.
    */
-  readonly route?: CodexProxyRoute;
+  readonly route?: CodexProxyRoute | CodexHostRoute;
 }
 /** The only app-server methods this module sends. Every one is a read; none dispatches, resumes or writes. */
 export const codexSessionMethods = Object.freeze(['config/read', 'account/read', 'getConversationSummary', 'thread/read'] as const);
@@ -43,7 +43,7 @@ export type CodexResumePreparation =
   | Exclude<SessionInspectionResult, { readonly kind: 'available' }>;
 type Access = SessionAccess<CodexSessionScope>;
 type Run = { readonly home: string; readonly request: CodexSessionScope['request']; readonly bounds: SessionDiscoveryBounds;
-  readonly signal: AbortSignal; readonly deadline: number; readonly route: CodexProxyRoute | undefined };
+  readonly signal: AbortSignal; readonly deadline: number; readonly route: CodexProxyRoute | CodexHostRoute | undefined };
 type Reply = { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly code: number; readonly message: string };
 type Stop = 'cancelled' | 'duration' | 'failed';
 type Ending = { readonly kind: 'complete' } | { readonly kind: 'cancelled' }
@@ -81,7 +81,8 @@ function admit(options: unknown): Run | undefined {
     if (!record(options) || !record(options.scope)) return undefined;
     const { scope: { home, request, initialize, route: rawRoute }, bounds: rawBounds, signal } = options;
     const bounds = validateSessionDiscoveryBounds(rawBounds);
-    const route = rawRoute === undefined ? undefined : copyCodexRoute(rawRoute);
+    const route = rawRoute === undefined ? undefined
+      : record(rawRoute) && rawRoute.kind === 'host-route' ? copyCodexHostRoute(rawRoute) : copyCodexRoute(rawRoute);
     if (rawRoute !== undefined && !route) return undefined;
     if (!text(home) || !isAbsolute(home) || home !== resolve(home)
       || !record(initialize) || initialize.codexHome !== home || typeof request !== 'function' || !(signal instanceof AbortSignal) || bounds.kind === 'error') return undefined;
@@ -131,6 +132,26 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * `approval_policy` must be exactly `"never"` (native reports `-c approval_policy="never"` as that string and an unset
  * policy as `null`), since an approved escalated command runs outside the sandbox.
  */
+function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute): boolean {
+  if (settings.model_provider !== route.providerId || !record(settings.model_providers)
+    || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
+  const entry = settings.model_providers[route.providerId];
+  if (!record(entry) || entry.base_url !== route.endpoint || entry.wire_api !== 'responses'
+    || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return false;
+  if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
+    || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
+  if (route.credentialForm === 'none') return entry.env_key == null && entry.auth == null;
+  if (route.credentialForm === 'bearer') {
+    const headers = record(entry.env_http_headers) ? entry.env_http_headers : {};
+    const expected = route.headerEnv ?? {};
+    return entry.env_key === route.envKey && entry.auth == null
+      && Object.keys(headers).length === Object.keys(expected).length
+      && Object.entries(expected).every(([name, variable]) => headers[name] === variable);
+  }
+  const command = route.helperCommand;
+  return command !== undefined && record(entry.auth) && entry.auth.command === command.command
+    && JSON.stringify(entry.auth.args) === JSON.stringify(command.args) && entry.env_key == null;
+}
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
   if (settings.approval_policy !== 'never') return false;
   if (!record(settings.features) || settings.features.multi_agent !== false
@@ -180,13 +201,18 @@ async function requester(run: Run): Promise<Outcome<Requester, SessionOperationE
     const path = settings[key];
     if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
-  if (run.route && !routedProvider(settings, run.route)) return failure('inaccessible');
+  if (run.route?.kind === 'host-route' && !hostProvider(settings, run.route)) return failure('inaccessible');
+  if (run.route?.kind === 'litellm-proxy' && !routedProvider(settings, run.route)) return failure('inaccessible');
   const provider = effectiveProvider(settings);
   if (!provider) return failure('native-failure');
   const reply = await call(run, 'account/read', { refreshToken: false });
   if (typeof reply === 'string') return failure(operation(reply));
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
   const { account, userId, requiresOpenaiAuth } = reply.value;
+  if (run.route?.kind === 'host-route') {
+    return account === null && requiresOpenaiAuth === false
+      ? { kind: 'ok', value: { principal: codexHostRoutePrincipal(run.route), provider } } : failure('inaccessible');
+  }
   if (run.route) {
     return account === null && requiresOpenaiAuth === false
       ? { kind: 'ok', value: { principal: codexRoutePrincipal(run.route), provider } } : failure('inaccessible');
