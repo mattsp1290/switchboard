@@ -365,23 +365,33 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     const current = segment;
     const active = session;
     if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
-    const limited = (): HostSegmentResult => {
-      capacityRefused = false;
-      return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-        { kind: 'accepted', evidence: accepted });
-    };
     let quiet = 0;
     while (true) {
       const sampled = hostSignal.aborted || turnResult || !turnCompletion ? turnResult
         : await Promise.race([turnCompletion.then((value) => value), delay(20).then(() => undefined)]);
       const pending = bridge.hostCalls();
+      quiet = pending.length > 0 ? quiet + 1 : 0;
       const choice = decideSettle({ aborted: hostSignal.aborted, pending: pending.length, completion: sampled !== undefined, quiet, capacityRefused });
-      if (choice === 'limit') return limited();
-      if (choice === 'pending') return pendingSegment(active, current, pending);
-      if (choice === 'completion' && sampled) return completionResult(active, current, sampled, accepted, pending);
-      if (choice === 'aborted') return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
-      if (pending.length > 0) quiet += 1; else quiet = 0;
-      await delay(10);
+      switch (choice) {
+        case 'limit':
+          return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
+            { kind: 'accepted', evidence: accepted });
+        case 'pending':
+          return pendingSegment(active, current, pending);
+        case 'completion':
+          return sampled ? completionResult(active, current, sampled, accepted, pending)
+            : failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        case 'aborted':
+          return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
+        case 'wait':
+          await delay(10);
+          break;
+        default: {
+          const leftover: never = choice;
+          void leftover;
+          return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        }
+      }
     }
   }
   function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion,
@@ -472,6 +482,7 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (prompt !== undefined && (bridge.hostCalls().length > 0 || (turnCompletion !== undefined && turnResult === undefined))) {
       return failed({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
     }
+    capacityRefused = false;
     segment = { phase: 'intent', text: '', usage: emptyUsage() };
     const target: DispatchIdentity['target'] = session
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };

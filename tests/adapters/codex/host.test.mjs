@@ -76,7 +76,7 @@ function fakeServer(home, tool) {
     send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed', error: null } } });
   };
   const arm = (threadId, turnId, calls) => {
-    for (const call of calls) pending.set(call.id, { threadId, turnId });
+    for (const call of calls) pending.set(call.id, { threadId, turnId, itemId: call.frame.params.callId ?? call.frame.params.itemId });
     queueMicrotask(() => { for (const call of calls) send(call.frame); });
   };
   const answer = {
@@ -126,7 +126,7 @@ function fakeServer(home, tool) {
         if (hit) {
           pending.delete(message.id);
           queueMicrotask(() => {
-            send({ method: 'item/completed', params: { threadId: hit.threadId, turnId: hit.turnId, item: { id: message.id, type: 'dynamicToolCall' } } });
+            send({ method: 'item/completed', params: { threadId: hit.threadId, turnId: hit.turnId, item: { id: hit.itemId, type: 'dynamicToolCall' } } });
             if (![...pending.values()].some((item) => item.turnId === hit.turnId)) finishTurn(hit.threadId, hit.turnId);
           });
         }

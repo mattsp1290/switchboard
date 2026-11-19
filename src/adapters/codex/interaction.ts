@@ -211,22 +211,25 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   } catch { return fail({ code: 'invalid-input' }); }
   const hostTools = options.declaredTools !== undefined || userInput;
   type HostEntry = { readonly id: string; readonly threadId: string; readonly turnId: string; readonly requestId: IncomingCall['id'];
-    readonly callId: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost';
+    readonly callId: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost'; delivered: boolean;
     readonly finish: (reply: RpcReply) => void };
   const hostLive = new Map<string, HostEntry>();
-  const hostSettled = new Set<string>();
-  const hostFacts = new Map<string, HostEntry>();
+  const hostSettled = new Map<string, HostEntry>();
   function rememberHost(entry: HostEntry): void {
-    hostSettled.add(entry.id);
-    hostFacts.set(entry.id, entry);
-    for (const oldest of hostSettled) {
+    hostSettled.set(entry.id, entry);
+    for (const oldest of hostSettled.keys()) {
       if (hostSettled.size <= maxSettled) break;
       hostSettled.delete(oldest);
-      hostFacts.delete(oldest);
     }
   }
-  const sameHostItem = (candidate: { readonly callId: string; readonly requestId: IncomingCall['id']; readonly turnId: string }, itemId: unknown, turnId: unknown) =>
-    (candidate.callId === itemId || String(candidate.requestId) === String(itemId)) && (turnId === undefined || candidate.turnId === turnId);
+  function deliverHost(entry: HostEntry): void {
+    if (entry.delivered) return;
+    entry.delivered = true;
+    publish({ kind: 'host-delivery', target: entry.call.pending.target, delivery: { kind: 'unknown' } });
+  }
+  const hostItem = (candidate: HostEntry, itemId: unknown, turnId: unknown) =>
+    (turnId === undefined || candidate.turnId === turnId)
+    && (typeof itemId === 'string' ? candidate.callId === itemId : Object.is(candidate.requestId, itemId));
   function hostReplyValue(entry: HostEntry, outcome: ToolOutcome): RpcReply | undefined {
     try {
       const extension = outcome.result.kind === 'ok' ? outcome.result.value : outcome.result.error;
@@ -300,13 +303,10 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       if (host) loseHost(host);
     } else if (event.method === 'item/completed' && record(params.item)) {
       const { item } = params;
-      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && sameHostItem(candidate, item.id, params.turnId));
-      const answered = host ?? [...hostFacts.values()].find((candidate) => candidate.threadId === threadId && sameHostItem(candidate, item.id, params.turnId));
-      if (answered) {
-        publish({ kind: 'host-delivery', target: answered.call.pending.target, delivery: { kind: 'unknown' } });
-        if (host) loseHost(host);
-        else hostFacts.delete(answered.id);
-      }
+      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && hostItem(candidate, item.id, params.turnId));
+      const answered = host ?? [...hostSettled.values()].find((candidate) => candidate.threadId === threadId && hostItem(candidate, item.id, params.turnId));
+      if (answered) deliverHost(answered);
+      if (host) loseHost(host);
       const entry = entries().find((candidate) => candidate.itemId === item.id && candidate.turnId === params.turnId);
       if (!entry) return;
       if (unanswered(entry)) { withdraw(entry, 'item/completed'); return; }
@@ -451,7 +451,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
-    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', finish };
+    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', delivered: false, finish };
     const onAbort = () => loseHost(entry);
     signal.addEventListener('abort', onAbort, { once: true });
     hostLive.set(id, entry);
