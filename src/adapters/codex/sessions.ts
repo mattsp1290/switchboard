@@ -140,17 +140,26 @@ function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute):
     || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return false;
   if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
     || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
-  if (route.credentialForm === 'none') return entry.env_key == null && entry.auth == null;
+  if (!stacksClear(entry)) return false;
+  if (route.credentialForm === 'none') return emptyValue(entry.env_key) && emptyValue(entry.auth) && headersMatch(entry, {});
   if (route.credentialForm === 'bearer') {
-    const headers = record(entry.env_http_headers) ? entry.env_http_headers : {};
-    const expected = route.headerEnv ?? {};
-    return entry.env_key === route.envKey && entry.auth == null
-      && Object.keys(headers).length === Object.keys(expected).length
-      && Object.entries(expected).every(([name, variable]) => headers[name] === variable);
+    return entry.env_key === route.envKey && emptyValue(entry.auth) && headersMatch(entry, route.headerEnv ?? {});
   }
   const command = route.helperCommand;
   return command !== undefined && record(entry.auth) && entry.auth.command === command.command
-    && JSON.stringify(entry.auth.args) === JSON.stringify(command.args) && entry.env_key == null;
+    && JSON.stringify(entry.auth.args) === JSON.stringify(command.args) && emptyValue(entry.env_key) && headersMatch(entry, {});
+}
+const emptyValue = (value: unknown) => value == null || (record(value) && Object.keys(value).length === 0);
+const providerStacks = ['http_headers', 'query_params', 'gateway_oauth', 'aws', 'credential_file'] as const;
+function stacksClear(entry: Record<string, unknown>): boolean {
+  return providerStacks.every((key) => emptyValue(entry[key]));
+}
+function headersMatch(entry: Record<string, unknown>, expected: Readonly<Record<string, string>>): boolean {
+  if (entry.env_http_headers == null) return Object.keys(expected).length === 0;
+  if (!record(entry.env_http_headers)) return false;
+  const headers = entry.env_http_headers;
+  return Object.keys(headers).length === Object.keys(expected).length
+    && Object.entries(expected).every(([name, variable]) => headers[name] === variable);
 }
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
   if (settings.approval_policy !== 'never') return false;
