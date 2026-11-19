@@ -64,6 +64,7 @@ try {
     './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
     './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
+    './host/pi': { types: './dist/host/pi/index.d.ts', import: './dist/host/pi/index.js' },
   });
   assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@opentelemetry/api': '1.9.0' });
   assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
@@ -73,6 +74,9 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
   for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
   assert.doesNotMatch(readFileSync(join(installed, 'dist/pi/index.d.ts'), 'utf8'), /@earendil-works/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.d.ts'), 'utf8'), /@earendil-works/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/contract.d.ts'), 'utf8'), /@earendil-works/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.js'), 'utf8'), /from ['"]\.\/runtime\.js['"]/);
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 declare const runtime: PiRuntime;
@@ -99,6 +103,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   return resolved;
 } });
 const switchboard = await import('${manifest.name}');
+const hostPi = await import('${manifest.name}/host/pi');
+assert.equal(hostPi.piHostAdapter.identity.adapter, 'pi-host');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.throws(() => createRequire(import.meta.url).resolve('@opentelemetry/api'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');

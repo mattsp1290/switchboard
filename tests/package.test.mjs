@@ -16,4 +16,5 @@ test('packed package supports ESM and TypeScript consumers', async () => {
   assert.doesNotMatch(read('core/host-adapter.js'), /\bimport\b/, 'the contract module loads nothing at run time');
   assert.doesNotMatch(read('core/host-adapter.d.ts'), /adapters\/|@anthropic-ai|@openai|@earendil-works|@ag-ui/,
     'the contract declarations reference no adapter or native SDK');
+  assert.doesNotMatch(read('host/pi/index.d.ts'), /@earendil-works/, 'the Pi host entry names no Pi SDK type');
 });
