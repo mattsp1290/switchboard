@@ -69,9 +69,22 @@ const maxPendingPerMessage = 8;
  * or the turn completes, or the pending cap trips.
  */
 const hostCallQuietMs = 30;
-/** In-process memory of the declarations sent at thread/start, keyed by home and thread. A fresh process starts empty. `close` leaves the record in place. */
+/**
+ * In-process memory of the declarations sent at thread/start, keyed by home and thread. A fresh process starts empty.
+ * `close` leaves the record in place. Past this many threads, the oldest key is dropped and a later resume of that
+ * thread is treated like a process that never saw it.
+ */
+const maxRemembered = 32;
 const remembered = new Map<string, string>();
 const declarationKey = (home: string, threadId: string) => `${home}\0${threadId}`;
+function rememberDeclaration(home: string, threadId: string, tools: string): void {
+  const key = declarationKey(home, threadId);
+  if (!remembered.has(key) && remembered.size >= maxRemembered) {
+    const oldest = remembered.keys().next().value;
+    if (oldest !== undefined) remembered.delete(oldest);
+  }
+  remembered.set(key, tools);
+}
 const discovery = Object.freeze({ maxResults: 10, maxExamined: 10, maxDurationMs: 5000 });
 const featurePins = [
   { keys: ['shell_tool', 'unified_exec', 'shell_snapshot'], on: (enabled: ReadonlySet<string>) => enabled.has('shell') || enabled.has('shell_tool'),
@@ -314,7 +327,7 @@ async function pinnedFeatures(request: (call: { method: string; params?: unknown
   const features = config && record(config.features) ? config.features : {};
   const mismatch = echoPins(features, enabled);
   if (mismatch) return mismatch;
-  if (!routed && multiAgent && (features.multi_agent !== false || features.multi_agent_v2 !== false)) return 'multi-agent is not pinned off';
+  if (multiAgent && (features.multi_agent !== false || features.multi_agent_v2 !== false)) return 'multi-agent is not pinned off';
   return undefined;
 }
 
@@ -340,7 +353,6 @@ async function openAdapter(ready: {
   let closing: ReturnType<HostAdapter['close']> | undefined;
   const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') stream.publish(Object.freeze(event)); };
   const calls = () => bridge.hostCalls().map(toCall);
-  execution.events.subscribe(() => {});
   bridge.events.subscribe((event) => {
     if (event.kind === 'refused' && event.reason === 'capacity') { capacityRefused = true; return; }
     if (event.kind === 'host-delivery') {
@@ -375,7 +387,7 @@ async function openAdapter(ready: {
     session = resumed.value.session;
     if (bridge.attach(session).kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'interaction attach failed' }); }
     watch(session);
-    remembered.set(declarationKey(native.home, session.threadId), canonical);
+    rememberDeclaration(native.home, session.threadId, canonical);
   }
   function watch(current: CodexSession): void {
     current.events.subscribe((event) => {
@@ -520,9 +532,12 @@ async function openAdapter(ready: {
         ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
         features: threadFeatures(native, options) });
       if (created.kind === 'error') return { kind: 'outcome-unknown' as const };
+      if (bridge.attach(created.value).kind === 'error') {
+        await created.value.close();
+        return { kind: 'outcome-unknown' as const };
+      }
       session = created.value;
-      remembered.set(declarationKey(native.home, session.threadId), canonical);
-      if (bridge.attach(session).kind === 'error') return { kind: 'outcome-unknown' as const };
+      rememberDeclaration(native.home, session.threadId, canonical);
       watch(session);
     }
     const active = session;

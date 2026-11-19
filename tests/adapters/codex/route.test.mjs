@@ -290,6 +290,25 @@ test('a marked IPv6 loopback port stays out of the host-route principal', () => 
   assert.notEqual(codexHostRoutePrincipal(pinned.route), codexHostRoutePrincipal(other.route));
 });
 
+test('a host route binds without LiteLLM sandbox pins and still refuses a static bearer', async (t) => {
+  const endpoint = 'http://127.0.0.1:9/v1';
+  const admitted = hostRoute(endpoint, 'none');
+  const bare = { provider: 'host', sandboxing: {}, features: {} };
+  const bound = await bind(server(home(t), { ...bare, route: admitted, providers: { host: hostEntry(endpoint) } }));
+  assert.equal(bound.kind, 'ok', JSON.stringify(bound));
+  assert.equal(bound.value.account, codexHostRoutePrincipal(checkCodexHostRoute(admitted).route));
+  const bearer = hostRoute(endpoint, 'bearer', { loopbackRelay: false, envKey: 'CODEX_TOKEN' });
+  const bearerEntry = { ...hostEntry(endpoint), env_key: 'CODEX_TOKEN' };
+  const bearerBound = await bind(server(home(t), { ...bare, route: bearer, providers: { host: bearerEntry } }));
+  assert.equal(bearerBound.kind, 'ok', JSON.stringify(bearerBound));
+  assert.deepEqual(await bind(server(home(t), { ...bare, route: bearer, providers: { host: { ...bearerEntry, env_key: 'OTHER' } } })),
+    { kind: 'error', error: { code: 'inaccessible' } });
+  assert.deepEqual(await bind(server(home(t), { ...bare, route: admitted, providers: { host: { ...hostEntry(endpoint), experimental_bearer_token: 'secret' } } })),
+    { kind: 'error', error: { code: 'inaccessible' } });
+  assert.deepEqual(await bind(server(home(t), { ...bare, route: admitted, providers: { host: { ...hostEntry(endpoint), http_headers: { Authorization: 'static' } } } })),
+    { kind: 'error', error: { code: 'inaccessible' } });
+});
+
 test('none and helper admission reject static provider auth', async (t) => {
   const endpoint = 'http://127.0.0.1:9/v1';
   const admitted = hostRoute(endpoint, 'none');

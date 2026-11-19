@@ -126,8 +126,8 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * Bearer is `env_key` plus `env_http_headers` names, never a secret and never `auth.command`.
  * No-auth is an empty env key, empty auth, and no headers. Helper is the absolute command and its args.
  * Static stacks (`http_headers`, `query_params`, `gateway_oauth`, `aws`, `credential_file`,
- * `experimental_bearer_token`) are refused. Confinement is `routeConfined`, the same predicate
- * `routedProvider` uses; this function does not become command-auth-only.
+ * `experimental_bearer_token`) are refused. Sandbox, approvals, and multi-agent stay on the thread
+ * and the feature args. This function does not read `approval_policy` or `sandbox_mode`.
  */
 function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute): boolean {
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)
@@ -137,7 +137,7 @@ function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute):
     || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return false;
   if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
     || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
-  if (!routeConfined(settings) || !stacksClear(entry)) return false;
+  if (!stacksClear(entry)) return false;
   if (route.credentialForm === 'none') return emptyValue(entry.env_key) && emptyValue(entry.auth) && headersMatch(entry, {});
   if (route.credentialForm === 'bearer') {
     return entry.env_key === route.envKey && emptyValue(entry.auth) && headersMatch(entry, route.headerEnv ?? {});
@@ -158,7 +158,7 @@ function headersMatch(entry: Record<string, unknown>, expected: Readonly<Record<
   return Object.keys(headers).length === Object.keys(expected).length
     && Object.entries(expected).every(([name, variable]) => headers[name] === variable);
 }
-function routeConfined(settings: Record<string, unknown>): boolean {
+function proxyConfined(settings: Record<string, unknown>): boolean {
   const features = record(settings.features) ? settings.features : undefined;
   const workspace = record(settings.sandbox_workspace_write) ? settings.sandbox_workspace_write : undefined;
   return settings.approval_policy === 'never'
@@ -179,7 +179,7 @@ function routeConfined(settings: Record<string, unknown>): boolean {
  * runs outside the sandbox.
  */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
-  if (!routeConfined(settings)) return false;
+  if (!proxyConfined(settings)) return false;
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)
     || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
   const entry = settings.model_providers[route.providerId];
