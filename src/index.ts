@@ -48,6 +48,7 @@ export type {
   AuthRoute,
   AuthScope,
   CredentialResolver,
+  HostRouteCredential,
   ProxyCredential,
   ResolvedAuthentication,
   ScopedAuth,
@@ -99,6 +100,11 @@ export type {
   DispatchHandle, FreshDispatchOptions, ReconcileResult, ReconciliationHandle,
   ReconcileNative, SharedDispatchOptions, RecoveryDispatchOptions,
 } from './core/dispatch.js';
+export type {
+  HostAdapter, HostAdapterCapabilities, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
+  HostEnvironment, HostFingerprintApi, HostInspectApi, HostInterruptResult, HostLaunch, HostOpenOptions, HostResume,
+  HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage, HostWriteStatus,
+} from './core/host-adapter.js';
 export type {
   AuthenticationObservation, InstallationObservation, ReadinessActionCode, ReadinessFact, ReadinessFacts,
   ReadinessRemediationCode, ReadinessReport, ReadinessSource, ReadinessUnknownCode, UnobservedState,
