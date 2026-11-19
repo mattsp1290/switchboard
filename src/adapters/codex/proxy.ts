@@ -7,7 +7,8 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AuthError, AuthRoute, ScopedAuth } from '../../core/auth.js';
 import type { Outcome } from '../../core/contracts.js';
-import { checkCodexRoute, copyCodexHostRoute, plain as clean } from './route.js';
+import { checkCodexRoute, plain as clean, processConfig } from './route.js';
+import type { CodexProcessConfig, CodexProxyValue } from './route.js';
 
 /** The provider `auth.command` Codex runs for a token: never a secret, only the helper and its broker socket. */
 export interface CodexHelperCommand {
@@ -27,17 +28,7 @@ export interface CodexProxyOptions {
   /** Native `auth.refresh_interval_ms`: proactive renewal, 1000-86400000; default 300000. A 401 always renews once. */
   readonly refreshIntervalMs?: number;
 }
-export type CodexProxyValue = string | number | boolean | readonly string[];
-export interface CodexProcessConfig {
-  /** Dotted native config keys and their values, in the order the args carry them. */
-  readonly overrides: Readonly<Record<string, CodexProxyValue>>;
-  /** `-c key=<JSON>` pairs the host appends to `codex app-server` (JSON scalars and string arrays are TOML values). */
-  readonly args: readonly string[];
-}
-function processConfig(overrides: Record<string, CodexProxyValue>): CodexProcessConfig {
-  return Object.freeze({ overrides: Object.freeze(overrides),
-    args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) });
-}
+export type { CodexProcessConfig, CodexProxyValue } from './route.js';
 
 const whole = (value: unknown, min: number, max: number, fallback: number): number | undefined =>
   value === undefined ? fallback : Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max
@@ -170,41 +161,4 @@ Promise<Outcome<CodexCredentialBroker, AuthError>> {
   if (signal.aborted) { await close(); return refused('aborted'); }
   return { kind: 'ok', value: Object.freeze({ close,
     helper: Object.freeze({ command: process.execPath, args: Object.freeze([helperPath, socketPath]) }) }) };
-}
-
-/**
- * `-c` overrides for a host route. Bearer and no-auth never set `auth.command`, `experimental_bearer_token`, or a
- * secret: `env_key` and `env_http_headers` name variables the host put in the process environment. The helper form
- * sets that command and still refuses headers. Sandbox and approvals are not pinned here; the host sets them.
- */
-export function codexHostRouteConfig(route: unknown): { readonly config: CodexProcessConfig } | { readonly problem: string } {
-  try {
-    const checked = copyCodexHostRoute(route);
-    if (!checked) return { problem: 'host route is invalid' };
-    const { providerId, endpoint, model, sqliteHome, logDir } = checked;
-    const at = `model_providers.${providerId}`;
-    const overrides: Record<string, CodexProxyValue> = { model_provider: providerId, model,
-      [`${at}.name`]: 'Host', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
-      [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
-      [`${at}.requires_openai_auth`]: false, sqlite_home: sqliteHome, log_dir: logDir };
-    switch (checked.credentialForm) {
-      case 'bearer':
-        overrides[`${at}.env_key`] = checked.envKey;
-        if (checked.headerEnv) for (const [name, variable] of Object.entries(checked.headerEnv)) overrides[`${at}.env_http_headers.${name}`] = variable;
-        break;
-      case 'helper':
-        overrides[`${at}.auth.command`] = checked.helperCommand.command;
-        overrides[`${at}.auth.args`] = checked.helperCommand.args;
-        overrides[`${at}.auth.timeout_ms`] = 5000;
-        overrides[`${at}.auth.refresh_interval_ms`] = 300000;
-        break;
-      case 'none':
-        break;
-      default: {
-        const leftover: never = checked;
-        void leftover;
-      }
-    }
-    return { config: processConfig(overrides) };
-  } catch { return { problem: 'host route config could not be built' }; }
 }

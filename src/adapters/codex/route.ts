@@ -229,3 +229,48 @@ export function codexHostRoutePrincipal(route: CodexHostRoute): string {
     route.scope.engine, route.scope.account]);
   return `host-route:sha256:${createHash('sha256').update(material, 'utf8').digest('hex')}`;
 }
+
+export type CodexProxyValue = string | number | boolean | readonly string[];
+export interface CodexProcessConfig {
+  /** Dotted native config keys and their values, in the order the args carry them. */
+  readonly overrides: Readonly<Record<string, CodexProxyValue>>;
+  /** `-c key=<JSON>` pairs the host appends to `codex app-server` (JSON scalars and string arrays are TOML values). */
+  readonly args: readonly string[];
+}
+export function processConfig(overrides: Record<string, CodexProxyValue>): CodexProcessConfig {
+  return Object.freeze({ overrides: Object.freeze(overrides),
+    args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) });
+}
+
+/**
+ * `-c` overrides for a host route. Bearer and no-auth never set `auth.command`, `experimental_bearer_token`, or a
+ * secret: `env_key` and `env_http_headers` name variables the host put in the process environment. The helper form
+ * sets that command and still refuses headers. Sandbox, approvals, and multi-agent are not pinned here.
+ */
+export function codexHostRouteConfig(route: CodexHostRoute): { readonly config: CodexProcessConfig } | { readonly problem: string } {
+  const { providerId, endpoint, model, sqliteHome, logDir } = route;
+  const at = `model_providers.${providerId}`;
+  const overrides: Record<string, CodexProxyValue> = { model_provider: providerId, model,
+    [`${at}.name`]: 'Host', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
+    [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
+    [`${at}.requires_openai_auth`]: false, sqlite_home: sqliteHome, log_dir: logDir };
+  switch (route.credentialForm) {
+    case 'bearer':
+      overrides[`${at}.env_key`] = route.envKey;
+      if (route.headerEnv) for (const [name, variable] of Object.entries(route.headerEnv)) overrides[`${at}.env_http_headers.${name}`] = variable;
+      break;
+    case 'helper':
+      overrides[`${at}.auth.command`] = route.helperCommand.command;
+      overrides[`${at}.auth.args`] = route.helperCommand.args;
+      overrides[`${at}.auth.timeout_ms`] = 5000;
+      overrides[`${at}.auth.refresh_interval_ms`] = 300000;
+      break;
+    case 'none':
+      break;
+    default: {
+      const leftover: never = route;
+      return { problem: `host route credential form is ${String(leftover)}` };
+    }
+  }
+  return { config: processConfig(overrides) };
+}

@@ -79,8 +79,8 @@ export interface CodexExecutionOptions {
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
- * routeOverride, admitCodexRoute), naming the rejected setting or rule, and on a `litellm-proxy` off-model or
- * unconfined `native-failure`.
+ * routeOverride, admitCodexRoute), naming the rejected setting or rule; on a `litellm-proxy` off-model `native-failure`;
+ * and on an `unconfined` `native-failure` for either route kind. A host route has no off-model failure.
  */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
@@ -351,8 +351,7 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   return undefined;
 };
 /** A host route refuses the two keys that can send its credential to another endpoint. Model, sandbox and approvals stay the host's. */
-const refuseHostRedirect = (route: CodexProxyRoute | CodexHostRoute | undefined, target: string, params: Record<string, unknown>) => {
-  if (route?.kind !== 'host-route') return undefined;
+const refuseHostRedirect = (_route: CodexHostRoute, target: string, params: Record<string, unknown>) => {
   const key = redirectKey(params);
   if (!key) return undefined;
   return { kind: 'error', error: Object.freeze({ code: 'invalid-input',
@@ -410,8 +409,19 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    * `sandbox` is outside `readOnly` or `workspaceWrite` without network, or whose `approvalPolicy` is not `"never"`,
    * is never a session.
    */
-  const constrainRoute = (target: string, params: Record<string, unknown>) =>
-    refuseHostRedirect(route, target, params) ?? routeOverride(proxy, target, params);
+  function constrainRoute(target: string, params: Record<string, unknown>) {
+    if (route === undefined) return undefined;
+    switch (route.kind) {
+      case 'host-route':
+        return refuseHostRedirect(route, target, params);
+      case 'litellm-proxy':
+        return routeOverride(route, target, params);
+      default: {
+        const leftover: never = route;
+        return leftover;
+      }
+    }
+  }
   const unconfined = (value: unknown, verb: string) => {
     if (route === undefined) return undefined;
     const sandbox = record(value) && record(value.sandbox) ? value.sandbox : undefined;

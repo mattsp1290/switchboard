@@ -18,8 +18,8 @@ import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
 import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
 import { codexNativeToolReply, createCodexInteraction } from './interaction.js';
 import type { CodexHostCall, CodexInteraction } from './interaction.js';
-import { codexHostRouteConfig, codexProxyConfig } from './proxy.js';
-import { checkCodexHostRoute, checkCodexRoute } from './route.js';
+import { codexProxyConfig } from './proxy.js';
+import { checkCodexHostRoute, checkCodexRoute, codexHostRouteConfig } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester } from './sessions.js';
 import { openCodexTransport } from './transport.js';
@@ -94,7 +94,6 @@ const featurePins = [
   { keys: ['request_user_input', 'default_mode_request_user_input'], on: (enabled: ReadonlySet<string>) => enabled.has('request_user_input'),
     off: 'request_user_input is on and the host did not leave it on' },
 ] as const;
-const pinsMultiAgent = (routed: boolean, subagents: 'off' | undefined) => routed || subagents === 'off';
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const fail = (error: HostAdapterError) => ({ kind: 'error' as const, error: Object.freeze(error) });
@@ -119,11 +118,11 @@ function dynamicTools(tools: readonly HostToolDeclaration[]): readonly CodexDyna
     tools: Object.freeze(tools.map((tool) => Object.freeze({ type: 'function' as const, name: tool.name,
       description: tool.description, inputSchema: tool.inputSchema, deferLoading: false }))) })];
 }
-function featureArgs(enabled: ReadonlySet<string>, subagents: 'off' | undefined, routed: boolean): readonly string[] {
+function featureArgs(enabled: ReadonlySet<string>, pinMultiAgent: boolean): readonly string[] {
   const args: string[] = [];
   const set = (name: string, on: boolean) => { args.push('-c', `features.${name}=${JSON.stringify(on)}`); };
   for (const pin of featurePins) for (const key of pin.keys) set(key, pin.on(enabled));
-  if (pinsMultiAgent(routed, subagents)) { set('multi_agent', false); set('multi_agent_v2', false); }
+  if (pinMultiAgent) { set('multi_agent', false); set('multi_agent_v2', false); }
   return args;
 }
 const timerBound = (value: number) => Number.isInteger(value) && value >= 1 && value <= 2147483647;
@@ -190,37 +189,77 @@ type PreparedRoute =
   | { readonly kind: 'direct'; readonly args: readonly string[] }
   | { readonly kind: 'litellm-proxy'; readonly route: CodexProxyRoute; readonly args: readonly string[] }
   | { readonly kind: 'host-route'; readonly route: CodexHostRoute; readonly args: readonly string[] };
+function withFeatureArgs(prepared: PreparedRoute, extra: readonly string[]): PreparedRoute {
+  const args = [...prepared.args, ...extra];
+  switch (prepared.kind) {
+    case 'direct':
+      return { kind: 'direct', args };
+    case 'litellm-proxy':
+      return { kind: 'litellm-proxy', route: prepared.route, args };
+    case 'host-route':
+      return { kind: 'host-route', route: prepared.route, args };
+    default: {
+      const leftover: never = prepared;
+      return leftover;
+    }
+  }
+}
+function threadFeatures(prepared: PreparedRoute, config: CodexHostNativeConfig,
+  openOptions: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>) {
+  const declared = openOptions.resume ? undefined : dynamicTools(openOptions.tools ?? []);
+  const base = { approvalPolicy: 'never' as const, cwd: config.cwd, ...(declared ? { dynamicTools: declared } : {}) };
+  const chosen = config.sandbox ? { sandbox: config.sandbox } : {};
+  switch (prepared.kind) {
+    case 'direct':
+      return { ...base, ...chosen };
+    case 'litellm-proxy':
+      return { ...base, ...chosen, model: prepared.route.model };
+    case 'host-route':
+      return { ...base, model: prepared.route.model, sandbox: config.sandbox ?? 'read-only' as const };
+    default: {
+      const leftover: never = prepared;
+      return leftover;
+    }
+  }
+}
 function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, native: CodexHostNativeConfig):
 { readonly route: PreparedRoute } | { readonly problem: string } | { readonly unavailable: string } {
-  if (config.kind === 'direct') return { problem: 'direct credentials are not a Codex host route' };
-  const helperOff = native.helper === 'unavailable';
-  if ((config.kind === 'litellm' || (config.kind === 'host-route' && config.credentialForm === 'helper')) && helperOff) {
-    return { unavailable: 'helper' };
+  switch (config.kind) {
+    case 'direct':
+      return { problem: 'direct credentials are not a Codex host route' };
+    case 'litellm': {
+      if (native.helper === 'unavailable') return { unavailable: 'helper' };
+      const providerId = native.providerId ?? 'litellm';
+      const helper = native.helper;
+      if (helper === undefined) return { problem: 'the helper form needs a host command' };
+      const checked = checkCodexRoute({ kind: 'litellm-proxy', providerId, endpoint: config.endpoint, credentialPurpose: 'litellm-proxy',
+        model: config.model, scope: { engine: scope.engine, account: scope.account } });
+      if ('problem' in checked) return checked;
+      const configured = codexProxyConfig(checked.route, { helper });
+      if ('problem' in configured) return configured;
+      return { route: { kind: 'litellm-proxy', route: checked.route, args: configured.config.args } };
+    }
+    case 'host-route': {
+      if (config.credentialForm === 'helper' && native.helper === 'unavailable') return { unavailable: 'helper' };
+      const providerId = native.providerId ?? 'host';
+      const helper = config.credentialForm === 'helper' && native.helper !== undefined ? native.helper : undefined;
+      const checked = checkCodexHostRoute({ kind: 'host-route', providerId, endpoint: config.endpoint, protocol: config.protocol,
+        credentialForm: config.credentialForm, principal: config.principal, loopbackRelay: native.loopbackRelay === true,
+        model: config.model, scope: { engine: scope.engine, account: scope.account },
+        sqliteHome: native.sqliteHome, logDir: native.logDir,
+        ...(config.credentialForm === 'bearer' ? { envKey: native.envKey, headerEnv: native.headerEnv } : {}),
+        ...(helper ? { helperCommand: helper } : {}) });
+      if ('problem' in checked) return { problem: checked.problem };
+      const built = checked.route;
+      const configured = codexHostRouteConfig(built);
+      if ('problem' in configured) return configured;
+      return { route: { kind: 'host-route', route: built, args: configured.config.args } };
+    }
+    default: {
+      const leftover: never = config;
+      return { problem: `route kind ${String(leftover)} is not a Codex route` };
+    }
   }
-  if (config.kind === 'litellm') {
-    const providerId = native.providerId ?? 'litellm';
-    const helper = native.helper;
-    if (helper === undefined || helper === 'unavailable') return { problem: 'the helper form needs a host command' };
-    const checked = checkCodexRoute({ kind: 'litellm-proxy', providerId, endpoint: config.endpoint, credentialPurpose: 'litellm-proxy',
-      model: config.model, scope: { engine: scope.engine, account: scope.account } });
-    if ('problem' in checked) return checked;
-    const configured = codexProxyConfig(checked.route, { helper });
-    if ('problem' in configured) return configured;
-    return { route: { kind: 'litellm-proxy', route: checked.route, args: configured.config.args } };
-  }
-  const providerId = native.providerId ?? 'host';
-  const helper = config.credentialForm === 'helper' && native.helper !== 'unavailable' && native.helper !== undefined ? native.helper : undefined;
-  const checked = checkCodexHostRoute({ kind: 'host-route', providerId, endpoint: config.endpoint, protocol: config.protocol,
-    credentialForm: config.credentialForm, principal: config.principal, loopbackRelay: native.loopbackRelay === true,
-    model: config.model, scope: { engine: scope.engine, account: scope.account },
-    sqliteHome: native.sqliteHome, logDir: native.logDir,
-    ...(config.credentialForm === 'bearer' ? { envKey: native.envKey, headerEnv: native.headerEnv } : {}),
-    ...(helper ? { helperCommand: helper } : {}) });
-  if ('problem' in checked) return { problem: checked.problem };
-  const built = checked.route;
-  const configured = codexHostRouteConfig(built);
-  if ('problem' in configured) return configured;
-  return { route: { kind: 'host-route', route: built, args: configured.config.args } };
 }
 
 /**
@@ -243,11 +282,18 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       const variables = options.environment?.variables;
       if (!native || !variables) return fail({ code: 'invalid-input', message: 'Codex requires a complete host environment and native config' });
       const enabled = new Set<string>(options.builtInTools ?? []);
-      const routed = options.route != null;
-      let prepared: PreparedRoute = { kind: 'direct', args: featureArgs(enabled, options.subagents, routed) };
-      if (routed && native.sandbox === 'danger-full-access') {
-        return fail({ code: 'invalid-input', message: 'a routed session refuses danger-full-access' });
+      let prepared: PreparedRoute = { kind: 'direct', args: [] };
+      if (options.route) {
+        if (native.sandbox === 'danger-full-access') {
+          return fail({ code: 'invalid-input', message: 'a routed session refuses danger-full-access' });
+        }
+        const route = prepareRoute(options.route.config, options.route.scope, native);
+        if ('unavailable' in route) return fail({ code: 'unavailable', feature: route.unavailable, message: 'The host cannot run a credential helper' });
+        if ('problem' in route) return fail({ code: 'invalid-input', message: route.problem });
+        prepared = route.route;
       }
+      const pinMultiAgent = prepared.kind !== 'direct' || options.subagents === 'off';
+      prepared = withFeatureArgs(prepared, featureArgs(enabled, pinMultiAgent));
       const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
       if (!timerBound(handlerTimeoutMs)) return fail({ code: 'invalid-input', message: 'handlerTimeoutMs is outside 1..2147483647' });
       const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: maxPendingPerMessage,
@@ -258,12 +304,6 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       transportBounds = { maxFrameBytes: 1048576, maxChunkBytes: 2097151, maxDiagnosticBytes: 65536,
         maxPending: 8, maxHandlers: 16, maxWrites: 8, observationCapacity: 256, handlerTimeoutMs,
         observationTimeoutMs: 5000, writeTimeoutMs: 20000 };
-      if (options.route) {
-        const route = prepareRoute(options.route.config, options.route.scope, native);
-        if ('unavailable' in route) return fail({ code: 'unavailable', feature: route.unavailable, message: 'The host cannot run a credential helper' });
-        if ('problem' in route) return fail({ code: 'invalid-input', message: route.problem });
-        prepared = { ...route.route, args: [...route.route.args, ...featureArgs(enabled, options.subagents, true)] };
-      }
       const executable = native.executable;
       let processExit: PromiseLike<unknown> | undefined;
       if (launch.kind === 'spawn') {
@@ -299,8 +339,7 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
           message: opened.error.message ?? 'Codex app-server handshake failed' });
       }
       execution = opened.value;
-      const admittedRoute = prepared.kind !== 'direct';
-      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, admittedRoute, pinsMultiAgent(admittedRoute, options.subagents));
+      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, prepared.kind, pinMultiAgent);
       if (pinned) { await execution.close(); return fail({ code: 'invalid-input', message: pinned }); }
       const bound = await bindCodexRequester({ scope: opened.value.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
       if (bound.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'Codex requester was not admitted' }); }
@@ -322,15 +361,15 @@ async function releaseSpawned(channel: BorrowedChannel, bounds: TransportBounds)
 }
 
 async function pinnedFeatures(request: (call: { method: string; params?: unknown }, signal: AbortSignal) => Promise<{ kind: string; envelope?: { reply?: { kind: string; value?: unknown } } }>,
-  enabled: ReadonlySet<string>, signal: AbortSignal, routed: boolean, multiAgent: boolean): Promise<string | undefined> {
+  enabled: ReadonlySet<string>, signal: AbortSignal, kind: PreparedRoute['kind'], pinMultiAgent: boolean): Promise<string | undefined> {
   const exchange = await request({ method: 'config/read', params: { includeLayers: false } }, signal);
   const reply = exchange.kind === 'reply' ? exchange.envelope?.reply : undefined;
   const config = reply?.kind === 'result' && record(reply.value) && record(reply.value.config) ? reply.value.config : undefined;
-  if (routed && !config) return 'the route config could not be read';
+  if (kind !== 'direct' && !config) return 'the route config could not be read';
   const features = config && record(config.features) ? config.features : {};
   const mismatch = echoPins(features, enabled);
   if (mismatch) return mismatch;
-  if (multiAgent && (features.multi_agent !== false || features.multi_agent_v2 !== false)) return 'multi-agent is not pinned off';
+  if (pinMultiAgent && (features.multi_agent !== false || features.multi_agent_v2 !== false)) return 'multi-agent is not pinned off';
   return undefined;
 }
 
@@ -384,7 +423,7 @@ async function openAdapter(ready: {
   }
   if (resume) {
     const resumed = await execution.resume({ binding: resume.session.binding, reference: resume.session, signal, bounds: discovery,
-      ...(options.instructions === undefined ? {} : { instructions: options.instructions }), features: threadFeatures(native, options) });
+      ...(options.instructions === undefined ? {} : { instructions: options.instructions }), features: threadFeatures(ready.prepared, native, options) });
     if (resumed.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: resumed.error.message ?? resumed.error.code }); }
     if (resumed.value.kind !== 'resumed') { await execution.close(); return fail({ code: 'busy', message: `resume is ${resumed.value.kind}` }); }
     session = resumed.value.session;
@@ -404,23 +443,6 @@ async function openAdapter(ready: {
         publish({ kind: 'usage', usage: segment.usage });
       }
     });
-  }
-  function threadFeatures(config: CodexHostNativeConfig, openOptions: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>) {
-    const declared = openOptions.resume ? undefined : dynamicTools(openOptions.tools ?? []);
-    const base = { approvalPolicy: 'never' as const, cwd: config.cwd, ...(declared ? { dynamicTools: declared } : {}) };
-    const chosen = config.sandbox ? { sandbox: config.sandbox } : {};
-    switch (ready.prepared.kind) {
-      case 'direct':
-        return { ...base, ...chosen };
-      case 'litellm-proxy':
-        return { ...base, ...chosen, model: ready.prepared.route.model };
-      case 'host-route':
-        return { ...base, model: ready.prepared.route.model, sandbox: config.sandbox ?? 'read-only' as const };
-      default: {
-        const leftover: never = ready.prepared;
-        return leftover;
-      }
-    }
   }
   async function credentialOk(hostSignal: AbortSignal): Promise<HostAdapterError | undefined> {
     const route = options.route;
@@ -542,7 +564,7 @@ async function openAdapter(ready: {
     if (!current) {
       const created = await execution.create({ signal: hostSignal, bounds: discovery,
         ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
-        features: threadFeatures(native, options) });
+        features: threadFeatures(ready.prepared, native, options) });
       if (created.kind === 'error') return { kind: 'outcome-unknown' as const };
       if (bridge.attach(created.value).kind === 'error') {
         await created.value.close();

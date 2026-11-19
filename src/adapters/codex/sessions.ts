@@ -131,12 +131,18 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
  * `experimental_bearer_token`) are refused. Sandbox, approvals, and multi-agent stay on the thread
  * and the feature args. This function does not read `approval_policy` or `sandbox_mode`.
  */
+function providerEntry(settings: Record<string, unknown>, providerId: string, endpoint: string):
+Record<string, unknown> | undefined {
+  if (settings.model_provider !== providerId || !record(settings.model_providers)
+    || !Object.hasOwn(settings.model_providers, providerId)) return undefined;
+  const entry = settings.model_providers[providerId];
+  if (!record(entry) || entry.base_url !== endpoint || entry.wire_api !== 'responses'
+    || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return undefined;
+  return entry;
+}
 function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute): boolean {
-  if (settings.model_provider !== route.providerId || !record(settings.model_providers)
-    || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
-  const entry = settings.model_providers[route.providerId];
-  if (!record(entry) || entry.base_url !== route.endpoint || entry.wire_api !== 'responses'
-    || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return false;
+  const entry = providerEntry(settings, route.providerId, route.endpoint);
+  if (!entry) return false;
   if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
     || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
   if (!stacksClear(entry)) return false;
@@ -190,12 +196,21 @@ function proxyConfined(settings: Record<string, unknown>): boolean {
  */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
   if (!proxyConfined(settings)) return false;
-  if (settings.model_provider !== route.providerId || !record(settings.model_providers)
-    || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
-  const entry = settings.model_providers[route.providerId];
-  return record(entry) && entry.base_url === route.endpoint && entry.wire_api === 'responses' && record(entry.auth)
-    && typeof entry.auth.command === 'string' && entry.requires_openai_auth === false
-    && entry.env_key == null && entry.experimental_bearer_token == null;
+  const entry = providerEntry(settings, route.providerId, route.endpoint);
+  return entry !== undefined && record(entry.auth) && typeof entry.auth.command === 'string' && entry.env_key == null;
+}
+function admittedRequester(settings: Record<string, unknown>, route: CodexProxyRoute | CodexHostRoute):
+{ readonly principal: string } | undefined {
+  switch (route.kind) {
+    case 'host-route':
+      return hostProvider(settings, route) ? { principal: codexHostRoutePrincipal(route) } : undefined;
+    case 'litellm-proxy':
+      return routedProvider(settings, route) ? { principal: codexRoutePrincipal(route) } : undefined;
+    default: {
+      const leftover: never = route;
+      return leftover;
+    }
+  }
 }
 /**
  * The provider native runs this app-server's threads on: `config/read` `model_provider`, or Codex's default `openai`
@@ -235,8 +250,8 @@ async function requester(run: Run): Promise<Outcome<Requester, SessionOperationE
     const path = settings[key];
     if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
-  if (run.route?.kind === 'host-route' && !hostProvider(settings, run.route)) return failure('inaccessible');
-  if (run.route?.kind === 'litellm-proxy' && !routedProvider(settings, run.route)) return failure('inaccessible');
+  const admitted = run.route === undefined ? undefined : admittedRequester(settings, run.route);
+  if (run.route !== undefined && admitted === undefined) return failure('inaccessible');
   const provider = effectiveProvider(settings);
   if (!provider) return failure('native-failure');
   const reply = await call(run, 'account/read', { refreshToken: false });
@@ -244,9 +259,9 @@ async function requester(run: Run): Promise<Outcome<Requester, SessionOperationE
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
   const { account, userId, requiresOpenaiAuth } = reply.value;
   if (run.route) {
-    const principal = run.route.kind === 'host-route' ? codexHostRoutePrincipal(run.route) : codexRoutePrincipal(run.route);
+    if (!admitted) return failure('inaccessible');
     return account === null && requiresOpenaiAuth === false
-      ? { kind: 'ok', value: { principal, provider } } : failure('inaccessible');
+      ? { kind: 'ok', value: { principal: admitted.principal, provider } } : failure('inaccessible');
   }
   const principal = !record(account) ? undefined : account.type === 'apiKey' ? 'apiKey'
     : account.type === 'chatgpt' && text(userId) ? `chatgpt:${userId}` : undefined;
