@@ -7,7 +7,7 @@ import { copyBinding, parseSessionReference, sessionLimits, validateSessionDisco
 import type { SessionAccess, SessionBinding, SessionDiscovery, SessionDiscoveryBounds, SessionDiscoveryDiagnostic,
   SessionDiscoveryPage, SessionInspection, SessionInspectionResult, SessionOperationError, SessionReference,
   SessionReferenceError } from '../../core/sessions.js';
-import { codexHostRoutePrincipal, codexRoutePrincipal, copyCodexHostRoute, copyCodexRoute } from './route.js';
+import { admitCodexRoute, codexHostRoutePrincipal, codexRoutePrincipal } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import type { CodexTransport } from './transport.js';
 
@@ -83,9 +83,9 @@ function admit(options: unknown): Run | undefined {
     if (!record(options) || !record(options.scope)) return undefined;
     const { scope: { home, request, initialize, route: rawRoute }, bounds: rawBounds, signal } = options;
     const bounds = validateSessionDiscoveryBounds(rawBounds);
-    const route = rawRoute === undefined ? undefined
-      : record(rawRoute) && rawRoute.kind === 'host-route' ? copyCodexHostRoute(rawRoute) : copyCodexRoute(rawRoute);
-    if (rawRoute !== undefined && !route) return undefined;
+    const checked = rawRoute === undefined ? undefined : admitCodexRoute(rawRoute);
+    if (checked && 'problem' in checked) return undefined;
+    const route = checked?.route;
     if (!text(home) || !isAbsolute(home) || home !== resolve(home)
       || !record(initialize) || initialize.codexHome !== home || typeof request !== 'function' || !(signal instanceof AbortSignal) || bounds.kind === 'error') return undefined;
     return { home, request: request as Run['request'], bounds: bounds.value, signal,
@@ -214,11 +214,13 @@ type Requester = { readonly principal: string; readonly provider: string };
  * so a change between API keys has no native signal and is unqualified. Native paths are compared after `resolve`;
  * symlink and case aliasing of the index stay host obligations.
  *
- * Routed (`run.route`): native reports no login for provider command auth (codex-native-api.md, Proxy-routed requester),
- * so the requester is the route principal, admitted only while `config/read` names the route's provider with an entry
- * matching the route with multi-agent pinned off (routedProvider) and `account/read` reports no account and
- * `requiresOpenaiAuth: false`. A native login under a route is refused, never used as a fallback: the prefix keeps
- * routed and direct principals disjoint.
+ * `litellm-proxy`: no native login. Admit only when `routedProvider` matches, including multi-agent, sandbox, and
+ * approval pins, and `account/read` reports no account and `requiresOpenaiAuth: false`. The principal is
+ * `codexRoutePrincipal`.
+ * `host-route`: no native login. Admit only when `hostProvider` matches that credential form. `hostProvider` does not
+ * read sandbox, approvals, or multi-agent. The principal is `codexHostRoutePrincipal`.
+ * A native login under either route is refused, never used as a fallback: the prefix keeps routed and direct
+ * principals disjoint.
  *
  * Both modes also yield the effective provider. Native resumes and runs a thread on its own `Thread.modelProvider`
  * whatever the app-server's default, with that provider's credentials, so every caller admits only threads on it: a
@@ -241,13 +243,10 @@ async function requester(run: Run): Promise<Outcome<Requester, SessionOperationE
   if (typeof reply === 'string') return failure(operation(reply));
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
   const { account, userId, requiresOpenaiAuth } = reply.value;
-  if (run.route?.kind === 'host-route') {
-    return account === null && requiresOpenaiAuth === false
-      ? { kind: 'ok', value: { principal: codexHostRoutePrincipal(run.route), provider } } : failure('inaccessible');
-  }
   if (run.route) {
+    const principal = run.route.kind === 'host-route' ? codexHostRoutePrincipal(run.route) : codexRoutePrincipal(run.route);
     return account === null && requiresOpenaiAuth === false
-      ? { kind: 'ok', value: { principal: codexRoutePrincipal(run.route), provider } } : failure('inaccessible');
+      ? { kind: 'ok', value: { principal, provider } } : failure('inaccessible');
   }
   const principal = !record(account) ? undefined : account.type === 'apiKey' ? 'apiKey'
     : account.type === 'chatgpt' && text(userId) ? `chatgpt:${userId}` : undefined;

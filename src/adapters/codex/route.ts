@@ -166,33 +166,51 @@ export function checkCodexHostRoute(value: unknown): { readonly route: CodexHost
     }
     const base = Object.freeze({ kind, providerId, endpoint, protocol, principal, loopbackRelay, model,
       scope: Object.freeze({ engine, account }), sqliteHome, logDir });
-    if (credentialForm === 'bearer') {
-      if (typeof envKey !== 'string' || !envName.test(envKey)) return { problem: 'bearer envKey must be an environment variable name' };
-      if (helperCommand !== undefined) return { problem: 'helperCommand is only admitted on the helper form' };
-      let headerEnvCopy: Readonly<Record<string, string>> | undefined;
-      if (headerEnv !== undefined) {
-        if (!record(headerEnv)) return { problem: 'bearer headerEnv must be an object of header names to variable names' };
-        const entries = Object.entries(headerEnv);
-        if (!entries.every(([name, variable]) => headerName.test(name) && typeof variable === 'string' && envName.test(variable))) {
-          return { problem: 'bearer headerEnv entries must be header names and environment variable names' };
+    switch (credentialForm) {
+      case 'bearer': {
+        if (helperCommand !== undefined) return { problem: 'helperCommand is only admitted on the helper form' };
+        if (typeof envKey !== 'string' || !envName.test(envKey)) return { problem: 'bearer envKey must be an environment variable name' };
+        let headerEnvCopy: Readonly<Record<string, string>> | undefined;
+        if (headerEnv !== undefined) {
+          if (!record(headerEnv)) return { problem: 'bearer headerEnv must be an object of header names to variable names' };
+          const entries = Object.entries(headerEnv);
+          if (!entries.every(([name, variable]) => headerName.test(name) && typeof variable === 'string' && envName.test(variable))) {
+            return { problem: 'bearer headerEnv entries must be header names and environment variable names' };
+          }
+          headerEnvCopy = Object.freeze(Object.fromEntries(entries.filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
         }
-        headerEnvCopy = Object.freeze(Object.fromEntries(entries.filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
+        return { route: Object.freeze({ ...base, credentialForm, envKey, ...(headerEnvCopy === undefined ? {} : { headerEnv: headerEnvCopy }) }) };
       }
-      return { route: Object.freeze({ ...base, credentialForm, envKey, ...(headerEnvCopy === undefined ? {} : { headerEnv: headerEnvCopy }) }) };
-    }
-    if (envKey !== undefined || headerEnv !== undefined) {
-      return { problem: 'envKey and headerEnv are only admitted on the bearer form' };
-    }
-    if (credentialForm === 'helper') {
-      if (!record(helperCommand) || typeof helperCommand.command !== 'string' || !helperCommand.command.startsWith('/')
-        || !Array.isArray(helperCommand.args) || !helperCommand.args.every((arg) => plain(arg))) {
-        return { problem: 'helper command must be an absolute path and plain arguments' };
+      case 'helper': {
+        if (envKey !== undefined || headerEnv !== undefined) {
+          return { problem: 'envKey and headerEnv are only admitted on the bearer form' };
+        }
+        if (!record(helperCommand) || typeof helperCommand.command !== 'string' || !helperCommand.command.startsWith('/')
+          || !Array.isArray(helperCommand.args) || !helperCommand.args.every((arg) => plain(arg))) {
+          return { problem: 'helper command must be an absolute path and plain arguments' };
+        }
+        return { route: Object.freeze({ ...base, credentialForm, helperCommand: Object.freeze({ command: helperCommand.command,
+          args: Object.freeze([...helperCommand.args]) }) }) };
       }
-      return { route: Object.freeze({ ...base, credentialForm, helperCommand: Object.freeze({ command: helperCommand.command,
-        args: Object.freeze([...helperCommand.args]) }) }) };
+      case 'none': {
+        if (envKey !== undefined || headerEnv !== undefined || helperCommand !== undefined) {
+          return { problem: 'envKey, headerEnv, and helperCommand are not admitted on the none form' };
+        }
+        return { route: Object.freeze({ ...base, credentialForm: 'none' }) };
+      }
+      default: {
+        const leftover: never = credentialForm;
+        void leftover;
+        return { problem: 'host route credentialForm must be "none", "bearer" or "helper"' };
+      }
     }
-    return { route: Object.freeze({ ...base, credentialForm: 'none' }) };
   } catch { return { problem: 'host route could not be read' }; }
+}
+/** One admit for both route kinds. A host route never goes through `checkCodexRoute`. */
+export function admitCodexRoute(value: unknown):
+{ readonly route: CodexProxyRoute | CodexHostRoute } | { readonly problem: string } {
+  if (record(value) && value.kind === 'host-route') return checkCodexHostRoute(value);
+  return checkCodexRoute(value);
 }
 export function copyCodexHostRoute(value: unknown): CodexHostRoute | undefined {
   const checked = checkCodexHostRoute(value);

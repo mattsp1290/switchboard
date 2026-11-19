@@ -10,7 +10,7 @@ import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, Ses
   SessionReferenceError } from '../../core/sessions.js';
 import { resolveCodexFeatures } from './features.js';
 import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
-import { checkCodexHostRoute, checkCodexRoute } from './route.js';
+import { admitCodexRoute } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester, codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
@@ -79,7 +79,7 @@ export interface CodexExecutionOptions {
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
- * routeOverride, checkCodexRoute), naming the rejected setting or rule, and on a `litellm-proxy` off-model or
+ * routeOverride, admitCodexRoute), naming the rejected setting or rule, and on a `litellm-proxy` off-model or
  * unconfined `native-failure`.
  */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
@@ -296,10 +296,13 @@ function newTurn(): Turn {
   return turn;
 }
 const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' }) } as const;
+const redirectKey = (params: Record<string, unknown>) =>
+  ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
 /**
- * Under a route, a per-thread `modelProvider` or any `config` override redirects traffic off the route while the
- * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. The route also
- * fixes the model: `model` (thread/start, thread/resume, turn/start) unless it strictly equals `route.model`,
+ * LiteLLM proxy only. A per-thread `modelProvider` or any `config` override redirects traffic off the proxy while the
+ * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. A host route
+ * does not enter this function. `refuseHostRedirect` refuses only `modelProvider` and `config` for that route. This
+ * function also fixes the model: `model` (thread/start, thread/resume, turn/start) unless it strictly equals `route.model`,
  * `collaborationMode` (turn/start; it takes precedence over `model`) unless its `settings.model` does, and
  * `allowProviderModelFallback` (thread/start) unless `false` are refused. TurnStartParams 0.169.0 has no provider or
  * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
@@ -316,7 +319,7 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   if (!route) return undefined;
   const refuse = (key: string, why: string) => ({ kind: 'error', error: Object.freeze({ code: 'invalid-input',
     message: `${target} ${key} is refused under a proxy route: ${why}` }) }) as const;
-  const key = ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  const key = redirectKey(params);
   if (key) return refuse(key, 'a per-thread provider or config override can redirect traffic off the route');
   if (Object.hasOwn(params, 'model') && params.model !== route.model) return refuse('model', 'it differs from the route model');
   if (Object.hasOwn(params, 'allowProviderModelFallback') && params.allowProviderModelFallback !== false) {
@@ -350,7 +353,7 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
 /** A host route refuses the two keys that can send its credential to another endpoint. Model, sandbox and approvals stay the host's. */
 const refuseHostRedirect = (route: CodexProxyRoute | CodexHostRoute | undefined, target: string, params: Record<string, unknown>) => {
   if (route?.kind !== 'host-route') return undefined;
-  const key = ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  const key = redirectKey(params);
   if (!key) return undefined;
   return { kind: 'error', error: Object.freeze({ code: 'invalid-input',
     message: `${target} ${key} is refused under a host route: a per-thread provider or config override can redirect traffic off the admitted provider` }) } as const;
@@ -375,14 +378,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit, route: rawRoute } = options;
     const state = registries.get(options.writers ?? processWriters);
     let route: CodexProxyRoute | CodexHostRoute | undefined;
-    if (rawRoute !== undefined && record(rawRoute) && rawRoute.kind === 'host-route') {
-      const checked = checkCodexHostRoute(rawRoute);
+    if (rawRoute !== undefined) {
+      const checked = admitCodexRoute(rawRoute);
       if ('problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
       route = checked.route;
-    } else {
-      const checked = rawRoute === undefined ? undefined : checkCodexRoute(rawRoute);
-      if (checked && 'problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
-      route = checked?.route;
     }
     if (!state || !record(bounds) || !record(initialize) || typeof onServerRequest !== 'function'
       || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0
@@ -400,8 +399,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   /** LiteLLM pins apply only to that route. A host route keeps the host's sandbox, model and approvals. */
   const proxy = route?.kind === 'litellm-proxy' ? route : undefined;
   /**
-   * Under a route, a start or resume reply whose `model` is not `route.model` is never a session: natively (0.169.0) a
-   * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
+   * LiteLLM proxy only. A start or resume reply whose `model` is not `proxy.model` is never a session: natively
+   * (0.169.0) a resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
+   * A host route does not take this failure.
    */
   const offModel = (value: unknown) => proxy !== undefined && (!record(value) || value.model !== proxy.model);
   /**

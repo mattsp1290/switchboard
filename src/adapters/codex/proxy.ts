@@ -28,11 +28,15 @@ export interface CodexProxyOptions {
   readonly refreshIntervalMs?: number;
 }
 export type CodexProxyValue = string | number | boolean | readonly string[];
-export interface CodexProxyConfig {
+export interface CodexProcessConfig {
   /** Dotted native config keys and their values, in the order the args carry them. */
   readonly overrides: Readonly<Record<string, CodexProxyValue>>;
   /** `-c key=<JSON>` pairs the host appends to `codex app-server` (JSON scalars and string arrays are TOML values). */
   readonly args: readonly string[];
+}
+function processConfig(overrides: Record<string, CodexProxyValue>): CodexProcessConfig {
+  return Object.freeze({ overrides: Object.freeze(overrides),
+    args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) });
 }
 
 const whole = (value: unknown, min: number, max: number, fallback: number): number | undefined =>
@@ -47,7 +51,7 @@ const whole = (value: unknown, min: number, max: number, fallback: number): numb
  * (features.ts `multi-agent-under-route`, `networked-shell-under-route`), not defaults.
  */
 export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
-{ readonly config: CodexProxyConfig } | { readonly problem: string } {
+{ readonly config: CodexProcessConfig } | { readonly problem: string } {
   try {
     const checked = checkCodexRoute(route);
     if ('problem' in checked) return checked;
@@ -81,8 +85,7 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
       // without asking the host (features.ts `approvals-under-route`).
       'features.multi_agent': false, 'features.multi_agent_v2': false,
       sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false, approval_policy: 'never' };
-    return { config: Object.freeze({ overrides: Object.freeze(overrides),
-      args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
+    return { config: processConfig(overrides) };
   } catch { return { problem: 'proxy options could not be read' }; }
 }
 
@@ -174,7 +177,7 @@ Promise<Outcome<CodexCredentialBroker, AuthError>> {
  * secret: `env_key` and `env_http_headers` name variables the host put in the process environment. The helper form
  * sets that command and still refuses headers. Sandbox and approvals are not pinned here; the host sets them.
  */
-export function codexHostRouteConfig(route: unknown): { readonly config: CodexProxyConfig } | { readonly problem: string } {
+export function codexHostRouteConfig(route: unknown): { readonly config: CodexProcessConfig } | { readonly problem: string } {
   try {
     const checked = copyCodexHostRoute(route);
     if (!checked) return { problem: 'host route is invalid' };
@@ -202,7 +205,6 @@ export function codexHostRouteConfig(route: unknown): { readonly config: CodexPr
         void leftover;
       }
     }
-    return { config: Object.freeze({ overrides: Object.freeze(overrides),
-      args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
+    return { config: processConfig(overrides) };
   } catch { return { problem: 'host route config could not be built' }; }
 }

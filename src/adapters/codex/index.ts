@@ -186,7 +186,10 @@ function toCall(call: CodexHostCall): HostToolCall {
   return Object.freeze({ pending: call.pending, name: call.name, arguments: call.arguments });
 }
 
-interface PreparedRoute { readonly proxy?: CodexProxyRoute; readonly host?: CodexHostRoute; readonly args: readonly string[] }
+type PreparedRoute =
+  | { readonly kind: 'direct'; readonly args: readonly string[] }
+  | { readonly kind: 'litellm-proxy'; readonly route: CodexProxyRoute; readonly args: readonly string[] }
+  | { readonly kind: 'host-route'; readonly route: CodexHostRoute; readonly args: readonly string[] };
 function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, native: CodexHostNativeConfig):
 { readonly route: PreparedRoute } | { readonly problem: string } | { readonly unavailable: string } {
   if (config.kind === 'direct') return { problem: 'direct credentials are not a Codex host route' };
@@ -203,7 +206,7 @@ function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, nati
     if ('problem' in checked) return checked;
     const configured = codexProxyConfig(checked.route, { helper });
     if ('problem' in configured) return configured;
-    return { route: { proxy: checked.route, args: configured.config.args } };
+    return { route: { kind: 'litellm-proxy', route: checked.route, args: configured.config.args } };
   }
   const providerId = native.providerId ?? 'host';
   const helper = config.credentialForm === 'helper' && native.helper !== 'unavailable' && native.helper !== undefined ? native.helper : undefined;
@@ -217,7 +220,7 @@ function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, nati
   const built = checked.route;
   const configured = codexHostRouteConfig(built);
   if ('problem' in configured) return configured;
-  return { route: { host: built, args: configured.config.args } };
+  return { route: { kind: 'host-route', route: built, args: configured.config.args } };
 }
 
 /**
@@ -241,7 +244,7 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       if (!native || !variables) return fail({ code: 'invalid-input', message: 'Codex requires a complete host environment and native config' });
       const enabled = new Set<string>(options.builtInTools ?? []);
       const routed = options.route != null;
-      let prepared: PreparedRoute = { args: featureArgs(enabled, options.subagents, routed) };
+      let prepared: PreparedRoute = { kind: 'direct', args: featureArgs(enabled, options.subagents, routed) };
       if (routed && native.sandbox === 'danger-full-access') {
         return fail({ code: 'invalid-input', message: 'a routed session refuses danger-full-access' });
       }
@@ -289,14 +292,14 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
         bounds: { maxSessions: 4, maxObservers: 4, eventCapacity: 64, maxEarlyNotifications: 32, cleanupTimeoutMs: 5000,
           acknowledgementTimeoutMs: 15000 },
         initialize: { clientInfo: { name: 'switchboard-codex-host', version: '1' }, capabilities: { experimentalApi: true } },
-        onServerRequest: bridge.onServerRequest, ...(prepared.proxy ? { route: prepared.proxy } : prepared.host ? { route: prepared.host } : {}) });
+        onServerRequest: bridge.onServerRequest, ...(prepared.kind === 'direct' ? {} : { route: prepared.route }) });
       if (opened.kind === 'error') {
         if (transportBounds) await releaseSpawned(channel, transportBounds);
         return fail({ code: opened.error.code === 'invalid-input' ? 'invalid-input' : 'native-failure',
           message: opened.error.message ?? 'Codex app-server handshake failed' });
       }
       execution = opened.value;
-      const admittedRoute = prepared.host !== undefined || prepared.proxy !== undefined;
+      const admittedRoute = prepared.kind !== 'direct';
       const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, admittedRoute, pinsMultiAgent(admittedRoute, options.subagents));
       if (pinned) { await execution.close(); return fail({ code: 'invalid-input', message: pinned }); }
       const bound = await bindCodexRequester({ scope: opened.value.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
@@ -404,15 +407,24 @@ async function openAdapter(ready: {
   }
   function threadFeatures(config: CodexHostNativeConfig, openOptions: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>) {
     const declared = openOptions.resume ? undefined : dynamicTools(openOptions.tools ?? []);
-    const sandbox = config.sandbox ?? (ready.prepared.host ? 'read-only' as const : undefined);
-    return { approvalPolicy: 'never' as const, cwd: config.cwd,
-      ...(sandbox ? { sandbox } : {}),
-      ...(options.route ? { model: options.route.config.model } : {}),
-      ...(declared ? { dynamicTools: declared } : {}) };
+    const base = { approvalPolicy: 'never' as const, cwd: config.cwd, ...(declared ? { dynamicTools: declared } : {}) };
+    const chosen = config.sandbox ? { sandbox: config.sandbox } : {};
+    switch (ready.prepared.kind) {
+      case 'direct':
+        return { ...base, ...chosen };
+      case 'litellm-proxy':
+        return { ...base, ...chosen, model: ready.prepared.route.model };
+      case 'host-route':
+        return { ...base, model: ready.prepared.route.model, sandbox: config.sandbox ?? 'read-only' as const };
+      default: {
+        const leftover: never = ready.prepared;
+        return leftover;
+      }
+    }
   }
   async function credentialOk(hostSignal: AbortSignal): Promise<HostAdapterError | undefined> {
     const route = options.route;
-    const host = ready.prepared.host;
+    const host = ready.prepared.kind === 'host-route' ? ready.prepared.route : undefined;
     if (!route || !host || host.credentialForm !== 'bearer') return undefined;
     const auth = createAuthContext({ config: route.config, scope: { ...route.scope, sessionId: session?.threadId ?? 'new', adapterInstanceId: identity.adapter } });
     if (auth.kind === 'error') return { code: 'unavailable', feature: 'credential', message: 'bearer credential is unavailable' };
