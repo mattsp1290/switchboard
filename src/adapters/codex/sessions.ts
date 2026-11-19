@@ -7,8 +7,8 @@ import { copyBinding, parseSessionReference, sessionLimits, validateSessionDisco
 import type { SessionAccess, SessionBinding, SessionDiscovery, SessionDiscoveryBounds, SessionDiscoveryDiagnostic,
   SessionDiscoveryPage, SessionInspection, SessionInspectionResult, SessionOperationError, SessionReference,
   SessionReferenceError } from '../../core/sessions.js';
-import { codexRoutePrincipal, copyCodexRoute } from './route.js';
-import type { CodexProxyRoute } from './route.js';
+import { admitCodexRoute, codexHostRoutePrincipal, codexRoutePrincipal } from './route.js';
+import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import type { CodexTransport } from './transport.js';
 
 /**
@@ -26,12 +26,14 @@ export interface CodexSessionScope {
    */
   readonly initialize: { readonly codexHome: string };
   /**
-   * The host-selected LiteLLM proxy route this app-server runs under, if any. Absent: direct mode, the requester is the
-   * native login. Present: the requester is the host-asserted route principal (route.ts); an invalid route is
+   * The route this app-server runs under, `litellm-proxy` or `host-route`, if any. Absent: direct mode, the requester is
+   * the native login. Present: the requester is the host-asserted route principal (route.ts); an invalid route is
    * `invalid-input` before any native request. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct app-server over one home would not exclude each other's writers.
+   * An off-model refusal is `litellm-proxy` only. A host route refuses `modelProvider` and `config` and does not pin
+   * sandbox or approvals in its config.
    */
-  readonly route?: CodexProxyRoute;
+  readonly route?: CodexProxyRoute | CodexHostRoute;
 }
 /** The only app-server methods this module sends. Every one is a read; none dispatches, resumes or writes. */
 export const codexSessionMethods = Object.freeze(['config/read', 'account/read', 'getConversationSummary', 'thread/read'] as const);
@@ -43,7 +45,7 @@ export type CodexResumePreparation =
   | Exclude<SessionInspectionResult, { readonly kind: 'available' }>;
 type Access = SessionAccess<CodexSessionScope>;
 type Run = { readonly home: string; readonly request: CodexSessionScope['request']; readonly bounds: SessionDiscoveryBounds;
-  readonly signal: AbortSignal; readonly deadline: number; readonly route: CodexProxyRoute | undefined };
+  readonly signal: AbortSignal; readonly deadline: number; readonly route: CodexProxyRoute | CodexHostRoute | undefined };
 type Reply = { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly code: number; readonly message: string };
 type Stop = 'cancelled' | 'duration' | 'failed';
 type Ending = { readonly kind: 'complete' } | { readonly kind: 'cancelled' }
@@ -81,8 +83,9 @@ function admit(options: unknown): Run | undefined {
     if (!record(options) || !record(options.scope)) return undefined;
     const { scope: { home, request, initialize, route: rawRoute }, bounds: rawBounds, signal } = options;
     const bounds = validateSessionDiscoveryBounds(rawBounds);
-    const route = rawRoute === undefined ? undefined : copyCodexRoute(rawRoute);
-    if (rawRoute !== undefined && !route) return undefined;
+    const checked = rawRoute === undefined ? undefined : admitCodexRoute(rawRoute);
+    if (checked && 'problem' in checked) return undefined;
+    const route = checked?.route;
     if (!text(home) || !isAbsolute(home) || home !== resolve(home)
       || !record(initialize) || initialize.codexHome !== home || typeof request !== 'function' || !(signal instanceof AbortSignal) || bounds.kind === 'error') return undefined;
     return { home, request: request as Run['request'], bounds: bounds.value, signal,
@@ -121,28 +124,93 @@ const operation = (stop: Stop): SessionOperationError['code'] =>
   stop === 'cancelled' ? 'cancelled' : stop === 'duration' ? 'bounds-exceeded' : 'native-failure';
 
 /**
- * The native provider entry must be exactly the host route with command auth only (codex-native-api.md, Proxy-routed
- * requester): `config/read` echoes `base_url` verbatim and lists no built-in provider (`ollama`, `openai`), so a
- * built-in id, another endpoint, another wire API, or an env-key or static bearer credential is refused. Native
- * multi-agent must be pinned off as `codexProxyConfig` sets it (`config.features.multi_agent` and `multi_agent_v2`
- * both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses the route model.
- * The sandbox must be `read-only` (the `codexProxyConfig` pin) or `workspace-write`, never `danger-full-access`, with
- * `network_access` `false` and no `default_permissions`, since a networked shell can take route tokens from the broker.
- * `approval_policy` must be exactly `"never"` (native reports `-c approval_policy="never"` as that string and an unset
- * policy as `null`), since an approved escalated command runs outside the sandbox.
+ * Host-route provider entry. `none`, `bearer`, and `helper` stay distinct.
+ * Bearer is `env_key` plus `env_http_headers` names, never a secret and never `auth.command`.
+ * No-auth is an empty env key, empty auth, and no headers. Helper is the absolute command and its args.
+ * Static stacks (`http_headers`, `query_params`, `gateway_oauth`, `aws`, `credential_file`,
+ * `experimental_bearer_token`) are refused. Sandbox, approvals, and multi-agent stay on the thread
+ * and the feature args. This function does not read `approval_policy` or `sandbox_mode`.
+ */
+function providerEntry(settings: Record<string, unknown>, providerId: string, endpoint: string):
+Record<string, unknown> | undefined {
+  if (settings.model_provider !== providerId || !record(settings.model_providers)
+    || !Object.hasOwn(settings.model_providers, providerId)) return undefined;
+  const entry = settings.model_providers[providerId];
+  if (!record(entry) || entry.base_url !== endpoint || entry.wire_api !== 'responses'
+    || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return undefined;
+  return entry;
+}
+function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute): boolean {
+  const entry = providerEntry(settings, route.providerId, route.endpoint);
+  if (!entry) return false;
+  if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
+    || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
+  if (!stacksClear(entry)) return false;
+  switch (route.credentialForm) {
+    case 'none':
+      return emptyValue(entry.env_key) && emptyValue(entry.auth) && headersMatch(entry, {});
+    case 'bearer':
+      return entry.env_key === route.envKey && emptyValue(entry.auth) && headersMatch(entry, route.headerEnv ?? {});
+    case 'helper':
+      return record(entry.auth) && entry.auth.command === route.helperCommand.command
+        && JSON.stringify(entry.auth.args) === JSON.stringify(route.helperCommand.args)
+        && emptyValue(entry.env_key) && headersMatch(entry, {});
+    default: {
+      const leftover: never = route;
+      void leftover;
+      return false;
+    }
+  }
+}
+const emptyValue = (value: unknown) => value == null || (record(value) && Object.keys(value).length === 0);
+const providerStacks = ['http_headers', 'query_params', 'gateway_oauth', 'aws', 'credential_file'] as const;
+function stacksClear(entry: Record<string, unknown>): boolean {
+  return providerStacks.every((key) => emptyValue(entry[key]));
+}
+function headersMatch(entry: Record<string, unknown>, expected: Readonly<Record<string, string>>): boolean {
+  if (entry.env_http_headers == null) return Object.keys(expected).length === 0;
+  if (!record(entry.env_http_headers)) return false;
+  const headers = entry.env_http_headers;
+  return Object.keys(headers).length === Object.keys(expected).length
+    && Object.entries(expected).every(([name, variable]) => headers[name] === variable);
+}
+function proxyConfined(settings: Record<string, unknown>): boolean {
+  const features = record(settings.features) ? settings.features : undefined;
+  const workspace = record(settings.sandbox_workspace_write) ? settings.sandbox_workspace_write : undefined;
+  return settings.approval_policy === 'never'
+    && features?.multi_agent === false && features.multi_agent_v2 === false
+    && ['read-only', 'workspace-write'].includes(String(settings.sandbox_mode))
+    && workspace?.network_access === false && settings.default_permissions == null;
+}
+/**
+ * The native provider entry must be exactly the LiteLLM route with command auth only (codex-native-api.md,
+ * Proxy-routed requester): `config/read` echoes `base_url` verbatim and lists no built-in provider (`ollama`,
+ * `openai`), so a built-in id, another endpoint, another wire API, or an env-key or static bearer credential is
+ * refused. Native multi-agent must be pinned off as `codexProxyConfig` sets it (`config.features.multi_agent` and
+ * `multi_agent_v2` both `false`; native omits an unset feature), since a sub-agent's `spawn_agent` `model` bypasses
+ * the route model. The sandbox must be `read-only` (the `codexProxyConfig` pin) or `workspace-write`, never
+ * `danger-full-access`, with `network_access` `false` and no `default_permissions`, since a networked shell can take
+ * route tokens from the broker. `approval_policy` must be exactly `"never"` (native reports
+ * `-c approval_policy="never"` as that string and an unset policy as `null`), since an approved escalated command
+ * runs outside the sandbox.
  */
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
-  if (settings.approval_policy !== 'never') return false;
-  if (!record(settings.features) || settings.features.multi_agent !== false
-    || settings.features.multi_agent_v2 !== false) return false;
-  if (!['read-only', 'workspace-write'].includes(String(settings.sandbox_mode)) || !record(settings.sandbox_workspace_write)
-    || settings.sandbox_workspace_write.network_access !== false || settings.default_permissions != null) return false;
-  if (settings.model_provider !== route.providerId || !record(settings.model_providers)
-    || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
-  const entry = settings.model_providers[route.providerId];
-  return record(entry) && entry.base_url === route.endpoint && entry.wire_api === 'responses' && record(entry.auth)
-    && typeof entry.auth.command === 'string' && entry.requires_openai_auth === false
-    && entry.env_key == null && entry.experimental_bearer_token == null;
+  if (!proxyConfined(settings)) return false;
+  const entry = providerEntry(settings, route.providerId, route.endpoint);
+  return entry !== undefined && record(entry.auth) && typeof entry.auth.command === 'string' && entry.env_key == null;
+}
+function admittedRequester(settings: Record<string, unknown>, route: CodexProxyRoute | CodexHostRoute):
+{ readonly principal: string } | undefined {
+  switch (route.kind) {
+    case 'host-route':
+      return hostProvider(settings, route) ? { principal: codexHostRoutePrincipal(route) } : undefined;
+    case 'litellm-proxy':
+      return routedProvider(settings, route) ? { principal: codexRoutePrincipal(route) } : undefined;
+    default: {
+      const leftover: never = route;
+      return leftover;
+    }
+  }
 }
 /**
  * The provider native runs this app-server's threads on: `config/read` `model_provider`, or Codex's default `openai`
@@ -161,11 +229,13 @@ type Requester = { readonly principal: string; readonly provider: string };
  * so a change between API keys has no native signal and is unqualified. Native paths are compared after `resolve`;
  * symlink and case aliasing of the index stay host obligations.
  *
- * Routed (`run.route`): native reports no login for provider command auth (codex-native-api.md, Proxy-routed requester),
- * so the requester is the route principal, admitted only while `config/read` names the route's provider with an entry
- * matching the route with multi-agent pinned off (routedProvider) and `account/read` reports no account and
- * `requiresOpenaiAuth: false`. A native login under a route is refused, never used as a fallback: the prefix keeps
- * routed and direct principals disjoint.
+ * `litellm-proxy`: no native login. Admit only when `routedProvider` matches, including multi-agent, sandbox, and
+ * approval pins, and `account/read` reports no account and `requiresOpenaiAuth: false`. The principal is
+ * `codexRoutePrincipal`.
+ * `host-route`: no native login. Admit only when `hostProvider` matches that credential form. `hostProvider` does not
+ * read sandbox, approvals, or multi-agent. The principal is `codexHostRoutePrincipal`.
+ * A native login under either route is refused, never used as a fallback: the prefix keeps routed and direct
+ * principals disjoint.
  *
  * Both modes also yield the effective provider. Native resumes and runs a thread on its own `Thread.modelProvider`
  * whatever the app-server's default, with that provider's credentials, so every caller admits only threads on it: a
@@ -180,7 +250,8 @@ async function requester(run: Run): Promise<Outcome<Requester, SessionOperationE
     const path = settings[key];
     if (typeof path !== 'string' || !isAbsolute(path) || within(resolve(path), run.home)) return failure('invalid-input');
   }
-  if (run.route && !routedProvider(settings, run.route)) return failure('inaccessible');
+  const admitted = run.route === undefined ? undefined : admittedRequester(settings, run.route);
+  if (run.route !== undefined && admitted === undefined) return failure('inaccessible');
   const provider = effectiveProvider(settings);
   if (!provider) return failure('native-failure');
   const reply = await call(run, 'account/read', { refreshToken: false });
@@ -188,8 +259,9 @@ async function requester(run: Run): Promise<Outcome<Requester, SessionOperationE
   if (reply.kind === 'error' || !record(reply.value)) return failure('native-failure');
   const { account, userId, requiresOpenaiAuth } = reply.value;
   if (run.route) {
+    if (!admitted) return failure('inaccessible');
     return account === null && requiresOpenaiAuth === false
-      ? { kind: 'ok', value: { principal: codexRoutePrincipal(run.route), provider } } : failure('inaccessible');
+      ? { kind: 'ok', value: { principal: admitted.principal, provider } } : failure('inaccessible');
   }
   const principal = !record(account) ? undefined : account.type === 'apiKey' ? 'apiKey'
     : account.type === 'chatgpt' && text(userId) ? `chatgpt:${userId}` : undefined;

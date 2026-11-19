@@ -1,0 +1,44 @@
+{
+  "note": "The option shape Crew passes to the Codex host adapter. An origin-only endpoint is canonical only with its trailing slash. Crew strips trailing slashes today, so that caller must pass the canonical form.",
+  "instructions": "developer instructions",
+  "subagents": "off",
+  "builtInTools": [],
+  "sandbox": "read-only",
+  "approvalPolicy": "never",
+  "storage": { "sqliteHome": "/thread/codex-index", "logDir": "/thread/codex-logs" },
+  "forms": {
+    "fixture": {
+      "kind": "host-route",
+      "providerId": "fixture",
+      "endpoint": "http://127.0.0.1:9/",
+      "protocol": "responses",
+      "credentialForm": "none",
+      "principal": "crew-fixture",
+      "loopbackRelay": true,
+      "model": "fixture-model"
+    },
+    "relay": {
+      "kind": "host-route",
+      "providerId": "birbcrew_proxy",
+      "endpoint": "http://127.0.0.1:9/",
+      "protocol": "responses",
+      "credentialForm": "bearer",
+      "principal": "crew-relay",
+      "loopbackRelay": true,
+      "model": "relay-model",
+      "envKey": "CODEX_API_KEY"
+    },
+    "subscription": {
+      "kind": "host-route",
+      "providerId": "birbcrew_subscription",
+      "endpoint": "https://chatgpt.com/backend-api/codex",
+      "protocol": "responses",
+      "credentialForm": "bearer",
+      "principal": "crew-subscription",
+      "loopbackRelay": false,
+      "model": "gpt-5.4",
+      "envKey": "BIRBCREW_CODEX_BEARER",
+      "headerEnv": { "ChatGPT-Account-Id": "BIRBCREW_CODEX_ACCOUNT" }
+    }
+  }
+}

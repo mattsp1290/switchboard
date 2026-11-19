@@ -13,7 +13,8 @@ import type { Outcome } from '../../core/contracts.js';
  * default.
  *
  * The adapter adds no setting: an omitted field keeps Codex's own default, and nothing forces an approval policy,
- * sandbox or tool allowlist, except under a proxy route (execution.ts routeOverride, approvals-under-route). Raw
+ * sandbox or tool allowlist, except under a proxy route (execution.ts routeOverride, approvals-under-route).
+ * The host-route row owns host-route refusal and non-pins. Raw
  * passthrough keys the host also supplies are preserved unchanged and never re-validated.
  * With no `features` the raw params pass exactly as before; with `features`, the protocol's combination rules and the
  * experimentalApi gates apply to the merged request. A typed field that contradicts a raw key, or a combination the
@@ -104,11 +105,12 @@ export const codexFeatureCapabilities = Object.freeze({
     `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
     + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network.'),
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
-    'Selects a native model name only. Under a proxy route only route.model is accepted (execution.ts); others are invalid-input, unsent.'),
+    'Selects a native model name only. Under a LiteLLM proxy route only route.model is accepted (execution.ts routeOverride); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
-  'dynamic-tools': supported('fixture-only', { 'thread/start': ['dynamicTools'] },
-    `Experimental thread/start.dynamicTools; requires ${gate}. The only evidence is the switchboard-bd21 diagnostic fixture `
-    + 'recorded at src/core/frontend-restore.ts:168-169: a warm item/tool/call reply observation, not production qualification.'),
+  'dynamic-tools': supported('typed-unqualified', { 'thread/start': ['dynamicTools'] },
+    `Experimental thread/start.dynamicTools; requires ${gate}. The host adapter sends the host's declarations here and `
+    + 'refuses item/tool/call for any tool that was not declared. thread/resume ignores dynamicTools (host-tool-probes A2). '
+    + 'The wire was probed; a production native proof is still typed-unqualified until the host-adapter job records it.'),
   'dynamic-tools-after-start': unsupported('thread/resume and turn/start have no dynamicTools field in the 0.169.0 protocol; tools are fixed at thread/start.'),
   'routing': supported('fixture-only', { options: ['route'], 'app-server': ['codexProxyConfig'] },
     'LiteLLM Responses route with host-resolved command auth (proxy.ts): synthetic loopback only (codex-native-api.md, '
@@ -116,6 +118,12 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'starts or resumes on another model is native-failure: resume it with params.model = route.model. Routed config '
     + 'disables multi-agent (multi-agent-under-route), networked shells (networked-shell-under-route) and approvals '
     + '(approvals-under-route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
+  'host-route': supported('typed-unqualified', { options: ['route'], 'app-server': ['codexHostRouteConfig'],
+    'thread/start': ['modelProvider', 'config'] },
+    'Host provider route. refuseHostRedirect refuses only modelProvider and config. '
+    + 'Model, sandbox, and approvals are not pinned in codexHostRouteConfig. '
+    + 'Multi-agent feature args live in index.ts. unconfined rejects an unconfined reply for both route kinds. '
+    + 'Off-model failure is litellm-proxy only.'),
   'multi-agent-under-route': unavailable('Under a proxy route, codexProxyConfig sets features.multi_agent and '
     + 'features.multi_agent_v2 to false: a sub-agent spawn_agent model argument would send requests on a model the model '
     + 'chose, bypassing the route model. The host cannot re-enable it: routed thread config is refused. Direct mode keeps '
@@ -132,8 +140,9 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'one is sent as "never" since a resumed thread keeps its persisted policy. Native rejects the escalation without '
     + 'asking the host or any approvalsReviewer, which is therefore accepted unchanged.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
-    'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
-    + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),
+    'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. A proxy route '
+    + 'and a host route refuse config and modelProvider as invalid-input, unsent, on thread/start, thread/resume and '
+    + 'turn/start (execution.ts).'),
   'plugins-and-capability-roots': supported('passthrough-unqualified',
     { 'thread/start': ['selectedCapabilityRoots'], 'turn/start': ['disabledPluginIds'] },
     'Passed through unchanged; nothing is disabled by the adapter.'),

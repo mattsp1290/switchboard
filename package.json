@@ -28,6 +28,10 @@
       "types": "./dist/codex/index.d.ts",
       "import": "./dist/codex/index.js"
     },
+    "./host/codex": {
+      "types": "./dist/adapters/codex/index.d.ts",
+      "import": "./dist/adapters/codex/index.js"
+    },
     "./claude": {
       "types": "./dist/claude/index.d.ts",
       "import": "./dist/claude/index.js"

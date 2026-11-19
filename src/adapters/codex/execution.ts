@@ -10,8 +10,8 @@ import type { SessionBinding, SessionDiscoveryBounds, SessionOperationError, Ses
   SessionReferenceError } from '../../core/sessions.js';
 import { resolveCodexFeatures } from './features.js';
 import type { CodexStartFeatures, CodexThreadFeatures, CodexTurnFeatures } from './features.js';
-import { checkCodexRoute } from './route.js';
-import type { CodexProxyRoute } from './route.js';
+import { admitCodexRoute } from './route.js';
+import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester, codexSessions } from './sessions.js';
 import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
@@ -65,19 +65,22 @@ export interface CodexExecutionOptions {
    */
   readonly processExit: PromiseLike<unknown>;
   /**
-   * The LiteLLM proxy route the host configured this app-server with, copied once at open. Sessions then bind to the
-   * host-asserted route principal instead of a native login (sessions.ts); absent is direct mode. Invalid: `invalid-input`
+   * The route this app-server runs under, copied once at open: `litellm-proxy` or `host-route`. Absent is direct mode.
+   * Sessions bind to the host-asserted route principal instead of a native login (sessions.ts). Invalid: `invalid-input`
    * with a `message` naming the failing rule. A host runs one mode per Codex home: the writer registry keys by the
    * complete reference, so a routed and a direct execution over one home would not exclude each other's writers.
-   * A thread that starts or resumes on another model than `route.model` is `native-failure` with a `message`: natively a
-   * resumed thread keeps its persisted model, so resume it with `params.model = route.model`. So is one whose reply
-   * reports a sandbox other than read-only or workspace-write without network, or an approval policy other than never.
+   * A `litellm-proxy` thread on another model than `route.model` is `native-failure`; resume it with
+   * `params.model = route.model`. A host route does not take that failure. Its outbound refusal is `modelProvider`
+   * and `config` (`refuseHostRedirect`). Both kinds refuse a reply whose sandbox is outside read-only or
+   * workspace-write without network, or whose approval policy is not never (`unconfined`). A host route does not
+   * rewrite those fields on the way out and does not pin them in `codexHostRouteConfig`.
    */
-  readonly route?: CodexProxyRoute;
+  readonly route?: CodexProxyRoute | CodexHostRoute;
 }
 /**
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
- * routeOverride, checkCodexRoute), naming the rejected setting or rule, and on a routed off-model or unconfined `native-failure`.
+ * routeOverride, admitCodexRoute), naming the rejected setting or rule; on a `litellm-proxy` off-model `native-failure`;
+ * and on an `unconfined` `native-failure` for either route kind. A host route has no off-model failure.
  */
 export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
   | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
@@ -171,7 +174,9 @@ export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: Co
   | Exclude<CodexResumePreparation, { readonly kind: 'ready' }>;
 /** `features` are typed native settings merged into `params` (features.ts); a conflict is `invalid-input`, unsent. */
 type Access<Features = CodexThreadFeatures> = { readonly bounds: SessionDiscoveryBounds; readonly signal: AbortSignal;
-  readonly params?: Readonly<Record<string, unknown>>; readonly features?: Features };
+  readonly params?: Readonly<Record<string, unknown>>; readonly features?: Features;
+  /** Placed as native `developerInstructions` on thread/start and thread/resume. */
+  readonly instructions?: string };
 export interface CodexExecution {
   /** pg51 scope over this connection, for `codexSessions` reads. Writer methods go only through this module. */
   readonly scope: CodexSessionScope;
@@ -291,10 +296,13 @@ function newTurn(): Turn {
   return turn;
 }
 const invalid = { kind: 'error', error: Object.freeze({ code: 'invalid-input' }) } as const;
+const redirectKey = (params: Record<string, unknown>) =>
+  ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
 /**
- * Under a route, a per-thread `modelProvider` or any `config` override redirects traffic off the route while the
- * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. The route also
- * fixes the model: `model` (thread/start, thread/resume, turn/start) unless it strictly equals `route.model`,
+ * LiteLLM proxy only. A per-thread `modelProvider` or any `config` override redirects traffic off the proxy while the
+ * binding still names it (codex-native-api.md, Proxy-routed requester), so either key is refused unsent. A host route
+ * does not enter this function. `refuseHostRedirect` refuses only `modelProvider` and `config` for that route. This
+ * function also fixes the model: `model` (thread/start, thread/resume, turn/start) unless it strictly equals `route.model`,
  * `collaborationMode` (turn/start; it takes precedence over `model`) unless its `settings.model` does, and
  * `allowProviderModelFallback` (thread/start) unless `false` are refused. TurnStartParams 0.169.0 has no provider or
  * config field; ThreadStartParams and ThreadResumeParams have no `collaborationMode`, which is refused there anyway.
@@ -311,7 +319,7 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   if (!route) return undefined;
   const refuse = (key: string, why: string) => ({ kind: 'error', error: Object.freeze({ code: 'invalid-input',
     message: `${target} ${key} is refused under a proxy route: ${why}` }) }) as const;
-  const key = ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  const key = redirectKey(params);
   if (key) return refuse(key, 'a per-thread provider or config override can redirect traffic off the route');
   if (Object.hasOwn(params, 'model') && params.model !== route.model) return refuse('model', 'it differs from the route model');
   if (Object.hasOwn(params, 'allowProviderModelFallback') && params.allowProviderModelFallback !== false) {
@@ -342,6 +350,23 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   params.collaborationMode = mode;
   return undefined;
 };
+/** A host route refuses the two keys that can send its credential to another endpoint. Model, sandbox and approvals stay the host's. */
+const refuseHostRedirect = (_route: CodexHostRoute, target: string, params: Record<string, unknown>) => {
+  const key = redirectKey(params);
+  if (!key) return undefined;
+  return { kind: 'error', error: Object.freeze({ code: 'invalid-input',
+    message: `${target} ${key} is refused under a host route: a per-thread provider or config override can redirect traffic off the admitted provider` }) } as const;
+};
+/** Host `instructions` become native `developerInstructions`. An empty string leaves the native default. */
+function placeInstructions(target: string, params: Record<string, unknown>, instructions: unknown) {
+  if (instructions === undefined) return undefined;
+  if (typeof instructions !== 'string') return fail('invalid-input', `${target} instructions must be a string`);
+  if (params.developerInstructions != null && params.developerInstructions !== instructions) {
+    return fail('invalid-input', `${target} developerInstructions conflicts with instructions`);
+  }
+  if (instructions.length > 0) params.developerInstructions = instructions;
+  return undefined;
+}
 const fail = (code: CodexOpenError['code'], message?: string) =>
   ({ kind: 'error', error: Object.freeze(message === undefined ? { code } : { code, message }) }) as const;
 
@@ -351,9 +376,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   try {
     const { channel, transport: transportBounds, bounds, home, initialize, onServerRequest, signal, processExit, route: rawRoute } = options;
     const state = registries.get(options.writers ?? processWriters);
-    const checked = rawRoute === undefined ? undefined : checkCodexRoute(rawRoute);
-    if (checked && 'problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
-    const route = checked?.route;
+    let route: CodexProxyRoute | CodexHostRoute | undefined;
+    if (rawRoute !== undefined) {
+      const checked = admitCodexRoute(rawRoute);
+      if ('problem' in checked) return { kind: 'error', error: Object.freeze({ code: 'invalid-input', message: checked.problem }) };
+      route = checked.route;
+    }
     if (!state || !record(bounds) || !record(initialize) || typeof onServerRequest !== 'function'
       || !(signal instanceof AbortSignal) || typeof home !== 'string' || home.length === 0
       || typeof (processExit as { then?: unknown } | null)?.then !== 'function') return invalid;
@@ -367,16 +395,33 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       bounds: { maxSessions, maxObservers, eventCapacity, maxEarlyNotifications, cleanupTimeoutMs, acknowledgementTimeoutMs } };
   } catch { return invalid; }
   const { home, state: writers, bounds, signal, experimentalApi, route } = captured;
+  /** LiteLLM pins apply only to that route. A host route keeps the host's sandbox, model and approvals. */
+  const proxy = route?.kind === 'litellm-proxy' ? route : undefined;
   /**
-   * Under a route, a start or resume reply whose `model` is not `route.model` is never a session: natively (0.169.0) a
-   * resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
+   * LiteLLM proxy only. A start or resume reply whose `model` is not `proxy.model` is never a session: natively
+   * (0.169.0) a resumed thread keeps its persisted model over the app-server's configured one unless `model` is passed.
+   * A host route does not take this failure.
    */
-  const offModel = (value: unknown) => route !== undefined && (!record(value) || value.model !== route.model);
+  const offModel = (value: unknown) => proxy !== undefined && (!record(value) || value.model !== proxy.model);
   /**
-   * Under a route, a start or resume reply whose `sandbox` is not `readOnly` or `workspaceWrite` without network, or whose
-   * `approvalPolicy` is not `"never"`, is never a session: defence in depth behind the resume `read-only` default, since a
-   * turn without `sandboxPolicy` runs on the thread's reported profile (codex-native-api.md, Proxy-routed requester).
+   * Reply confinement for both route kinds. A host route still does not rewrite model, sandbox, or approvals
+   * on the way out; `refuseHostRedirect` only blocks `modelProvider` and `config`. A start or resume reply whose
+   * `sandbox` is outside `readOnly` or `workspaceWrite` without network, or whose `approvalPolicy` is not `"never"`,
+   * is never a session.
    */
+  function constrainRoute(target: string, params: Record<string, unknown>) {
+    if (route === undefined) return undefined;
+    switch (route.kind) {
+      case 'host-route':
+        return refuseHostRedirect(route, target, params);
+      case 'litellm-proxy':
+        return routeOverride(route, target, params);
+      default: {
+        const leftover: never = route;
+        return leftover;
+      }
+    }
+  }
   const unconfined = (value: unknown, verb: string) => {
     if (route === undefined) return undefined;
     const sandbox = record(value) && record(value.sandbox) ? value.sandbox : undefined;
@@ -564,8 +609,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('thread/start', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
-      const overridden = routeOverride(route, 'thread/start', params);
-      if (overridden) return overridden;
+      const placed = placeInstructions('thread/start', params, access.instructions);
+      if (placed) return placed;
+      const blocked = constrainRoute('thread/start', params);
+      if (blocked) return blocked;
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
     const refused = admit(wait);
@@ -611,8 +658,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('thread/resume', access.features, params, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       params = resolved.value;
-      const overridden = routeOverride(route, 'thread/resume', params);
-      if (overridden) return overridden;
+      const placed = placeInstructions('thread/resume', params, access.instructions);
+      if (placed) return placed;
+      const blocked = constrainRoute('thread/resume', params);
+      if (blocked) return blocked;
       parsed = parseSessionReference({ value: access.reference, expected: binding });
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
@@ -669,8 +718,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
-      const overridden = routeOverride(route, 'turn/start', params);
-      if (overridden) return overridden;
+      const blocked = constrainRoute('turn/start', params);
+      if (blocked) return blocked;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
       handle = createDispatchOperation<CodexTurnResult>({ mode: 'fresh', identity, recordIntent,
         signal: AbortSignal.any([hostSignal, session.abort.signal]), ...(lifecycle ? { events: lifecycle } : {}),

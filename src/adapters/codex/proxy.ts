@@ -7,7 +7,8 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AuthError, AuthRoute, ScopedAuth } from '../../core/auth.js';
 import type { Outcome } from '../../core/contracts.js';
-import { checkCodexRoute, plain as clean } from './route.js';
+import { checkCodexRoute, plain as clean, processConfig, responsesProviderWire } from './route.js';
+import type { CodexProcessConfig, CodexProxyValue } from './route.js';
 
 /** The provider `auth.command` Codex runs for a token: never a secret, only the helper and its broker socket. */
 export interface CodexHelperCommand {
@@ -27,13 +28,7 @@ export interface CodexProxyOptions {
   /** Native `auth.refresh_interval_ms`: proactive renewal, 1000-86400000; default 300000. A 401 always renews once. */
   readonly refreshIntervalMs?: number;
 }
-export type CodexProxyValue = string | number | boolean | readonly string[];
-export interface CodexProxyConfig {
-  /** Dotted native config keys and their values, in the order the args carry them. */
-  readonly overrides: Readonly<Record<string, CodexProxyValue>>;
-  /** `-c key=<JSON>` pairs the host appends to `codex app-server` (JSON scalars and string arrays are TOML values). */
-  readonly args: readonly string[];
-}
+export type { CodexProcessConfig, CodexProxyValue } from './route.js';
 
 const whole = (value: unknown, min: number, max: number, fallback: number): number | undefined =>
   value === undefined ? fallback : Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max
@@ -47,7 +42,7 @@ const whole = (value: unknown, min: number, max: number, fallback: number): numb
  * (features.ts `multi-agent-under-route`, `networked-shell-under-route`), not defaults.
  */
 export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
-{ readonly config: CodexProxyConfig } | { readonly problem: string } {
+{ readonly config: CodexProcessConfig } | { readonly problem: string } {
   try {
     const checked = checkCodexRoute(route);
     if ('problem' in checked) return checked;
@@ -67,10 +62,8 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
     const refresh = whole(options.refreshIntervalMs, 1000, 86400000, 300000);
     if (timeout === undefined || refresh === undefined) return { problem: 'timeoutMs or refreshIntervalMs is out of range' };
     const at = `model_providers.${providerId}`;
-    const overrides: Record<string, CodexProxyValue> = { model_provider: providerId, model,
-      [`${at}.name`]: 'LiteLLM', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
-      [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
-      [`${at}.requires_openai_auth`]: false, [`${at}.auth.command`]: command, [`${at}.auth.args`]: Object.freeze(args as string[]),
+    const overrides: Record<string, CodexProxyValue> = { ...responsesProviderWire(providerId, endpoint, model, 'LiteLLM'),
+      [`${at}.auth.command`]: command, [`${at}.auth.args`]: Object.freeze(args as string[]),
       [`${at}.auth.timeout_ms`]: timeout, [`${at}.auth.refresh_interval_ms`]: refresh,
       // A sub-agent's spawn_agent `model` argument (multi_agent_v1 namespace, on by default in 0.169.0; collaboration
       // namespace under multi_agent_v2) sends requests on a model the model picked, bypassing route.model. -c outranks a
@@ -81,8 +74,7 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
       // without asking the host (features.ts `approvals-under-route`).
       'features.multi_agent': false, 'features.multi_agent_v2': false,
       sandbox_mode: 'read-only', 'sandbox_workspace_write.network_access': false, approval_policy: 'never' };
-    return { config: Object.freeze({ overrides: Object.freeze(overrides),
-      args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) }) };
+    return { config: processConfig(overrides) };
   } catch { return { problem: 'proxy options could not be read' }; }
 }
 
