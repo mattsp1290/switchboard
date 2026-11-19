@@ -91,7 +91,18 @@ async function segments(factory: HostConformanceFactory, signal: AbortSignal) {
     assert(Number.isSafeInteger(capabilities.maxPendingPerMessage) && capabilities.maxPendingPerMessage >= 1);
     const observed = await collect(adapter, (events) => events.some((event) => event.kind === 'text-delta'), signal);
     const intents: DispatchIdentity[] = [];
-    const complete = kind(await harness.segment(adapter, harness.subject.prompts.text, intents), 'complete');
+    let releaseRecorded = () => {};
+    const recordedGate = new Promise<void>((resolve) => { releaseRecorded = resolve; });
+    const pending = adapter.run({
+      prompt: harness.subject.prompts.text, signal, hostOperationId: 'intent-order',
+      recordIntent: (identity) => { intents.push(identity); return recordedGate; },
+    });
+    for (let turn = 0; turn < 10 && intents.length === 0; turn++) await setImmediate(undefined, { signal });
+    assert.equal(intents.length, 1, 'recordIntent runs before dispatch');
+    assert.equal(observed.events.some((event) => event.kind === 'text-delta'), false,
+      'no segment fact is published before recordIntent resolves');
+    releaseRecorded();
+    const complete = kind(await pending, 'complete');
     assert.equal(intents.length, 1, 'intent is recorded once before dispatch');
     assert.equal(intents[0]?.target.kind, 'new-session');
     assert.equal(complete.session.kind, 'session');
@@ -156,6 +167,8 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
     assert.deepEqual(call.pending.target.session, pending.session);
     const events = await observed.settled();
     assert(started(events) >= 0 && started(events) < ended(events), 'tool-call-start precedes tool-call-end');
+    const argsAt = events.findIndex((event) => event.kind === 'tool-call-arguments-delta');
+    assert(started(events) < argsAt && argsAt < ended(events), 'argument deltas sit between start and end');
 
     if (adapter.capabilities.inspect.kind === 'supported') {
       const read = ok(await adapter.capabilities.inspect.api.pending(signal));
@@ -169,15 +182,31 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
       assert.deepEqual(refused.write, { kind: 'not-attempted' });
     }
     assert.equal(intents.length, 0, 'an invalid continuation records no intent');
+    const other = await harness.open({ resume: { session: pending.session } });
+    const stolen = kind(await harness.answer(other, [answer(call)]), 'failed');
+    assert.equal(stolen.write.kind, 'not-attempted', 'pending calls stay with the open segment that produced them');
+    const delivered = await collect(adapter, (items) => items.some((event) => event.kind === 'tool-delivery')
+      && items.some((event) => event.kind === 'usage'), signal);
     kind(await harness.answer(adapter, [answer(call)]), 'complete');
+    const follow = await delivered.settled();
+    assert(follow.some((event) => event.kind === 'tool-delivery'), 'tool delivery is its own fact');
+    assert(follow.some((event) => event.kind === 'usage'), 'usage is published as its own fact');
     const stale = kind(await harness.answer(adapter, [answer(call)]), 'failed');
     assert.deepEqual(stale.write, { kind: 'not-attempted' });
 
     const batch = await harness.segment(adapter, subject.prompts.twoToolCalls);
     if (adapter.capabilities.maxPendingPerMessage >= 2) {
-      assert.equal(kind(batch, 'pending').calls.length, 2);
+      const held = kind(batch, 'pending');
+      assert.equal(held.calls.length, 2);
+      const [first] = held.calls as readonly [HostToolCall, ...HostToolCall[]];
+      const partial = kind(await harness.answer(adapter, [answer(first)]), 'failed');
+      assert.equal(partial.error.code, 'invalid-input');
+      assert.deepEqual(partial.write, { kind: 'not-attempted' });
+      kind(await harness.answer(adapter, held.calls.map(answer)), 'complete');
     } else {
-      assert.equal(kind(batch, 'failed').error.code, 'pending-limit', 'a call beyond the limit is never silently lost');
+      const limited = kind(batch, 'failed');
+      assert.equal(limited.error.code, 'pending-limit', 'a call beyond the limit is never silently lost');
+      assert.equal(limited.write.kind, 'accepted', 'pending-limit follows a native write and is not safe to send again');
     }
 
     if (adapter.capabilities.continuation === 'fresh-process') {
@@ -199,6 +228,10 @@ async function history(factory: HostConformanceFactory, signal: AbortSignal) {
       return;
     }
     const { session } = kind(await harness.segment(first, harness.subject.prompts.text), 'complete');
+    if (fingerprint.api.validity === 'after-process-exit') {
+      assert.equal((await fingerprint.api.read(signal)).kind, 'error',
+        'an after-process-exit fingerprint cannot be read while the segment is open');
+    }
     const atEnd = fingerprint.api.validity === 'segment-end' ? ok(await fingerprint.api.read(signal)) : undefined;
     ok(await first.close());
     const reader = await harness.open({ resume: { session } });
@@ -218,12 +251,21 @@ async function history(factory: HostConformanceFactory, signal: AbortSignal) {
 async function interrupt(factory: HostConformanceFactory, signal: AbortSignal) {
   await withSubject(factory, signal, async (harness) => {
     const adapter = await harness.open();
-    const kinds = ['terminal-observed', 'interrupted', 'unconfirmed-within-bound'];
-    assert(kinds.includes((await adapter.interrupt({ timeoutMs: 1000 })).kind));
-    kind(await harness.segment(adapter, harness.subject.prompts.text), 'complete');
-    assert(kinds.includes((await adapter.interrupt({ timeoutMs: 1000 })).kind));
+    const { subject } = harness;
+    assert.equal((await adapter.interrupt({ timeoutMs: 20 })).kind, 'terminal-observed');
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const running = adapter.run({ prompt: subject.prompts.text, signal, hostOperationId: 'interrupt', recordIntent: () => gate });
+    const during = await adapter.interrupt({ timeoutMs: 20 });
+    assert.notEqual(during.kind, 'terminal-observed', 'an active segment has no terminal fact yet');
+    assert.equal(during.kind, 'unconfirmed-within-bound',
+      'native has not been entered, so it cannot have acknowledged the interrupt');
+    assert.equal(subject.launches().signals, 0, 'the adapter never signals a host-owned process');
+    release();
+    kind(await running, 'complete');
+    assert.equal((await adapter.interrupt({ timeoutMs: 20 })).kind, 'terminal-observed');
     ok(await adapter.close());
-    assert.equal(harness.subject.launches().signals, 0, 'the adapter never signals a host-owned process');
+    assert.equal(subject.launches().signals, 0, 'the adapter never signals a host-owned process');
   });
 }
 
@@ -234,16 +276,26 @@ async function hostLauncher(factory: HostConformanceFactory, signal: AbortSignal
     kind(await harness.segment(allowed, subject.prompts.text), 'complete');
     const used = subject.launches().attempts;
     assert(used >= 1, 'the adapter launches through the host launcher');
+    const denial = ['unavailable', 'native-failure'];
+    const signals = subject.launches().signals;
     const opened = await subject.registration.open({ launch: subject.launch('deny'), tools: [subject.tool] }, signal);
     if (opened.kind === 'ok') {
       try {
         const result = await harness.segment(opened.value, subject.prompts.text);
         assert.equal(result.kind, 'failed', 'a denied launch never falls back to another launch');
+        if (result.kind === 'failed') {
+          assert(denial.includes(result.error.code), `a denied launch is unavailable or an operation error: ${result.error.code}`);
+          assert(result.write.kind === 'not-attempted' || result.write.kind === 'not-dispatched',
+            'a denied launch does not start a native write');
+        }
       } finally {
         await opened.value.close();
       }
+    } else {
+      assert(denial.includes(opened.error.code), `a denied launch is unavailable or an operation error: ${opened.error.code}`);
     }
     assert(subject.launches().attempts > used, 'the denied launch went through the host launcher');
+    assert.equal(subject.launches().signals, signals, 'a denied launch never signals a host-owned process');
   });
 }
 

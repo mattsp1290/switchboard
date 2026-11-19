@@ -23,6 +23,7 @@ interface NativeSession {
   turns: number;
   calls: readonly HostToolCall[] | null;
   holder: object | null;
+  segmentOpen: boolean;
 }
 
 const namespace = 'switchboard-host-fake';
@@ -35,11 +36,12 @@ const evidence = Object.freeze({ namespace, schemaVersion: 1, data: Object.freez
 function refuse(error: HostAdapterError): Outcome<never, HostAdapterError> {
   return { kind: 'error', error: Object.freeze(error) };
 }
-function failed(error: HostAdapterError, write: HostWriteStatus = { kind: 'not-attempted' }): HostSegmentResult {
+type SegmentError = Exclude<HostAdapterError, { readonly code: 'pending-limit' }>;
+function failed(error: SegmentError, write: HostWriteStatus = { kind: 'not-attempted' }): HostSegmentResult {
   return Object.freeze({ kind: 'failed', error: Object.freeze(error), write });
 }
-const invalid = (message: string): HostAdapterError => ({ code: 'invalid-input', message });
-const closedError: HostAdapterError = { code: 'closed', message: 'The adapter is closed.' };
+const invalid = (message: string): SegmentError => ({ code: 'invalid-input', message });
+const closedError: SegmentError = { code: 'closed', message: 'The adapter is closed.' };
 
 function historyOf(session: NativeSession): CheckpointReference {
   return Object.freeze({ kind: 'checkpoint', formatVersion: 1, binding, sessionOpaque: session.reference.opaque,
@@ -112,7 +114,7 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
     function ensure(): NativeSession {
       if (current !== undefined) return current;
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding, opaque: `session-${sessions.size + 1}` });
-      current = { reference, toolKey, turns: 0, calls: null, holder };
+      current = { reference, toolKey, turns: 0, calls: null, holder, segmentOpen: true };
       sessions.set(reference.opaque, current);
       return current;
     }
@@ -133,12 +135,20 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
     }
     function model(prompt: string, accepted: DispatchEvidence): HostSegmentResult {
       const session = ensure();
+      session.segmentOpen = true;
+      session.holder = holder;
       session.turns++;
       if (prompt !== prompts.toolCall && prompt !== prompts.twoToolCalls) return reply(session);
       const wanted = prompt === prompts.toolCall ? 1 : 2;
       if (wanted > maxPendingPerMessage && !faults.dropExtraCalls) {
-        return failed({ code: 'pending-limit', message: 'The engine produced more host calls than one message may hold.' },
-          { kind: 'accepted', evidence: accepted });
+        return Object.freeze({
+          kind: 'failed' as const,
+          error: Object.freeze({
+            code: 'pending-limit' as const,
+            message: 'The engine produced more host calls than one message may hold.',
+          }),
+          write: { kind: 'accepted' as const, evidence: accepted },
+        } satisfies HostSegmentResult);
       }
       session.calls = Object.freeze(Array.from({ length: Math.min(wanted, maxPendingPerMessage) }, (_, index) => call(session, index)));
       session.holder = holder;
@@ -169,6 +179,9 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       const session = current;
       const calls = session?.calls;
       if (session === undefined || calls == null) return failed(invalid('No host call is pending.'));
+      if (session.holder !== holder && session.segmentOpen) {
+        return failed({ code: 'busy', message: 'Pending calls stay with the open segment that produced them.' });
+      }
       if (session.holder !== holder && continuation === 'same-process') {
         return failed({ code: 'unsupported', feature: 'fresh-process-continuation', message: 'The pending call belongs to another process.' });
       }
@@ -180,6 +193,8 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
         unanswered.delete(match);
       }
       return dispatch(input, () => {
+        session.segmentOpen = true;
+        session.holder = holder;
         session.calls = null;
         session.turns++;
         for (const pending of calls) {
@@ -202,8 +217,14 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
         : { kind: 'unsupported', reason: 'The fake was configured without inspection.' },
       fingerprint: fingerprint === 'unsupported'
         ? { kind: 'unsupported', reason: 'The fake was configured without fingerprints.' }
-        : { kind: 'supported', api: { validity: fingerprint, read: async () => current === undefined
-          ? refuse(invalid('No session exists yet.')) : { kind: 'ok', value: historyOf(current) } } },
+        : { kind: 'supported', api: { validity: fingerprint, read: async () => {
+          if (current === undefined) return refuse(invalid('No session exists yet.'));
+          if (fingerprint === 'after-process-exit' && current.segmentOpen) {
+            return refuse({ code: 'unavailable', feature: 'fingerprint',
+              message: 'An after-process-exit fingerprint cannot be read while the segment is open.' });
+          }
+          return { kind: 'ok', value: historyOf(current) };
+        } } },
     };
     const adapter: HostAdapter = {
       identity,
@@ -214,9 +235,12 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
         return occupy(() => dispatch(input, (accepted) => model(input.prompt, accepted)));
       },
       continue: (input) => occupy(() => answer(input)),
-      interrupt: async () => ({ kind: 'terminal-observed' }),
+      interrupt: ({ timeoutMs }) => new Promise((resolve) => {
+        setTimeout(() => resolve(active ? { kind: 'unconfirmed-within-bound' } : { kind: 'terminal-observed' }), timeoutMs);
+      }),
       close: () => {
         if (closing === undefined) {
+          if (current !== undefined && current.holder === holder) current.segmentOpen = false;
           stream.close();
           closing = Promise.resolve(Object.freeze({ kind: 'ok', value: undefined }));
         }

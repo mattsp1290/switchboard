@@ -89,7 +89,8 @@ export type HostWriteStatus =
  * `unavailable`: a denial first seen at this operation, including a host launcher that refused to start.
  */
 export type HostAdapterError = AdapterError
-  | { readonly code: 'history-mismatch' | 'pending-limit'; readonly message: string }
+  | { readonly code: 'history-mismatch'; readonly message: string }
+  | { readonly code: 'pending-limit'; readonly message: string }
   | { readonly code: 'unavailable'; readonly feature: string; readonly message: string };
 
 export type HostSegmentResult =
@@ -100,7 +101,16 @@ export type HostSegmentResult =
       readonly calls: readonly HostToolCall[];
       readonly usage: HostUsage;
     }
-  | { readonly kind: 'failed'; readonly error: HostAdapterError; readonly write: HostWriteStatus };
+  | {
+      readonly kind: 'failed';
+      readonly error: Exclude<HostAdapterError, { readonly code: 'pending-limit' }>;
+      readonly write: HostWriteStatus;
+    }
+  | {
+      readonly kind: 'failed';
+      readonly error: { readonly code: 'pending-limit'; readonly message: string };
+      readonly write: Extract<HostWriteStatus, { readonly kind: 'accepted' }>;
+    };
 
 export type HostAdapterEvent =
   | { readonly kind: 'text-delta'; readonly nativeItemId: string; readonly text: string }

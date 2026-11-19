@@ -22,6 +22,7 @@ export type FixedTools = Expect<Equal<HostAdapterCapabilities['toolDeclarations'
 export type EventKinds = Expect<Equal<HostAdapterEvent['kind'], 'text-delta' | 'tool-call-start' | 'tool-call-arguments-delta'
   | 'tool-call-end' | 'tool-delivery' | 'usage' | 'native-item'>>;
 export type LaunchKinds = Expect<Equal<HostLaunch['kind'], 'spawn' | 'channel' | 'in-process'>>;
+export type PendingLimitWrite = Expect<Equal<Extract<HostSegmentResult, { kind: 'failed'; error: { code: 'pending-limit' } }>['write']['kind'], 'accepted'>>;
 export type CredentialForms = Expect<Equal<HostRouteCredential['form'], 'none' | 'bearer' | 'helper'>>;
 export type ResolvedRoute = Expect<Equal<Extract<ResolvedAuthentication<unknown>, { kind: 'host-route' }>['material'], HostRouteCredential>>;
 
@@ -45,7 +46,7 @@ export const adapter: HostAdapter<'fixture'> = {
   identity: { engine: 'fixture', adapter: 'example', version: '1', contractVersion: 1 },
   capabilities, events,
   run: async () => ({ kind: 'failed', error: { code: 'unsupported', feature: 'run', message: 'Example.' }, write: { kind: 'not-attempted' } }),
-  continue: async () => ({ kind: 'failed', error: { code: 'pending-limit', message: 'Example.' },
+  continue: async () => ({ kind: 'failed', error: { code: 'native-failure', message: 'Example.' },
     write: { kind: 'not-dispatched', reason: 'aborted' } }),
   interrupt: async () => ({ kind: 'unconfirmed-within-bound' }),
   close: async () => ({ kind: 'ok', value: undefined }),

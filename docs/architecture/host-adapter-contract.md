@@ -71,7 +71,22 @@ The contract declares no second `PendingInteraction`, `InteractionContinuation`,
 
 ## Decisions D1 to D12
 
-Decisions D1 to D12 were argued against t3code and OpenBot. The comparison is the Crew plan's `09-debate-evidence.md`, read from that plan's worktree. That file is not in this repository. It records the comparison and the advocate briefs beside it, and it does not contain a D1 to D12 verdict table or per-decision reasons. The plan file that holds the table is also outside this repository. This document does not reproduce a verdict table.
+Each seam was argued by one advocate for the library and one for the host, with t3code and OpenBot as comparisons. The table and the comparison come from the Crew migration plan (`switchboard-adapter-migration`, files `00-overview.md` and `09-debate-evidence.md`), which is not in this repository.
+
+| # | Seam | Switchboard owns | The host keeps | Rejected | Reason from the comparison |
+| --- | --- | --- | --- | --- | --- |
+| D1 | Session checkpoints | Locating and parsing native history; a history fingerprint; verify-before-resume | The checkpoint record, fencing, provenance, and the decision to require a match | A checkpoint that carries a whole session | t3code keeps native sessions with host refs; OpenBot's "two stores remembering the same thread" warning argues against a second copy |
+| D2 | Process launch | Mapping a host spawn function or channel onto each SDK's hook; never signalling a host-owned process | The launcher, environment, process group, kill and reap evidence | An adapter that spawns and reaps | Both systems split process and sandbox; the host already proves its own confinement |
+| D3 | Pi | An adapter that loads inside a host-owned worker with an injected model stream function | The worker, channel, relay, text publication, and result verification | Moving the relay or distrust check into the library | The host's check of the worker must not depend on the code it checks |
+| D4 | Codex member lane | The app-server transport with host dynamic tools | The call ledger, live hold, settlement, delivery confirmation and deadlines | SDK exec with a loopback MCP server | t3code puts app tools behind a host endpoint; probe A1 showed the app-server holds a host call long enough |
+| D5 | Pause and resume | Core `PendingInteraction` and `InteractionContinuation`; a read of pending calls with no model call; a fresh-process capability | The approval ledger, receipts, restore decision, and recovery | An adapter that picks a restore workaround or fabricates a tool result | t3code: "Do not imitate a missing mode by answering approvals"; OpenBot persists the pending row in the host |
+| D6 | Cancellation | An interrupt with a typed result that never claims termination | Reap evidence, the `uncertain` record, the no-replay rule | Trusting an adapter's cleanup as proof | t3code surfaces a timeout as "its processes may still be running"; neither system auto-replays an uncertain effect |
+| D7 | Events | Typed facts in order, with argument deltas and native identifiers | Redaction, receipts, the durable wire and replay | Replacing the host's projection | Both systems translate events in the adapter and leave durability to the host |
+| D8 | Credentials | A host-declared route: endpoint, protocol, credential form, and a stable principal | The signing relay, upstream credentials, account approval, sign-in reads | A LiteLLM-only route; a helper the launcher cannot run | Both systems split credentials; in both, plan credentials leaked through side channels when the seam lacked a route |
+| D9 | Usage | Raw native counters per segment | The ledger, prices, budgets, stored prior totals | Summing in the library | t3code's adapter reports tokens and the host prices |
+| D10 | Children | An option that switches the engine's own subagents off | Targets, roles, budgets, the delegation tool, the kill switch | A child driver in the library | OpenBot removes the engine's own agent tool and keeps subagents in the host |
+| D11 | System context | One `instructions` input, placed per engine | The content | Per-engine placement code in the host | t3code shares the text and lets each adapter place it; OpenBot composes content and the harness places it |
+| D12 | Host-run tools | Declarations fixed at creation, a pending call keyed by native identity, a delivery fact, capabilities that report limits | The catalog, gate, ledger and execution | Engine built-in tools as the mechanism | OpenBot strips ungoverned built-ins and runs governed tools in the host |
 
 What the contract takes from those decisions:
 
@@ -90,7 +105,14 @@ What the contract takes from those decisions:
 
 ## Conformance
 
-`src/testkit/host-contracts.ts` exports `hostAdapterContracts`: `segments`, `interaction`, `history`, `interrupt`, and `host-launcher`. Each runs against any `HostConformanceSubject`. The host-launcher contract requires the launch to go through the host launcher, and a denial to surface as an operation error or as a failed segment. A subject that launches another way after the denial fails the contract. `createFakeHostSubject` is an in-memory subject with no process and no engine. It qualifies nothing native.
+`src/testkit/host-contracts.ts` exports `hostAdapterContracts`: `segments`, `interaction`, `history`, `interrupt`, and `host-launcher`. Each runs against any `HostConformanceSubject`. The host-launcher contract requires the launch to go through the host launcher, and a denial to surface as an operation error or as a failed segment whose write did not start. A subject that launches another way, or that reports an accepted or unknown write after the denial, fails the contract. An interrupt with no segment in flight must be `terminal-observed`. An interrupt while a segment is blocked before native entry must be `unconfirmed-within-bound`, and it must not signal the process. `interrupted` stays the result where native has acknowledged the interrupt. `pending-limit` must carry an `accepted` write. `createFakeHostSubject` is an in-memory subject with no process and no engine. It qualifies nothing native.
+
+## Layout and export names
+
+- The Codex host adapter will live at `src/adapters/codex/index.ts`, in the root project beside the private app-server stack. It will not import `@openai/codex-sdk`. It will export the qualified native binary version as a constant.
+- The Claude host adapter will live in `adapters/claude-host/`, and the Pi host adapter in `adapters/pi-host/`. Each will be a separate TypeScript project beside the text adapters, because the root project checks library declarations and the Claude SDK's declarations fail there. Each will have `sessions.ts`, `execution.ts`, `interaction.ts`, `features.ts`, and `proxy.ts`.
+- The export names will be `./host/codex`, `./host/claude`, and `./host/pi`. Each package that adds an adapter adds its entry. The map gains no entry that points at a missing file.
+- Each host adapter will declare the exact native versions it was proved against. The Claude host adapter will also declare `@modelcontextprotocol/sdk`.
 
 ## Left to later packages
 
