@@ -2,7 +2,7 @@ import type { NativeExtension, Outcome } from '../../core/contracts.js';
 import { createEventStream } from '../../core/events.js';
 import type { EventObserver } from '../../core/events.js';
 import { interactionLimits, parseInteractionContinuation } from '../../core/interaction.js';
-import type { ApprovalTarget, InteractionError, NativeDelivery, PendingApproval, ToolEffect, ToolOutcome, ToolTarget } from '../../core/interaction.js';
+import type { ApprovalTarget, InteractionContinuation, InteractionError, NativeDelivery, PendingApproval, ToolEffect, ToolTarget } from '../../core/interaction.js';
 import type { CodexEvidence, CodexSession, CodexSessionEvent } from './execution.js';
 import type { RequestId } from './protocol/RequestId.js';
 import type { EndReason, TransportBounds, TransportOptions } from './transport.js';
@@ -149,6 +149,33 @@ const fail = <E>(error: E) => Object.freeze({ kind: 'error', error: Object.freez
 /** The file-change request carries no `availableDecisions` in the 0.169 bindings; its decision enum is this set. */
 const fileChangeDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
 const unanswered = (entry: Entry) => entry.state === 'live' || entry.state === 'reserved';
+
+/**
+ * The four native bodies a host tool reply may write. An empty `data` object is an explicit success.
+ * Anything else is refused before a reply is written.
+ */
+export function codexNativeToolReply(call: CodexHostCall, answer: InteractionContinuation): RpcReply | undefined {
+  if (answer.kind !== 'tool') return undefined;
+  try {
+    const { outcome } = answer;
+    const extension = outcome.result.kind === 'ok' ? outcome.result.value : outcome.result.error;
+    if (!record(extension) || !record(extension.data)) return undefined;
+    const { data } = extension;
+    if (call.method === 'item/tool/requestUserInput') {
+      if (!record(data.answers)) return undefined;
+      return { kind: 'result', value: { answers: structuredClone(data.answers) } };
+    }
+    const success = outcome.result.kind === 'ok';
+    if (Array.isArray(data.contentItems)) {
+      return { kind: 'result', value: { contentItems: structuredClone(data.contentItems), success } };
+    }
+    if (typeof data.text === 'string') {
+      return { kind: 'result', value: { contentItems: [{ type: 'inputText', text: data.text }], success } };
+    }
+    if (success && Object.keys(data).length === 0) return { kind: 'result', value: { contentItems: [], success: true } };
+    return undefined;
+  } catch { return undefined; }
+}
 type RefusalReason = Extract<CodexInteractionEvent, { kind: 'refused' }>['reason'];
 const refusals: Readonly<Record<RefusalReason, readonly [number, string]>> = Object.freeze({
   malformed: [-32602, 'Malformed server request'], capacity: [-32000, 'Too many pending approvals'],
@@ -240,21 +267,6 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (entry.delivered) return;
     entry.delivered = true;
     publish({ kind: 'host-delivery', target: entry.call.pending.target, delivery: { kind: 'unknown' } });
-  }
-  function hostReplyValue(entry: HostEntry, outcome: ToolOutcome): RpcReply | undefined {
-    try {
-      const extension = outcome.result.kind === 'ok' ? outcome.result.value : outcome.result.error;
-      const data = record(extension.data) ? extension.data : undefined;
-      if (entry.call.method === 'item/tool/requestUserInput') {
-        if (!data || !record(data.answers)) return undefined;
-        return { kind: 'result', value: { answers: structuredClone(data.answers) } };
-      }
-      const contentItems = data && Array.isArray(data.contentItems) ? data.contentItems
-        : data && typeof data.text === 'string' ? [{ type: 'inputText', text: data.text }]
-          : data && Object.keys(data).length === 0 && outcome.result.kind === 'ok' ? [] : undefined;
-      if (!contentItems) return undefined;
-      return { kind: 'result', value: { contentItems: structuredClone(contentItems), success: outcome.result.kind === 'ok' } };
-    } catch { return undefined; }
   }
   function loseHost(entry: HostEntry): void {
     if (entry.state === 'replied' || entry.state === 'lost') return;
@@ -499,7 +511,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (parsed.value.kind !== 'tool') return fail({ code: 'invalid-input' });
     if (entry.state === 'replied' || entry.state === 'reserved') return fail({ code: 'duplicate-interaction' });
     if (entry.state !== 'live') return fail({ code: 'stale-interaction' });
-    const replyValue = hostReplyValue(entry, parsed.value.outcome);
+    const replyValue = codexNativeToolReply(entry.call, parsed.value);
     if (!replyValue) return fail({ code: 'invalid-input' });
     const recorded = await recordChoice(entry, entry.call.pending.target, entry.id, recordIntent, signal);
     if (recorded !== 'ok') return fail({ code: recorded });

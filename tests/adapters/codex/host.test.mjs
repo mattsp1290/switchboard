@@ -223,6 +223,48 @@ test('request_user_input is answered with the host answers object', async () => 
   } finally { await made.dispose(); }
 });
 
+test('close keeps the tool declaration, so a different resume is refused before thread/resume', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool] }, signal);
+    assert.equal(opened.kind, 'ok', JSON.stringify(opened));
+    const ran = await opened.value.run({ prompt: prompts.text, signal, hostOperationId: 'first', recordIntent: () => {} });
+    assert.equal(ran.kind, 'complete', JSON.stringify(ran));
+    await opened.value.close();
+    const same = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool], resume: { session: ran.session } }, signal);
+    assert.equal(same.kind, 'ok', JSON.stringify({ same, sent: made.state.servers.at(-1)?.sent }));
+    await same.value.close();
+    const again = await made.registration.open({ launch: made.launch('allow'),
+      tools: [{ name: 'other', description: 'different', inputSchema: { type: 'object' } }],
+      resume: { session: ran.session } }, signal);
+    assert.equal(again.kind, 'error');
+    assert.equal(again.error.code, 'invalid-input');
+    assert.equal(made.state.servers.at(-1).sent.includes('thread/resume'), false);
+  } finally { await made.dispose(); }
+});
+
+test('a continue whose second answer has no native body writes nothing', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool] }, signal);
+    assert.equal(opened.kind, 'ok', JSON.stringify(opened));
+    const pending = await opened.value.run({ prompt: prompts.twoToolCalls, signal, hostOperationId: 'two', recordIntent: () => {} });
+    assert.equal(pending.kind, 'pending', JSON.stringify(pending));
+    const answer = (call, data) => ({ formatVersion: 1, kind: 'tool', outcome: { target: call.pending.target,
+      result: { kind: 'ok', value: { namespace: 'host', schemaVersion: 1, data } },
+      effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } });
+    const continued = await opened.value.continue({ answers: [answer(pending.calls[0], { text: 'one' }), answer(pending.calls[1], { nope: true })],
+      signal, hostOperationId: 'bad-body', recordIntent: () => {} });
+    assert.equal(continued.kind, 'failed', JSON.stringify(continued));
+    assert.equal(continued.error.code, 'invalid-input');
+    assert.deepEqual(continued.write, { kind: 'not-attempted' });
+    assert.equal(made.state.servers[0].replies.some((item) => item.result?.contentItems), false);
+    await opened.value.close();
+  } finally { await made.dispose(); }
+});
+
 test('a host that cannot run a helper is unavailable and launches nothing', async () => {
   const made = subject();
   let attempts = 0;

@@ -7,6 +7,7 @@ import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js'
 import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
+  HostWriteStatus,
 } from '../../core/host-adapter.js';
 import type { InteractionContinuation } from '../../core/interaction.js';
 import { parseInteractionContinuation } from '../../core/interaction.js';
@@ -15,7 +16,7 @@ import { createCodexWriters, openCodexExecution } from './execution.js';
 import type { CleanupStep, CodexSession, CodexTurnCompletion } from './execution.js';
 import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
 import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
-import { createCodexInteraction } from './interaction.js';
+import { codexNativeToolReply, createCodexInteraction } from './interaction.js';
 import type { CodexHostCall, CodexInteraction } from './interaction.js';
 import { codexHostRouteConfig, codexProxyConfig } from './proxy.js';
 import { checkCodexHostRoute, checkCodexRoute } from './route.js';
@@ -63,8 +64,12 @@ export type CodexHostLaunch = HostLaunch<
 const identity = Object.freeze({ engine: 'codex' as const, adapter: 'codex-host', version: '1', contractVersion: 1 as const });
 /** One pending set per assistant message. The bridge refuses the next call at this same limit. */
 const maxPendingPerMessage = 8;
+/**
+ * One assistant message's host calls are collected until this long passes with no further `host-call`,
+ * or the turn completes, or the pending cap trips.
+ */
 const hostCallQuietMs = 30;
-/** In-process memory of the declarations sent at thread/start, keyed by home and thread. A fresh process starts empty. */
+/** In-process memory of the declarations sent at thread/start, keyed by home and thread. A fresh process starts empty. `close` leaves the record in place. */
 const remembered = new Map<string, string>();
 const declarationKey = (home: string, threadId: string) => `${home}\0${threadId}`;
 const discovery = Object.freeze({ maxResults: 10, maxExamined: 10, maxDurationMs: 5000 });
@@ -80,8 +85,15 @@ const pinsMultiAgent = (routed: boolean, subagents: 'off' | undefined) => routed
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const fail = (error: HostAdapterError) => ({ kind: 'error' as const, error: Object.freeze(error) });
-const failed = (error: HostAdapterError, write: HostSegmentResult & { kind: 'failed' } extends infer T ? T extends { write: infer W } ? W : never : never): HostSegmentResult =>
-  ({ kind: 'failed', error, write }) as HostSegmentResult;
+function failed(error: HostAdapterError, write: HostWriteStatus): HostSegmentResult {
+  if (error.code === 'pending-limit') {
+    if (write.kind !== 'accepted') {
+      return { kind: 'failed', error: { code: 'native-failure', message: 'a pending limit was not an accepted write' }, write: { kind: 'not-attempted' } };
+    }
+    return { kind: 'failed', error, write };
+  }
+  return { kind: 'failed', error, write };
+}
 const emptyUsage = (): HostUsage => Object.freeze({ scope: 'cumulative', native: Object.freeze({
   namespace: 'codex-app-server/token-usage', schemaVersion: 1, data: null }) });
 
@@ -108,10 +120,54 @@ function echoPins(features: Record<string, unknown>, enabled: ReadonlySet<string
   }
   return undefined;
 }
+const sandboxes = ['read-only', 'workspace-write', 'danger-full-access'] as const satisfies readonly CodexSandboxMode[];
+function optionalString(value: unknown): string | undefined | false {
+  if (value === undefined) return undefined;
+  return typeof value === 'string' ? value : false;
+}
+function helperOf(value: unknown): CodexHostNativeConfig['helper'] | false {
+  if (value === undefined || value === 'unavailable') return value;
+  if (!record(value) || typeof value.command !== 'string' || !Array.isArray(value.args)
+    || !value.args.every((arg) => typeof arg === 'string')) return false;
+  return { command: value.command, args: Object.freeze([...value.args]) };
+}
 function nativeOf(value: unknown): CodexHostNativeConfig | undefined {
   if (!record(value) || typeof value.home !== 'string' || typeof value.cwd !== 'string') return undefined;
-  if (!isAbsolute(value.home) || !isAbsolute(value.cwd) || value.home !== resolve(value.home)) return undefined;
-  return value as unknown as CodexHostNativeConfig;
+  if (!isAbsolute(value.home) || !isAbsolute(value.cwd) || value.home !== resolve(value.home) || value.cwd !== resolve(value.cwd)) return undefined;
+  const executable = optionalString(value.executable);
+  const sqliteHome = optionalString(value.sqliteHome);
+  const logDir = optionalString(value.logDir);
+  const providerId = optionalString(value.providerId);
+  const envKey = optionalString(value.envKey);
+  if (executable === false || sqliteHome === false || logDir === false || providerId === false || envKey === false) return undefined;
+  if (executable !== undefined && !isAbsolute(executable)) return undefined;
+  const handlerTimeoutMs = value.handlerTimeoutMs;
+  if (handlerTimeoutMs !== undefined && (typeof handlerTimeoutMs !== 'number' || !timerBound(handlerTimeoutMs))) return undefined;
+  const sandbox = sandboxes.find((mode) => mode === value.sandbox);
+  if (value.sandbox !== undefined && sandbox === undefined) return undefined;
+  if (value.loopbackRelay !== undefined && typeof value.loopbackRelay !== 'boolean') return undefined;
+  const helper = helperOf(value.helper);
+  if (helper === false) return undefined;
+  let headerEnv: Readonly<Record<string, string>> | undefined;
+  if (value.headerEnv !== undefined) {
+    if (!record(value.headerEnv)) return undefined;
+    const entries = Object.entries(value.headerEnv);
+    if (!entries.every((entry): entry is [string, string] => typeof entry[1] === 'string')) return undefined;
+    headerEnv = Object.freeze(Object.fromEntries(entries));
+  }
+  return {
+    home: value.home, cwd: value.cwd,
+    ...(executable === undefined ? {} : { executable }),
+    ...(sqliteHome === undefined ? {} : { sqliteHome }),
+    ...(logDir === undefined ? {} : { logDir }),
+    ...(providerId === undefined ? {} : { providerId }),
+    ...(envKey === undefined ? {} : { envKey }),
+    ...(handlerTimeoutMs === undefined ? {} : { handlerTimeoutMs }),
+    ...(sandbox === undefined ? {} : { sandbox }),
+    ...(value.loopbackRelay === undefined ? {} : { loopbackRelay: value.loopbackRelay }),
+    ...(helper === undefined ? {} : { helper }),
+    ...(headerEnv === undefined ? {} : { headerEnv }),
+  };
 }
 function toCall(call: CodexHostCall): HostToolCall {
   return Object.freeze({ pending: call.pending, name: call.name, arguments: call.arguments });
@@ -498,7 +554,8 @@ async function openAdapter(ready: {
       const id = answer.outcome.target.nativeToolCallId;
       const expected = pending.find((call) => call.pending.target.nativeToolCallId === id);
       if (!expected || !ids.delete(id)) return false;
-      return parseInteractionContinuation({ value: answer, expected: expected.pending }).kind === 'ok';
+      return parseInteractionContinuation({ value: answer, expected: expected.pending }).kind === 'ok'
+        && codexNativeToolReply(expected, answer) !== undefined;
     }) && ids.size === 0;
   }
   async function segmentOf(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
@@ -555,9 +612,7 @@ async function openAdapter(ready: {
       return interruptResult(step, turnResult);
     },
     close: () => closing ??= (async () => {
-      const threadId = session?.threadId;
       await execution.close();
-      if (threadId) remembered.delete(declarationKey(native.home, threadId));
       stream.close();
       return { kind: 'ok' as const, value: undefined };
     })() };
