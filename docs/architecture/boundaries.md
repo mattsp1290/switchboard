@@ -61,15 +61,17 @@ The root export maps to emitted JavaScript and declarations under `dist`.
 Deep imports are private. The package verification command checks this restriction in an installed tarball.
 
 The following directories describe source ownership. Core contracts live in `src/core/`; protocol mapping and metadata live in `src/agui/`.
+The host-facing adapter contract is [host-adapter-contract.md](host-adapter-contract.md), typed in `src/core/host-adapter.ts`.
 
 | Source area | Responsibility | Allowed direction |
 | --- | --- | --- |
-| `src/core/` | Public runtime contracts, native session references, and bounded event delivery | No native SDK or AG-UI dependency |
-| `src/adapters/claude/` | Claude native integration | May import core and Claude dependencies |
-| `src/adapters/codex/` | Codex native integration | May import core and Codex dependencies |
+| `src/core/` | Public runtime contracts, the host-facing adapter contract, native session references, and bounded event delivery | No native SDK, adapter, or AG-UI dependency |
+| `adapters/claude/src/` | Claude text adapter (`./claude` entry) | May import Claude SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/claude/tsconfig.json` |
+| `adapters/codex/src/` | Codex text adapter (`./codex` entry) | May import the Codex SDK peer and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/codex/tsconfig.json` |
+| `src/adapters/codex/` | Private Codex app-server stack, not exported. The Codex host adapter will add `index.ts` here | May import core and `node:` builtins. Never imported by core or the root entry |
 | `adapters/pi/src/` | Pi native integration (`./pi` entry) | May import Pi SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/pi/tsconfig.json` |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
-| `src/testkit/` | Controlled qualification scenarios and reference fake for tests | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
+| `src/testkit/` | Controlled qualification scenarios, the reference fake, and the host-adapter conformance suite | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
 
 AgentUI keeps its separately qualified production core while adopting a newer testkit as a development dependency under an npm alias.
 The aliased testkit must use its own artifact's public core at runtime and in declarations, even when an older canonical core is installed.
@@ -131,7 +133,8 @@ When host configuration shows that confinement prevents a feature, the adapter r
 A denial first seen during an operation is an operation error.
 The adapter must not fall back to an unconfined launch, or to network or filesystem access the host did not grant.
 An input the host omits keeps the adapter's documented default.
-These are requirements on future adapters. Core defines no launcher, environment, configuration, or process ownership option.
+The host-facing contract names the launcher, environment, native configuration, and process-ownership options. An option the host omits still keeps native behaviour.
+These are requirements on adapters that implement that contract.
 
 The installed consumer checks prove public typing and package boundaries.
 They do not verify cleanup idempotence, resource release, native identity validation, or native integration behavior.
