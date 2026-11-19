@@ -91,7 +91,18 @@ async function segments(factory: HostConformanceFactory, signal: AbortSignal) {
     assert(Number.isSafeInteger(capabilities.maxPendingPerMessage) && capabilities.maxPendingPerMessage >= 1);
     const observed = await collect(adapter, (events) => events.some((event) => event.kind === 'text-delta'), signal);
     const intents: DispatchIdentity[] = [];
-    const complete = kind(await harness.segment(adapter, harness.subject.prompts.text, intents), 'complete');
+    let releaseRecorded = () => {};
+    const recordedGate = new Promise<void>((resolve) => { releaseRecorded = resolve; });
+    const pending = adapter.run({
+      prompt: harness.subject.prompts.text, signal, hostOperationId: 'intent-order',
+      recordIntent: (identity) => { intents.push(identity); return recordedGate; },
+    });
+    for (let turn = 0; turn < 10 && intents.length === 0; turn++) await setImmediate(undefined, { signal });
+    assert.equal(intents.length, 1, 'recordIntent runs before dispatch');
+    assert.equal(observed.events.some((event) => event.kind === 'text-delta'), false,
+      'no segment fact is published before recordIntent resolves');
+    releaseRecorded();
+    const complete = kind(await pending, 'complete');
     assert.equal(intents.length, 1, 'intent is recorded once before dispatch');
     assert.equal(intents[0]?.target.kind, 'new-session');
     assert.equal(complete.session.kind, 'session');
@@ -156,6 +167,8 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
     assert.deepEqual(call.pending.target.session, pending.session);
     const events = await observed.settled();
     assert(started(events) >= 0 && started(events) < ended(events), 'tool-call-start precedes tool-call-end');
+    const argsAt = events.findIndex((event) => event.kind === 'tool-call-arguments-delta');
+    assert(started(events) < argsAt && argsAt < ended(events), 'argument deltas sit between start and end');
 
     if (adapter.capabilities.inspect.kind === 'supported') {
       const read = ok(await adapter.capabilities.inspect.api.pending(signal));
@@ -169,13 +182,27 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
       assert.deepEqual(refused.write, { kind: 'not-attempted' });
     }
     assert.equal(intents.length, 0, 'an invalid continuation records no intent');
+    const other = await harness.open({ resume: { session: pending.session } });
+    const stolen = kind(await harness.answer(other, [answer(call)]), 'failed');
+    assert.equal(stolen.write.kind, 'not-attempted', 'pending calls stay with the open segment that produced them');
+    const delivered = await collect(adapter, (items) => items.some((event) => event.kind === 'tool-delivery')
+      && items.some((event) => event.kind === 'usage'), signal);
     kind(await harness.answer(adapter, [answer(call)]), 'complete');
+    const follow = await delivered.settled();
+    assert(follow.some((event) => event.kind === 'tool-delivery'), 'tool delivery is its own fact');
+    assert(follow.some((event) => event.kind === 'usage'), 'usage is published as its own fact');
     const stale = kind(await harness.answer(adapter, [answer(call)]), 'failed');
     assert.deepEqual(stale.write, { kind: 'not-attempted' });
 
     const batch = await harness.segment(adapter, subject.prompts.twoToolCalls);
     if (adapter.capabilities.maxPendingPerMessage >= 2) {
-      assert.equal(kind(batch, 'pending').calls.length, 2);
+      const held = kind(batch, 'pending');
+      assert.equal(held.calls.length, 2);
+      const [first] = held.calls as readonly [HostToolCall, ...HostToolCall[]];
+      const partial = kind(await harness.answer(adapter, [answer(first)]), 'failed');
+      assert.equal(partial.error.code, 'invalid-input');
+      assert.deepEqual(partial.write, { kind: 'not-attempted' });
+      kind(await harness.answer(adapter, held.calls.map(answer)), 'complete');
     } else {
       const limited = kind(batch, 'failed');
       assert.equal(limited.error.code, 'pending-limit', 'a call beyond the limit is never silently lost');
@@ -201,6 +228,10 @@ async function history(factory: HostConformanceFactory, signal: AbortSignal) {
       return;
     }
     const { session } = kind(await harness.segment(first, harness.subject.prompts.text), 'complete');
+    if (fingerprint.api.validity === 'after-process-exit') {
+      assert.equal((await fingerprint.api.read(signal)).kind, 'error',
+        'an after-process-exit fingerprint cannot be read while the segment is open');
+    }
     const atEnd = fingerprint.api.validity === 'segment-end' ? ok(await fingerprint.api.read(signal)) : undefined;
     ok(await first.close());
     const reader = await harness.open({ resume: { session } });
@@ -227,7 +258,8 @@ async function interrupt(factory: HostConformanceFactory, signal: AbortSignal) {
     const running = adapter.run({ prompt: subject.prompts.text, signal, hostOperationId: 'interrupt', recordIntent: () => gate });
     const during = await adapter.interrupt({ timeoutMs: 20 });
     assert.notEqual(during.kind, 'terminal-observed', 'an active segment has no terminal fact yet');
-    assert(during.kind === 'interrupted' || during.kind === 'unconfirmed-within-bound');
+    assert.equal(during.kind, 'unconfirmed-within-bound',
+      'native has not been entered, so it cannot have acknowledged the interrupt');
     assert.equal(subject.launches().signals, 0, 'the adapter never signals a host-owned process');
     release();
     kind(await running, 'complete');

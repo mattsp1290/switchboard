@@ -23,6 +23,7 @@ interface NativeSession {
   turns: number;
   calls: readonly HostToolCall[] | null;
   holder: object | null;
+  segmentOpen: boolean;
 }
 
 const namespace = 'switchboard-host-fake';
@@ -112,7 +113,7 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
     function ensure(): NativeSession {
       if (current !== undefined) return current;
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding, opaque: `session-${sessions.size + 1}` });
-      current = { reference, toolKey, turns: 0, calls: null, holder };
+      current = { reference, toolKey, turns: 0, calls: null, holder, segmentOpen: true };
       sessions.set(reference.opaque, current);
       return current;
     }
@@ -133,6 +134,8 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
     }
     function model(prompt: string, accepted: DispatchEvidence): HostSegmentResult {
       const session = ensure();
+      session.segmentOpen = true;
+      session.holder = holder;
       session.turns++;
       if (prompt !== prompts.toolCall && prompt !== prompts.twoToolCalls) return reply(session);
       const wanted = prompt === prompts.toolCall ? 1 : 2;
@@ -169,6 +172,9 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       const session = current;
       const calls = session?.calls;
       if (session === undefined || calls == null) return failed(invalid('No host call is pending.'));
+      if (session.holder !== holder && session.segmentOpen) {
+        return failed({ code: 'busy', message: 'Pending calls stay with the open segment that produced them.' });
+      }
       if (session.holder !== holder && continuation === 'same-process') {
         return failed({ code: 'unsupported', feature: 'fresh-process-continuation', message: 'The pending call belongs to another process.' });
       }
@@ -180,6 +186,8 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
         unanswered.delete(match);
       }
       return dispatch(input, () => {
+        session.segmentOpen = true;
+        session.holder = holder;
         session.calls = null;
         session.turns++;
         for (const pending of calls) {
@@ -202,8 +210,14 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
         : { kind: 'unsupported', reason: 'The fake was configured without inspection.' },
       fingerprint: fingerprint === 'unsupported'
         ? { kind: 'unsupported', reason: 'The fake was configured without fingerprints.' }
-        : { kind: 'supported', api: { validity: fingerprint, read: async () => current === undefined
-          ? refuse(invalid('No session exists yet.')) : { kind: 'ok', value: historyOf(current) } } },
+        : { kind: 'supported', api: { validity: fingerprint, read: async () => {
+          if (current === undefined) return refuse(invalid('No session exists yet.'));
+          if (fingerprint === 'after-process-exit' && current.segmentOpen) {
+            return refuse({ code: 'unavailable', feature: 'fingerprint',
+              message: 'An after-process-exit fingerprint cannot be read while the segment is open.' });
+          }
+          return { kind: 'ok', value: historyOf(current) };
+        } } },
     };
     const adapter: HostAdapter = {
       identity,
@@ -219,6 +233,7 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       }),
       close: () => {
         if (closing === undefined) {
+          if (current !== undefined && current.holder === holder) current.segmentOpen = false;
           stream.close();
           closing = Promise.resolve(Object.freeze({ kind: 'ok', value: undefined }));
         }
