@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { createAuthContext } from '../../core/auth.js';
 import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
-import type { DispatchIdentity } from '../../core/dispatch.js';
+import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
@@ -21,7 +21,8 @@ import { codexHostRouteConfig, codexProxyConfig } from './proxy.js';
 import { checkCodexRoute, copyCodexHostRoute } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester } from './sessions.js';
-import type { BorrowedChannel } from './transport.js';
+import { openCodexTransport } from './transport.js';
+import type { BorrowedChannel, TransportBounds } from './transport.js';
 
 /** Pinned app-server this adapter was proved against. */
 export const CODEX_HOST_NATIVE_VERSION = '0.169.0';
@@ -81,7 +82,7 @@ function dynamicTools(tools: readonly HostToolDeclaration[]): readonly CodexDyna
     tools: Object.freeze(tools.map((tool) => Object.freeze({ type: 'function' as const, name: tool.name,
       description: tool.description, inputSchema: tool.inputSchema, deferLoading: false }))) })];
 }
-function featureArgs(enabled: ReadonlySet<string>, subagents: 'off' | undefined): readonly string[] {
+function featureArgs(enabled: ReadonlySet<string>, subagents: 'off' | undefined, routed: boolean): readonly string[] {
   const args: string[] = [];
   const set = (name: string, on: boolean) => { args.push('-c', `features.${name}=${JSON.stringify(on)}`); };
   const shell = enabled.has('shell') || enabled.has('shell_tool');
@@ -89,8 +90,16 @@ function featureArgs(enabled: ReadonlySet<string>, subagents: 'off' | undefined)
   set('view_image', enabled.has('view_image'));
   set('request_user_input', enabled.has('request_user_input'));
   set('default_mode_request_user_input', enabled.has('request_user_input'));
-  if (subagents === 'off') { set('multi_agent', false); set('multi_agent_v2', false); }
+  if (routed || subagents === 'off') { set('multi_agent', false); set('multi_agent_v2', false); }
   return args;
+}
+const timerBound = (value: number) => Number.isInteger(value) && value >= 1 && value <= 2147483647;
+function hostConfined(value: unknown): boolean {
+  if (!record(value)) return false;
+  const sandbox = record(value.sandbox) ? value.sandbox : undefined;
+  if (!sandbox || (sandbox.type !== 'readOnly' && sandbox.type !== 'workspaceWrite')) return false;
+  if ((sandbox.networkAccess ?? false) !== false) return false;
+  return value.approvalPolicy === 'never';
 }
 function nativeOf(value: unknown): CodexHostNativeConfig | undefined {
   if (!record(value) || typeof value.home !== 'string' || typeof value.cwd !== 'string') return undefined;
@@ -141,6 +150,9 @@ function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, nati
 export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>> = Object.freeze({
   identity,
   async open(options: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>, signal: AbortSignal) {
+    let channel: BorrowedChannel | undefined;
+    let execution: { close: () => Promise<unknown> } | undefined;
+    let transportBounds: TransportBounds | undefined;
     try {
       if (!(signal instanceof AbortSignal)) return fail({ code: 'invalid-input', message: 'open requires an AbortSignal' });
       if (signal.aborted) return fail({ code: 'closed', message: 'open was aborted' });
@@ -151,16 +163,29 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       const variables = options.environment?.variables;
       if (!native || !variables) return fail({ code: 'invalid-input', message: 'Codex requires a complete host environment and native config' });
       const enabled = new Set<string>(options.builtInTools ?? []);
-      let prepared: PreparedRoute = { args: featureArgs(enabled, options.subagents) };
+      const routed = options.route != null;
+      let prepared: PreparedRoute = { args: featureArgs(enabled, options.subagents, routed) };
+      if (routed && native.sandbox === 'danger-full-access') {
+        return fail({ code: 'invalid-input', message: 'a host route refuses danger-full-access' });
+      }
+      const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
+      if (!timerBound(handlerTimeoutMs)) return fail({ code: 'invalid-input', message: 'handlerTimeoutMs is outside 1..2147483647' });
+      const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: 9,
+        transport: { maxHandlers: 16, handlerTimeoutMs }, userInput: enabled.has('request_user_input'),
+        declaredTools: (options.tools ?? []).map((tool) => ({ name: tool.name, namespace: 'application' as const })) });
+      if (bridgeResult.kind === 'error') return fail({ code: 'invalid-input', message: 'interaction bounds were rejected' });
+      const bridge = bridgeResult.value;
+      transportBounds = { maxFrameBytes: 1048576, maxChunkBytes: 2097151, maxDiagnosticBytes: 65536,
+        maxPending: 8, maxHandlers: 16, maxWrites: 8, observationCapacity: 256, handlerTimeoutMs,
+        observationTimeoutMs: 5000, writeTimeoutMs: 20000 };
       if (options.route) {
         const route = prepareRoute(options.route.config, options.route.scope, native);
         if ('unavailable' in route) return fail({ code: 'unavailable', feature: route.unavailable, message: 'The host cannot run a credential helper' });
         if ('problem' in route) return fail({ code: 'invalid-input', message: route.problem });
-        prepared = { ...route.route, args: [...route.route.args, ...prepared.args] };
+        prepared = { ...route.route, args: [...route.route.args, ...featureArgs(enabled, options.subagents, true)] };
       }
       const executable = native.executable;
-      let channel: BorrowedChannel;
-      let processExit: PromiseLike<unknown>;
+      let processExit: PromiseLike<unknown> | undefined;
       if (launch.kind === 'spawn') {
         if (typeof executable !== 'string' || !isAbsolute(executable)) {
           return fail({ code: 'invalid-input', message: 'spawn requires an absolute native executable' });
@@ -181,43 +206,57 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
         channel = launch.channel;
         processExit = launch.processExit;
       }
-      const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
-      const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: 8,
-        transport: { maxHandlers: 16, handlerTimeoutMs }, userInput: enabled.has('request_user_input'),
-        declaredTools: (options.tools ?? []).map((tool) => ({ name: tool.name, namespace: 'application' as const })) });
-      if (bridgeResult.kind === 'error') return fail({ code: 'invalid-input', message: 'interaction bounds were rejected' });
-      const bridge = bridgeResult.value;
+      if (!channel || !processExit) return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher returned no channel' });
       const opened = await openCodexExecution({ channel, processExit, writers: createCodexWriters(4), home: native.home, signal,
-        transport: { maxFrameBytes: 1048576, maxChunkBytes: 2097151, maxDiagnosticBytes: 65536, maxPending: 8,
-          maxHandlers: 16, maxWrites: 8, observationCapacity: 256, handlerTimeoutMs, observationTimeoutMs: 5000, writeTimeoutMs: 20000 },
+        transport: transportBounds,
         bounds: { maxSessions: 4, maxObservers: 4, eventCapacity: 64, maxEarlyNotifications: 32, cleanupTimeoutMs: 5000,
           acknowledgementTimeoutMs: 15000 },
         initialize: { clientInfo: { name: 'switchboard-codex-host', version: '1' }, capabilities: { experimentalApi: true } },
         onServerRequest: bridge.onServerRequest, ...(prepared.proxy ? { route: prepared.proxy } : prepared.host ? { route: prepared.host } : {}) });
-      if (opened.kind === 'error') return fail({ code: opened.error.code === 'invalid-input' ? 'invalid-input' : 'native-failure',
-        message: opened.error.message ?? 'Codex app-server handshake failed' });
-      const execution = opened.value;
-      const pinned = await pinnedFeatures(execution.scope.request, enabled, signal);
+      if (opened.kind === 'error') {
+        if (transportBounds) await releaseSpawned(channel, transportBounds);
+        return fail({ code: opened.error.code === 'invalid-input' ? 'invalid-input' : 'native-failure',
+          message: opened.error.message ?? 'Codex app-server handshake failed' });
+      }
+      execution = opened.value;
+      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, prepared.host !== undefined || prepared.proxy !== undefined);
       if (pinned) { await execution.close(); return fail({ code: 'invalid-input', message: pinned }); }
-      const bound = await bindCodexRequester({ scope: execution.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
+      const bound = await bindCodexRequester({ scope: opened.value.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
       if (bound.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'Codex requester was not admitted' }); }
-      return await finishOpen({ options, signal, native, enabled, prepared, bridge, execution, binding: bound.value.binding, variables });
+      return await finishOpen({ options, signal, native, enabled, prepared, bridge, execution: opened.value, binding: bound.value.binding, variables });
     } catch {
+      if (execution) await execution.close();
+      else if (channel && transportBounds) await releaseSpawned(channel, transportBounds);
       return fail({ code: 'native-failure', message: 'Codex host adapter failed to open' });
     }
   },
 });
 
+async function releaseSpawned(channel: BorrowedChannel, bounds: TransportBounds): Promise<void> {
+  try {
+    const transport = openCodexTransport({ channel, bounds,
+      onRequest: () => ({ kind: 'error', error: { code: -32601, message: 'closed', data: null } }), onObservation: () => {} });
+    await transport.close();
+  } catch { /* the child is already unreachable when the transport cannot attach */ }
+}
+
 async function pinnedFeatures(request: (call: { method: string; params?: unknown }, signal: AbortSignal) => Promise<{ kind: string; envelope?: { reply?: { kind: string; value?: unknown } } }>,
-  enabled: ReadonlySet<string>, signal: AbortSignal): Promise<string | undefined> {
+  enabled: ReadonlySet<string>, signal: AbortSignal, routed: boolean): Promise<string | undefined> {
   const exchange = await request({ method: 'config/read', params: { includeLayers: false } }, signal);
   const reply = exchange.kind === 'reply' ? exchange.envelope?.reply : undefined;
   const config = reply?.kind === 'result' && record(reply.value) && record(reply.value.config) ? reply.value.config : undefined;
+  if (routed && !config) return 'the route config could not be read';
   const features = config && record(config.features) ? config.features : {};
   const shell = enabled.has('shell') || enabled.has('shell_tool');
   if (!shell && shellFeatures.some((name) => features[name] !== false)) return 'the engine shell is on and the host did not enable it';
   if (!enabled.has('view_image') && features.view_image !== false) return 'view_image is on and the host did not leave it on';
   if (!enabled.has('request_user_input') && features.request_user_input !== false) return 'request_user_input is on and the host did not leave it on';
+  if (!routed) return undefined;
+  const workspace = config && record(config.sandbox_workspace_write) ? config.sandbox_workspace_write : undefined;
+  if (features.multi_agent !== false || features.multi_agent_v2 !== false) return 'multi-agent is not pinned off';
+  if (!config || config.approval_policy !== 'never') return 'approval_policy is not never';
+  if (!['read-only', 'workspace-write'].includes(String(config.sandbox_mode))) return 'sandbox_mode is not confined';
+  if (!workspace || workspace.network_access !== false) return 'sandbox network access is not off';
   return undefined;
 }
 
@@ -239,13 +278,28 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
   let session: CodexSession | undefined;
   let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; entered: boolean } | undefined;
   let turnCompletion: Promise<CodexTurnCompletion> | undefined;
+  let turnResult: CodexTurnCompletion | undefined;
+  let capacityRefused = false;
+  let refusedBusy = false;
   let closing: ReturnType<HostAdapter['close']> | undefined;
+  const delivered = new Map<string, ToolTarget>();
+  const rememberTarget = (id: string, target: ToolTarget) => {
+    delivered.set(id, target);
+    try {
+      const parsed = JSON.parse(id) as unknown;
+      if (!Array.isArray(parsed)) return;
+      if (parsed[0] !== undefined) delivered.set(String(parsed[0]), target);
+      if (typeof parsed[2] === 'string') delivered.set(parsed[2], target);
+    } catch { /* a non-JSON id is stored as itself */ }
+  };
   const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') stream.publish(Object.freeze(event)); };
   const calls = () => bridge.hostCalls().map(toCall);
   execution.events.subscribe(() => {});
   bridge.events.subscribe((event) => {
+    if (event.kind === 'refused' && event.reason === 'capacity') { capacityRefused = true; return; }
     if (event.kind !== 'host-call') return;
     const target: ToolTarget = event.call.pending.target;
+    rememberTarget(target.nativeToolCallId, target);
     publish({ kind: 'tool-call-start', target, name: event.call.name });
     publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(event.call.arguments ?? null) });
     publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
@@ -269,6 +323,10 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (resumed.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: resumed.error.message ?? resumed.error.code }); }
     if (resumed.value.kind !== 'resumed') { await execution.close(); return fail({ code: 'busy', message: `resume is ${resumed.value.kind}` }); }
     session = resumed.value.session;
+    if (ready.prepared.host && !hostConfined(session.native)) {
+      await execution.close();
+      return fail({ code: 'native-failure', message: 'the resumed thread is outside the host-route sandbox' });
+    }
     if (bridge.attach(session).kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'interaction attach failed' }); }
     watch(session);
     remembered.set(session.threadId, canonical);
@@ -286,17 +344,18 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
       } else if (event.kind === 'native' && event.method === 'item/completed') {
         const params = event.params;
         const item = record(params) ? params.item : undefined;
-        if (!record(item) || item.type !== 'dynamicToolCall') return;
-        const target = calls().find((call) => call.pending.target.nativeToolCallId === item.id)?.pending.target;
-        publish({ kind: 'tool-delivery', target: target ?? { kind: 'tool', session: current.reference, nativeToolCallId: String(item.id) },
-          delivery: { kind: 'unknown' } });
+        if (!record(item) || item.type !== 'dynamicToolCall' || typeof item.id !== 'string') return;
+        const target = delivered.get(item.id);
+        if (!target) return;
+        publish({ kind: 'tool-delivery', target, delivery: { kind: 'unknown' } });
       }
     });
   }
   function threadFeatures(config: CodexHostNativeConfig, openOptions: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>) {
     const declared = openOptions.resume ? undefined : dynamicTools(openOptions.tools ?? []);
+    const sandbox = config.sandbox ?? (ready.prepared.host ? 'read-only' as const : undefined);
     return { approvalPolicy: 'never' as const, cwd: config.cwd,
-      ...(config.sandbox ? { sandbox: config.sandbox } : {}),
+      ...(sandbox ? { sandbox } : {}),
       ...(options.route ? { model: options.route.config.model } : {}),
       ...(declared ? { dynamicTools: declared } : {}) };
   }
@@ -321,19 +380,20 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     }
     return undefined;
   }
-  async function settle(hostSignal: AbortSignal): Promise<HostSegmentResult> {
+  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<HostSegmentResult> {
     const current = segment;
     const active = session;
     if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
+    const limited = (): HostSegmentResult => failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
+      { kind: 'accepted', evidence: accepted });
     let quiet = 0;
     while (!hostSignal.aborted) {
       const pending = bridge.hostCalls();
-      if (pending.length > 8) return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-        { kind: 'accepted', evidence: { identity: { hostOperationId: 'pending-limit', target: { kind: 'session', reference: active.reference } },
-          source: 'native-acknowledgement', nativeOperation: null, observation: { namespace: 'codex-app-server/pending-limit', schemaVersion: 1, data: { count: pending.length } } } });
+      if (pending.length > 8 || capacityRefused) return limited();
+      if (turnResult) return completionResult(active, current, turnResult, accepted);
       if (turnCompletion) {
         const winner = await Promise.race([turnCompletion.then((value) => ({ value })), delay(20).then(() => ({ value: undefined }))]);
-        if (winner.value) return completionResult(active, current, winner.value);
+        if (winner.value) return completionResult(active, current, winner.value, accepted);
       }
       if (pending.length > 0) {
         quiet += 1;
@@ -341,19 +401,28 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
       } else quiet = 0;
       await delay(10);
     }
-    return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'not-dispatched', reason: 'aborted' });
+    if (turnResult) return completionResult(active, current, turnResult, accepted);
+    return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
   }
-  function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion): HostSegmentResult {
+  function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion,
+    accepted: DispatchEvidence): HostSegmentResult {
+    const acceptedWrite = { kind: 'accepted' as const, evidence: accepted };
+    if (completion.kind === 'terminal' && completion.terminal.status === 'completed' && bridge.hostCalls().length > 0) {
+      return { kind: 'pending', session: active.reference, calls: Object.freeze(bridge.hostCalls().map(toCall)), usage: current.usage };
+    }
     if (completion.kind === 'terminal' && completion.terminal.status === 'completed' && bridge.hostCalls().length === 0) {
       return { kind: 'complete', session: active.reference, text: current.text, usage: current.usage };
     }
     if (completion.kind === 'terminal' && completion.terminal.status === 'failed') {
-      return failed({ code: 'native-failure', message: 'the native turn failed' }, { kind: 'accepted', evidence: evidence(active, completion) });
+      return failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite);
+    }
+    if (completion.kind === 'terminal' && completion.terminal.status === 'interrupted') {
+      return failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite);
     }
     if (completion.kind === 'unconcluded' || completion.kind === 'not-sent' || completion.kind === 'not-dispatched') {
       return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
     }
-    return failed({ code: 'native-failure', message: 'the native turn was rejected' }, { kind: 'accepted', evidence: evidence(active, completion) });
+    return failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite);
   }
   function evidence(active: CodexSession, completion: CodexTurnCompletion) {
     return { identity: { hostOperationId: 'turn', target: { kind: 'session' as const, reference: active.reference } },
@@ -364,11 +433,9 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     const current = session;
     if (!current && prompt === undefined) return { kind: 'outcome-unknown' as const };
     if (!current) {
-      const declared = dynamicTools(tools);
       const created = await execution.create({ signal: hostSignal, bounds: discovery,
         ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
-        features: { approvalPolicy: 'never', cwd: native.cwd, ...(native.sandbox ? { sandbox: native.sandbox } : {}),
-          ...(options.route ? { model: options.route.config.model } : {}), ...(declared ? { dynamicTools: declared } : {}) } });
+        features: threadFeatures(native, options) });
       if (created.kind === 'error') return { kind: 'outcome-unknown' as const };
       session = created.value;
       remembered.set(session.threadId, canonical);
@@ -377,6 +444,11 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     }
     const active = session;
     if (!active) return { kind: 'outcome-unknown' as const };
+    if (ready.prepared.host && !hostConfined(active.native)) {
+      await execution.close();
+      session = undefined;
+      return { kind: 'outcome-unknown' as const };
+    }
     if (answers) {
       for (const answer of answers) {
         const replied = await bridge.reply({ value: answer, signal: hostSignal, recordIntent: () => {} });
@@ -386,8 +458,8 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
     const started = active.turn({ hostOperationId: 'turn', input: [{ type: 'text', text: prompt, text_elements: [] }],
       signal: hostSignal, recordIntent: () => {} });
-    if (started.kind === 'error') return { kind: 'outcome-unknown' as const };
-    turnCompletion = started.value.completion;
+    if (started.kind === 'error') return started.error.code === 'busy' ? { kind: 'busy' as const } : { kind: 'outcome-unknown' as const };
+    turnCompletion = started.value.completion.then((value) => { turnResult = value; return value; });
     const snapshot = await started.value.run();
     return snapshot.observation.kind === 'outcome-unknown' || snapshot.observation.kind === 'not-dispatched'
       ? { kind: 'outcome-unknown' as const } : snapshot.observation;
@@ -409,6 +481,9 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (closing) return failed({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
     if (segment) return failed({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
     if (answers && !answersMatch(answers)) return failed({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
+    if (prompt !== undefined && bridge.hostCalls().length > 0) {
+      return failed({ code: 'busy', message: 'host calls from the previous turn are still pending' }, { kind: 'not-attempted' });
+    }
     segment = { phase: 'intent', text: '', usage: emptyUsage(), entered: false };
     const target: DispatchIdentity['target'] = session
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };
@@ -417,20 +492,22 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
       if (denied) return failed(denied, { kind: 'not-attempted' });
       const handle = createDispatchOperation({ mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
         identity: { hostOperationId: input.hostOperationId, target },
-        dispatchNative: async (canonical) => {
+        dispatchNative: async (recorded) => {
           if (segment) { segment.phase = 'native'; segment.entered = true; }
           const observation = await dispatchTurn(prompt, answers, input.signal);
+          if (observation.kind === 'busy') { refusedBusy = true; return { kind: 'outcome-unknown' }; }
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
-          return { kind: 'accepted', evidence: { ...observation.evidence, identity: canonical } };
+          return { kind: 'accepted', evidence: { ...observation.evidence, identity: recorded } };
         } });
       const snapshot = await handle.run();
+      if (refusedBusy) return failed({ code: 'busy', message: 'the previous turn is still in progress' }, { kind: 'not-attempted' });
       if (snapshot.observation.kind === 'not-dispatched') {
         return failed({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
       }
-      if (snapshot.observation.kind === 'outcome-unknown') {
+      if (snapshot.observation.kind !== 'accepted' && snapshot.observation.kind !== 'conclusive') {
         return failed({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
       }
-      return await settle(input.signal);
+      return await settle(input.signal, snapshot.observation.evidence);
     } finally { segment = undefined; }
   }
   const adapter: HostAdapter<'codex'> = { identity, capabilities: Object.freeze({
@@ -446,12 +523,13 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     run: (input: HostRunInput) => segmentOf(input, input.prompt, undefined),
     continue: (input: HostContinueInput) => segmentOf(input, undefined, input.answers),
     interrupt: async ({ timeoutMs }) => {
-      if (!segment && bridge.hostCalls().length === 0) return { kind: 'terminal-observed' as const };
-      if (!segment || segment.phase === 'intent' || !segment.entered) return { kind: 'unconfirmed-within-bound' as const };
+      if (!segment) return { kind: 'terminal-observed' as const };
+      if (segment.phase === 'intent' || !segment.entered) return { kind: 'unconfirmed-within-bound' as const };
       const active = session;
       if (!active) return { kind: 'unconfirmed-within-bound' as const };
       const step = await Promise.race([active.interrupt(), delay(timeoutMs).then(() => 'timeout' as const)]);
       if (step === 'replied') return { kind: 'interrupted' as const, evidence: Object.freeze({ namespace: 'codex-app-server/turn-interrupt', schemaVersion: 1, data: { step } }) };
+      if (step === 'not-needed' && turnResult?.kind === 'terminal') return { kind: 'terminal-observed' as const };
       return { kind: 'unconfirmed-within-bound' as const };
     },
     close: () => closing ??= (async () => { await execution.close(); stream.close(); return { kind: 'ok' as const, value: undefined }; })() };

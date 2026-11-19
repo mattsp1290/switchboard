@@ -86,7 +86,7 @@ function fakeServer(home, tool) {
     'account/read': () => ({ account: { type: 'apiKey' }, requiresOpenaiAuth: false }),
     'thread/start': () => {
       const id = randomUUID();
-      writeFileSync(join(home, 'sessions', `${id}.jsonl`), `${JSON.stringify({ threadId: id })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-stable' } })}\n`);
+      writeFileSync(join(home, 'sessions', `rollout-${id}.jsonl`), `${JSON.stringify({ threadId: id })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-stable' } })}\n`);
       return { thread: { id, historyMode: 'paginated', ephemeral: false, modelProvider: 'openai', sandbox: { type: 'readOnly' }, approvalPolicy: 'never' } };
     },
     'thread/read': ({ threadId }) => ({ thread: { id: threadId, historyMode: 'paginated', modelProvider: 'openai', status: { type: 'notLoaded' } } }),
