@@ -25,6 +25,31 @@ export interface ProxyCredential {
   readonly token: string;
 }
 
+/**
+ * Material for a host-declared provider route, beside `ProxyCredential`. `none` carries no secret. `helper` names a
+ * native credential helper the host configured and carries no secret. `bearer` is a host-supplied token, with optional
+ * headers the host resolves for that request. This is not a LiteLLM credential, and `purpose: 'litellm-proxy'` stays the
+ * only proxy purpose.
+ */
+export type HostRouteCredential =
+  | { readonly purpose: 'host-route'; readonly form: 'none' | 'helper' }
+  | {
+      readonly purpose: 'host-route';
+      readonly form: 'bearer';
+      readonly token: string;
+      readonly headers?: Readonly<Record<string, string>>;
+    };
+
+interface HostRouteFields {
+  readonly kind: 'host-route';
+  readonly endpoint: string;
+  readonly protocol: string;
+  readonly credentialPurpose: 'host-route';
+  readonly credentialForm: HostRouteCredential['form'];
+  /** Stable route identity that sessions bind to, so a per-turn loopback endpoint keeps one principal. */
+  readonly principal: string;
+}
+
 /** Adapters validate protocol, headers, and native options against their native family. */
 export interface AuthRoute<NativeOptions = unknown> {
   readonly model: string;
@@ -46,7 +71,8 @@ export type AuthConfiguration<DirectMaterial, NativeOptions = unknown> =
       readonly protocol: string;
       readonly credentialPurpose: 'litellm-proxy';
       readonly resolve: CredentialResolver<ProxyCredential>;
-    });
+    })
+  | (AuthRoute<NativeOptions> & HostRouteFields & { readonly resolve: CredentialResolver<HostRouteCredential> });
 
 export type ResolvedAuthentication<DirectMaterial, NativeOptions = unknown> =
   | (AuthRoute<NativeOptions> & { readonly kind: 'direct'; readonly material: DirectMaterial })
@@ -56,7 +82,8 @@ export type ResolvedAuthentication<DirectMaterial, NativeOptions = unknown> =
       readonly protocol: string;
       readonly credentialPurpose: 'litellm-proxy';
       readonly material: ProxyCredential;
-    });
+    })
+  | (AuthRoute<NativeOptions> & HostRouteFields & { readonly material: HostRouteCredential });
 
 export interface AuthError {
   readonly code: 'invalid-config' | 'invalid-boundary' | 'credential-unavailable' | 'aborted';
@@ -158,6 +185,15 @@ function copyProxy(value: unknown): ProxyCredential | undefined {
   return Object.freeze({ purpose, token });
 }
 
+function copyHostCredential(value: unknown, form: HostRouteCredential['form']): HostRouteCredential | undefined {
+  if (!record(value) || value.purpose !== 'host-route' || value.form !== form) return undefined;
+  if (form !== 'bearer') return keys(value, ['purpose', 'form']) ? Object.freeze({ purpose: 'host-route', form }) : undefined;
+  const { token } = value;
+  const headers = copyHeaders(value.headers);
+  if (!keys(value, ['purpose', 'form', 'token', 'headers']) || !text(token, 16384) || headers === false) return undefined;
+  return Object.freeze({ purpose: 'host-route', form, token, ...(headers === undefined ? {} : { headers }) });
+}
+
 /**
  * Endpoint checks establish syntax only. The host authorizes endpoints, including private HTTP proxies.
  * This helper never dispatches native work. Adapters wire resolve to the boundaries their SDK supports.
@@ -187,7 +223,8 @@ function prepare<DirectMaterial, NativeOptions>(options: {
   const headers = copyHeaders(config.headers);
   const allowed = ['kind', 'model', 'endpoint', 'protocol', 'headers', 'nativeOptions', 'resolve'];
   if (kind === 'litellm') allowed.push('credentialPurpose');
-  if ((kind !== 'direct' && kind !== 'litellm') || !keys(config, allowed)
+  if (kind === 'host-route') allowed.push('credentialPurpose', 'credentialForm', 'principal');
+  if ((kind !== 'direct' && kind !== 'litellm' && kind !== 'host-route') || !keys(config, allowed)
     || !text(model) || typeof resolve !== 'function' || headers === false
     || (endpoint !== undefined && !endpointValid(endpoint))
     || (protocol !== undefined && !text(protocol))) return failure('invalid-config');
@@ -200,6 +237,13 @@ function prepare<DirectMaterial, NativeOptions>(options: {
   let selected: AuthConfiguration<DirectMaterial, NativeOptions>;
   if (kind === 'direct') {
     selected = Object.freeze({ ...route, kind, resolve });
+  } else if (kind === 'host-route') {
+    const { credentialForm, principal } = config;
+    if (credentialPurpose !== 'host-route' || !endpointValid(endpoint) || !text(protocol) || !text(principal)
+      || (credentialForm !== 'none' && credentialForm !== 'bearer' && credentialForm !== 'helper')) {
+      return failure('invalid-config');
+    }
+    selected = Object.freeze({ ...route, kind, endpoint, protocol, credentialPurpose, credentialForm, principal, resolve });
   } else {
     if (credentialPurpose !== 'litellm-proxy' || !endpointValid(endpoint) || !text(protocol)) {
       return failure('invalid-config');
@@ -224,6 +268,14 @@ function prepare<DirectMaterial, NativeOptions>(options: {
           const material = await selected.resolve(context, signal);
           if (signal.aborted) return failure('aborted');
           return { kind: 'ok', value: Object.freeze({ ...route, kind: 'direct', material }) };
+        }
+        if (selected.kind === 'host-route') {
+          const { endpoint, protocol, credentialForm, principal } = selected;
+          const material = copyHostCredential(await selected.resolve(context, signal), credentialForm);
+          if (signal.aborted) return failure('aborted');
+          if (material === undefined) return failure('credential-unavailable');
+          return { kind: 'ok', value: Object.freeze({ ...route, kind: 'host-route', endpoint, protocol,
+            credentialPurpose: 'host-route', credentialForm, principal, material }) };
         }
         const material = copyProxy(await selected.resolve(context, signal));
         if (signal.aborted) return failure('aborted');

@@ -56,10 +56,15 @@ export async function consume(): Promise<void> {
     const options: NativeOptions | undefined = resolved.value.nativeOptions;
     void handle;
     void options;
-  } else {
+  } else if (resolved.value.kind === 'litellm') {
     const purpose: 'litellm-proxy' = resolved.value.material.purpose;
     const token: string = resolved.value.material.token;
     void purpose;
+    void token;
+  } else {
+    const principal: string = resolved.value.principal;
+    const token: string | undefined = resolved.value.material.form === 'bearer' ? resolved.value.material.token : undefined;
+    void principal;
     void token;
   }
 }
