@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "../../dist/host/pi",
+    "lib": ["ES2024"],
+    "skipLibCheck": true,
+    "paths": {
+      "#switchboard": ["../../dist/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}
