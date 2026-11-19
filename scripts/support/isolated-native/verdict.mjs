@@ -22,8 +22,9 @@ const CALL = /^([a-z0-9_]+)\(/;
 const RESUMED = /^<\.\.\. ([a-z0-9_]+) resumed>/;
 const STRING = /"((?:[^"\\]|\\.)*)"(\.\.\.)?/y;
 const MAX_VIOLATIONS = 200;
-// The errno is only the syscall result. An argument may contain the same text.
-const refusedErrno = (rest) => { const at = rest.lastIndexOf(') = '); return at >= 0 && /^-1 [A-Z]/.test(rest.slice(at + 4)); };
+// The errno is only the syscall result at the end of the line. An argument may contain the same text.
+// strace aligns "=" and a resumed call can close a split struct first: ") = -1 EPERM" or "})    = -1 EPERM".
+const refusedErrno = (rest) => /\)[^"=]*= -1 [A-Z]/.test(rest) && /=\s*-1 [A-Z][A-Z0-9]* \([^)]*\)\s*$/.test(rest);
 
 /** Reads the filename and argv of an execve body; null when strace truncated or abbreviated either. */
 export function execArguments(body) {

@@ -49,8 +49,19 @@ test('decoy, network, launch and io_uring records each fail a run that exits 0',
     ['launch', '1 execve("/usr/local/bin/node", ["node", "--import", "/stage/fixture.mjs", "/stage/fixture.mjs"], 0x5 /* 3 vars */) = 0'],
     ['launch', '1 execveat(3</bin>, "true", ["true"], NULL, 0) = 0'],
     ['io_uring', '1 io_uring_setup(256, {flags=0, sq_thread_cpu=0, sq_thread_idle=0}) = 20<anon_inode:[io_uring]>'],
+    ['io_uring', '1 io_uring_setup(256, {flags=0, sq_thread_cpu=0, sq_thread_idle=0})    = 20<anon_inode:[io_uring]>'],
   ];
   for (const [kind, line] of cases) assert.deepEqual(judge(line).kinds, [kind], line);
+});
+
+test('a resumed io_uring_setup finished with a column-aligned EPERM denial is not a violation', () => {
+  // x86_64 GitHub Actions run 44434269431. The verdict detail omitted the pid.
+  const resumed = '<... io_uring_setup resumed>})    = -1 EPERM (Operation not permitted)';
+  const result = judge(
+    '1 io_uring_setup(256, {flags=0x10000, sq_thread_cpu=0, sq_thread_idle=0 <unfinished ...>',
+    `1 ${resumed}`);
+  assert.equal(result.violations.some((violation) => violation.kind === 'io_uring'), false);
+  assert.deepEqual(result.violations, []);
 });
 
 test('an unfinished execve whose result is never recorded counts as a launch', () => {
