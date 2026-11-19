@@ -8,10 +8,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { createCodexRuntime } from './sdk-runtime.mjs';
-import { assertCoherentReport } from '../readiness-oracle.mjs';
+import { createCodexRuntime } from '@mattsp1290/switchboard/codex';
+import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
-const executable = fileURLToPath(new URL('./sdk-cli.mjs', import.meta.url));
+const executable = fileURLToPath(new URL('../adapters/codex/sdk-cli.mjs', import.meta.url));
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'codex-sdk-chat-'));
   const id = randomUUID();
@@ -161,7 +161,7 @@ test('an early native exit during a large stdin write cannot crash the host', as
   const { account, dir } = await fixture(t);
   await account({ exitBeforeInput: true });
   const program = `
-    import { createCodexRuntime } from ${JSON.stringify(new URL('./sdk-runtime.mjs', import.meta.url).href)};
+    import { createCodexRuntime } from '@mattsp1290/switchboard/codex';
     const runtime = createCodexRuntime(${JSON.stringify({ cwd: dir, model: 'gpt-6.1-sol', codexHome: dir, codexPathOverride: executable })});
     try {
       await runtime.start({ text: 'x'.repeat(1024 * 1024), onEvent() {} });
@@ -190,7 +190,7 @@ env={SECRET="original-env-secret"}
 url="https://original-url-secret.invalid"
 http_headers={Authorization="original-header-secret"}
 `);
-  const cli = fileURLToPath(new URL('../../../node_modules/@openai/codex/bin/codex.js', import.meta.url));
+  const cli = fileURLToPath(new URL('../../node_modules/@openai/codex/bin/codex.js', import.meta.url));
   const { stdout } = await promisify(execFile)(process.execPath, [cli, 'mcp', 'list', '--json', '-c', override], {
     env: { HOME: dir, CODEX_HOME: dir, PATH: process.env.PATH }, timeout: 10000,
   });
