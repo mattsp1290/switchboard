@@ -344,6 +344,14 @@ const routeOverride = (route: CodexProxyRoute | undefined, target: string, param
   params.collaborationMode = mode;
   return undefined;
 };
+/** A host route refuses the two keys that can send its credential to another endpoint. Model, sandbox and approvals stay the host's. */
+const refuseHostRedirect = (route: CodexProxyRoute | CodexHostRoute | undefined, target: string, params: Record<string, unknown>) => {
+  if (route?.kind !== 'host-route') return undefined;
+  const key = ['modelProvider', 'config'].find((name) => Object.hasOwn(params, name));
+  if (!key) return undefined;
+  return { kind: 'error', error: Object.freeze({ code: 'invalid-input',
+    message: `${target} ${key} is refused under a host route: a per-thread provider or config override can redirect traffic off the admitted provider` }) } as const;
+};
 /** Host `instructions` become native `developerInstructions`. An empty string leaves the native default. */
 function placeInstructions(target: string, params: Record<string, unknown>, instructions: unknown) {
   if (instructions === undefined) return undefined;
@@ -587,6 +595,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       params = resolved.value;
       const placed = placeInstructions('thread/start', params, access.instructions);
       if (placed) return placed;
+      const redirected = refuseHostRedirect(route, 'thread/start', params);
+      if (redirected) return redirected;
       const overridden = routeOverride(proxy, 'thread/start', params);
       if (overridden) return overridden;
       wait = AbortSignal.any([access.signal, opening.signal]);
@@ -636,6 +646,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       params = resolved.value;
       const placed = placeInstructions('thread/resume', params, access.instructions);
       if (placed) return placed;
+      const redirected = refuseHostRedirect(route, 'thread/resume', params);
+      if (redirected) return redirected;
       const overridden = routeOverride(proxy, 'thread/resume', params);
       if (overridden) return overridden;
       parsed = parseSessionReference({ value: access.reference, expected: binding });
@@ -694,6 +706,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
+      const redirected = refuseHostRedirect(route, 'turn/start', params);
+      if (redirected) return redirected;
       const overridden = routeOverride(proxy, 'turn/start', params);
       if (overridden) return overridden;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;

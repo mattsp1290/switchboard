@@ -123,7 +123,10 @@ export interface CodexHostRoute {
 }
 const envName = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
 const headerName = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$/u;
-const loopbackHost = (hostname: string) => hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+const loopbackHost = (hostname: string) => {
+  const bare = hostname.length > 2 && hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  return bare === '127.0.0.1' || bare === 'localhost' || bare === '::1';
+};
 
 /** Canonical http(s) URL: `new URL(endpoint).href === endpoint`, so an origin-only URL keeps its trailing slash. */
 export function canonicalEndpoint(value: unknown): value is string {

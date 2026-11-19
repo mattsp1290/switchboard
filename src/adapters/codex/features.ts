@@ -133,8 +133,9 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'one is sent as "never" since a resumed thread keeps its persisted policy. Native rejects the escalation without '
     + 'asking the host or any approvalsReviewer, which is therefore accepted unchanged.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
-    'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. Under a proxy '
-    + 'route, thread/start and thread/resume refuse config and modelProvider as invalid-input, unsent (execution.ts).'),
+    'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. A proxy route '
+    + 'and a host route refuse config and modelProvider as invalid-input, unsent, on thread/start, thread/resume and '
+    + 'turn/start (execution.ts). A host route does not pin model, sandbox or approvals.'),
   'plugins-and-capability-roots': supported('passthrough-unqualified',
     { 'thread/start': ['selectedCapabilityRoots'], 'turn/start': ['disabledPluginIds'] },
     'Passed through unchanged; nothing is disabled by the adapter.'),

@@ -34,7 +34,7 @@ const { codexSessions } = await import(target);
 const fallback = (await import(`${target}?mutant=native-fallback`)).codexSessions;
 const unpinned = (await import(`${target}?mutant=unpinned`)).codexSessions;
 const approving = (await import(`${target}?mutant=approvals`)).codexSessions;
-const { codexRoutePrincipal, copyCodexRoute } = await import(new URL('adapters/codex/route.ts', src).href);
+const { codexRoutePrincipal, copyCodexRoute, checkCodexHostRoute, codexHostRoutePrincipal } = await import(new URL('adapters/codex/route.ts', src).href);
 hook.deregister();
 
 const route = Object.freeze({ kind: 'litellm-proxy', providerId: 'litellm', endpoint: 'http://127.0.0.1:4000/v1',
@@ -270,4 +270,36 @@ test('invalid routes are refused before any native request', async (t) => {
   }
   assert.equal(copyCodexRoute(Object.defineProperty({}, 'kind', { get() { throw new Error('hostile'); } })), undefined);
   assert(Object.isFrozen(copyCodexRoute(route).scope));
+});
+
+function hostRoute(endpoint, credentialForm, extra = {}) {
+  return { kind: 'host-route', providerId: 'host', endpoint, protocol: 'responses', credentialForm, principal: 'crew',
+    loopbackRelay: true, model: 'fixture', scope: { engine: 'codex', account: 'local' },
+    sqliteHome: '/private/index', logDir: '/private/logs', ...extra };
+}
+const hostEntry = (endpoint) => ({ base_url: endpoint, wire_api: 'responses', requires_openai_auth: false,
+  experimental_bearer_token: null, env_key: null, auth: null });
+
+test('a marked IPv6 loopback port stays out of the host-route principal', () => {
+  const first = checkCodexHostRoute(hostRoute('http://[::1]:9/v1', 'none'));
+  const second = checkCodexHostRoute(hostRoute('http://[::1]:10/v1', 'none'));
+  assert.equal('route' in first && 'route' in second, true);
+  assert.equal(codexHostRoutePrincipal(first.route), codexHostRoutePrincipal(second.route));
+  const pinned = checkCodexHostRoute(hostRoute('http://[::1]:9/v1', 'bearer', { loopbackRelay: false, envKey: 'CODEX_TOKEN' }));
+  const other = checkCodexHostRoute(hostRoute('http://[::1]:10/v1', 'bearer', { loopbackRelay: false, envKey: 'CODEX_TOKEN' }));
+  assert.notEqual(codexHostRoutePrincipal(pinned.route), codexHostRoutePrincipal(other.route));
+});
+
+test('none and helper admission reject static provider auth', async (t) => {
+  const endpoint = 'http://127.0.0.1:9/v1';
+  const admitted = hostRoute(endpoint, 'none');
+  const clean = server(home(t), { provider: 'host', route: admitted, providers: { host: hostEntry(endpoint) } });
+  const bound = await bind(clean);
+  assert.equal(bound.kind, 'ok', JSON.stringify(bound));
+  assert.equal(bound.value.account, codexHostRoutePrincipal(checkCodexHostRoute(admitted).route));
+  for (const extra of [{ http_headers: { Authorization: 'static' } }, { query_params: { key: 'static' } },
+    { env_http_headers: { Authorization: 'TOKEN' } }, { env_http_headers: 'TOKEN' }, { gateway_oauth: { client_id: 'x' } }]) {
+    const fake = server(home(t), { provider: 'host', route: admitted, providers: { host: { ...hostEntry(endpoint), ...extra } } });
+    assert.deepEqual(await bind(fake), { kind: 'error', error: { code: 'inaccessible' } }, JSON.stringify(extra));
+  }
 });

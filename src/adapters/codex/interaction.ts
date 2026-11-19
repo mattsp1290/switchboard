@@ -209,9 +209,18 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     userInput = options.userInput === true;
   } catch { return fail({ code: 'invalid-input' }); }
   const hostTools = options.declaredTools !== undefined || userInput;
-  type HostEntry = { readonly id: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost';
+  type HostEntry = { readonly id: string; readonly threadId: string; readonly turnId: string; readonly requestId: IncomingCall['id'];
+    readonly callId: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost';
     readonly finish: (reply: RpcReply) => void };
   const hostLive = new Map<string, HostEntry>();
+  const hostSettled = new Set<string>();
+  function rememberHost(id: string): void {
+    hostSettled.add(id);
+    for (const oldest of hostSettled) {
+      if (hostSettled.size <= maxSettled) break;
+      hostSettled.delete(oldest);
+    }
+  }
   function hostReplyValue(entry: HostEntry, outcome: ToolOutcome): RpcReply | undefined {
     try {
       const extension = outcome.result.kind === 'ok' ? outcome.result.value : outcome.result.error;
@@ -231,6 +240,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (entry.state === 'replied' || entry.state === 'lost') return;
     entry.state = 'lost';
     hostLive.delete(entry.id);
+    rememberHost(entry.id);
     entry.finish(withdrawnReply);
   }
 
@@ -267,9 +277,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
         if (entry.threadId === threadId && entry.turnId === event.turnId) withdraw(entry, 'turn/completed');
       }
       for (const entry of [...hostLive.values()]) {
-        let turn: unknown;
-        try { turn = JSON.parse(entry.id); } catch { turn = undefined; }
-        if (Array.isArray(turn) && turn[1] === event.turnId) loseHost(entry);
+        if (entry.threadId === threadId && entry.turnId === event.turnId) loseHost(entry);
       }
       return;
     }
@@ -282,8 +290,13 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       else if (entry?.state === 'replied') {
         publish({ kind: 'observed', target: entry.pending.target, method: event.method, effect: unknown, evidence: 'unqualified' });
       }
+      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && Object.is(candidate.requestId, params.requestId));
+      if (host) loseHost(host);
     } else if (event.method === 'item/completed' && record(params.item)) {
       const { item } = params;
+      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && candidate.callId === item.id
+        && (params.turnId === undefined || candidate.turnId === params.turnId));
+      if (host) loseHost(host);
       const entry = entries().find((candidate) => candidate.itemId === item.id && candidate.turnId === params.turnId);
       if (!entry) return;
       if (unanswered(entry)) { withdraw(entry, 'item/completed'); return; }
@@ -326,7 +339,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       expected: pending });
     if (checked.kind === 'error' || live.has(id) || settled.has(id)) return refuse(request, 'malformed');
     // Refused while a transport handler slot remains (maxPending < maxHandlers), so a burst never reaches overflow.
-    if (live.size >= maxPending) return refuse(request, 'capacity');
+    if (live.size + hostLive.size >= maxPending) return refuse(request, 'capacity');
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
@@ -419,15 +432,16 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (typeof callId !== 'string' || typeof name !== 'string' || namespace === undefined) return refuse(request, 'malformed');
     if (!user && !declared.has(`${namespace ?? ''}\0${name}`)) return refuse(request, 'unsupported');
     const id = JSON.stringify([request.id, turnId, callId]);
-    if (hostLive.has(id)) return refuse(request, 'malformed');
+    if (hostLive.has(id) || hostSettled.has(id)) return refuse(request, 'malformed');
     if (live.size + hostLive.size >= maxPending) return refuse(request, 'capacity');
+    if (attached.ended.includes(turnId)) return withdrawnReply;
     const target: ToolTarget = Object.freeze({ kind: 'tool', session: attached.session.reference, nativeToolCallId: id });
     const call: CodexHostCall = Object.freeze({ method: user ? 'item/tool/requestUserInput' : 'item/tool/call', name,
       arguments: user ? params.questions : params.arguments, pending: Object.freeze({ kind: 'tool', target }) });
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
-    const entry: HostEntry = { id, call, state: 'live', finish };
+    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', finish };
     const onAbort = () => loseHost(entry);
     signal.addEventListener('abort', onAbort, { once: true });
     hostLive.set(id, entry);
@@ -454,12 +468,14 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       await recordIntent(Object.freeze({ target: entry.call.pending.target, nativeChoiceId: entry.id }), signal);
       if (signal.aborted) throw new Error('aborted');
     } catch {
-      if (entry.state === 'reserved') entry.state = 'live';
+      if (entry.state !== 'reserved') return fail({ code: 'stale-interaction' });
+      entry.state = 'live';
       return fail({ code: signal.aborted ? 'aborted' : 'intent-failed' });
     }
     if (entry.state !== 'reserved') return fail({ code: 'stale-interaction' });
     entry.state = 'replied';
     hostLive.delete(entry.id);
+    rememberHost(entry.id);
     entry.finish(replyValue);
     return { kind: 'ok', value: Object.freeze({ nativeChoiceId: entry.id, delivery: unknown }) };
   }
