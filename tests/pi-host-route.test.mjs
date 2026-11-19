@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { admitPiHostTransport } from '../dist/host/pi/route.js';
-import { isPiHostSystemEntry, validatePiHostSessionState } from '../dist/host/pi/contract.js';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+if (!existsSync(join(root, 'dist', 'index.js')) || !existsSync(join(root, 'dist', 'host', 'pi', 'route.js'))) {
+  execFileSync(process.execPath, [tsc, '-p', 'tsconfig.json'], { cwd: root, stdio: 'inherit' });
+  execFileSync(process.execPath, [tsc, '-p', 'adapters/pi-host/tsconfig.json'], { cwd: root, stdio: 'inherit' });
+}
+const { admitPiHostTransport } = await import('../dist/host/pi/route.js');
+const { isPiHostSystemEntry, validatePiHostSessionState } = await import('../dist/host/pi/contract.js');
 
 const scope = { engine: 'pi', account: 'account-a', adapterInstanceId: 'adapter-a', sessionId: 'session-a' };
 const signal = () => new AbortController().signal;
