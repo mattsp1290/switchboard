@@ -82,7 +82,7 @@
     "build:pi-host": "tsc -p adapters/pi-host/tsconfig.json",
     "check:pi-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/pi-host/tsconfig.json --noEmit",
     "build:claude-host": "tsc -p adapters/claude-host/tsconfig.json",
-    "check:claude-host": "tsc -p adapters/claude-host/tsconfig.json --noEmit",
+    "check:claude-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/claude-host/tsconfig.json --noEmit",
     "verify:observability:lotel": "node scripts/verify-observability-lotel.mjs",
     "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
   },

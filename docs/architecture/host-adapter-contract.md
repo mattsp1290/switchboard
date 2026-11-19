@@ -110,7 +110,7 @@ What the contract takes from those decisions:
 ## Layout and export names
 
 - The Codex host adapter lives at `src/adapters/codex/index.ts`, in the root project beside the private app-server stack. It does not import `@openai/codex-sdk`. It exports `CODEX_HOST_NATIVE_VERSION`. It sets `initialize.capabilities.experimentalApi` to true so host dynamic tools can be declared at `thread/start`.
-- The Claude host project is `adapters/claude-host/`. It compiles apart from the root project because the root declaration check fails on the SDK (`docs/qualification/claude-selection.md`). Its `sessions.ts`, `execution.ts`, `interaction.ts`, `features.ts`, `proxy.ts`, and the `./host/claude` export remain later. The Pi host adapter is `adapters/pi-host/`.
+- The Claude host project is `adapters/claude-host/`. It compiles apart from the root project because the root declaration check fails on the SDK (`docs/qualification/claude-selection.md`). `sessions.ts` discovers one directory. `execution.ts`, `interaction.ts`, `features.ts`, `proxy.ts`, and the `./host/claude` export remain later. The Pi host adapter is `adapters/pi-host/`.
 - The export names will be `./host/codex`, `./host/claude`, and `./host/pi`. Each package that adds an adapter adds its entry. The map gains no entry that points at a missing file.
 - Each host adapter will declare the exact native versions it was proved against. The Claude host adapter will also declare `@modelcontextprotocol/sdk`.
 

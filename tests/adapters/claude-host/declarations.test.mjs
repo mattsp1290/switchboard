@@ -24,6 +24,7 @@ test('the root compiler policy rejects the Claude SDK on HeadersInit', () => {
 test('the Claude host project compiles and its declarations do not name the SDK', () => {
   const out = mkdtempSync(join(tmpdir(), 'switchboard-claude-host-declarations-'));
   try {
+    execFileSync(process.execPath, [tsc, '-p', 'tsconfig.json', '--emitDeclarationOnly', '--outDir', 'dist'], { cwd: root, stdio: 'inherit' });
     execFileSync(process.execPath, [tsc, '-p', 'adapters/claude-host/tsconfig.json', '--noEmit'], { cwd: root, stdio: 'inherit' });
     execFileSync(process.execPath, [tsc, '-p', 'adapters/claude-host/tsconfig.json', '--outDir', out, '--declaration'],
       { cwd: root, stdio: 'inherit' });
