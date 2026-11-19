@@ -36,11 +36,12 @@ const evidence = Object.freeze({ namespace, schemaVersion: 1, data: Object.freez
 function refuse(error: HostAdapterError): Outcome<never, HostAdapterError> {
   return { kind: 'error', error: Object.freeze(error) };
 }
-function failed(error: HostAdapterError, write: HostWriteStatus = { kind: 'not-attempted' }): HostSegmentResult {
-  return Object.freeze({ kind: 'failed', error: Object.freeze(error), write }) as HostSegmentResult;
+type SegmentError = Exclude<HostAdapterError, { readonly code: 'pending-limit' }>;
+function failed(error: SegmentError, write: HostWriteStatus = { kind: 'not-attempted' }): HostSegmentResult {
+  return Object.freeze({ kind: 'failed', error: Object.freeze(error), write });
 }
-const invalid = (message: string): HostAdapterError => ({ code: 'invalid-input', message });
-const closedError: HostAdapterError = { code: 'closed', message: 'The adapter is closed.' };
+const invalid = (message: string): SegmentError => ({ code: 'invalid-input', message });
+const closedError: SegmentError = { code: 'closed', message: 'The adapter is closed.' };
 
 function historyOf(session: NativeSession): CheckpointReference {
   return Object.freeze({ kind: 'checkpoint', formatVersion: 1, binding, sessionOpaque: session.reference.opaque,
@@ -140,8 +141,14 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       if (prompt !== prompts.toolCall && prompt !== prompts.twoToolCalls) return reply(session);
       const wanted = prompt === prompts.toolCall ? 1 : 2;
       if (wanted > maxPendingPerMessage && !faults.dropExtraCalls) {
-        return failed({ code: 'pending-limit', message: 'The engine produced more host calls than one message may hold.' },
-          { kind: 'accepted', evidence: accepted });
+        return Object.freeze({
+          kind: 'failed' as const,
+          error: Object.freeze({
+            code: 'pending-limit' as const,
+            message: 'The engine produced more host calls than one message may hold.',
+          }),
+          write: { kind: 'accepted' as const, evidence: accepted },
+        } satisfies HostSegmentResult);
       }
       session.calls = Object.freeze(Array.from({ length: Math.min(wanted, maxPendingPerMessage) }, (_, index) => call(session, index)));
       session.holder = holder;
