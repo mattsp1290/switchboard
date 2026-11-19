@@ -118,12 +118,26 @@ function dynamicTools(tools: readonly HostToolDeclaration[]): readonly CodexDyna
     tools: Object.freeze(tools.map((tool) => Object.freeze({ type: 'function' as const, name: tool.name,
       description: tool.description, inputSchema: tool.inputSchema, deferLoading: false }))) })];
 }
-function featureArgs(enabled: ReadonlySet<string>, pinMultiAgent: boolean): readonly string[] {
+function featureArgs(enabled: ReadonlySet<string>, emitMultiAgent: boolean): readonly string[] {
   const args: string[] = [];
   const set = (name: string, on: boolean) => { args.push('-c', `features.${name}=${JSON.stringify(on)}`); };
   for (const pin of featurePins) for (const key of pin.keys) set(key, pin.on(enabled));
-  if (pinMultiAgent) { set('multi_agent', false); set('multi_agent_v2', false); }
+  if (emitMultiAgent) { set('multi_agent', false); set('multi_agent_v2', false); }
   return args;
+}
+function emitMultiAgentArgs(kind: PreparedRoute['kind'], subagentsOff: boolean): boolean {
+  switch (kind) {
+    case 'host-route':
+      return true;
+    case 'direct':
+      return subagentsOff;
+    case 'litellm-proxy':
+      return false;
+    default: {
+      const leftover: never = kind;
+      return leftover;
+    }
+  }
 }
 const timerBound = (value: number) => Number.isInteger(value) && value >= 1 && value <= 2147483647;
 function echoPins(features: Record<string, unknown>, enabled: ReadonlySet<string>): string | undefined {
@@ -279,8 +293,9 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
         if ('problem' in route) return fail({ code: 'invalid-input', message: route.problem });
         prepared = route.route;
       }
-      const pinMultiAgent = prepared.kind !== 'direct' || options.subagents === 'off';
-      prepared = withFeatureArgs(prepared, featureArgs(enabled, pinMultiAgent));
+      const subagentsOff = options.subagents === 'off';
+      const echoMultiAgent = prepared.kind !== 'direct' || subagentsOff;
+      prepared = withFeatureArgs(prepared, featureArgs(enabled, emitMultiAgentArgs(prepared.kind, subagentsOff)));
       const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
       if (!timerBound(handlerTimeoutMs)) return fail({ code: 'invalid-input', message: 'handlerTimeoutMs is outside 1..2147483647' });
       const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: maxPendingPerMessage,
@@ -326,7 +341,7 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
           message: opened.error.message ?? 'Codex app-server handshake failed' });
       }
       execution = opened.value;
-      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, prepared.kind, pinMultiAgent);
+      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, prepared.kind, echoMultiAgent);
       if (pinned) { await execution.close(); return fail({ code: 'invalid-input', message: pinned }); }
       const bound = await bindCodexRequester({ scope: opened.value.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
       if (bound.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'Codex requester was not admitted' }); }

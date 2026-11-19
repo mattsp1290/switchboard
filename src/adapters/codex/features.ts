@@ -13,10 +13,8 @@ import type { Outcome } from '../../core/contracts.js';
  * default.
  *
  * The adapter adds no setting: an omitted field keeps Codex's own default, and nothing forces an approval policy,
- * sandbox or tool allowlist, except under a proxy route (execution.ts routeOverride, approvals-under-route). A host
- * route does not take that pin: refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an
- * unconfined reply for both kinds. A host route's multi-agent feature args live in index.ts and are not
- * codexProxyConfig or proxyConfined. Raw
+ * sandbox or tool allowlist, except under a proxy route (execution.ts routeOverride, approvals-under-route).
+ * The host-route row owns host-route refusal and non-pins. Raw
  * passthrough keys the host also supplies are preserved unchanged and never re-validated.
  * With no `features` the raw params pass exactly as before; with `features`, the protocol's combination rules and the
  * experimentalApi gates apply to the merged request. A typed field that contradicts a raw key, or a combination the
@@ -144,7 +142,7 @@ export const codexFeatureCapabilities = Object.freeze({
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. A proxy route '
     + 'and a host route refuse config and modelProvider as invalid-input, unsent, on thread/start, thread/resume and '
-    + 'turn/start (execution.ts). A host route does not pin model, sandbox or approvals.'),
+    + 'turn/start (execution.ts).'),
   'plugins-and-capability-roots': supported('passthrough-unqualified',
     { 'thread/start': ['selectedCapabilityRoots'], 'turn/start': ['disabledPluginIds'] },
     'Passed through unchanged; nothing is disabled by the adapter.'),
