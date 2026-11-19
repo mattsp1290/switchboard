@@ -1,5 +1,5 @@
 import { isAbsolute, resolve } from 'node:path';
-import { validateSessionDiscoveryBounds } from '#switchboard';
+import { sessionLimits, validateSessionDiscoveryBounds } from '#switchboard';
 import type {
   Outcome, SessionBinding, SessionDiscoveryBounds, SessionDiscoveryPage, SessionOperationError, SessionReference,
 } from '#switchboard';
@@ -20,8 +20,9 @@ export type ClaudeSessionRead =
 const failure = (code: SessionOperationError['code']): Outcome<SessionDiscoveryPage, SessionOperationError> =>
   ({ kind: 'error', error: { code } });
 
-function plain(value: string): boolean {
-  if (value.length === 0 || value.length > 1024) return false;
+function plain(value: unknown): value is string {
+  if (typeof value !== 'string' || value.trim().length === 0
+    || value.length > sessionLimits.identifierLength) return false;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code <= 31 || (code >= 127 && code <= 159)) return false;
@@ -29,12 +30,17 @@ function plain(value: string): boolean {
   return true;
 }
 
-function bindingOf(value: SessionBinding): SessionBinding | undefined {
-  if (!plain(value.engine) || !plain(value.nativeVersion) || !plain(value.account)
-    || !plain(value.authorizedScope) || !plain(value.nativeFormat)) return undefined;
+function bindingOf(value: unknown): SessionBinding | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as {
+    engine?: unknown; nativeVersion?: unknown; account?: unknown;
+    authorizedScope?: unknown; nativeFormat?: unknown;
+  };
+  if (!plain(candidate.engine) || !plain(candidate.nativeVersion) || !plain(candidate.account)
+    || !plain(candidate.authorizedScope) || !plain(candidate.nativeFormat)) return undefined;
   return Object.freeze({
-    engine: value.engine, nativeVersion: value.nativeVersion, account: value.account,
-    authorizedScope: value.authorizedScope, nativeFormat: value.nativeFormat,
+    engine: candidate.engine, nativeVersion: candidate.nativeVersion, account: candidate.account,
+    authorizedScope: candidate.authorizedScope, nativeFormat: candidate.nativeFormat,
   });
 }
 
@@ -70,17 +76,16 @@ export async function discoverClaudeHostSessions(input: {
   const seen = new Set<string>();
   let examined = 0;
   let corrupt = 0;
-  let ending: SessionDiscoveryPage = overflow
-    ? { kind: 'truncated', reason: 'examined', sessions, examined, skipped: { corrupt, inaccessible: 0 }, diagnostics: [] }
-    : { kind: 'complete', sessions, examined, skipped: { corrupt, inaccessible: 0 }, diagnostics: [] };
+  type Ending = { readonly kind: 'complete' } | { readonly kind: 'truncated'; readonly reason: 'examined' | 'duration' | 'results' };
+  let ending: Ending = overflow ? { kind: 'truncated', reason: 'examined' } : { kind: 'complete' };
   for (const record of records) {
     if (input.signal.aborted) return failure('cancelled');
     if (performance.now() - started >= bounds.value.maxDurationMs) {
-      ending = { kind: 'truncated', reason: 'duration', sessions, examined, skipped: { corrupt, inaccessible: 0 }, diagnostics: [] };
+      ending = { kind: 'truncated', reason: 'duration' };
       break;
     }
     if (sessions.length >= bounds.value.maxResults) {
-      ending = { kind: 'truncated', reason: 'results', sessions, examined, skipped: { corrupt, inaccessible: 0 }, diagnostics: [] };
+      ending = { kind: 'truncated', reason: 'results' };
       break;
     }
     examined += 1;

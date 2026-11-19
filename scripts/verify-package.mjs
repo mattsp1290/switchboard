@@ -73,6 +73,7 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/sdk.d.ts'), 'utf8'), /@anthropic-ai/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/index.js'), 'utf8'), /from ['"]\.\/sdk\.js['"]/);
   assert(!existsSync(join(consumer, 'node_modules/@openai/codex-sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
   for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');

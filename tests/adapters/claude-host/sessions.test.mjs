@@ -81,6 +81,9 @@ test('a relative directory, a bad binding, and a refused reader never become a p
   const read = async () => { throw new Error('unread'); };
   assert.equal((await discover(read, { dir: 'work' })).error.code, 'invalid-input');
   assert.equal((await discover(read, { binding: { ...binding, account: '' } })).error.code, 'invalid-input');
+  assert.equal((await discover(read, { binding: { ...binding, account: ' ' } })).error.code, 'invalid-input');
+  assert.equal((await discover(read, { binding: { ...binding, account: 1 } })).error.code, 'invalid-input');
+  assert.equal((await discover(read, { binding: null })).error.code, 'invalid-input');
   assert.equal((await discover(async () => ({ kind: 'error', code: 'inaccessible' }))).error.code, 'inaccessible');
   assert.equal((await discover(async () => { throw new Error('broken'); })).error.code, 'native-failure');
   const aborted = new AbortController();
