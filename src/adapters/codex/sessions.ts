@@ -140,7 +140,7 @@ function hostProvider(settings: Record<string, unknown>, route: CodexHostRoute):
     || entry.requires_openai_auth !== false || entry.experimental_bearer_token != null) return false;
   if (resolve(String(settings.sqlite_home)) !== resolve(route.sqliteHome)
     || resolve(String(settings.log_dir)) !== resolve(route.logDir)) return false;
-  if (!stacksClear(entry)) return false;
+  if (!routeConfined(settings) || !stacksClear(entry)) return false;
   if (route.credentialForm === 'none') return emptyValue(entry.env_key) && emptyValue(entry.auth) && headersMatch(entry, {});
   if (route.credentialForm === 'bearer') {
     return entry.env_key === route.envKey && emptyValue(entry.auth) && headersMatch(entry, route.headerEnv ?? {});
@@ -161,12 +161,16 @@ function headersMatch(entry: Record<string, unknown>, expected: Readonly<Record<
   return Object.keys(headers).length === Object.keys(expected).length
     && Object.entries(expected).every(([name, variable]) => headers[name] === variable);
 }
+function routeConfined(settings: Record<string, unknown>): boolean {
+  const features = record(settings.features) ? settings.features : undefined;
+  const workspace = record(settings.sandbox_workspace_write) ? settings.sandbox_workspace_write : undefined;
+  return settings.approval_policy === 'never'
+    && features?.multi_agent === false && features.multi_agent_v2 === false
+    && ['read-only', 'workspace-write'].includes(String(settings.sandbox_mode))
+    && workspace?.network_access === false && settings.default_permissions == null;
+}
 function routedProvider(settings: Record<string, unknown>, route: CodexProxyRoute): boolean {
-  if (settings.approval_policy !== 'never') return false;
-  if (!record(settings.features) || settings.features.multi_agent !== false
-    || settings.features.multi_agent_v2 !== false) return false;
-  if (!['read-only', 'workspace-write'].includes(String(settings.sandbox_mode)) || !record(settings.sandbox_workspace_write)
-    || settings.sandbox_workspace_write.network_access !== false || settings.default_permissions != null) return false;
+  if (!routeConfined(settings)) return false;
   if (settings.model_provider !== route.providerId || !record(settings.model_providers)
     || !Object.hasOwn(settings.model_providers, route.providerId)) return false;
   const entry = settings.model_providers[route.providerId];

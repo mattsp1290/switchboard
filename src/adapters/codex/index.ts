@@ -8,11 +8,11 @@ import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
 } from '../../core/host-adapter.js';
-import type { InteractionContinuation, ToolTarget } from '../../core/interaction.js';
+import type { InteractionContinuation } from '../../core/interaction.js';
 import { parseInteractionContinuation } from '../../core/interaction.js';
 import type { SessionBinding } from '../../core/sessions.js';
 import { createCodexWriters, openCodexExecution } from './execution.js';
-import type { CodexSession, CodexTurnCompletion } from './execution.js';
+import type { CleanupStep, CodexSession, CodexTurnCompletion } from './execution.js';
 import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
 import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
 import { createCodexInteraction } from './interaction.js';
@@ -64,7 +64,15 @@ const identity = Object.freeze({ engine: 'codex' as const, adapter: 'codex-host'
 /** In-process memory of the declarations sent at thread/start. A fresh process starts empty. */
 const remembered = new Map<string, string>();
 const discovery = Object.freeze({ maxResults: 10, maxExamined: 10, maxDurationMs: 5000 });
-const shellFeatures = ['shell_tool', 'unified_exec', 'shell_snapshot'] as const;
+const featurePins = [
+  { keys: ['shell_tool', 'unified_exec', 'shell_snapshot'], on: (enabled: ReadonlySet<string>) => enabled.has('shell') || enabled.has('shell_tool'),
+    off: 'the engine shell is on and the host did not enable it' },
+  { keys: ['view_image'], on: (enabled: ReadonlySet<string>) => enabled.has('view_image'),
+    off: 'view_image is on and the host did not leave it on' },
+  { keys: ['request_user_input', 'default_mode_request_user_input'], on: (enabled: ReadonlySet<string>) => enabled.has('request_user_input'),
+    off: 'request_user_input is on and the host did not leave it on' },
+] as const;
+const pinsMultiAgent = (routed: boolean, subagents: 'off' | undefined) => routed || subagents === 'off';
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const fail = (error: HostAdapterError) => ({ kind: 'error' as const, error: Object.freeze(error) });
@@ -85,21 +93,16 @@ function dynamicTools(tools: readonly HostToolDeclaration[]): readonly CodexDyna
 function featureArgs(enabled: ReadonlySet<string>, subagents: 'off' | undefined, routed: boolean): readonly string[] {
   const args: string[] = [];
   const set = (name: string, on: boolean) => { args.push('-c', `features.${name}=${JSON.stringify(on)}`); };
-  const shell = enabled.has('shell') || enabled.has('shell_tool');
-  for (const name of shellFeatures) set(name, shell);
-  set('view_image', enabled.has('view_image'));
-  set('request_user_input', enabled.has('request_user_input'));
-  set('default_mode_request_user_input', enabled.has('request_user_input'));
-  if (routed || subagents === 'off') { set('multi_agent', false); set('multi_agent_v2', false); }
+  for (const pin of featurePins) for (const key of pin.keys) set(key, pin.on(enabled));
+  if (pinsMultiAgent(routed, subagents)) { set('multi_agent', false); set('multi_agent_v2', false); }
   return args;
 }
 const timerBound = (value: number) => Number.isInteger(value) && value >= 1 && value <= 2147483647;
-function hostConfined(value: unknown): boolean {
-  if (!record(value)) return false;
-  const sandbox = record(value.sandbox) ? value.sandbox : undefined;
-  if (!sandbox || (sandbox.type !== 'readOnly' && sandbox.type !== 'workspaceWrite')) return false;
-  if ((sandbox.networkAccess ?? false) !== false) return false;
-  return value.approvalPolicy === 'never';
+function echoPins(features: Record<string, unknown>, enabled: ReadonlySet<string>): string | undefined {
+  for (const pin of featurePins) {
+    if (!pin.on(enabled) && pin.keys.some((key) => features[key] !== false)) return pin.off;
+  }
+  return undefined;
 }
 function nativeOf(value: unknown): CodexHostNativeConfig | undefined {
   if (!record(value) || typeof value.home !== 'string' || typeof value.cwd !== 'string') return undefined;
@@ -219,7 +222,8 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
           message: opened.error.message ?? 'Codex app-server handshake failed' });
       }
       execution = opened.value;
-      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, prepared.host !== undefined || prepared.proxy !== undefined);
+      const admittedRoute = prepared.host !== undefined || prepared.proxy !== undefined;
+      const pinned = await pinnedFeatures(opened.value.scope.request, enabled, signal, admittedRoute, pinsMultiAgent(admittedRoute, options.subagents));
       if (pinned) { await execution.close(); return fail({ code: 'invalid-input', message: pinned }); }
       const bound = await bindCodexRequester({ scope: opened.value.scope, bounds: discovery, signal, nativeFormat: 'codex-thread/paginated' });
       if (bound.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'Codex requester was not admitted' }); }
@@ -241,22 +245,15 @@ async function releaseSpawned(channel: BorrowedChannel, bounds: TransportBounds)
 }
 
 async function pinnedFeatures(request: (call: { method: string; params?: unknown }, signal: AbortSignal) => Promise<{ kind: string; envelope?: { reply?: { kind: string; value?: unknown } } }>,
-  enabled: ReadonlySet<string>, signal: AbortSignal, routed: boolean): Promise<string | undefined> {
+  enabled: ReadonlySet<string>, signal: AbortSignal, routed: boolean, multiAgent: boolean): Promise<string | undefined> {
   const exchange = await request({ method: 'config/read', params: { includeLayers: false } }, signal);
   const reply = exchange.kind === 'reply' ? exchange.envelope?.reply : undefined;
   const config = reply?.kind === 'result' && record(reply.value) && record(reply.value.config) ? reply.value.config : undefined;
   if (routed && !config) return 'the route config could not be read';
   const features = config && record(config.features) ? config.features : {};
-  const shell = enabled.has('shell') || enabled.has('shell_tool');
-  if (!shell && shellFeatures.some((name) => features[name] !== false)) return 'the engine shell is on and the host did not enable it';
-  if (!enabled.has('view_image') && features.view_image !== false) return 'view_image is on and the host did not leave it on';
-  if (!enabled.has('request_user_input') && features.request_user_input !== false) return 'request_user_input is on and the host did not leave it on';
-  if (!routed) return undefined;
-  const workspace = config && record(config.sandbox_workspace_write) ? config.sandbox_workspace_write : undefined;
-  if (features.multi_agent !== false || features.multi_agent_v2 !== false) return 'multi-agent is not pinned off';
-  if (!config || config.approval_policy !== 'never') return 'approval_policy is not never';
-  if (!['read-only', 'workspace-write'].includes(String(config.sandbox_mode))) return 'sandbox_mode is not confined';
-  if (!workspace || workspace.network_access !== false) return 'sandbox network access is not off';
+  const mismatch = echoPins(features, enabled);
+  if (mismatch) return mismatch;
+  if (!routed && multiAgent && (features.multi_agent !== false || features.multi_agent_v2 !== false)) return 'multi-agent is not pinned off';
   return undefined;
 }
 
@@ -276,30 +273,22 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
   const canonical = canonicalTools(tools);
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 4, capacity: 64 });
   let session: CodexSession | undefined;
-  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; entered: boolean } | undefined;
+  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage } | undefined;
   let turnCompletion: Promise<CodexTurnCompletion> | undefined;
   let turnResult: CodexTurnCompletion | undefined;
   let capacityRefused = false;
-  let refusedBusy = false;
   let closing: ReturnType<HostAdapter['close']> | undefined;
-  const delivered = new Map<string, ToolTarget>();
-  const rememberTarget = (id: string, target: ToolTarget) => {
-    delivered.set(id, target);
-    try {
-      const parsed = JSON.parse(id) as unknown;
-      if (!Array.isArray(parsed)) return;
-      if (parsed[0] !== undefined) delivered.set(String(parsed[0]), target);
-      if (typeof parsed[2] === 'string') delivered.set(parsed[2], target);
-    } catch { /* a non-JSON id is stored as itself */ }
-  };
   const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') stream.publish(Object.freeze(event)); };
   const calls = () => bridge.hostCalls().map(toCall);
   execution.events.subscribe(() => {});
   bridge.events.subscribe((event) => {
     if (event.kind === 'refused' && event.reason === 'capacity') { capacityRefused = true; return; }
+    if (event.kind === 'host-delivery') {
+      publish({ kind: 'tool-delivery', target: event.target, delivery: event.delivery });
+      return;
+    }
     if (event.kind !== 'host-call') return;
-    const target: ToolTarget = event.call.pending.target;
-    rememberTarget(target.nativeToolCallId, target);
+    const target = event.call.pending.target;
     publish({ kind: 'tool-call-start', target, name: event.call.name });
     publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(event.call.arguments ?? null) });
     publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
@@ -323,10 +312,6 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (resumed.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: resumed.error.message ?? resumed.error.code }); }
     if (resumed.value.kind !== 'resumed') { await execution.close(); return fail({ code: 'busy', message: `resume is ${resumed.value.kind}` }); }
     session = resumed.value.session;
-    if (ready.prepared.host && !hostConfined(session.native)) {
-      await execution.close();
-      return fail({ code: 'native-failure', message: 'the resumed thread is outside the host-route sandbox' });
-    }
     if (bridge.attach(session).kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: 'interaction attach failed' }); }
     watch(session);
     remembered.set(session.threadId, canonical);
@@ -341,13 +326,6 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
         segment.usage = Object.freeze({ scope: 'cumulative', native: Object.freeze({ namespace: 'codex-app-server/token-usage',
           schemaVersion: 1, data: { total: event.total, last: event.last, modelContextWindow: event.modelContextWindow } }) });
         publish({ kind: 'usage', usage: segment.usage });
-      } else if (event.kind === 'native' && event.method === 'item/completed') {
-        const params = event.params;
-        const item = record(params) ? params.item : undefined;
-        if (!record(item) || item.type !== 'dynamicToolCall' || typeof item.id !== 'string') return;
-        const target = delivered.get(item.id);
-        if (!target) return;
-        publish({ kind: 'tool-delivery', target, delivery: { kind: 'unknown' } });
       }
     });
   }
@@ -380,49 +358,61 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     }
     return undefined;
   }
+  function pendingSegment(active: CodexSession, current: NonNullable<typeof segment>, pending: readonly CodexHostCall[]): HostSegmentResult {
+    return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), usage: current.usage };
+  }
   async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<HostSegmentResult> {
     const current = segment;
     const active = session;
     if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
-    const limited = (): HostSegmentResult => failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-      { kind: 'accepted', evidence: accepted });
+    const limited = (): HostSegmentResult => {
+      capacityRefused = false;
+      return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
+        { kind: 'accepted', evidence: accepted });
+    };
     let quiet = 0;
-    while (!hostSignal.aborted) {
+    while (true) {
+      const sampled = hostSignal.aborted || turnResult || !turnCompletion ? turnResult
+        : await Promise.race([turnCompletion.then((value) => value), delay(20).then(() => undefined)]);
       const pending = bridge.hostCalls();
-      if (pending.length > 8 || capacityRefused) return limited();
-      if (turnResult) return completionResult(active, current, turnResult, accepted);
-      if (turnCompletion) {
-        const winner = await Promise.race([turnCompletion.then((value) => ({ value })), delay(20).then(() => ({ value: undefined }))]);
-        if (winner.value) return completionResult(active, current, winner.value, accepted);
-      }
-      if (pending.length > 0) {
-        quiet += 1;
-        if (quiet >= 2) return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), usage: current.usage };
-      } else quiet = 0;
+      const choice = decideSettle({ aborted: hostSignal.aborted, pending: pending.length, completion: sampled !== undefined, quiet, capacityRefused });
+      if (choice === 'limit') return limited();
+      if (choice === 'pending') return pendingSegment(active, current, pending);
+      if (choice === 'completion' && sampled) return completionResult(active, current, sampled, accepted, pending);
+      if (choice === 'aborted') return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
+      if (pending.length > 0) quiet += 1; else quiet = 0;
       await delay(10);
     }
-    if (turnResult) return completionResult(active, current, turnResult, accepted);
-    return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
   }
   function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion,
-    accepted: DispatchEvidence): HostSegmentResult {
+    accepted: DispatchEvidence, pending: readonly CodexHostCall[]): HostSegmentResult {
     const acceptedWrite = { kind: 'accepted' as const, evidence: accepted };
-    if (completion.kind === 'terminal' && completion.terminal.status === 'completed' && bridge.hostCalls().length > 0) {
-      return { kind: 'pending', session: active.reference, calls: Object.freeze(bridge.hostCalls().map(toCall)), usage: current.usage };
+    switch (completion.kind) {
+      case 'terminal':
+        switch (completion.terminal.status) {
+          case 'completed':
+            return pending.length > 0 ? pendingSegment(active, current, pending)
+              : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage };
+          case 'failed':
+            return failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite);
+          case 'interrupted':
+            return failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite);
+          default: {
+            const status: never = completion.terminal.status;
+            return failed({ code: 'native-failure', message: `the native turn status is ${String(status)}` }, acceptedWrite);
+          }
+        }
+      case 'rejected':
+        return failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite);
+      case 'unconcluded':
+      case 'not-sent':
+      case 'not-dispatched':
+        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+      default: {
+        const leftover: never = completion;
+        return failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' });
+      }
     }
-    if (completion.kind === 'terminal' && completion.terminal.status === 'completed' && bridge.hostCalls().length === 0) {
-      return { kind: 'complete', session: active.reference, text: current.text, usage: current.usage };
-    }
-    if (completion.kind === 'terminal' && completion.terminal.status === 'failed') {
-      return failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite);
-    }
-    if (completion.kind === 'terminal' && completion.terminal.status === 'interrupted') {
-      return failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite);
-    }
-    if (completion.kind === 'unconcluded' || completion.kind === 'not-sent' || completion.kind === 'not-dispatched') {
-      return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
-    }
-    return failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite);
   }
   function evidence(active: CodexSession, completion: CodexTurnCompletion) {
     return { identity: { hostOperationId: 'turn', target: { kind: 'session' as const, reference: active.reference } },
@@ -444,11 +434,6 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     }
     const active = session;
     if (!active) return { kind: 'outcome-unknown' as const };
-    if (ready.prepared.host && !hostConfined(active.native)) {
-      await execution.close();
-      session = undefined;
-      return { kind: 'outcome-unknown' as const };
-    }
     if (answers) {
       for (const answer of answers) {
         const replied = await bridge.reply({ value: answer, signal: hostSignal, recordIntent: () => {} });
@@ -458,8 +443,11 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
     const started = active.turn({ hostOperationId: 'turn', input: [{ type: 'text', text: prompt, text_elements: [] }],
       signal: hostSignal, recordIntent: () => {} });
-    if (started.kind === 'error') return started.error.code === 'busy' ? { kind: 'busy' as const } : { kind: 'outcome-unknown' as const };
-    turnCompletion = started.value.completion.then((value) => { turnResult = value; return value; });
+    if (started.kind === 'error') return { kind: 'outcome-unknown' as const };
+    turnResult = undefined;
+    let observed: Promise<CodexTurnCompletion>;
+    observed = started.value.completion.then((value) => { if (turnCompletion === observed) turnResult = value; return value; });
+    turnCompletion = observed;
     const snapshot = await started.value.run();
     return snapshot.observation.kind === 'outcome-unknown' || snapshot.observation.kind === 'not-dispatched'
       ? { kind: 'outcome-unknown' as const } : snapshot.observation;
@@ -481,10 +469,10 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     if (closing) return failed({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
     if (segment) return failed({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
     if (answers && !answersMatch(answers)) return failed({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
-    if (prompt !== undefined && bridge.hostCalls().length > 0) {
-      return failed({ code: 'busy', message: 'host calls from the previous turn are still pending' }, { kind: 'not-attempted' });
+    if (prompt !== undefined && (bridge.hostCalls().length > 0 || (turnCompletion !== undefined && turnResult === undefined))) {
+      return failed({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
     }
-    segment = { phase: 'intent', text: '', usage: emptyUsage(), entered: false };
+    segment = { phase: 'intent', text: '', usage: emptyUsage() };
     const target: DispatchIdentity['target'] = session
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };
     try {
@@ -493,14 +481,12 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
       const handle = createDispatchOperation({ mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
         identity: { hostOperationId: input.hostOperationId, target },
         dispatchNative: async (recorded) => {
-          if (segment) { segment.phase = 'native'; segment.entered = true; }
+          if (segment) segment.phase = 'native';
           const observation = await dispatchTurn(prompt, answers, input.signal);
-          if (observation.kind === 'busy') { refusedBusy = true; return { kind: 'outcome-unknown' }; }
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
           return { kind: 'accepted', evidence: { ...observation.evidence, identity: recorded } };
         } });
       const snapshot = await handle.run();
-      if (refusedBusy) return failed({ code: 'busy', message: 'the previous turn is still in progress' }, { kind: 'not-attempted' });
       if (snapshot.observation.kind === 'not-dispatched') {
         return failed({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
       }
@@ -524,16 +510,40 @@ async function openAdapter(ready: Parameters<typeof finishOpen>[0]) {
     continue: (input: HostContinueInput) => segmentOf(input, undefined, input.answers),
     interrupt: async ({ timeoutMs }) => {
       if (!segment) return { kind: 'terminal-observed' as const };
-      if (segment.phase === 'intent' || !segment.entered) return { kind: 'unconfirmed-within-bound' as const };
+      if (segment.phase === 'intent') return { kind: 'unconfirmed-within-bound' as const };
       const active = session;
       if (!active) return { kind: 'unconfirmed-within-bound' as const };
       const step = await Promise.race([active.interrupt(), delay(timeoutMs).then(() => 'timeout' as const)]);
-      if (step === 'replied') return { kind: 'interrupted' as const, evidence: Object.freeze({ namespace: 'codex-app-server/turn-interrupt', schemaVersion: 1, data: { step } }) };
-      if (step === 'not-needed' && turnResult?.kind === 'terminal') return { kind: 'terminal-observed' as const };
-      return { kind: 'unconfirmed-within-bound' as const };
+      return interruptResult(step, turnResult);
     },
     close: () => closing ??= (async () => { await execution.close(); stream.close(); return { kind: 'ok' as const, value: undefined }; })() };
   return { kind: 'ok' as const, value: adapter };
+}
+type SettleChoice = 'limit' | 'completion' | 'pending' | 'wait' | 'aborted';
+function decideSettle(facts: { readonly aborted: boolean; readonly pending: number; readonly completion: boolean; readonly quiet: number; readonly capacityRefused: boolean }): SettleChoice {
+  if (facts.aborted) return facts.completion ? 'completion' : 'aborted';
+  if (facts.pending > 8 || facts.capacityRefused) return 'limit';
+  if (facts.completion) return 'completion';
+  if (facts.pending > 0 && facts.quiet >= 2) return 'pending';
+  return 'wait';
+}
+function interruptResult(step: CleanupStep | 'timeout', completion: CodexTurnCompletion | undefined) {
+  switch (step) {
+    case 'replied':
+      return { kind: 'interrupted' as const, evidence: Object.freeze({ namespace: 'codex-app-server/turn-interrupt', schemaVersion: 1, data: { step } }) };
+    case 'not-needed':
+      return completion?.kind === 'terminal' ? { kind: 'terminal-observed' as const } : { kind: 'unconfirmed-within-bound' as const };
+    case 'rejected':
+    case 'not-sent':
+    case 'uncertain':
+    case 'timeout':
+      return { kind: 'unconfirmed-within-bound' as const };
+    default: {
+      const leftover: never = step;
+      void leftover;
+      return { kind: 'unconfirmed-within-bound' as const };
+    }
+  }
 }
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });

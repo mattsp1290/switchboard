@@ -82,7 +82,7 @@ function fakeServer(home, tool) {
   const answer = {
     initialize: () => ({ codexHome: home, userAgent: 'fake/0.169.0' }),
     'config/read': () => ({ config: { sqlite_home: '/codex-host-index', log_dir: '/codex-host-logs',
-      features: { shell_tool: false, unified_exec: false, shell_snapshot: false, view_image: false, request_user_input: false } } }),
+      features: { shell_tool: false, unified_exec: false, shell_snapshot: false, view_image: false, request_user_input: false, default_mode_request_user_input: false } } }),
     'account/read': () => ({ account: { type: 'apiKey' }, requiresOpenaiAuth: false }),
     'thread/start': () => {
       const id = randomUUID();

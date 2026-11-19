@@ -92,7 +92,8 @@ export type CodexInteractionEvent =
     readonly effect: ToolEffect; readonly evidence: CodexEvidence }
   /** The bridge lost its session observer (overflow): native withdrawals for this thread are no longer seen. */
   | { readonly kind: 'blind'; readonly threadId: string }
-  | { readonly kind: 'host-call'; readonly call: CodexHostCall };
+  | { readonly kind: 'host-call'; readonly call: CodexHostCall }
+  | { readonly kind: 'host-delivery'; readonly target: ToolTarget; readonly delivery: NativeDelivery };
 export type CodexReplyError = InteractionError
   | { readonly code: 'stale-interaction' | 'duplicate-interaction' | 'intent-failed' | 'aborted' }
   | { readonly code: 'unsupported'; readonly feature: 'tool' | 'delegation' };
@@ -214,13 +215,18 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     readonly finish: (reply: RpcReply) => void };
   const hostLive = new Map<string, HostEntry>();
   const hostSettled = new Set<string>();
-  function rememberHost(id: string): void {
-    hostSettled.add(id);
+  const hostFacts = new Map<string, HostEntry>();
+  function rememberHost(entry: HostEntry): void {
+    hostSettled.add(entry.id);
+    hostFacts.set(entry.id, entry);
     for (const oldest of hostSettled) {
       if (hostSettled.size <= maxSettled) break;
       hostSettled.delete(oldest);
+      hostFacts.delete(oldest);
     }
   }
+  const sameHostItem = (candidate: { readonly callId: string; readonly requestId: IncomingCall['id']; readonly turnId: string }, itemId: unknown, turnId: unknown) =>
+    (candidate.callId === itemId || String(candidate.requestId) === String(itemId)) && (turnId === undefined || candidate.turnId === turnId);
   function hostReplyValue(entry: HostEntry, outcome: ToolOutcome): RpcReply | undefined {
     try {
       const extension = outcome.result.kind === 'ok' ? outcome.result.value : outcome.result.error;
@@ -240,7 +246,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (entry.state === 'replied' || entry.state === 'lost') return;
     entry.state = 'lost';
     hostLive.delete(entry.id);
-    rememberHost(entry.id);
+    rememberHost(entry);
     entry.finish(withdrawnReply);
   }
 
@@ -294,9 +300,13 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       if (host) loseHost(host);
     } else if (event.method === 'item/completed' && record(params.item)) {
       const { item } = params;
-      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && candidate.callId === item.id
-        && (params.turnId === undefined || candidate.turnId === params.turnId));
-      if (host) loseHost(host);
+      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && sameHostItem(candidate, item.id, params.turnId));
+      const answered = host ?? [...hostFacts.values()].find((candidate) => candidate.threadId === threadId && sameHostItem(candidate, item.id, params.turnId));
+      if (answered) {
+        publish({ kind: 'host-delivery', target: answered.call.pending.target, delivery: { kind: 'unknown' } });
+        if (host) loseHost(host);
+        else hostFacts.delete(answered.id);
+      }
       const entry = entries().find((candidate) => candidate.itemId === item.id && candidate.turnId === params.turnId);
       if (!entry) return;
       if (unanswered(entry)) { withdraw(entry, 'item/completed'); return; }
@@ -475,7 +485,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (entry.state !== 'reserved') return fail({ code: 'stale-interaction' });
     entry.state = 'replied';
     hostLive.delete(entry.id);
-    rememberHost(entry.id);
+    rememberHost(entry);
     entry.finish(replyValue);
     return { kind: 'ok', value: Object.freeze({ nativeChoiceId: entry.id, delivery: unknown }) };
   }
