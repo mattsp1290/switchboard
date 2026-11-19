@@ -28,7 +28,7 @@ test('a clean trace with admitted launches, refused execs and local pipes passes
     '3 execve("/usr/local/bin/node", ["node", "/stage/cli.mjs"], 0x3 /* 4 vars */) = 0',
     '3 +++ killed by SIGKILL +++',
     '4 execve("/tmp/missing-cli", ["/tmp/missing-cli"], 0x4 /* 3 vars */) = -1 ENOENT (No such file or directory)',
-    '4 execve("/usr/local/bin/node", ["/usr/local/bin/node", "-e", "setTimeout(() => {}, 1)"], 0x4 /* 3 vars */) = 0',
+    '4 execve("/usr/local/bin/node", ["/usr/local/bin/node", "-e", "echo = -1 ENOENT"], 0x4 /* 3 vars */) = 0',
     '4 +++ exited with 0 +++',
     '1 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=4} ---');
   assert.deepEqual(result.violations, []);
@@ -44,6 +44,7 @@ test('decoy, network, launch and io_uring records each fail a run that exits 0',
     ['network', '1 connect(18<socket:[3]>, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("192.0.2.1")}, 16) = -1 ENETUNREACH (Network is unreachable)'],
     ['network', '1 sendto(18<socket:[3]>, "x", 1, 0, {sa_family=AF_INET, sin_port=htons(53)}, 16) = -1 EPERM (Operation not permitted)'],
     ['launch', '1 execve("/bin/true", ["/bin/true"], 0x5 /* 3 vars */) = 0'],
+    ['launch', '1 execve("/bin/sh", ["/bin/sh", "-c", "echo = -1 ENOENT"], 0x5 /* 3 vars */) = 0'],
     ['launch', '1 execve("/usr/local/bin/node", ["node", "/stage/other.mjs"], 0x5 /* 3 vars */) = 0'],
     ['launch', '1 execve("/usr/local/bin/node", ["node", "--import", "/stage/fixture.mjs", "/stage/fixture.mjs"], 0x5 /* 3 vars */) = 0'],
     ['launch', '1 execveat(3</bin>, "true", ["true"], NULL, 0) = 0'],
@@ -69,6 +70,7 @@ test('unreadable, truncated or incomplete traces fail closed', () => {
   assert.deepEqual(judge('1 execve("/usr/local/bin/node", ["node", "/stage/fix"...], 0x1 /* 3 vars */) = 0').kinds, ['trace']);
   assert.deepEqual(judge('9 openat(AT_FDCWD</stage>, "/stage/a", O_RDONLY) = 3</stage/a>').kinds, ['trace']);
   assert.deepEqual(judge('1 +++ exited strangely +++').kinds, ['trace']);
+  assert.deepEqual(judge('1 io_uring_setup(32, {flags=0} <unfinished ...>').kinds, ['io_uring']);
   const empty = createVerdict(policy).finish();
   assert.deepEqual(empty.kinds, ['trace']);
   const failed = createVerdict(policy);

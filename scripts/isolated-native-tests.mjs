@@ -24,7 +24,13 @@ const STRACE = '/opt/strace/usr/bin/strace';
 // Debian bookworm strace 6.1-0.1: package and extracted executable SHA-256 per Docker architecture.
 const STRACE_PACKAGES = {
   aarch64: { arch: 'arm64', deb: '751817724af91cb95df566a21a154f9a7dcdd938e700e5cb9a5a47eb19752ea2', bin: '0e69fa123b3d9732645ce1ac8c89819d100f83cdc9e52a80565d9ad8e7d8cf28' },
-  x86_64: { arch: 'amd64', deb: '1942d086a6244a1a9643489d3b0aa604ac44b88991d6c69217a63a193671bd4f', bin: 'aebaf212ce84a12208c5fa25f08c892029e6f6949b778da55e071ac145404a1e' },
+  // bookworm-slim has libc and liblzma, and the amd64 strace also needs libunwind.
+  x86_64: { arch: 'amd64', deb: '1942d086a6244a1a9643489d3b0aa604ac44b88991d6c69217a63a193671bd4f', bin: 'aebaf212ce84a12208c5fa25f08c892029e6f6949b778da55e071ac145404a1e',
+    unwind: { file: 'libunwind8_1.6.2-3_amd64.deb', deb: '7b297868682836e4c87be349f17e4a56bc287586e3576503e84a5cb5485ce925', libs: {
+      'usr/lib/x86_64-linux-gnu/libunwind-ptrace.so.0': 'cb8ab3f0e63b0fa826c1002a91ba3d7f055940b0be3f4092e24834b3cadba020',
+      'usr/lib/x86_64-linux-gnu/libunwind-x86_64.so.8': '04bd8928ff2105c4c86f01755b9cfbe5414f16115d6f1f3b3c98ec3d9aa8ccb2',
+      'usr/lib/x86_64-linux-gnu/libunwind.so.8': 'c66c0e877d919d0cea417cb58372884c00e529f13a9ddf78b9760a16a887dba0',
+    } } },
 };
 const DECOY_FILES = ['.claude.json', '.claude/.credentials.json', '.codex/auth.json', '.pi/agent/auth.json',
   '.aws/credentials', '.config/gcloud/application_default_credentials.json', '.netrc'];
@@ -111,9 +117,20 @@ async function stageStrace(stage, machine) {
   assert(response.ok, `strace download failed: HTTP ${response.status}`);
   writeFileSync(deb, Buffer.from(await response.arrayBuffer()));
   assert.equal(sha256(deb), pin.deb, 'strace package hash');
-  docker(['run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--user', `${process.getuid()}:${process.getgid()}`,
-    '--mount', `type=bind,src=${stage},dst=/work`, '--entrypoint', 'dpkg-deb', IMAGE, '-x', '/work/strace.deb', '/work/strace']);
+  const extract = (file) => docker(['run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--user', `${process.getuid()}:${process.getgid()}`,
+    '--mount', `type=bind,src=${stage},dst=/work`, '--entrypoint', 'dpkg-deb', IMAGE, '-x', `/work/${file}`, '/work/strace']);
+  extract('strace.deb');
   assert.equal(sha256(join(stage, 'strace/usr/bin/strace')), pin.bin, 'strace executable hash');
+  if (pin.unwind) {
+    const unwindDeb = join(stage, pin.unwind.file);
+    const unwind = await fetch(`https://deb.debian.org/debian/pool/main/libu/libunwind/${pin.unwind.file}`);
+    assert(unwind.ok, `libunwind download failed: HTTP ${unwind.status}`);
+    writeFileSync(unwindDeb, Buffer.from(await unwind.arrayBuffer()));
+    assert.equal(sha256(unwindDeb), pin.unwind.deb, 'libunwind package hash');
+    extract(pin.unwind.file);
+    for (const [file, hash] of Object.entries(pin.unwind.libs)) assert.equal(sha256(join(stage, 'strace', file)), hash, `${file} hash`);
+  }
+  assert.equal(spawnSync('chmod', ['-R', 'a+rX', join(stage, 'strace')]).status, 0, 'chmod strace failed');
 }
 
 /** Builds the mounted tree: the packed package and SDK closure under node_modules, the fixtures, the decoys. */
@@ -147,8 +164,16 @@ async function stageTree(stage, machine) {
 }
 
 /** One confined, traced container run. Resolves after the container is gone; never rejects. */
-function confinedRun(stage, entry) {
+function confinedRun(stage, entry, machine) {
   const name = `switchboard-isolated-${randomUUID()}`;
+  const pin = STRACE_PACKAGES[machine];
+  const environment = ['-i', 'PATH=/usr/local/bin:/usr/bin:/bin', `HOME=${HOME}`, 'TMPDIR=/tmp'];
+  // strace loads libunwind through this path. -E removes it before the traced command starts.
+  const strace = [STRACE, '-f', '-q', '-y', '-s', '4096', '-e', 'trace=%file,%network,%process,io_uring_setup', '-o', '/proc/self/fd/3'];
+  if (pin.unwind) {
+    environment.push('LD_LIBRARY_PATH=/opt/strace/usr/lib/x86_64-linux-gnu');
+    strace.push('-E', 'LD_LIBRARY_PATH');
+  }
   const args = ['run', '--rm', '--name', name, '--pull', 'never', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges', '--user', '65534:65534', '--pids-limit', '512', '--memory', '2g',
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=512m',
@@ -156,10 +181,10 @@ function confinedRun(stage, entry) {
     '--mount', `type=bind,src=${stage.home},dst=${HOME},readonly`,
     '--mount', `type=bind,src=${join(stage.dir, 'strace')},dst=/opt/strace,readonly`,
     '--workdir', STAGE, '--entrypoint', '/usr/bin/env', IMAGE,
-    '-i', 'PATH=/usr/local/bin:/usr/bin:/bin', `HOME=${HOME}`, 'TMPDIR=/tmp',
+    ...environment,
     // The trace leaves on fd 3 (container stderr); the program's stdout and stderr both go to container stdout.
     '/bin/sh', '-c', 'exec "$@" 3>&2 2>&1', 'sh',
-    STRACE, '-f', '-q', '-y', '-s', '4096', '-e', 'trace=%file,%network,%process,io_uring_setup', '-o', '/proc/self/fd/3',
+    ...strace,
     NODE, '--test-reporter=tap', `${STAGE}/${entry}`];
   const verdict = createVerdict({ decoy: DECOY, node: NODE, entry: `${STAGE}/${entry}`, scripts: SCRIPTS,
     executable: (path) => path === `${STAGE}/tests/adapters/codex/sdk-cli.mjs` || CODEX_VENDOR.test(path) });
@@ -210,7 +235,7 @@ async function main() {
     const stage = { dir, ...await stageTree(dir, machine) };
     console.log(`isolated-native: ${machine}, ${stage.packed}, ${stage.packages} SDK closure packages, ${stage.fetched} container platform packages, ${DECOY_FILES.length} decoys, stage ${dir}`);
     for (const control of CONTROLS) {
-      const run = await confinedRun(stage, control.entry);
+      const run = await confinedRun(stage, control.entry, machine);
       const rejected = run.code === 0 && run.kinds.length === 1 && run.kinds[0] === control.expect;
       console.log(`isolated-native: ${rejected ? 'ok' : 'UNEXPECTED'} control ${control.entry} exited ${run.code} and was rejected for [${run.kinds.join(', ')}]`
         + (run.violations[0] ? `: ${run.violations[0].detail.slice(0, 160)}` : ''));
@@ -218,7 +243,7 @@ async function main() {
     }
     if (failures.length === 0) {
       for (const entry of SUITES) {
-        const run = await confinedRun(stage, entry);
+        const run = await confinedRun(stage, entry, machine);
         const passed = run.ok && run.code === 0 && run.tests.fail === 0 && run.tests.pass > 0;
         console.log(`isolated-native: ${passed ? 'ok' : 'FAIL'} ${entry}: ${run.tests.pass} passed, ${run.tests.fail} failed; ${run.lines} trace lines, ${run.launches} launches, ${run.violations.length} violations, ${run.ms} ms`);
         if (!passed) failures.push(`${entry}\n${describe(run)}\n  output tail:\n${run.stdout.slice(-4000)}`);

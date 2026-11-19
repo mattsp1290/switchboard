@@ -22,6 +22,8 @@ const CALL = /^([a-z0-9_]+)\(/;
 const RESUMED = /^<\.\.\. ([a-z0-9_]+) resumed>/;
 const STRING = /"((?:[^"\\]|\\.)*)"(\.\.\.)?/y;
 const MAX_VIOLATIONS = 200;
+// The errno is only the syscall result. An argument may contain the same text.
+const refusedErrno = (rest) => { const at = rest.lastIndexOf(') = '); return at >= 0 && /^-1 [A-Z]/.test(rest.slice(at + 4)); };
 
 /** Reads the filename and argv of an execve body; null when strace truncated or abbreviated either. */
 export function execArguments(body) {
@@ -63,6 +65,7 @@ export function createVerdict(policy) {
   let lines = 0;
   let launches = 0;
   let refused = 0;
+  let pendingIo = 0;
   let top = null;
   const seen = new Set();
   /** @type {Map<string, string>} */
@@ -82,7 +85,7 @@ export function createVerdict(policy) {
     settle(problem, rest);
   };
   const settle = (problem, rest) => {
-    if (/ = -1 [A-Z]+/.test(rest)) { refused++; return; }
+    if (refusedErrno(rest)) { refused++; return; }
     launches++;
     if (problem) add('launch', problem);
   };
@@ -117,7 +120,7 @@ export function createVerdict(policy) {
     const resumed = RESUMED.exec(rest);
     if (resumed) {
       if (resumed[1] === 'execve' && pending.has(pid)) { settle(pending.get(pid), rest); pending.delete(pid); }
-      if (resumed[1] === 'io_uring_setup' && !/ = -1 /.test(rest)) add('io_uring', rest);
+      if (resumed[1] === 'io_uring_setup') { if (pendingIo > 0) pendingIo--; if (!refusedErrno(rest)) add('io_uring', rest); }
       return;
     }
     const call = CALL.exec(rest);
@@ -126,7 +129,8 @@ export function createVerdict(policy) {
     if (NETWORK.has(name) || (SEND.has(name) && rest.includes('sa_family='))) add('network', rest);
     else if (name === 'execve') exec(pid, rest, rest);
     else if (name === 'execveat') add('launch', `execveat is not admitted: ${rest}`);
-    else if (name === 'io_uring_setup' && !rest.endsWith('<unfinished ...>') && !/ = -1 /.test(rest)) add('io_uring', rest);
+    else if (name === 'io_uring_setup' && rest.endsWith('<unfinished ...>')) pendingIo++;
+    else if (name === 'io_uring_setup' && !refusedErrno(rest)) add('io_uring', rest);
   }
 
   /** @returns {{ ok: boolean, violations: Violation[], kinds: ViolationKind[], lines: number, launches: number, refused: number }} */
@@ -134,6 +138,7 @@ export function createVerdict(policy) {
     if (top === null) add('trace', 'empty trace');
     else if (ended.get(top) !== '+++ exited with 0 +++') add('trace', `entry process ended with: ${ended.get(top) ?? 'no record'}`);
     for (const pid of seen) if (!ended.has(pid)) add('trace', `process ${pid} has no end record`);
+    if (pendingIo > 0) add('io_uring', 'io_uring_setup result not recorded');
     for (const problem of pending.values()) {
       launches++;
       if (problem) add('launch', `${problem} (result not recorded)`);
