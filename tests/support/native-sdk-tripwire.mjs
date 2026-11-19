@@ -9,12 +9,17 @@ export const NATIVE_SDK_PACKAGES = Object.freeze(['@anthropic-ai/claude-agent-sd
 
 const paths = NATIVE_SDK_PACKAGES.map((name) => `/node_modules/${name}/`);
 const write = writeSync;
+let tripped = false;
+const failClosed = () => { if (tripped) process.exitCode = 1; };
+process.on('beforeExit', failClosed);
+process.on('exit', failClosed);
 
 registerHooks({
   load(url, context, next) {
     const path = decodeURIComponent(url);
     const name = NATIVE_SDK_PACKAGES[paths.findIndex((prefix) => path.includes(prefix))];
     if (name === undefined) return next(url, context);
+    tripped = true;
     process.exitCode = 1;
     try { write(2, `native SDK tripwire: ${name} loaded outside npm run test:native-isolated\n`); } catch { /* the throw still fails the load */ }
     throw Object.assign(new Error(`native SDK tripwire refused ${name}`), { code: 'ERR_SWITCHBOARD_NATIVE_SDK_TRIPWIRE' });

@@ -85,7 +85,7 @@ async function stageLockedPackages(tree, names, lockPackages) {
     const dest = join(tree, 'node_modules', ...name.split('/'));
     if (existsSync(join(dest, 'package.json'))) continue;
     const entry = lockPackages[`node_modules/${name}`];
-    const response = await fetch(entry.resolved);
+    const response = await fetch(entry.resolved, { signal: AbortSignal.timeout(120_000) });
     assert(response.ok, `${name} download failed: HTTP ${response.status}`);
     const body = Buffer.from(await response.arrayBuffer());
     const digest = entry.integrity.split(' ').find((part) => part.startsWith('sha512-'))?.slice('sha512-'.length);
@@ -113,7 +113,7 @@ async function stageStrace(stage, machine) {
   const pin = STRACE_PACKAGES[machine];
   assert(pin, `no pinned strace for Docker architecture ${machine}`);
   const deb = join(stage, 'strace.deb');
-  const response = await fetch(`https://deb.debian.org/debian/pool/main/s/strace/strace_6.1-0.1_${pin.arch}.deb`);
+  const response = await fetch(`https://deb.debian.org/debian/pool/main/s/strace/strace_6.1-0.1_${pin.arch}.deb`, { signal: AbortSignal.timeout(120_000) });
   assert(response.ok, `strace download failed: HTTP ${response.status}`);
   writeFileSync(deb, Buffer.from(await response.arrayBuffer()));
   assert.equal(sha256(deb), pin.deb, 'strace package hash');
@@ -123,7 +123,7 @@ async function stageStrace(stage, machine) {
   assert.equal(sha256(join(stage, 'strace/usr/bin/strace')), pin.bin, 'strace executable hash');
   if (pin.unwind) {
     const unwindDeb = join(stage, pin.unwind.file);
-    const unwind = await fetch(`https://deb.debian.org/debian/pool/main/libu/libunwind/${pin.unwind.file}`);
+    const unwind = await fetch(`https://deb.debian.org/debian/pool/main/libu/libunwind/${pin.unwind.file}`, { signal: AbortSignal.timeout(120_000) });
     assert(unwind.ok, `libunwind download failed: HTTP ${unwind.status}`);
     writeFileSync(unwindDeb, Buffer.from(await unwind.arrayBuffer()));
     assert.equal(sha256(unwindDeb), pin.unwind.deb, 'libunwind package hash');
@@ -131,6 +131,20 @@ async function stageStrace(stage, machine) {
     for (const [file, hash] of Object.entries(pin.unwind.libs)) assert.equal(sha256(join(stage, 'strace', file)), hash, `${file} hash`);
   }
   assert.equal(spawnSync('chmod', ['-R', 'a+rX', join(stage, 'strace')]).status, 0, 'chmod strace failed');
+}
+
+/** nobody's home is the decoy directory. The image account list is otherwise unchanged. */
+function stagePasswd(stage) {
+  const text = docker(['run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--entrypoint', 'cat', IMAGE, '/etc/passwd']);
+  const rewritten = text.split('\n').map((line) => {
+    const fields = line.split(':');
+    if (fields[0] !== 'nobody' || fields.length < 7) return line;
+    fields[5] = HOME;
+    return fields.join(':');
+  }).join('\n');
+  const file = join(stage, 'passwd');
+  writeFileSync(file, `${rewritten}\n`);
+  chmodSync(file, 0o644);
 }
 
 /** Builds the mounted tree: the packed package and SDK closure under node_modules, the fixtures, the decoys. */
@@ -177,13 +191,15 @@ function confinedRun(stage, entry, machine) {
   const args = ['run', '--rm', '--name', name, '--pull', 'never', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges', '--user', '65534:65534', '--pids-limit', '512', '--memory', '2g',
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=512m',
+    '--tmpfs', '/dev/shm:ro,noexec,nosuid,nodev,size=65536k',
     '--mount', `type=bind,src=${stage.tree},dst=${STAGE},readonly`,
     '--mount', `type=bind,src=${stage.home},dst=${HOME},readonly`,
     '--mount', `type=bind,src=${join(stage.dir, 'strace')},dst=/opt/strace,readonly`,
+    '--mount', `type=bind,src=${join(stage.dir, 'passwd')},dst=/etc/passwd,readonly`,
     '--workdir', STAGE, '--entrypoint', '/usr/bin/env', IMAGE,
     ...environment,
     // The trace leaves on fd 3 (container stderr); the program's stdout and stderr both go to container stdout.
-    '/bin/sh', '-c', 'exec "$@" 3>&2 2>&1', 'sh',
+    '/bin/sh', '-c', 'unset PWD; exec "$@" 3>&2 2>&1', 'sh',
     ...strace,
     NODE, '--test-reporter=tap', `${STAGE}/${entry}`];
   const verdict = createVerdict({ decoy: DECOY, node: NODE, entry: `${STAGE}/${entry}`, scripts: SCRIPTS,
@@ -232,6 +248,7 @@ async function main() {
   const failures = [];
   try {
     await stageStrace(dir, machine);
+    stagePasswd(dir);
     const stage = { dir, ...await stageTree(dir, machine) };
     console.log(`isolated-native: ${machine}, ${stage.packed}, ${stage.packages} SDK closure packages, ${stage.fetched} container platform packages, ${DECOY_FILES.length} decoys, stage ${dir}`);
     for (const control of CONTROLS) {

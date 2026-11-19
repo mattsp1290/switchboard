@@ -64,6 +64,31 @@ test('a resumed io_uring_setup finished with a column-aligned EPERM denial is no
   assert.deepEqual(result.violations, []);
 });
 
+test('a resumed successful io_uring_setup is a violation', () => {
+  const result = judge(
+    '1 io_uring_setup(256, {flags=0 <unfinished ...>',
+    '1 <... io_uring_setup resumed>})    = 20<anon_inode:[io_uring]>');
+  assert.deepEqual(result.kinds, ['io_uring']);
+});
+
+test('a refused execve resume stays pending until a later success', () => {
+  const refused = judge(
+    '5 execve("/bin/sh", ["/bin/sh"], 0x6 /* 3 vars */ <unfinished ...>',
+    '5 <... execve resumed>) = -1 ENOENT (No such file or directory)',
+    '5 +++ exited with 0 +++');
+  assert.deepEqual(refused.violations, []);
+  assert.equal(refused.refused, 1);
+  assert.equal(refused.launches, 1);
+  const accepted = judge(
+    '5 execve("/bin/sh", ["/bin/sh"], 0x6 /* 3 vars */ <unfinished ...>',
+    '5 <... execve resumed>) = -1 ENOENT (No such file or directory)',
+    '5 <... execve resumed>) = 0',
+    '5 +++ exited with 0 +++');
+  assert.deepEqual(accepted.kinds, ['launch']);
+  assert.equal(accepted.refused, 1);
+  assert.equal(accepted.launches, 2);
+});
+
 test('an unfinished execve whose result is never recorded counts as a launch', () => {
   const result = judge('5 execve("/bin/sh", ["/bin/sh"], 0x6 /* 3 vars */ <unfinished ...>', '5 +++ exited with 0 +++');
   assert.deepEqual(result.kinds, ['launch']);

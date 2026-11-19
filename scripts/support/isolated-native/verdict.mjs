@@ -71,7 +71,7 @@ export function createVerdict(policy) {
   const seen = new Set();
   /** @type {Map<string, string>} */
   const ended = new Map();
-  /** @type {Map<string, string | null>} unfinished execve per pid: its problem, or null when allowed */
+  /** @type {Map<string, { problem: string | null, sawRefusal: boolean }>} unfinished execve per pid */
   const pending = new Map();
   const add = (kind, detail) => { if (violations.length < MAX_VIOLATIONS) violations.push({ kind, detail: detail.slice(0, 300) }); };
 
@@ -81,14 +81,16 @@ export function createVerdict(policy) {
     if (lines === 1 && (parsed.file !== policy.node || !parsed.argv.includes(policy.entry))) {
       add('trace', `first program is not the entry: ${body}`);
     }
+    if (lines === 1 && !rest.includes('/* 3 vars */')) add('trace', `entry environment is not three variables: ${body}`);
     const problem = launchProblem(policy, parsed.file, parsed.argv);
-    if (rest.endsWith('<unfinished ...>')) { pending.set(pid, problem); return; }
-    settle(problem, rest);
+    if (rest.endsWith('<unfinished ...>')) { pending.set(pid, { problem, sawRefusal: false }); return; }
+    if (settle({ problem, sawRefusal: false }, rest)) pending.delete(pid);
   };
-  const settle = (problem, rest) => {
-    if (refusedErrno(rest)) { refused++; return; }
+  const settle = (entry, rest) => {
+    if (refusedErrno(rest)) { refused++; entry.sawRefusal = true; return false; }
     launches++;
-    if (problem) add('launch', problem);
+    if (entry.problem) add('launch', entry.problem);
+    return true;
   };
 
   /** @param {string} text */
@@ -108,7 +110,7 @@ export function createVerdict(policy) {
         const thread = superseded[1];
         ended.set(thread, rest);
         seen.add(thread);
-        if (pending.has(thread)) { pending.set(pid, pending.get(thread) ?? null); pending.delete(thread); }
+        if (pending.has(thread)) { pending.set(pid, pending.get(thread)); pending.delete(thread); }
         return;
       }
       if (!/^\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+( \(core dumped\))?) \+\+\+$/.test(rest)) {
@@ -120,7 +122,7 @@ export function createVerdict(policy) {
     if (rest.startsWith('--- ') && rest.endsWith(' ---')) return;
     const resumed = RESUMED.exec(rest);
     if (resumed) {
-      if (resumed[1] === 'execve' && pending.has(pid)) { settle(pending.get(pid), rest); pending.delete(pid); }
+      if (resumed[1] === 'execve' && pending.has(pid) && settle(pending.get(pid), rest)) pending.delete(pid);
       if (resumed[1] === 'io_uring_setup') { if (pendingIo > 0) pendingIo--; if (!refusedErrno(rest)) add('io_uring', rest); }
       return;
     }
@@ -140,9 +142,10 @@ export function createVerdict(policy) {
     else if (ended.get(top) !== '+++ exited with 0 +++') add('trace', `entry process ended with: ${ended.get(top) ?? 'no record'}`);
     for (const pid of seen) if (!ended.has(pid)) add('trace', `process ${pid} has no end record`);
     if (pendingIo > 0) add('io_uring', 'io_uring_setup result not recorded');
-    for (const problem of pending.values()) {
+    for (const entry of pending.values()) {
+      if (entry.sawRefusal) continue;
       launches++;
-      if (problem) add('launch', `${problem} (result not recorded)`);
+      if (entry.problem) add('launch', `${entry.problem} (result not recorded)`);
     }
     pending.clear();
     const kinds = [...new Set(violations.map((violation) => violation.kind))].sort();
