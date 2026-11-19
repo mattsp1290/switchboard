@@ -498,11 +498,11 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (observation.kind === 'conclusive') {
           const value = observation.result;
           if (value.kind === 'model-failed') {
-          if (value.error.code === 'pending-limit') {
-            return { kind: 'failed', error: value.error, write: { kind: 'accepted', evidence: observation.evidence } };
+            const write = { kind: 'accepted' as const, evidence: observation.evidence };
+            return value.error.code === 'pending-limit'
+              ? { kind: 'failed', error: value.error, write }
+              : { kind: 'failed', error: value.error, write };
           }
-          return { kind: 'failed', error: value.error, write: { kind: 'accepted', evidence: observation.evidence } };
-        }
           return { ...value, session: sessionReference };
         }
         return { kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation };
