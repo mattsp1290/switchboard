@@ -71,6 +71,8 @@ try {
   assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
   assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/sdk.d.ts'), 'utf8'), /@anthropic-ai/);
   assert(!existsSync(join(consumer, 'node_modules/@openai/codex-sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/codex/index.d.ts'), 'utf8'), /@openai/);
   for (const name of ['pi-ai', 'pi-coding-agent']) assert(!existsSync(join(consumer, 'node_modules/@earendil-works', name)), 'Core consumer has no Pi SDK installed.');
