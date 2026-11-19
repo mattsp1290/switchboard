@@ -4,7 +4,7 @@ Switchboard is a Node-hosted TypeScript library for native agent interfaces and 
 This foundation contains one private ESM package, `@mattsp1290/switchboard@0.0.0`.
 Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
 The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output.
-The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go with `glm-5.3`.
+The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go. The caller supplies the model id. The provider remains OpenCode Go, and an id missing from the bundled offline catalog is rejected.
 Claude and Codex adapters remain unqualified. The Pi entry has local SDK tests and requires separate live provider qualification.
 The optional `./observability` entry records observed agent, model-request, and tool boundaries as OpenTelemetry GenAI spans.
 
@@ -96,6 +96,8 @@ process.stdout.write(answer);
 await runtime.close();
 ```
 
+The `model` field is required and is not filled by the library. `glm-5.3` in the example is an argument the caller supplied.
+
 Text events contain the complete assistant text so far. Replace the displayed text for each event.
 `prompt()` resolves after Pi reports that its run started and persists the native user message in its journal.
 This SDK admission lets hosts save the session reference before the first provider token. It does not wait for a provider acknowledgement.
@@ -148,7 +150,7 @@ Disposal and close never cancel native work. See [event delivery boundaries](doc
 
 ## ChatGPT subscription chat
 
-Install the optional peer `@openai/codex-sdk@0.169.0` and make Codex CLI 0.169.0 available on PATH. Sign in with ChatGPT using `codex login`. Import `createCodexRuntime` from `@mattsp1290/switchboard/codex`. Supply an absolute working directory and `model: 'gpt-6.1-sol'`. Supply an absolute `codexPathOverride` for another path to the pinned CLI or `codexHome` for a separate native account and history directory.
+Install the optional peer `@openai/codex-sdk@0.169.0` and make Codex CLI 0.169.0 available on PATH. Sign in with ChatGPT using `codex login`. Import `createCodexRuntime` from `@mattsp1290/switchboard/codex`. Supply an absolute working directory and a model id. `gpt-6.1-sol` is an example. Supply an absolute `codexPathOverride` for another path to the pinned CLI or `codexHome` for a separate native account and history directory.
 
 Call `await runtime.checkReady()` before opening the chat. Call `await runtime.start({ text, onEvent })` to submit a message. This resolves at the SDK's native turn-start event. Persist the returned `threadId` against the authorized conversation. To continue after a restart, pass that same ID and the new message to `runtime.start`. The SDK owns native history. Hosts own admission across processes and must never resubmit a prompt after an uncertain dispatch.
 
@@ -158,7 +160,20 @@ The child uses the existing ChatGPT login and official OpenAI provider endpoint.
 
 ### Claude text adapter
 
-`@mattsp1290/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. Create a runtime with an absolute working directory, an absolute private session directory, an Anthropic API key, and the `opus` or `sonnet` model alias. Call `checkReady()` to check local paths, then `start({ text, threadId?, onEvent })`. The returned turn exposes the native session ID, resolved model, a `finished` promise, and `abort()`. Call `close()` when the runtime is no longer needed.
+`@mattsp1290/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies a model id. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals that id. An alias the engine rewrites to a different string is a legal caller string and a failed turn.
+
+```js
+import { createClaudeRuntime } from '@mattsp1290/switchboard/claude';
+
+const claude = createClaudeRuntime({
+	cwd: '/work',
+	sessionDirectory: '/work/sessions',
+	apiKey: process.env.ANTHROPIC_API_KEY,
+	model: 'claude-haiku-4-5',
+});
+```
+
+Create a runtime with an absolute working directory, an absolute private session directory, an Anthropic API key, and that model id. Call `checkReady()` to check local paths, then `start({ text, threadId?, onEvent })`. The returned turn exposes the native session ID, resolved model, a `finished` promise, and `abort()`. Call `close()` when the runtime is no longer needed.
 
 Sessions use the native SDK's persisted session data inside the specified directory. Keep that directory private and retain it to resume a session. Resuming uses the exact native ID and never falls back to a new conversation. A turn is admitted only after a native response starts or an assistant response arrives. Initialization alone does not establish that the prompt was accepted. Admission times out after 30 seconds. Each runtime permits up to 32 simultaneous turns, and concurrent writes to the same session are rejected within the process. These limits do not coordinate separate operating-system processes. The adapter disables tools and configured settings, uses a private Claude configuration directory, and supplies only an explicit child environment. It does not impose an overall response deadline after admission.
 

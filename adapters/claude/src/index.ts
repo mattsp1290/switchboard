@@ -8,7 +8,7 @@ export interface ClaudeRuntimeOptions {
   readonly cwd: string;
   readonly sessionDirectory: string;
   readonly apiKey: string;
-  readonly model: 'opus' | 'sonnet';
+  readonly model: string;
   readonly claudePathOverride?: string;
 }
 export type ClaudeTerminal = { readonly kind: 'ended'; readonly outcome: 'completed' | 'failed' | 'interrupted' };
@@ -51,6 +51,15 @@ export interface ClaudeRuntime {
 }
 
 const failure = () => new Error('Claude operation failed.');
+// Matches plain(value, 256) and must stay identical in the three text adapters.
+function callerModelId(value: unknown): boolean {
+  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
+  }
+  return true;
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const writers = new Set<string>();
 const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
@@ -67,7 +76,7 @@ const remedies = {
 
 export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntime {
   if (!isAbsolute(options.cwd) || !isAbsolute(options.sessionDirectory) || !options.apiKey.trim()
-    || (options.model !== 'opus' && options.model !== 'sonnet')
+    || !callerModelId(options.model)
     || (options.claudePathOverride !== undefined && !isAbsolute(options.claudePathOverride))) throw failure();
   const cwd = resolve(options.cwd);
   const config = resolve(options.sessionDirectory);
@@ -191,7 +200,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
           if (message.type === 'system' && message.subtype === 'init') {
             if (session || !uuid.test(message.session_id) || (requested && message.session_id !== requested)
               || (!requested && writers.has(message.session_id)) || message.apiKeySource !== 'ANTHROPIC_API_KEY'
-              || !message.model.toLowerCase().includes(options.model) || message.tools.length || message.mcp_servers.length) throw failure();
+              || message.model !== options.model || message.tools.length || message.mcp_servers.length) throw failure();
             reserved = message.session_id;
             writers.add(reserved);
             session = { id: message.session_id, model: message.model };
@@ -200,7 +209,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
             const event = message.event;
             if (event.type === 'message_start') {
               if (!event.message.id || event.message.id.length > 512
-                || !event.message.model.toLowerCase().includes(options.model)) throw failure();
+                || event.message.model !== options.model) throw failure();
               session.model = event.message.model;
               streamId = event.message.id;
               streamed.add(streamId);
@@ -218,7 +227,7 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
             }
           } else if (message.type === 'assistant') {
             if (!session || message.session_id !== session.id || message.error || message.parent_tool_use_id !== null) throw failure();
-            if (!message.message.model.toLowerCase().includes(options.model)) throw failure();
+            if (message.message.model !== options.model) throw failure();
             if (!admitted) session.model = message.message.model;
             else if (session.model !== message.message.model) throw failure();
             admit();

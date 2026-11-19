@@ -20,8 +20,8 @@ async function fixture(t) {
   }
   await account();
   t.after(() => rm(dir, { recursive: true, force: true }));
-  function open() {
-    const runtime = createCodexRuntime({ cwd: dir, model: 'gpt-6.1-sol', codexHome: dir, codexPathOverride: executable });
+  function open(model = 'gpt-6.1-sol') {
+    const runtime = createCodexRuntime({ cwd: dir, model, codexHome: dir, codexPathOverride: executable });
     t.after(() => runtime.close());
     return runtime;
   }
@@ -30,7 +30,7 @@ async function fixture(t) {
 
 test('native SDK streams message snapshots and resumes with the same subscription and model after restart', async t => {
   const { dir, id, open } = await fixture(t);
-  const first = open();
+  const first = open('caller-selected-model');
   await first.checkReady();
   const out = [];
   const turn = await first.start({ text: 'one', onEvent: e => out.push(e) });
@@ -41,12 +41,12 @@ test('native SDK streams message snapshots and resumes with the same subscriptio
     { kind: 'text', itemId: 'item_0', text: 'first second' }, { kind: 'ended', outcome: 'completed' }]);
   await first.close();
 
-  const next = open();
+  const next = open('caller-selected-model');
   const continued = await next.start({ text: 'two', threadId: id, onEvent() {} });
   assert.equal((await continued.finished).outcome, 'completed');
   const { args, inherited } = JSON.parse(await readFile(join(dir, 'args.json'), 'utf8'));
   assert.equal(args[args.indexOf('resume') + 1], id);
-  assert.equal(args[args.indexOf('--model') + 1], 'gpt-6.1-sol');
+  assert.equal(args[args.indexOf('--model') + 1], 'caller-selected-model');
   for (const setting of ['forced_login_method="chatgpt"', 'model_provider="openai"', 'approval_policy="never"',
     'openai_base_url="https://chatgpt.com/backend-api/codex"', 'web_search="disabled"', 'features.shell_tool=false',
     'mcp_servers={"fixture.one"={enabled=false,command="switchboard-disabled-mcp"},"fixture.http"={enabled=false,url="http://127.0.0.1:9/disabled"}}']) assert(args.includes(setting), setting);
@@ -347,6 +347,25 @@ test('host cancellation and close report cancelled or closed checks and reap the
   assert.deepEqual([after.checked, after.facts.installation.state, after.remediation.code], [[], 'not_checked', 'runtime_closed']);
   await assert.rejects(closed.checkReady(), { message: 'Codex operation failed.' });
   assert.deepEqual(await calls(dir), []);
+});
+
+test('createCodexRuntime accepts a one-character and 256-character model id without a child', async t => {
+  const { dir } = await fixture(t);
+  for (const model of ['a', 'm'.repeat(256)]) {
+    const runtime = createCodexRuntime({ cwd: dir, model, codexHome: dir, codexPathOverride: executable });
+    t.after(() => runtime.close());
+  }
+  await assert.rejects(readFile(join(dir, 'args.json')), { code: 'ENOENT' });
+});
+
+test('createCodexRuntime rejects an illegal model id before a child', async t => {
+  const { dir } = await fixture(t);
+  const base = { cwd: dir, codexHome: dir, codexPathOverride: executable };
+  assert.throws(() => createCodexRuntime(base), /Codex operation failed/);
+  for (const model of [null, '', '   ', ' id', 'id ', 'x'.repeat(257), '\n', '\u0000', '\u007f', '\u009f', '\uD800', 1]) {
+    assert.throws(() => createCodexRuntime({ ...base, model }), /Codex operation failed/);
+  }
+  await assert.rejects(readFile(join(dir, 'args.json')), { code: 'ENOENT' });
 });
 
 test('invalid readiness options reject without spawning', async t => {

@@ -13,8 +13,8 @@ import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 const { terminalOutcome } = await import(new URL('terminal.js', import.meta.resolve('@mattsp1290/switchboard/pi')).href);
 
 const key = 'fixture-key-never-log';
-const frame = (content, finish_reason = null) => `data: ${JSON.stringify({
-  id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'glm-5.3',
+const frame = (content, finish_reason = null, model = 'glm-5.3') => `data: ${JSON.stringify({
+  id: 'fixture', object: 'chat.completion.chunk', created: 1, model,
   choices: [{ index: 0, delta: content === null ? {} : { role: 'assistant', content }, finish_reason }],
 })}\n\n`;
 
@@ -22,7 +22,9 @@ async function fixture(run) {
   const directory = await mkdtemp(join(tmpdir(), 'switchboard-pi-'));
   const requests = [];
   const runtimes = [];
-  let respond = () => new Response(frame('Hello') + frame(' world') + frame(null, 'stop') + 'data: [DONE]\n\n', {
+  let expectedModel = 'glm-5.3';
+  const sse = (content, finish_reason = null) => frame(content, finish_reason, expectedModel);
+  let respond = () => new Response(sse('Hello') + sse(' world') + sse(null, 'stop') + 'data: [DONE]\n\n', {
     headers: { 'content-type': 'text/event-stream' },
   });
   const original = globalThis.fetch;
@@ -31,18 +33,20 @@ async function fixture(run) {
     const headers = new Headers(init?.headers);
     assert.equal(headers.get('authorization'), `Bearer ${key}`);
     const body = JSON.parse(init.body);
-    assert.equal(body.model, 'glm-5.3');
+    assert.equal(body.model, expectedModel);
     assert.equal(body.tools?.length ?? 0, 0);
     requests.push(body);
     return respond(init);
   };
   const options = { cwd: directory, sessionDirectory: join(directory, 'sessions'), apiKey: key, provider: 'opencode-go', model: 'glm-5.3' };
   const runtime = async (extra = {}) => {
-    const value = await createPiRuntime({ ...options, ...extra });
+    const merged = { ...options, ...extra };
+    expectedModel = merged.model;
+    const value = await createPiRuntime(merged);
     runtimes.push(value);
     return value;
   };
-  try { await run({ directory, options, requests, runtime, respond: value => { respond = value; } }); }
+  try { await run({ directory, options, requests, runtime, sse, respond: value => { respond = value; } }); }
   finally {
     await Promise.all(runtimes.map(value => value.close()));
     globalThis.fetch = original;
@@ -140,11 +144,11 @@ test('resume rejects missing, empty, malformed, traversing and symlink session f
 });
 
 test('native admission resolves before the streamed answer and Stop drains ownership', { timeout: 10_000 }, async () => {
-  await fixture(async ({ runtime, respond }) => {
+  await fixture(async ({ runtime, respond, sse }) => {
     const requestStarted = Promise.withResolvers();
     respond(init => {
       let stream;
-      const body = new ReadableStream({ start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode(frame('partial'))); } });
+      const body = new ReadableStream({ start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode(sse('partial'))); } });
       init.signal.addEventListener('abort', () => stream.error(new DOMException('Aborted', 'AbortError')), { once: true });
       requestStarted.resolve();
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
@@ -202,15 +206,62 @@ test('provider errors become failed terminals without retries or credential text
   });
 });
 
-test('runtime closes sessions, enforces its limit and rejects unsupported configuration', { timeout: 10_000 }, async () => {
-  await fixture(async ({ runtime, options }) => {
-    await assert.rejects(createPiRuntime({ ...options, model: 'glm-5.3-flash' }), /Pi operation failed/);
+test('runtime closes sessions and enforces its limit', { timeout: 10_000 }, async () => {
+  await fixture(async ({ runtime }) => {
     const current = await runtime();
     const sessions = await Promise.all(Array.from({ length: 32 }, () => current.open()));
     await assert.rejects(current.open(), /limit/);
     await current.close();
     await assert.rejects(current.open(), /closed/);
     await assert.rejects(sessions[0].prompt('Closed', () => {}), /closed/);
+  });
+});
+
+test('glm-5.3-flash is forwarded as the provider request model', { timeout: 10_000 }, async () => {
+  await fixture(async ({ runtime, requests }) => {
+    const current = await runtime({ model: 'glm-5.3-flash' });
+    const session = await current.open();
+    await prompt(session);
+    assert.equal(requests.at(-1).model, 'glm-5.3-flash');
+  });
+});
+
+test('createPiRuntime rejects an illegal model id before a session directory or fetch', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, options, requests }) => {
+    const withoutModel = { ...options };
+    delete withoutModel.model;
+    const cases = [
+      withoutModel,
+      { ...options, model: null },
+      { ...options, model: '' },
+      { ...options, model: '   ' },
+      { ...options, model: ' id' },
+      { ...options, model: 'id ' },
+      { ...options, model: 'x'.repeat(257) },
+      { ...options, model: '\n' },
+      { ...options, model: '\u0000' },
+      { ...options, model: '\u007f' },
+      { ...options, model: '\u009f' },
+      { ...options, model: '\uD800' },
+      { ...options, model: 1 },
+    ];
+    for (const [index, input] of cases.entries()) {
+      const sessionDirectory = join(directory, `illegal-${index}`);
+      await assert.rejects(createPiRuntime({ ...input, sessionDirectory }), /Pi operation failed/);
+      await assert.rejects(access(sessionDirectory), { code: 'ENOENT' });
+    }
+    assert.equal(requests.length, 0);
+  });
+});
+
+test('catalog misses fail after the session directory exists and do not fetch', { timeout: 10_000 }, async () => {
+  await fixture(async ({ directory, options, requests }) => {
+    for (const model of ['a', 'm'.repeat(256), 'unsupported']) {
+      const sessionDirectory = join(directory, `catalog-${model.length}`);
+      await assert.rejects(createPiRuntime({ ...options, sessionDirectory, model }), /Pi operation failed/);
+      await access(sessionDirectory);
+    }
+    assert.equal(requests.length, 0);
   });
 });
 
