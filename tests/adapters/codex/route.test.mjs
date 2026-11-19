@@ -10,8 +10,8 @@ const target = new URL('adapters/codex/sessions.ts', src).href;
 // Broken controls: a routed requester that falls back to the native login instead of refusing it, and one that binds
 // without checking the multi-agent pins.
 const mutations = new Map([['native-fallback', ['if (run.route) {', 'if (run.route && account === null) {']],
-  ['unpinned', ['|| settings.features.multi_agent_v2 !== false) return false;', '|| settings.features.multi_agent_v2 !== false) {}']],
-  ['approvals', ["  if (settings.approval_policy !== 'never') return false;\n", '']]]);
+  ['unpinned', ['features?.multi_agent === false && features.multi_agent_v2 === false', 'true']],
+  ['approvals', ["settings.approval_policy === 'never'", 'true']]]);
 const hook = registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
     return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };

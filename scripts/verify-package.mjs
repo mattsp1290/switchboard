@@ -62,6 +62,7 @@ try {
     './testkit': { types: './dist/testkit/index.d.ts', import: './dist/testkit/index.js' },
     './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
     './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
+    './host/codex': { types: './dist/adapters/codex/index.d.ts', import: './dist/adapters/codex/index.js' },
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
     './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
     './host/pi': { types: './dist/host/pi/index.d.ts', import: './dist/host/pi/index.js' },

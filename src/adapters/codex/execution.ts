@@ -406,7 +406,6 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    * turn without `sandboxPolicy` runs on the thread's reported profile (codex-native-api.md, Proxy-routed requester).
    */
   const unconfined = (value: unknown, verb: string) => {
-    if (route?.kind === 'host-route') return undefined;
     if (route === undefined) return undefined;
     const sandbox = record(value) && record(value.sandbox) ? value.sandbox : undefined;
     if (!sandbox || !['readOnly', 'workspaceWrite'].includes(sandbox.type as string) || (sandbox.networkAccess ?? false) !== false) {

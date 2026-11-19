@@ -92,7 +92,8 @@ export type CodexInteractionEvent =
     readonly effect: ToolEffect; readonly evidence: CodexEvidence }
   /** The bridge lost its session observer (overflow): native withdrawals for this thread are no longer seen. */
   | { readonly kind: 'blind'; readonly threadId: string }
-  | { readonly kind: 'host-call'; readonly call: CodexHostCall };
+  | { readonly kind: 'host-call'; readonly call: CodexHostCall }
+  | { readonly kind: 'host-delivery'; readonly target: ToolTarget; readonly delivery: NativeDelivery };
 export type CodexReplyError = InteractionError
   | { readonly code: 'stale-interaction' | 'duplicate-interaction' | 'intent-failed' | 'aborted' }
   | { readonly code: 'unsupported'; readonly feature: 'tool' | 'delegation' };
@@ -210,17 +211,25 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   } catch { return fail({ code: 'invalid-input' }); }
   const hostTools = options.declaredTools !== undefined || userInput;
   type HostEntry = { readonly id: string; readonly threadId: string; readonly turnId: string; readonly requestId: IncomingCall['id'];
-    readonly callId: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost';
+    readonly callId: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost'; delivered: boolean;
     readonly finish: (reply: RpcReply) => void };
   const hostLive = new Map<string, HostEntry>();
-  const hostSettled = new Set<string>();
-  function rememberHost(id: string): void {
-    hostSettled.add(id);
-    for (const oldest of hostSettled) {
+  const hostSettled = new Map<string, HostEntry>();
+  function rememberHost(entry: HostEntry): void {
+    hostSettled.set(entry.id, entry);
+    for (const oldest of hostSettled.keys()) {
       if (hostSettled.size <= maxSettled) break;
       hostSettled.delete(oldest);
     }
   }
+  function deliverHost(entry: HostEntry): void {
+    if (entry.delivered) return;
+    entry.delivered = true;
+    publish({ kind: 'host-delivery', target: entry.call.pending.target, delivery: { kind: 'unknown' } });
+  }
+  const hostItem = (candidate: HostEntry, itemId: unknown, turnId: unknown) =>
+    (turnId === undefined || candidate.turnId === turnId)
+    && (typeof itemId === 'string' ? candidate.callId === itemId : Object.is(candidate.requestId, itemId));
   function hostReplyValue(entry: HostEntry, outcome: ToolOutcome): RpcReply | undefined {
     try {
       const extension = outcome.result.kind === 'ok' ? outcome.result.value : outcome.result.error;
@@ -240,7 +249,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (entry.state === 'replied' || entry.state === 'lost') return;
     entry.state = 'lost';
     hostLive.delete(entry.id);
-    rememberHost(entry.id);
+    rememberHost(entry);
     entry.finish(withdrawnReply);
   }
 
@@ -294,8 +303,9 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       if (host) loseHost(host);
     } else if (event.method === 'item/completed' && record(params.item)) {
       const { item } = params;
-      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && candidate.callId === item.id
-        && (params.turnId === undefined || candidate.turnId === params.turnId));
+      const host = [...hostLive.values()].find((candidate) => candidate.threadId === threadId && hostItem(candidate, item.id, params.turnId));
+      const answered = host ?? [...hostSettled.values()].find((candidate) => candidate.threadId === threadId && hostItem(candidate, item.id, params.turnId));
+      if (answered) deliverHost(answered);
       if (host) loseHost(host);
       const entry = entries().find((candidate) => candidate.itemId === item.id && candidate.turnId === params.turnId);
       if (!entry) return;
@@ -441,7 +451,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
-    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', finish };
+    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', delivered: false, finish };
     const onAbort = () => loseHost(entry);
     signal.addEventListener('abort', onAbort, { once: true });
     hostLive.set(id, entry);
@@ -475,7 +485,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (entry.state !== 'reserved') return fail({ code: 'stale-interaction' });
     entry.state = 'replied';
     hostLive.delete(entry.id);
-    rememberHost(entry.id);
+    rememberHost(entry);
     entry.finish(replyValue);
     return { kind: 'ok', value: Object.freeze({ nativeChoiceId: entry.id, delivery: unknown }) };
   }

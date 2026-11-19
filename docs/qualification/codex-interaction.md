@@ -41,7 +41,10 @@ Native fact (coordinator linux/arm64 run, 0.169.0, `untrusted`/`read-only`, no `
 | host-selected expiry | `settled{expired}`, `-32000`, delivery `unknown` | unqualified; N9 records the native reaction |
 | transport end (eof, deadline, overflow, process exit) while live | `settled{lost, not-sent, cause}`, `cause` the transport end reason, nothing written | transport; N5 |
 | `serverRequest/resolved` after a reply | `observed`; delivery stays `unknown` | unqualified; N1 records order (not pinned) |
-| tool or delegation continuation | `unsupported` | Codex has no delegation request; dynamic tools need the experimental API |
+| tool continuation when no tools were declared | `unsupported` | historical default; the host adapter declares tools and then answers `item/tool/call` |
+| declared `item/tool/call` | held as a tool `PendingInteraction`; the reply is `contentItems` from the host, never a fabricated result | host adapter; undeclared names stay `-32601` |
+| `item/tool/requestUserInput` when the host left it on | held as a tool pending named `request_user_input`; the reply is the host's `answers` object | host adapter; otherwise still `-32601` |
+| delegation continuation | `unsupported` | Codex has no delegation request |
 
 ## Native proof scenarios
 
