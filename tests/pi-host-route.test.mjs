@@ -1,19 +1,8 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
-
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const tsc = join(root, 'node_modules', 'typescript', 'bin', 'tsc');
-if (!existsSync(join(root, 'dist', 'index.js')) || !existsSync(join(root, 'dist', 'host', 'pi', 'route.js'))) {
-  execFileSync(process.execPath, [tsc, '-p', 'tsconfig.json'], { cwd: root, stdio: 'inherit' });
-  execFileSync(process.execPath, [tsc, '-p', 'adapters/pi-host/tsconfig.json'], { cwd: root, stdio: 'inherit' });
-}
-const { admitPiHostTransport } = await import('../dist/host/pi/route.js');
-const { isPiHostSystemEntry, validatePiHostSessionState } = await import('../dist/host/pi/contract.js');
+import { admitPiHostTransport } from '../dist/host/pi/route.js';
+import { isPiHostSystemEntry, validatePiHostSessionState } from '../dist/host/pi/contract.js';
 
 const scope = { engine: 'pi', account: 'account-a', adapterInstanceId: 'adapter-a', sessionId: 'session-a' };
 const signal = () => new AbortController().signal;
@@ -52,22 +41,39 @@ test('direct and LiteLLM routes are refused and subscription passthrough stays a
     route: { config: { kind: 'litellm', model: 'fixture/model', endpoint: 'http://127.0.0.1:9', protocol: 'responses',
       credentialPurpose: 'litellm-proxy', resolve: () => ({ token: 'proxy-token' }) }, scope },
   });
-  const subscription = admitPiHostTransport({
+  let resolved = false;
+  const refuse = (protocol) => admitPiHostTransport({
     stream: false, invocationId: 'open-1',
-    route: { config: hostRoute(() => ({ purpose: 'host-route', form: 'none' }), { protocol: 'subscription', credentialForm: 'none' }), scope },
+    route: { config: hostRoute(() => { resolved = true; return { purpose: 'host-route', form: 'none' }; }, { protocol, credentialForm: 'none' }), scope },
   });
+  const subscription = refuse('subscription');
+  const titled = refuse(' Subscription ');
+  const passthrough = refuse('PASSTHROUGH');
+  const responses = refuse('responses');
+  const spaced = refuse('switchboard-host ');
   assert.equal(direct.kind, 'error');
   assert.equal(proxy.kind, 'error');
+  assert.equal(resolved, false);
   assert.equal(subscription.error.message, 'Subscription passthrough is absent.');
+  assert.equal(titled.error.message, 'Subscription passthrough is absent.');
+  assert.equal(passthrough.error.message, 'Subscription passthrough is absent.');
+  assert.match(responses.error.message, /switchboard-host/);
+  assert.match(spaced.error.message, /switchboard-host/);
   assert.match(direct.error.message, /does not fall back/);
 });
 
 test('a host route rotates credentials, keeps headers, and redacts the token', async () => {
   const seen = [];
+  const bodies = [];
   const server = createServer((request, response) => {
-    seen.push(request.headers);
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ events: [{ kind: 'text', text: 'ok' }] }));
+    const chunks = [];
+    request.on('data', (chunk) => { chunks.push(chunk); });
+    request.on('end', () => {
+      bodies.push(Buffer.concat(chunks).toString('utf8'));
+      seen.push(request.headers);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ events: [{ kind: 'text', text: 'ok' }] }));
+    });
   });
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
   const { port } = server.address();
@@ -92,19 +98,54 @@ test('a host route rotates credentials, keeps headers, and redacts the token', a
   assert.equal(seen[0]['x-crew'], 'one');
   assert.equal(seen[0]['x-account'], 'acct');
   assert.notEqual(seen[2].authorization, seen[3].authorization);
-  const thrown = admitPiHostTransport({
+  const leaked = 'route-token-leaked-value';
+  const stale = admitPiHostTransport({
     stream: false, invocationId: 'open-2',
-    route: { config: hostRoute(() => ({ purpose: 'host-route', form: 'bearer', token: 'route-token-leaked' }),
+    route: { config: hostRoute(() => ({ purpose: 'host-route', form: 'bearer', token: leaked, headers: { 'Content-Type': 'text/plain' } }),
+      { endpoint: `http://127.0.0.1:${port}`, headers: { Authorization: 'Bearer stale-token' } }), scope },
+  });
+  assert.equal(stale.kind, 'ok');
+  const replaced = await stale.value.request(body, signal());
+  assert.equal(replaced.kind, 'ok');
+  assert.equal(seen.at(-1).authorization, `Bearer ${leaked}`);
+  assert.equal(seen.at(-1).authorization.includes('stale-token'), false);
+  assert.equal(seen.at(-1)['content-type'], 'application/json');
+  assert.equal(bodies.at(-1).includes(leaked), false);
+  assert.equal(bodies.at(-1).includes('stale-token'), false);
+  const beforePlain = seen.length;
+  server.removeAllListeners('request');
+  server.on('request', (request, response) => {
+    seen.push(request.headers);
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.end(leaked);
+  });
+  const unreadable = await stale.value.request(body, signal());
+  assert.equal(unreadable.kind, 'error');
+  assert.equal(unreadable.error.message, 'The host route request failed.');
+  assert.equal(unreadable.error.message.includes(leaked.slice(0, 10)), false);
+  server.removeAllListeners('request');
+  const headerSecret = 'shortsec';
+  server.on('request', (request, response) => {
+    seen.push(request.headers);
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.end(headerSecret);
+  });
+  const shortSecret = admitPiHostTransport({
+    stream: false, invocationId: 'open-3',
+    route: { config: hostRoute(() => ({ purpose: 'host-route', form: 'bearer', token: 'rotated-token', headers: { 'x-account': headerSecret } }),
       { endpoint: `http://127.0.0.1:${port}` }), scope },
   });
-  const original = globalThis.fetch;
-  globalThis.fetch = async () => { throw new Error('socket failed for route-token-leaked'); };
-  try {
-    const redacted = await thrown.value.request(body, signal());
-    assert.equal(redacted.error.message.includes('route-token-leaked'), false);
-    assert.match(redacted.error.message, /\[redacted\]/);
-  } finally {
-    globalThis.fetch = original;
-    await new Promise((resolve) => { server.close(resolve); });
-  }
+  const shortBody = await shortSecret.value.request(body, signal());
+  assert.equal(shortBody.error.message, 'The host route request failed.');
+  assert.equal(shortBody.error.message.includes(headerSecret), false);
+  const anonymous = admitPiHostTransport({
+    stream: false, invocationId: 'open-4',
+    route: { config: hostRoute(() => ({ purpose: 'host-route', form: 'none' }), {
+      endpoint: `http://127.0.0.1:${port}`, credentialForm: 'none', headers: { Authorization: 'Bearer leftover' },
+    }), scope },
+  });
+  const blocked = await anonymous.value.request(body, signal());
+  assert.equal(blocked.error.code, 'invalid-input');
+  assert.equal(seen.length, beforePlain + 2);
+  await new Promise((resolve) => { server.close(resolve); });
 });

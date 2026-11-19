@@ -25,26 +25,30 @@ export type PiHostTransport =
 const refused = (message: string): { readonly kind: 'error'; readonly error: HostAdapterError } =>
   ({ kind: 'error', error: { code: 'invalid-input', message } });
 
-function scrub(message: string, secrets: readonly string[]): string {
-  let text = message;
-  for (const secret of secrets) {
-    if (secret.length >= 8) text = text.split(secret).join('[redacted]');
-  }
-  return text;
+function fold(source: Readonly<Record<string, string>> | undefined, into: Map<string, string>): void {
+  if (!source) return;
+  for (const [name, value] of Object.entries(source)) into.set(name.toLowerCase(), value);
 }
 
-function copyEvents(value: unknown): readonly PiHostModelEvent[] | undefined {
+function leaked(value: string, secrets: readonly string[]): boolean {
+  return secrets.some((secret) => secret.length > 0 && value.includes(secret));
+}
+
+function copyEvents(value: unknown, secrets: readonly string[]): readonly PiHostModelEvent[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const events: PiHostModelEvent[] = [];
   for (const event of value) {
     if (typeof event !== 'object' || event === null) return undefined;
     const record = event as Record<string, unknown>;
-    if (record.kind === 'text' && typeof record.text === 'string') events.push({ kind: 'text', text: record.text });
-    else if (record.kind === 'usage' && typeof record.input === 'number' && typeof record.output === 'number'
+    if (record.kind === 'text' && typeof record.text === 'string') {
+      if (leaked(record.text, secrets)) return undefined;
+      events.push({ kind: 'text', text: record.text });
+    } else if (record.kind === 'usage' && typeof record.input === 'number' && typeof record.output === 'number'
       && Number.isFinite(record.input) && Number.isFinite(record.output)) {
       events.push({ kind: 'usage', input: record.input, output: record.output });
     } else if (record.kind === 'tool-call' && typeof record.id === 'string' && typeof record.name === 'string'
       && Object.hasOwn(record, 'arguments')) {
+      if (leaked(record.id, secrets) || leaked(record.name, secrets) || leaked(JSON.stringify(record.arguments), secrets)) return undefined;
       events.push({ kind: 'tool-call', id: record.id, name: record.name, arguments: record.arguments });
     } else return undefined;
   }
@@ -70,9 +74,10 @@ export function admitPiHostTransport(options: {
     return refused('The Pi host adapter does not fall back to a direct provider or a LiteLLM proxy.');
   }
   if (route.config.kind !== 'host-route') return refused('The Pi host adapter admits only a host-declared route.');
-  if (route.config.protocol === 'subscription' || route.config.protocol === 'passthrough') {
-    return refused('Subscription passthrough is absent.');
-  }
+  const rawProtocol = route.config.protocol;
+  const protocol = rawProtocol.trim().toLowerCase();
+  if (protocol === 'subscription' || protocol === 'passthrough') return refused('Subscription passthrough is absent.');
+  if (rawProtocol !== 'switchboard-host') return refused('The Pi host adapter admits only the switchboard-host protocol.');
   const prepared = createAuthContext({ config: route.config, scope: route.scope });
   if (prepared.kind === 'error') return refused('The host route configuration was rejected.');
   const auth = prepared.value;
@@ -97,28 +102,33 @@ export function admitPiHostTransport(options: {
       }
       const material: HostRouteCredential = resolved.value.material;
       const endpoint = resolved.value.endpoint;
-      const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' };
-      const base = resolved.value.headers;
-      if (base) Object.assign(headers, base);
+      const headerMap = new Map<string, string>();
+      fold(resolved.value.headers, headerMap);
       const secrets: string[] = [];
       if (material.form === 'bearer') {
-        if (material.headers) Object.assign(headers, material.headers);
-        headers.authorization = `Bearer ${material.token}`;
-        secrets.push(material.token);
+        fold(material.headers, headerMap);
+        headerMap.set('authorization', `Bearer ${material.token}`);
+        secrets.push(material.token, ...Object.values(material.headers ?? {}));
+      } else if (headerMap.has('authorization') || headerMap.has('proxy-authorization') || headerMap.has('cookie')) {
+        return { kind: 'error', error: { code: 'invalid-input', message: 'A host route without a bearer token cannot carry an authorization header.' } };
       }
+      headerMap.set('content-type', 'application/json');
+      headerMap.set('accept', 'application/json');
       try {
         const response = await fetch(endpoint, {
-          method: 'POST', redirect: 'error', headers, body: JSON.stringify(body), signal,
+          method: 'POST', redirect: 'error', headers: Object.fromEntries(headerMap), body: JSON.stringify(body), signal,
         });
-        if (!response.ok) return { kind: 'error', error: { code: 'native-failure', message: `The host route returned ${response.status}.` } };
+        if (!response.ok) {
+          await response.body?.cancel();
+          return { kind: 'error', error: { code: 'native-failure', message: `The host route returned ${response.status}.` } };
+        }
         const payload: unknown = await response.json();
-        const events = typeof payload === 'object' && payload !== null ? copyEvents((payload as { events?: unknown }).events) : undefined;
+        const events = typeof payload === 'object' && payload !== null ? copyEvents((payload as { events?: unknown }).events, secrets) : undefined;
         if (events === undefined) return { kind: 'error', error: { code: 'native-failure', message: 'The host route returned an unreadable response.' } };
         return { kind: 'ok', events };
-      } catch (error) {
-        const message = scrub(error instanceof Error ? error.message : 'The host route request failed.', secrets);
+      } catch {
         if (signal.aborted) return { kind: 'error', error: { code: 'native-failure', message: 'The host route was aborted.' } };
-        return { kind: 'error', error: { code: 'native-failure', message } };
+        return { kind: 'error', error: { code: 'native-failure', message: 'The host route request failed.' } };
       }
     },
   } };
