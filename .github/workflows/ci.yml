@@ -61,7 +61,27 @@ jobs:
       - name: Install and verify
         run: >-
           npx --yes --package=node@24.22.3 --package=npm@11.19.1
-          -c 'npm ci && npm run lint && npm run check && npm test && npm run test:codex-guarded && npm run verify:agui && npm run verify:compiler'
+          -c 'npm ci && npm run lint && npm run check && npm test && npm run verify:package && npm run test:codex-guarded && npm run verify:agui && npm run verify:compiler'
+
+  native-isolated:
+    name: Linux isolated native SDK imports
+    runs-on: ubuntu-24.04
+    # The gate ran in 85s on Docker Desktop arm64, build and staging included; 15 covers install, pull and x64.
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.22.3
+          cache: npm
+      - name: Install and run the isolated-import gate
+        run: >-
+          npx --yes --package=node@24.22.3 --package=npm@11.19.1
+          -c 'npm ci && npm run test:native-isolated'
 
   codex-native:
     name: Linux native Codex fixtures

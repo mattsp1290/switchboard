@@ -226,52 +226,58 @@ void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedR
   assert(!/\/@(?:openai|anthropic-ai|earendil-works)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'readiness-types.json'], consumer);
 
-  const piConsumer = join(temporary, 'pi');
-  mkdirSync(piConsumer);
-  writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  process.stdout.write(runNpm([
-    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-    `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
-    `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
-  ], piConsumer));
-  writeFileSync(join(piConsumer, 'runtime.mjs'), `
-import assert from 'node:assert/strict';
-const pi = await import('${manifest.name}/pi');
-assert.equal(typeof pi.createPiRuntime, 'function');
-globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
-const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
-await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
-const runtime = await pi.createPiRuntime(options);
-try {
-  const session = await runtime.open();
-  assert.equal(typeof session.id, 'string');
-  assert.match(session.sessionFile, /\\.jsonl$/);
-} finally { await runtime.close(); }
-`);
-  run(process.execPath, ['runtime.mjs'], piConsumer);
+  // These two consumers execute the packed adapters, which load the Pi and Codex SDKs.
+  // The ordinary test preloads the tripwire and must not. `npm run verify:package` does not, and runs them.
+  if (process.execArgv.some((arg) => arg.includes('native-sdk-tripwire'))) {
+    console.log('Skipping packaged Pi and Codex runtime consumers while the native SDK tripwire is loaded.');
+  } else {
+    const piConsumer = join(temporary, 'pi');
+    mkdirSync(piConsumer);
+    writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    process.stdout.write(runNpm([
+      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+      `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
+      `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
+    ], piConsumer));
+    writeFileSync(join(piConsumer, 'runtime.mjs'), `
+  import assert from 'node:assert/strict';
+  const pi = await import('${manifest.name}/pi');
+  assert.equal(typeof pi.createPiRuntime, 'function');
+  globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
+  const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+  await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
+  const runtime = await pi.createPiRuntime(options);
+  try {
+    const session = await runtime.open();
+    assert.equal(typeof session.id, 'string');
+    assert.match(session.sessionFile, /\\.jsonl$/);
+  } finally { await runtime.close(); }
+  `);
+    run(process.execPath, ['runtime.mjs'], piConsumer);
 
-  const codexConsumer = join(temporary, 'codex');
-  mkdirSync(codexConsumer);
-  writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  process.stdout.write(runNpm([
-    'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-    `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
-  ], codexConsumer));
-  const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
-  writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
-  writeFileSync(join(codexConsumer, 'runtime.mjs'), `
-import { strict as assert } from 'node:assert';
-import { createCodexRuntime } from '${manifest.name}/codex';
-const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
-  codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
-try {
-  assert.equal((await runtime.readinessReport()).verdict, 'ready');
-  const turn = await runtime.start({ text: 'packaged', onEvent() {} });
-  assert.equal(turn.threadId, '${fixtureId}');
-  assert.equal((await turn.finished).outcome, 'completed');
-} finally { await runtime.close(); }
-`);
-  run(process.execPath, ['runtime.mjs'], codexConsumer);
+    const codexConsumer = join(temporary, 'codex');
+    mkdirSync(codexConsumer);
+    writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    process.stdout.write(runNpm([
+      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
+      `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
+    ], codexConsumer));
+    const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
+    writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
+    writeFileSync(join(codexConsumer, 'runtime.mjs'), `
+  import { strict as assert } from 'node:assert';
+  import { createCodexRuntime } from '${manifest.name}/codex';
+  const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
+    codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
+  try {
+    assert.equal((await runtime.readinessReport()).verdict, 'ready');
+    const turn = await runtime.start({ text: 'packaged', onEvent() {} });
+    assert.equal(turn.threadId, '${fixtureId}');
+    assert.equal((await turn.finished).outcome, 'completed');
+  } finally { await runtime.close(); }
+  `);
+    run(process.execPath, ['runtime.mjs'], codexConsumer);
+  }
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });
