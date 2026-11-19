@@ -116,21 +116,29 @@ function plainText(value: unknown, limit: number): value is string {
   return true;
 }
 
+const stateKeys = new Set(['formatVersion', 'sessionId', 'turns']);
+const turnKeys = new Set(['segment', 'role', 'text', 'toolCallId', 'name', 'pending', 'toolCalls']);
+const callKeys = new Set(['id', 'name', 'arguments']);
+
+function knownKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
 export function validatePiHostSessionState(value: unknown): value is PiHostSessionState {
-  if (!record(value) || value.formatVersion !== 1 || !plainText(value.sessionId, 1024)
+  if (!record(value) || !knownKeys(value, stateKeys) || value.formatVersion !== 1 || !plainText(value.sessionId, 1024)
     || !Array.isArray(value.turns) || value.turns.length > piHostLimits.maxTurns) return false;
   for (const turn of value.turns) {
-    if (!record(turn) || typeof turn.segment !== 'number' || !Number.isSafeInteger(turn.segment) || turn.segment < 1
+    if (!record(turn) || !knownKeys(turn, turnKeys) || typeof turn.segment !== 'number' || !Number.isSafeInteger(turn.segment) || turn.segment < 1
       || (turn.role !== 'system' && turn.role !== 'user' && turn.role !== 'assistant' && turn.role !== 'tool')
       || typeof turn.text !== 'string' || turn.text.length > piHostLimits.maxText) return false;
     if (turn.toolCallId !== undefined && !plainText(turn.toolCallId, 1024)) return false;
     if (turn.name !== undefined && !plainText(turn.name, 256)) return false;
     if (turn.pending !== undefined && typeof turn.pending !== 'boolean') return false;
     if (turn.toolCalls !== undefined) {
-      if (!Array.isArray(turn.toolCalls)) return false;
+      if (!Array.isArray(turn.toolCalls) || turn.toolCalls.length > piHostLimits.maxPendingPerMessage) return false;
       for (const call of turn.toolCalls) {
-        if (!record(call) || !plainText(call.id, 1024) || !plainText(call.name, 256)
-          || !Object.hasOwn(call, 'arguments')) return false;
+        if (!record(call) || !knownKeys(call, callKeys) || !plainText(call.id, 1024) || !plainText(call.name, 256)
+          || !record(call.arguments)) return false;
       }
     }
   }
