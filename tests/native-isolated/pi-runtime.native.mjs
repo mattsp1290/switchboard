@@ -2,23 +2,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { registerHooks } from 'node:module';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
-import { terminalOutcome } from '../../../adapters/pi/src/terminal.ts';
-import { assertCoherentReport } from '../readiness-oracle.mjs';
+import { createPiRuntime } from '@mattsp1290/switchboard/pi';
+import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
-const source = new URL('../../../adapters/pi/src/index.ts', import.meta.url).href;
-const hook = registerHooks({ resolve(specifier, context, next) {
-  if (context.parentURL === source && specifier === './terminal.js') {
-    return { url: new URL('../../../adapters/pi/src/terminal.ts', import.meta.url).href, shortCircuit: true };
-  }
-  return next(specifier, context);
-} });
-const { createPiRuntime } = await import(source);
-hook.deregister();
+// The terminal mapping is internal to the packed entry, so it is loaded by file URL past the exports map.
+const { terminalOutcome } = await import(new URL('terminal.js', import.meta.resolve('@mattsp1290/switchboard/pi')).href);
 
 const key = 'fixture-key-never-log';
 const frame = (content, finish_reason = null) => `data: ${JSON.stringify({
