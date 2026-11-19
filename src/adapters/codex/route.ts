@@ -237,6 +237,14 @@ export interface CodexProcessConfig {
   /** `-c key=<JSON>` pairs the host appends to `codex app-server` (JSON scalars and string arrays are TOML values). */
   readonly args: readonly string[];
 }
+/** Provider wire keys only. Sandbox, approval, and multi-agent pins are not this function's to set. */
+export function responsesProviderWire(providerId: string, endpoint: string, model: string, name: string):
+Record<string, CodexProxyValue> {
+  const at = `model_providers.${providerId}`;
+  return { model_provider: providerId, model, [`${at}.name`]: name, [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
+    [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
+    [`${at}.requires_openai_auth`]: false };
+}
 export function processConfig(overrides: Record<string, CodexProxyValue>): CodexProcessConfig {
   return Object.freeze({ overrides: Object.freeze(overrides),
     args: Object.freeze(Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`])) });
@@ -247,13 +255,11 @@ export function processConfig(overrides: Record<string, CodexProxyValue>): Codex
  * secret: `env_key` and `env_http_headers` name variables the host put in the process environment. The helper form
  * sets that command and still refuses headers. Sandbox, approvals, and multi-agent are not pinned here.
  */
-export function codexHostRouteConfig(route: CodexHostRoute): { readonly config: CodexProcessConfig } | { readonly problem: string } {
+export function codexHostRouteConfig(route: CodexHostRoute): CodexProcessConfig {
   const { providerId, endpoint, model, sqliteHome, logDir } = route;
   const at = `model_providers.${providerId}`;
-  const overrides: Record<string, CodexProxyValue> = { model_provider: providerId, model,
-    [`${at}.name`]: 'Host', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
-    [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
-    [`${at}.requires_openai_auth`]: false, sqlite_home: sqliteHome, log_dir: logDir };
+  const overrides: Record<string, CodexProxyValue> = { ...responsesProviderWire(providerId, endpoint, model, 'Host'),
+    sqlite_home: sqliteHome, log_dir: logDir };
   switch (route.credentialForm) {
     case 'bearer':
       overrides[`${at}.env_key`] = route.envKey;
@@ -269,8 +275,8 @@ export function codexHostRouteConfig(route: CodexHostRoute): { readonly config: 
       break;
     default: {
       const leftover: never = route;
-      return { problem: `host route credential form is ${String(leftover)}` };
+      throw new Error(`host route credential form is ${String(leftover)}`);
     }
   }
-  return { config: processConfig(overrides) };
+  return processConfig(overrides);
 }

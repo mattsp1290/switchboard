@@ -102,15 +102,12 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'proxy route native sends none: approvals are pinned off (approvals-under-route).'),
   'approval-policy': supported('typed-unqualified', everyTarget(['approvalPolicy', 'approvalsReviewer']),
     `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission `
-    + 'journeys are unqualified. Under a proxy route only "never" is accepted and an absent approvalPolicy is sent as "never" (approvals-under-route). '
-    + 'A host route does not take that pin: refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds.'),
+    + 'journeys are unqualified. Under a proxy route only "never" is accepted and an absent approvalPolicy is sent as "never" (approvals-under-route).'),
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
     `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
-    + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network. '
-    + 'A host route does not take that pin: refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds.'),
+    + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network.'),
   'model': supported('typed-unqualified', everyTarget(['model'], ['model'], ['model', 'effort']),
-    'Selects a native model name only. Under a LiteLLM proxy route only route.model is accepted (execution.ts routeOverride); others are invalid-input, unsent. '
-    + 'A host route does not take that pin: refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds.'),
+    'Selects a native model name only. Under a LiteLLM proxy route only route.model is accepted (execution.ts routeOverride); others are invalid-input, unsent.'),
   'cwd': supported('typed-unqualified', everyTarget(['cwd']), 'Absolute paths only.'),
   'dynamic-tools': supported('typed-unqualified', { 'thread/start': ['dynamicTools'] },
     `Experimental thread/start.dynamicTools; requires ${gate}. The host adapter sends the host's declarations here and `
@@ -122,27 +119,28 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'LiteLLM route). The route fixes the model: another model or collaborationMode is invalid-input, unsent. A thread that '
     + 'starts or resumes on another model is native-failure: resume it with params.model = route.model. Routed config '
     + 'disables multi-agent (multi-agent-under-route), networked shells (networked-shell-under-route) and approvals '
-    + '(approvals-under-route). Live LiteLLM qualification is owned by switchboard-ov4y. A host route does not take the model, '
-    + 'multi-agent, sandbox, or approval pins. refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds. '
-    + 'A host route\'s multi-agent feature args live in index.ts and are not codexProxyConfig or proxyConfined.'),
+    + '(approvals-under-route). Live LiteLLM qualification is owned by switchboard-ov4y.'),
+  'host-route': supported('typed-unqualified', { options: ['route'], 'app-server': ['codexHostRouteConfig'],
+    'thread/start': ['modelProvider', 'config'] },
+    'Host provider route. refuseHostRedirect refuses only modelProvider and config. '
+    + 'Model, sandbox, and approvals are not pinned in codexHostRouteConfig. '
+    + 'Multi-agent feature args live in index.ts. unconfined rejects an unconfined reply for both route kinds. '
+    + 'Off-model failure is litellm-proxy only.'),
   'multi-agent-under-route': unavailable('Under a proxy route, codexProxyConfig sets features.multi_agent and '
     + 'features.multi_agent_v2 to false: a sub-agent spawn_agent model argument would send requests on a model the model '
     + 'chose, bypassing the route model. The host cannot re-enable it: routed thread config is refused. Direct mode keeps '
-    + 'native multi-agent. A host route does not take that pin. Its multi-agent feature args live in index.ts and are not '
-    + 'codexProxyConfig or proxyConfined. refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds.'),
+    + 'native multi-agent.'),
   'networked-shell-under-route': unavailable('Under a proxy route, a shell with network could run the credential helper '
     + 'against the broker socket for a fresh route token and send requests on any model. Always refused, with no opt-in: '
     + 'sandbox danger-full-access, a sandboxPolicy other than readOnly or workspaceWrite without networkAccess, and any '
     + 'permissions profile are invalid-input, unsent; codexProxyConfig pins sandbox_mode read-only with '
-    + 'network_access false, and approvals are off (approvals-under-route). A host route does not take that pin: '
-    + 'refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds.'),
+    + 'network_access false, and approvals are off (approvals-under-route).'),
   'approvals-under-route': unavailable('Under a proxy route, an approved escalated command (exec_command sandbox_permissions '
     + 'require_escalated) runs outside the sandbox, where it could run the credential helper for a fresh route token and '
     + 'send requests on any model. Always off, with no opt-in: codexProxyConfig pins approval_policy never, the bind '
     + 'requires config/read to report it, an approvalPolicy other than "never" is invalid-input, unsent, and an absent '
     + 'one is sent as "never" since a resumed thread keeps its persisted policy. Native rejects the escalation without '
-    + 'asking the host or any approvalsReviewer, which is therefore accepted unchanged. A host route does not take that pin: '
-    + 'refuseHostRedirect refuses only modelProvider and config. unconfined still rejects an unconfined reply for both kinds.'),
+    + 'asking the host or any approvalsReviewer, which is therefore accepted unchanged.'),
   'config-overrides': supported('passthrough-unqualified', { 'thread/start': ['config'], 'thread/resume': ['config'] },
     'Native config overrides, including MCP servers and features, pass through unchanged in direct mode. A proxy route '
     + 'and a host route refuse config and modelProvider as invalid-input, unsent, on thread/start, thread/resume and '

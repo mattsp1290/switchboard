@@ -23,7 +23,7 @@ import { checkCodexHostRoute, checkCodexRoute, codexHostRouteConfig } from './ro
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
 import { bindCodexRequester } from './sessions.js';
 import { openCodexTransport } from './transport.js';
-import type { BorrowedChannel, TransportBounds } from './transport.js';
+import type { BorrowedChannel, CodexTransport, TransportBounds } from './transport.js';
 
 /** Pinned app-server this adapter was proved against. */
 export const CODEX_HOST_NATIVE_VERSION = '0.169.0';
@@ -190,19 +190,7 @@ type PreparedRoute =
   | { readonly kind: 'litellm-proxy'; readonly route: CodexProxyRoute; readonly args: readonly string[] }
   | { readonly kind: 'host-route'; readonly route: CodexHostRoute; readonly args: readonly string[] };
 function withFeatureArgs(prepared: PreparedRoute, extra: readonly string[]): PreparedRoute {
-  const args = [...prepared.args, ...extra];
-  switch (prepared.kind) {
-    case 'direct':
-      return { kind: 'direct', args };
-    case 'litellm-proxy':
-      return { kind: 'litellm-proxy', route: prepared.route, args };
-    case 'host-route':
-      return { kind: 'host-route', route: prepared.route, args };
-    default: {
-      const leftover: never = prepared;
-      return leftover;
-    }
-  }
+  return { ...prepared, args: [...prepared.args, ...extra] };
 }
 function threadFeatures(prepared: PreparedRoute, config: CodexHostNativeConfig,
   openOptions: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>) {
@@ -252,8 +240,7 @@ function prepareRoute(config: AuthConfiguration<unknown>, scope: AuthScope, nati
       if ('problem' in checked) return { problem: checked.problem };
       const built = checked.route;
       const configured = codexHostRouteConfig(built);
-      if ('problem' in configured) return configured;
-      return { route: { kind: 'host-route', route: built, args: configured.config.args } };
+      return { route: { kind: 'host-route', route: built, args: configured.args } };
     }
     default: {
       const leftover: never = config;
@@ -360,7 +347,7 @@ async function releaseSpawned(channel: BorrowedChannel, bounds: TransportBounds)
   } catch { /* the child is already unreachable when the transport cannot attach */ }
 }
 
-async function pinnedFeatures(request: (call: { method: string; params?: unknown }, signal: AbortSignal) => Promise<{ kind: string; envelope?: { reply?: { kind: string; value?: unknown } } }>,
+async function pinnedFeatures(request: CodexTransport['request'],
   enabled: ReadonlySet<string>, signal: AbortSignal, kind: PreparedRoute['kind'], pinMultiAgent: boolean): Promise<string | undefined> {
   const exchange = await request({ method: 'config/read', params: { includeLayers: false } }, signal);
   const reply = exchange.kind === 'reply' ? exchange.envelope?.reply : undefined;
@@ -472,36 +459,8 @@ async function openAdapter(ready: {
     const current = segment;
     const active = session;
     if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
-    const choice = await new Promise<SettleChoice>((resolve) => {
-      let quietTimer: ReturnType<typeof setTimeout> | undefined;
-      let done = false;
-      let dispose = () => {};
-      const finish = (quiet: boolean) => {
-        if (done) return;
-        done = true;
-        clearTimeout(quietTimer);
-        hostSignal.removeEventListener('abort', onAbort);
-        dispose();
-        resolve(decideSettle({ aborted: hostSignal.aborted, pending: bridge.hostCalls().length,
-          completion: turnResult !== undefined, quiet, capacityRefused }));
-      };
-      const onAbort = () => finish(false);
-      const arm = () => {
-        clearTimeout(quietTimer);
-        quietTimer = setTimeout(() => finish(true), hostCallQuietMs);
-      };
-      const subscribed = bridge.events.subscribe((event) => {
-        if (event.kind === 'host-call') arm();
-        else if (event.kind === 'refused' && event.reason === 'capacity') finish(false);
-      });
-      if (subscribed.kind === 'ok') dispose = () => subscribed.value.dispose();
-      if (turnResult !== undefined || capacityRefused || hostSignal.aborted || subscribed.kind === 'error') finish(false);
-      else {
-        if (turnCompletion) void turnCompletion.then(() => finish(false));
-        if (bridge.hostCalls().length > 0) arm();
-        hostSignal.addEventListener('abort', onAbort, { once: true });
-      }
-    });
+    const choice = await collectSettleChoice({ signal: hostSignal, bridge, turnDone: turnCompletion,
+      turnFinished: () => turnResult !== undefined, capacityRefused: () => capacityRefused });
     const pending = bridge.hostCalls();
     switch (choice) {
       case 'limit':
@@ -668,6 +627,44 @@ async function openAdapter(ready: {
   return { kind: 'ok' as const, value: adapter };
 }
 type SettleChoice = 'limit' | 'completion' | 'pending' | 'wait' | 'aborted';
+async function collectSettleChoice(input: {
+  readonly signal: AbortSignal;
+  readonly bridge: CodexInteraction;
+  readonly turnDone: Promise<unknown> | undefined;
+  readonly turnFinished: () => boolean;
+  readonly capacityRefused: () => boolean;
+}): Promise<SettleChoice> {
+  return new Promise((resolve) => {
+    let quietTimer: ReturnType<typeof setTimeout> | undefined;
+    let done = false;
+    let dispose = () => {};
+    const finish = (quiet: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(quietTimer);
+      input.signal.removeEventListener('abort', onAbort);
+      dispose();
+      resolve(decideSettle({ aborted: input.signal.aborted, pending: input.bridge.hostCalls().length,
+        completion: input.turnFinished(), quiet, capacityRefused: input.capacityRefused() }));
+    };
+    const onAbort = () => finish(false);
+    const arm = () => {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => finish(true), hostCallQuietMs);
+    };
+    const subscribed = input.bridge.events.subscribe((event) => {
+      if (event.kind === 'host-call') arm();
+      else if (event.kind === 'refused' && event.reason === 'capacity') finish(false);
+    });
+    if (subscribed.kind === 'ok') dispose = () => subscribed.value.dispose();
+    if (input.turnFinished() || input.capacityRefused() || input.signal.aborted || subscribed.kind === 'error') finish(false);
+    else {
+      if (input.turnDone) void input.turnDone.then(() => finish(false));
+      if (input.bridge.hostCalls().length > 0) arm();
+      input.signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
 function decideSettle(facts: { readonly aborted: boolean; readonly pending: number; readonly completion: boolean; readonly quiet: boolean; readonly capacityRefused: boolean }): SettleChoice {
   if (facts.aborted) return facts.completion ? 'completion' : 'aborted';
   if (facts.pending > maxPendingPerMessage || facts.capacityRefused) return 'limit';

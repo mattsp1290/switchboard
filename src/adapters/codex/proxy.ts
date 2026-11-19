@@ -7,7 +7,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AuthError, AuthRoute, ScopedAuth } from '../../core/auth.js';
 import type { Outcome } from '../../core/contracts.js';
-import { checkCodexRoute, plain as clean, processConfig } from './route.js';
+import { checkCodexRoute, plain as clean, processConfig, responsesProviderWire } from './route.js';
 import type { CodexProcessConfig, CodexProxyValue } from './route.js';
 
 /** The provider `auth.command` Codex runs for a token: never a secret, only the helper and its broker socket. */
@@ -62,10 +62,8 @@ export function codexProxyConfig(route: unknown, options: CodexProxyOptions):
     const refresh = whole(options.refreshIntervalMs, 1000, 86400000, 300000);
     if (timeout === undefined || refresh === undefined) return { problem: 'timeoutMs or refreshIntervalMs is out of range' };
     const at = `model_providers.${providerId}`;
-    const overrides: Record<string, CodexProxyValue> = { model_provider: providerId, model,
-      [`${at}.name`]: 'LiteLLM', [`${at}.base_url`]: endpoint, [`${at}.wire_api`]: 'responses',
-      [`${at}.supports_websockets`]: false, [`${at}.request_max_retries`]: 0, [`${at}.stream_max_retries`]: 0,
-      [`${at}.requires_openai_auth`]: false, [`${at}.auth.command`]: command, [`${at}.auth.args`]: Object.freeze(args as string[]),
+    const overrides: Record<string, CodexProxyValue> = { ...responsesProviderWire(providerId, endpoint, model, 'LiteLLM'),
+      [`${at}.auth.command`]: command, [`${at}.auth.args`]: Object.freeze(args as string[]),
       [`${at}.auth.timeout_ms`]: timeout, [`${at}.auth.refresh_interval_ms`]: refresh,
       // A sub-agent's spawn_agent `model` argument (multi_agent_v1 namespace, on by default in 0.169.0; collaboration
       // namespace under multi_agent_v2) sends requests on a model the model picked, bypassing route.model. -c outranks a
