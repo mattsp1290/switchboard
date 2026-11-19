@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { piHostAdapter, validatePiHostSessionState } from '@mattsp1290/switchboard/host/pi';
 
 const base = {
   launch: { kind: 'in-process' },
-  environment: { variables: { PATH: '/usr/bin' }, nativeConfig: {} },
+  environment: { variables: { PATH: '/usr/bin', TMPDIR: tmpdir() }, nativeConfig: {} },
   instructions: 'Answer briefly.',
   subagents: 'off',
 };
@@ -50,6 +51,18 @@ test('a host stream answers with no route and exports state', async () => {
     scope: { engine: 'pi', account: 'a', adapterInstanceId: 'i', sessionId: 's' },
   } }, openSignal());
   assert.equal(refused.kind, 'error');
+  await host.close();
+});
+
+test('a thrown host stream is not a completed export', async () => {
+  const host = await open({ stream: async function* stream() {
+    yield { kind: 'usage', input: 0, output: 0 };
+    throw new Error('boom');
+  } });
+  const result = await host.adapter.run(run('Fail'));
+  assert.equal(result.kind, 'failed');
+  assert.equal(result.error.code, 'native-failure');
+  assert.equal(host.states.length, 0);
   await host.close();
 });
 

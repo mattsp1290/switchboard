@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { InMemoryCredentialStore, InMemoryModelsStore, PI_AI_VERSION } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { AssistantMessage, Message, Model, Provider, Usage } from '@earendil-works/pi-ai';
@@ -142,7 +141,9 @@ function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<s
     else if (event.kind === 'usage') { input = event.input; output = event.output; }
     else {
       const argumentsValue = jsonObject(event.arguments);
-      if (argumentsValue === undefined) return { text, calls: [], input, output, failure: 'arguments' };
+      if (argumentsValue === undefined || !identifier(event.id, 1024) || !identifier(event.name, 256)) {
+        return { text, calls: [], input, output, failure: 'arguments' };
+      }
       if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], input, output, failure: 'duplicate' };
       ids.add(event.id);
       calls.push({ id: event.id, name: event.name, arguments: argumentsValue });
@@ -193,7 +194,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
-function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, sink: Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure'] }): Provider {
+function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, sink: Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
   const model: Model<string> = {
     id: modelId, name: 'host', api: providerId, provider: providerId, baseUrl: 'http://127.0.0.1:9', reasoning: false,
     input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
@@ -214,7 +215,8 @@ function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Prom
         const collected = collectEvents(loaded, names, answered);
         note.failure = collected.failure;
         emitAssistant(stream, collected, sink);
-      } catch {
+      } catch (error) {
+        if (error instanceof OpenRefusal) note.refusal = error.failure;
         const failed: AssistantMessage = { ...modelMessage(), stopReason: 'error', errorMessage: 'The host stream failed.' };
         stream.push({ type: 'error', reason: 'error', error: failed });
       }
@@ -247,6 +249,15 @@ async function eventsFromStream(stream: NonNullable<PiHostOpenOptions['stream']>
   return events;
 }
 
+function identifier(value: string, limit: number): boolean {
+  if (value.trim().length === 0 || value.length > limit) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
+  }
+  return true;
+}
+
 async function eventsFromRoute(transport: Extract<PiHostTransport, { kind: 'route' }>, body: PiHostRouteBody, signal: AbortSignal): Promise<readonly PiHostModelEvent[]> {
   const result = await transport.request(body, signal);
   if (result.kind === 'error') throw new OpenRefusal(result.error);
@@ -257,6 +268,7 @@ function requireOptions(options: PiHostOpenOptions, signal: AbortSignal): {
   readonly instructions: string;
   readonly tools: readonly HostToolDeclaration[];
   readonly state: PiHostSessionState | undefined;
+  readonly tempRoot: string;
 } {
   if (!(signal instanceof AbortSignal)) throw new OpenRefusal({ code: 'invalid-input', message: 'The open signal is not an AbortSignal.' });
   if (options.launch?.kind !== 'in-process') throw new OpenRefusal({ code: 'invalid-input', message: 'The Pi host adapter launches in-process.' });
@@ -292,7 +304,11 @@ function requireOptions(options: PiHostOpenOptions, signal: AbortSignal): {
   if (options.state !== undefined && !validatePiHostSessionState(options.state)) {
     throw new OpenRefusal({ code: 'invalid-input', message: 'The imported session state does not match the published schema.' });
   }
-  return { instructions: options.instructions ?? '', tools, state: options.state };
+  const tempRoot = options.environment.variables.TMPDIR ?? options.environment.variables.TMP ?? options.environment.variables.TEMP;
+  if (tempRoot === undefined || !isAbsolute(tempRoot)) {
+    throw new OpenRefusal({ code: 'invalid-input', message: 'The host environment must name an absolute temp directory.' });
+  }
+  return { instructions: options.instructions ?? '', tools, state: options.state, tempRoot };
 }
 
 export async function openPiHostSession(options: PiHostOpenOptions, signal: AbortSignal): Promise<Outcome<PiHostAdapter, HostAdapterError>> {
@@ -308,11 +324,11 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       : transportResult.value.kind === 'route' ? transportResult.value
         : undefined;
     if (active === undefined) return { kind: 'error', error: { code: 'invalid-input', message: 'The host stream is missing.' } };
-    directory = await mkdtemp(join(tmpdir(), 'pi-host-'));
+    directory = await mkdtemp(join(admitted.tempRoot, 'pi-host-'));
     const names = new Set(admitted.tools.map((tool) => tool.name));
     const answered = new Set<string>();
     const executed: string[] = [];
-    const note: { failure?: Collected['failure'] } = {};
+    const note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined } = { refusal: undefined };
     let segmentNumber = admitted.state === undefined ? 1
       : admitted.state.turns.reduce((max, turn) => Math.max(max, turn.segment), 0) + 1;
     const load = (body: PiHostRouteBody, requestSignal: AbortSignal) => active.kind === 'stream'
@@ -322,9 +338,12 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       text: (delta: string) => { publish({ kind: 'text-delta', nativeItemId: 'assistant', text: delta }); },
       tool: (call: { id: string; name: string; arguments: unknown }, phase: 'start' | 'end') => {
         const target = { kind: 'tool' as const, session: reference(), nativeToolCallId: call.id };
-        publish(phase === 'start'
-          ? { kind: 'tool-call-start', target, name: call.name }
-          : { kind: 'tool-call-end', target, arguments: call.arguments });
+        if (phase === 'start') {
+          publish({ kind: 'tool-call-start', target, name: call.name });
+          publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(call.arguments) });
+        } else {
+          publish({ kind: 'tool-call-end', target, arguments: call.arguments });
+        }
       },
       usage: (input: number, output: number) => { publish({ kind: 'usage', usage: hostUsage(input, output) }); },
     };
@@ -333,20 +352,18 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     const models = await ModelRuntime.create({
       credentials, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
     });
-    // Registration refreshes every built-in provider. That refresh looks for Google application-default
-    // credentials on disk. The host provider is already in the snapshot, so this open skips that scan.
+    // A provider refresh looks for Google application-default credentials. The host provider is already
+    // in the snapshot, and this no-op stays in place so a later refresh cannot scan the disk.
     const registered = models as ModelRuntime & { refresh(options?: { allowNetwork?: boolean }): Promise<unknown> };
-    const refresh = registered.refresh.bind(registered);
     registered.refresh = async () => ({ aborted: false, errors: new Map() });
-    try {
-      registered.registerNativeProvider(provider);
-    } finally {
-      registered.refresh = refresh;
-    }
+    registered.registerNativeProvider(provider);
     const model = provider.getModels()[0];
     if (model === undefined) throw new OpenRefusal({ code: 'native-failure', message: 'The host model was not registered.' });
     const manager = SessionManager.inMemory(directory, admitted.state ? { id: admitted.state.sessionId } : undefined);
     if (admitted.state) {
+      for (const turn of admitted.state.turns) {
+        if (turn.role === 'tool' && turn.toolCallId !== undefined && turn.pending !== true) answered.add(turn.toolCallId);
+      }
       for (const message of messagesFrom(admitted.state.turns)) manager.appendMessage(message);
     }
     const created = await createAgentSession({
@@ -385,13 +402,19 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     const sessionReference: SessionReference = parsed.value;
     const events = createEventStream<HostAdapterEvent>({ maxObservers: 8, capacity: 64 });
     const publish = (event: HostAdapterEvent) => { events.publish(event); };
-    let current: PiHostSessionState = admitted.state ?? { formatVersion: 1, sessionId: session.sessionId, turns: [] };
+    let current: PiHostSessionState = admitted.state === undefined
+      ? { formatVersion: 1, sessionId: session.sessionId, turns: [] }
+      : structuredClone(admitted.state);
     let seen = session.messages.length;
     let pending: readonly HostToolCall[] = pendingCalls(current, sessionReference);
     let running = false;
     let closed = false;
     let stopping: (() => void) | undefined;
     let stopped: Promise<void> | undefined;
+    let agentRun: Promise<void> | undefined;
+    let undoContinuation = () => {};
+    let continuedIds: readonly string[] = [];
+    const deliveries: { readonly target: { readonly kind: 'tool'; readonly session: SessionReference; readonly nativeToolCallId: string } }[] = [];
     const reference = () => sessionReference;
     function exportState(): PiHostSessionState | undefined {
       const fresh = turnsFrom(session.messages.slice(seen).filter((message): message is Message =>
@@ -414,12 +437,18 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       if (signal.aborted) throw new OpenRefusal({ code: 'native-failure', message: 'The segment was aborted.' });
       const assistant = session.messages.findLast((message) => message.role === 'assistant');
       const failure = note.failure;
+      const refusal = note.refusal;
       note.failure = undefined;
+      note.refusal = undefined;
       const usage = hostUsage(assistant?.role === 'assistant' ? assistant.usage.input : 0, assistant?.role === 'assistant' ? assistant.usage.output : 0);
+      if (refusal) return { kind: 'model-failed', error: refusal };
       if (failure === 'limit') return { kind: 'model-failed', error: { code: 'pending-limit', message: 'The assistant message asked for more host calls than the pending limit.' } };
       if (failure === 'mixed') return { kind: 'model-failed', error: { code: 'invalid-input', message: 'A mixed tool batch is not a host-tool set.' } };
       if (failure === 'duplicate') return { kind: 'model-failed', error: { code: 'invalid-input', message: 'One call identifier cannot have two results.' } };
       if (failure === 'arguments' || failure !== undefined) return { kind: 'model-failed', error: { code: 'native-failure', message: 'The host stream failed.' } };
+      if (assistant?.role === 'assistant' && (assistant.stopReason === 'error' || assistant.stopReason === 'aborted')) {
+        return { kind: 'model-failed', error: { code: 'native-failure', message: 'The host stream failed.' } };
+      }
       const calls = toolCalls(assistant?.role === 'assistant' ? assistant : undefined);
       const exported = exportState();
       if (exported === undefined) return { kind: 'model-failed', error: { code: 'native-failure', message: 'The exported session state does not match the published schema.' } };
@@ -445,8 +474,23 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           mode: 'fresh', signal: hostSignal, identity, recordIntent,
           dispatchNative: async () => {
             await work();
-            if (hostSignal.aborted) return { kind: 'outcome-unknown' };
-            return { kind: 'conclusive', evidence, result: await finish(hostSignal) };
+            const assistant = session.messages.findLast((message) => message.role === 'assistant');
+            const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
+            if (aborted) {
+              undoContinuation();
+              continuedIds = [];
+              deliveries.length = 0;
+              return { kind: 'outcome-unknown' };
+            }
+            const result = await finish(hostSignal);
+            if (result.kind === 'model-failed') undoContinuation();
+            else {
+              for (const id of continuedIds) answered.add(id);
+              for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
+            }
+            continuedIds = [];
+            deliveries.length = 0;
+            return { kind: 'conclusive', evidence, result };
           },
         });
         const snapshot = await handle.run();
@@ -504,6 +548,9 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         });
       },
       async continue(input) {
+        if (pending.length === 0 || !Array.isArray(input.answers)) {
+          return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
+        }
         const expected = new Map(pending.map((call) => [call.pending.target.nativeToolCallId, call]));
         const replacements = new Map<string, { text: string; isError: boolean }>();
         for (const answer of input.answers) {
@@ -524,12 +571,28 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
         }
         return dispatch(input.hostOperationId, input.recordIntent, input.signal, async () => {
+          const prior = new Map<string, { content: Message['content']; isError: boolean; details: unknown }>();
           const applyReplacement = (message: Message) => {
             if (message.role !== 'toolResult' || !replacements.has(message.toolCallId)) return;
+            if (!prior.has(message.toolCallId)) {
+              prior.set(message.toolCallId, { content: message.content, isError: message.isError, details: message.details });
+            }
             const replacement = replacements.get(message.toolCallId);
             message.content = [{ type: 'text', text: replacement?.text ?? '' }];
             message.isError = replacement?.isError ?? false;
             message.details = { pending: false };
+          };
+          const restore = () => {
+            for (const [id, saved] of prior) {
+              for (const message of session.messages) {
+                if (message.role === 'toolResult' && message.toolCallId === id) Object.assign(message, saved);
+              }
+              for (const entry of manager.getEntries()) {
+                if (entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolCallId === id) {
+                  Object.assign(entry.message, saved);
+                }
+              }
+            }
           };
           for (const message of session.messages) {
             if (message.role === 'toolResult') applyReplacement(message);
@@ -537,10 +600,20 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           for (const entry of manager.getEntries()) {
             if (entry.type === 'message' && entry.message.role === 'toolResult') applyReplacement(entry.message);
           }
-          for (const id of replacements.keys()) answered.add(id);
-          pending = [];
-          await session.agent.continue();
-          await session.waitForIdle();
+          undoContinuation = restore;
+          continuedIds = [...replacements.keys()];
+          for (const call of expected.values()) deliveries.push({ target: call.pending.target });
+          try {
+            agentRun = session.agent.continue();
+            await agentRun;
+            await session.waitForIdle();
+          } catch (error) {
+            restore();
+            undoContinuation = () => {};
+            throw error;
+          } finally {
+            agentRun = undefined;
+          }
         });
       },
       async interrupt({ timeoutMs }) {
@@ -553,20 +626,29 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         return winner === 'done' ? { kind: 'terminal-observed' } : { kind: 'unconfirmed-within-bound' };
       },
       async close() {
+        const running = agentRun;
         closed = true;
         stopping?.();
-        try { await session.abort(); session.dispose(); } catch { /* closing still releases the directory */ }
-        await rm(directory ?? '', { recursive: true, force: true });
+        try { await session.abort(); } catch { /* dispose still runs */ }
+        try { await running; } catch { /* the segment observes this failure */ }
+        try { session.dispose(); } catch { /* closing still releases the directory */ }
         events.close();
+        if (directory === undefined) {
+          return { kind: 'error', error: { code: 'native-failure', message: 'The Pi host session could not be closed.' } };
+        }
+        try {
+          await rm(directory, { recursive: true, force: true });
+        } catch {
+          return { kind: 'error', error: { code: 'native-failure', message: 'The Pi host session could not be closed.' } };
+        }
         return { kind: 'ok', value: undefined };
       },
     };
     return { kind: 'ok', value: adapter };
   } catch (error) {
-    if (directory !== undefined) await rm(directory, { recursive: true, force: true });
+    if (directory !== undefined) await rm(directory, { recursive: true, force: true }).catch(() => {});
     if (error instanceof OpenRefusal) return { kind: 'error', error: error.failure };
-    const message = error instanceof Error ? error.message.slice(0, 300) : 'The Pi host session could not be opened.';
-    return { kind: 'error', error: { code: 'native-failure', message } };
+    return { kind: 'error', error: { code: 'native-failure', message: 'The Pi host session could not be opened.' } };
   }
 }
 
