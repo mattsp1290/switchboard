@@ -822,5 +822,123 @@ test('prompt bytes followed by channel EOF are outcome-unknown', async () => {
     assert.equal(result.kind, 'failed', JSON.stringify(result));
     assert.equal(result.write.kind, 'outcome-unknown');
     assert.equal(agent.state.signals, 0);
+    agent.push(textUpdate('LATE'));
+    let called = false;
+    const again = await adapter.run({ prompt: 'again', signal, hostOperationId: 'again', recordIntent() { called = true; } });
+    assert.equal(again.write.kind, 'not-attempted');
+    assert.equal(called, false);
+    assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+    assert.equal(JSON.stringify(result).includes('LATE'), false);
   });
+});
+
+test('aborting a written prompt leaves the next run unsent', async () => {
+  const controller = new AbortController();
+  await withSession(async ({ adapter, agent }) => {
+    const running = adapter.run({ prompt: 'abort-me', signal: controller.signal, hostOperationId: 'abort-me', recordIntent() {} });
+    await untilRequest(agent, 'session/prompt');
+    controller.abort();
+    agent.push(textUpdate('LATE'));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.write.kind, 'outcome-unknown');
+    assert.equal(JSON.stringify(result).includes('LATE'), false);
+    const again = await adapter.run({ prompt: 'again', signal: AbortSignal.timeout(1000), hostOperationId: 'again', recordIntent() {} });
+    assert.equal(again.write.kind, 'not-attempted');
+    assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+    assert.equal(agent.state.signals, 0);
+  });
+});
+
+test('ending stdout while interrupt waits is not a native terminal', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'cut', signal, hostOperationId: 'cut', recordIntent() {} });
+    await untilRequest(agent, 'session/prompt');
+    const pending = adapter.interrupt({ timeoutMs: 1000 });
+    agent.endOutput();
+    assert.equal((await pending).kind, 'unconfirmed-within-bound');
+    const result = await running;
+    assert.equal(result.write.kind, 'outcome-unknown');
+    assert.equal(agent.state.signals, 0);
+  });
+});
+
+test('a process exit during initialize fails open without the exit reason', async () => {
+  const agent = createAgent();
+  agent.options.auto = false;
+  agent.options.resolveOnEndInput = false;
+  const opening = opencodeHostAdapter.open({
+    model,
+    environment: { variables: { PATH: '/host/bin' }, nativeConfig: { cwd, executable, account } },
+    launch: launchOf(agent),
+  }, AbortSignal.timeout(10000));
+  await untilRequest(agent, 'initialize');
+  agent.rejectExit(new Error('secret-exit-detail'));
+  const opened = await opening;
+  assert.equal(opened.kind, 'error');
+  assert.equal(opened.error.message, 'OpenCode process exit failed.');
+  assert.equal(JSON.stringify(opened).includes('secret-exit-detail'), false);
+  assert.equal(agent.state.signals, 0);
+});
+
+test('a process exit during a prompt fails that segment and blocks the next run', async () => {
+  const agent = createAgent();
+  agent.options.resolveOnEndInput = false;
+  const ready = await openReady({ agent });
+  assert.equal(ready.opened.kind, 'ok');
+  const adapter = ready.opened.value;
+  const running = adapter.run({ prompt: 'live', signal: ready.signal, hostOperationId: 'live', recordIntent() {} });
+  await untilRequest(agent, 'session/prompt');
+  agent.rejectExit(new Error('secret-exit-detail'));
+  const result = await running;
+  assert.equal(result.kind, 'failed', JSON.stringify(result));
+  assert.equal(result.error.message, 'OpenCode process exit failed.');
+  assert.equal(JSON.stringify(result).includes('secret-exit-detail'), false);
+  let called = false;
+  const again = await adapter.run({ prompt: 'next', signal: ready.signal, hostOperationId: 'next', recordIntent() { called = true; } });
+  assert.equal(again.write.kind, 'not-attempted');
+  assert.equal(called, false);
+  assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+  assert.equal(agent.state.signals, 0);
+  await adapter.close();
+});
+
+test('a malformed byte and a stopped reader drop the stdout sink', async () => {
+  let removed = 0;
+  let sink;
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => { removed += 1; }; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, { onNotification() {}, onRequest() {} });
+  protocol.start();
+  const pending = protocol.request('initialize', {}, { signal: AbortSignal.timeout(1000), timeoutMs: 1000 });
+  sink(Buffer.from([0xff, 0x0a]));
+  assert.equal((await pending).kind, 'ended');
+  assert.equal(removed, 1);
+  protocol.stop();
+  assert.equal(removed, 1);
+});
+
+test('an agent request is finished before the next line', async () => {
+  const seen = [];
+  let sink;
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, {
+    onRequest() { return gate.then(() => { seen.push('request'); }); },
+    onNotification() { seen.push('note'); },
+  });
+  protocol.start();
+  sink(Buffer.from('{"jsonrpc":"2.0","id":7,"method":"fs/read_text_file","params":{}}\n{"jsonrpc":"2.0","method":"a","params":1}\n'));
+  await setImmediate();
+  assert.deepEqual(seen, []);
+  release();
+  await setImmediate();
+  assert.deepEqual(seen, ['request', 'note']);
+  protocol.stop();
 });

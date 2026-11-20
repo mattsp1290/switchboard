@@ -47,6 +47,7 @@ export interface OpenCodeHostSpawnRequest {
 }
 export interface OpenCodeHostSpawned {
   readonly channel: OpenCodeHostChannel;
+  /** Fulfillment means the host accepts the exit. A non-zero status must reject. The adapter ignores the fulfillment value. */
   readonly processExit: PromiseLike<unknown>;
 }
 export type OpenCodeHostLaunch = HostLaunch<
@@ -155,8 +156,13 @@ function promptFrameFits(sessionId: string, text: string): boolean {
   return Buffer.byteLength(encoded) + 1 <= maxFrameBytes;
 }
 function releaseSpawn(value: unknown): void {
-  if (!record(value) || !record(value.channel) || typeof value.channel.endInput !== 'function') return;
-  try { value.channel.endInput(); } catch { /* the adapter does not signal the process */ }
+  try {
+    if (record(value) && isPromiseLike(value.processExit)) {
+      void Promise.resolve(value.processExit).then(() => undefined, () => undefined);
+    }
+    if (!record(value) || !record(value.channel) || typeof value.channel.endInput !== 'function') return;
+    value.channel.endInput();
+  } catch { /* the adapter does not signal the process */ }
 }
 function chunkText(update: Record<string, unknown>): string | undefined {
   if (!record(update.content) || update.content.type !== 'text' || typeof update.content.text !== 'string') return undefined;
@@ -177,19 +183,6 @@ function rpcError(outcome: OpenCodeRpcOutcome): HostAdapterError {
   return { code: 'native-failure', message: 'OpenCode did not acknowledge the session.' };
 }
 type ExitWatch = 'observed' | 'rejected' | 'timeout';
-function observeExit(processExit: PromiseLike<unknown>): Promise<ExitWatch> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (status: ExitWatch) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(status);
-    };
-    const timer = setTimeout(() => finish('timeout'), exitMs);
-    Promise.resolve(processExit).then(() => finish('observed'), () => finish('rejected'));
-  });
-}
 
 interface PermissionAnswer {
   id: number | string;
@@ -201,6 +194,7 @@ interface Turn {
   sawTraffic: boolean;
   cancelSent: boolean;
   settled: boolean;
+  nativeTerminal: boolean;
   text: string;
   failure?: SegmentError;
   stopReason?: string;
@@ -228,7 +222,7 @@ function readUpdate(params: unknown, context: {
   const name = update.sessionUpdate;
   if (typeof name !== 'string') return 'reject';
   if (childMeta(update._meta)) return 'reject';
-  const active = context.phase === 'setup' ? undefined : context.turn;
+  const active = context.phase === 'live' ? context.turn : undefined;
   const live = active && !active.settled ? active : undefined;
   if (context.phase === 'setup') {
     if (ignoredUpdates.has(name)) return 'ignore';
@@ -343,6 +337,9 @@ async function openSession(ready: {
   readonly processExit: PromiseLike<unknown>;
 }) {
   const { signal, native, model, channel, processExit } = ready;
+  const exitReady = new Promise<ExitWatch>((resolve) => {
+    Promise.resolve(processExit).then(() => resolve('observed'), () => resolve('rejected'));
+  });
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 8, capacity: 64 });
   const permissions: PermissionAnswer[] = [];
   let phase: 'setup' | 'live' | 'closed' = 'setup';
@@ -379,15 +376,55 @@ async function openSession(ready: {
     active.failure = error;
     sendCancel(active);
   }
+  function watchExit(): Promise<ExitWatch> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finishWatch = (status: ExitWatch) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(status);
+      };
+      const timer = setTimeout(() => finishWatch('timeout'), exitMs);
+      void exitReady.then((status) => finishWatch(status));
+    });
+  }
+  function latchExit(status: ExitWatch): void {
+    if (phase === 'closed') return;
+    const error: SegmentError = {
+      code: 'native-failure',
+      message: status === 'rejected' ? exitFailed : incompleteTurn,
+    };
+    if (phase === 'setup') {
+      void cleanup(error);
+      return;
+    }
+    unusable ??= error;
+    if (turn && !turn.settled) failActive(turn, error);
+    void shutdownChannel();
+  }
+  void exitReady.then((status) => latchExit(status));
+  function markReaderStopped(): void {
+    if (phase === 'closed') return;
+    const error: SegmentError = { code: 'native-failure', message: incompleteTurn };
+    if (phase === 'setup') {
+      if (!setupError) void cleanup(error);
+      return;
+    }
+    unusable ??= error;
+    void shutdownChannel();
+  }
   function shutdownChannel(): Promise<void> {
     if (!shuttingDown) {
       shuttingDown = (async () => {
         phase = 'closed';
         signal.removeEventListener('abort', onAbort);
         for (const item of [...permissions]) answerCancelled(item);
+        const closeAbort = new AbortController();
+        void exitReady.then(() => closeAbort.abort());
         if (sessionId) {
           try {
-            await rpc().request('session/close', { sessionId }, { signal: new AbortController().signal, timeoutMs: acknowledgementMs });
+            await rpc().request('session/close', { sessionId }, { signal: closeAbort.signal, timeoutMs: acknowledgementMs });
           } catch { /* the original error stays */ }
         }
         try { channel.endInput(); } catch { /* the original error stays */ }
@@ -456,6 +493,7 @@ async function openSession(ready: {
       rpc().respondError(message.id, -32601);
       noteDisallowed();
     },
+    onStopped() { markReaderStopped(); },
   });
   rpc().start();
 
@@ -534,6 +572,7 @@ async function openSession(ready: {
   }
   function applyOutcome(active: Turn, outcome: OpenCodeRpcOutcome): void {
     if (active.settled || !active.promptWritten) return;
+    if (outcome.kind === 'result' || outcome.kind === 'error') active.nativeTerminal = true;
     if (outcome.kind === 'result') {
       active.sawTraffic = true;
       const stopReason = record(outcome.value) && typeof outcome.value.stopReason === 'string' ? outcome.value.stopReason : '';
@@ -554,6 +593,10 @@ async function openSession(ready: {
       }
       return;
     }
+    if (phase === 'live') {
+      unusable ??= { code: 'native-failure', message: incompleteTurn };
+      void shutdownChannel();
+    }
     if (active.sawTraffic && !active.failure) active.failure = { code: 'native-failure', message: incompleteTurn };
   }
   function finishTurn(active: Turn): void {
@@ -563,7 +606,7 @@ async function openSession(ready: {
   }
 
   async function finish(): Promise<Outcome<void, AdapterError>> {
-    const watched = await shutdownChannel().then(() => observeExit(processExit));
+    const watched = await shutdownChannel().then(() => watchExit());
     stream.close();
     if (turn && !turn.settled) finishTurn(turn);
     if (watched === 'rejected') return { kind: 'error', error: { code: 'native-failure', message: exitFailed } };
@@ -596,7 +639,7 @@ async function openSession(ready: {
       }
       let resolveTurn: () => void = () => {};
       const active: Turn = {
-        phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, text: '', usage: null,
+        phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
@@ -619,6 +662,8 @@ async function openSession(ready: {
                   onOutcome(next) { applyOutcome(active, next); },
                 });
                 applyOutcome(active, outcome);
+                // A line queued behind the prompt result can fail the turn before classify.
+                // Yielding also lets flushDeferred leave the drain stack.
                 await Promise.resolve();
               } finally {
                 input.signal.removeEventListener('abort', onRunAbort);
@@ -644,13 +689,16 @@ async function openSession(ready: {
     },
     async interrupt({ timeoutMs }) {
       const active = turn;
-      if (!active || active.settled) return { kind: 'terminal-observed' };
+      if (!active || (active.settled && active.nativeTerminal)) return { kind: 'terminal-observed' };
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return { kind: 'unconfirmed-within-bound' };
-      if (active.phase === 'intent' || !active.promptWritten) return { kind: 'unconfirmed-within-bound' };
+      if (active.settled || active.phase === 'intent' || !active.promptWritten) return { kind: 'unconfirmed-within-bound' };
       sendCancel(active);
       const timer = new AbortController();
       const timed = delay(timeoutMs, 'timeout' as const, { signal: timer.signal }).then((value) => value, () => 'timeout' as const);
-      const winner = await Promise.race([active.done.then(() => 'done' as const), timed]);
+      const winner = await Promise.race([
+        active.done.then(() => active.nativeTerminal ? 'done' as const : 'local' as const),
+        timed,
+      ]);
       timer.abort();
       return winner === 'done' ? { kind: 'terminal-observed' } : { kind: 'unconfirmed-within-bound' };
     },

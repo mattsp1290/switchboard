@@ -28,6 +28,7 @@ export interface OpenCodeNotification {
 export interface OpenCodeProtocolHandlers {
   onNotification: (message: OpenCodeNotification) => void | 'yield' | Promise<void | 'yield'>;
   onRequest: (message: OpenCodeIncomingRequest) => void | Promise<void>;
+  onStopped?: () => void;
 }
 
 export interface OpenCodeProtocol {
@@ -65,9 +66,11 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   let writeChain: Promise<void> = Promise.resolve();
   let nextId = 1;
   let pending = Buffer.alloc(0);
+  let queuedBytes = 0;
   let stopped = false;
   let pumping = false;
   let started = false;
+  let unsubscribe: (() => void) | undefined;
 
   function flushDeferred(): void {
     const ready = deferred.splice(0);
@@ -79,13 +82,18 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     stopped = true;
     output.abort();
     queue.length = 0;
+    queuedBytes = 0;
     pending = Buffer.alloc(0);
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
     const waiting = [...waiters.values()];
     waiters.clear();
-    for (const complete of waiting) complete({ kind: 'ended' });
+    for (const complete of waiting) {
+      try { complete({ kind: 'ended' }); } catch { /* the waiter is already resolved */ }
+    }
     flushDeferred();
+    try { unsubscribe?.(); } catch { /* the sink is already gone */ }
+    try { handlers.onStopped?.(); } catch { /* the adapter records this itself */ }
   }
 
   function enqueueWrite(frame: Uint8Array): Promise<void> {
@@ -123,17 +131,21 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         timers.delete(timer);
       }
       options.signal.removeEventListener('abort', onAbort);
-      options.onOutcome?.(outcome);
-      const deliver = () => resolve(outcome);
-      if (pumping && !stopped) deferred.push(deliver);
-      else deliver();
+      try {
+        options.onOutcome?.(outcome);
+      } finally {
+        const deliver = () => resolve(outcome);
+        if (pumping && !stopped) deferred.push(deliver);
+        else deliver();
+      }
     };
     const onAbort = () => complete({ kind: 'ended' });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    if (options.timeoutMs !== undefined) {
+    const armTimer = () => {
+      if (settled || stopped || options.timeoutMs === undefined || timer !== undefined) return;
       timer = setTimeout(() => complete({ kind: 'timeout' }), options.timeoutMs);
       timers.add(timer);
-    }
+    };
     waiters.set(id, complete);
     options.signal.addEventListener('abort', onAbort, { once: true });
     options.beforeWrite?.();
@@ -144,7 +156,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
       complete({ kind: 'ended' });
       return promise;
     }
-    void enqueueWrite(frame).then(() => undefined, () => {
+    void enqueueWrite(frame).then(() => armTimer(), () => {
       complete({ kind: 'ended' });
     });
     return promise;
@@ -167,10 +179,17 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function dispatchLine(line: Buffer): void | 'yield' | Promise<void | 'yield'> {
-    const text = line.toString('utf8');
+    const body = line.length > 0 && line[line.length - 1] === 0x0d ? line.subarray(0, -1) : line;
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+    } catch {
+      failLine();
+      return;
+    }
     let value: unknown;
     try {
-      value = JSON.parse(text.endsWith('\r') ? text.slice(0, -1) : text);
+      value = JSON.parse(text);
     } catch {
       failLine();
       return;
@@ -181,11 +200,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     }
     const id = typeof value.id === 'number' || typeof value.id === 'string' ? value.id : undefined;
     const method = typeof value.method === 'string' ? value.method : undefined;
-    if (id !== undefined && method !== undefined) {
-      const incoming = handlers.onRequest({ id, method, params: value.params });
-      if (isThenable(incoming)) void Promise.resolve(incoming).then(() => undefined, () => { stop(); });
-      return;
-    }
+    if (id !== undefined && method !== undefined) return handlers.onRequest({ id, method, params: value.params });
     if (method !== undefined && !Object.hasOwn(value, 'id')) return handlers.onNotification({ method, params: value.params });
     if (typeof id === 'number') {
       const complete = waiters.get(id);
@@ -225,6 +240,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     while (!stopped && queue.length > 0) {
       const line = queue.shift();
       if (line === undefined) break;
+      queuedBytes -= line.length;
       let step: void | 'yield' | Promise<void | 'yield'>;
       try {
         step = dispatchLine(line);
@@ -250,22 +266,50 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     drain();
   }
 
+  function takeLine(line: Buffer): boolean {
+    if (line.length > maxLineBytes || queuedBytes + line.length > maxLineBytes) {
+      stop();
+      return false;
+    }
+    queuedBytes += line.length;
+    queue.push(line);
+    return true;
+  }
+
   function accept(chunk: Uint8Array): void {
     if (stopped) return;
     if (!(chunk instanceof Uint8Array)) {
       stop();
       return;
     }
-    pending = pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([pending, chunk]);
-    for (;;) {
-      const newline = pending.indexOf(0x0a);
-      if (newline === -1) break;
-      if (newline > maxLineBytes) {
+    let offset = 0;
+    while (offset < chunk.length && !stopped) {
+      const room = maxLineBytes + 1 - pending.length;
+      if (room <= 0) {
         stop();
         return;
       }
-      queue.push(Buffer.from(pending.subarray(0, newline)));
-      pending = pending.subarray(newline + 1);
+      const slice = chunk.subarray(offset, offset + Math.min(room, chunk.length - offset));
+      const newlineAt = slice.indexOf(0x0a);
+      if (newlineAt === -1 && offset + slice.length < chunk.length) {
+        stop();
+        return;
+      }
+      const incoming = newlineAt === -1 ? slice : slice.subarray(0, newlineAt + 1);
+      pending = pending.length === 0 ? Buffer.from(incoming) : Buffer.concat([pending, incoming]);
+      offset += incoming.length;
+      if (newlineAt === -1) break;
+      for (;;) {
+        const newline = pending.indexOf(0x0a);
+        if (newline === -1) break;
+        if (newline > maxLineBytes) {
+          stop();
+          return;
+        }
+        const line = Buffer.from(pending.subarray(0, newline));
+        pending = pending.subarray(newline + 1);
+        if (!takeLine(line)) return;
+      }
     }
     if (pending.length > maxLineBytes) {
       stop();
@@ -282,7 +326,8 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     if (started) return;
     started = true;
     const sink = Object.assign((chunk: Uint8Array) => accept(chunk), { ended });
-    channel.listen(sink);
+    const remove = channel.listen(sink);
+    unsubscribe = typeof remove === 'function' ? remove : () => {};
   }
 
   return { request, notify, respond, respondError, start, stop };
