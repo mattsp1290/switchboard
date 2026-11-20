@@ -893,6 +893,7 @@ test('a process exit during a prompt fails that segment and blocks the next run'
   const result = await running;
   assert.equal(result.kind, 'failed', JSON.stringify(result));
   assert.equal(result.error.message, 'OpenCode process exit failed.');
+  assert.equal(result.write.kind, 'outcome-unknown');
   assert.equal(JSON.stringify(result).includes('secret-exit-detail'), false);
   let called = false;
   const again = await adapter.run({ prompt: 'next', signal: ready.signal, hostOperationId: 'next', recordIntent() { called = true; } });
@@ -901,6 +902,52 @@ test('a process exit during a prompt fails that segment and blocks the next run'
   assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
   assert.equal(agent.state.signals, 0);
   await adapter.close();
+});
+
+test('a malformed run returns invalid input and does not stay busy', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const missing = await adapter.run(null);
+    assert.equal(missing.kind, 'failed');
+    assert.equal(missing.error.code, 'invalid-input');
+    assert.equal(missing.write.kind, 'not-attempted');
+    const blank = await adapter.run({ prompt: 'ok', signal, hostOperationId: '', recordIntent: 'nope' });
+    assert.equal(blank.kind, 'failed');
+    assert.equal(blank.error.code, 'invalid-input');
+    assert.equal(blank.write.kind, 'not-attempted');
+    const running = adapter.run({ prompt: 'after', signal, hostOperationId: 'after', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    assert.equal((await running).kind, 'complete');
+  });
+});
+
+test('a stalled write still hits the request deadline', async () => {
+  const protocol = openOpenCodeProtocol({
+    listen() { return () => {}; },
+    write() { return new Promise(() => {}); },
+    endInput() {},
+  }, { onNotification() {}, onRequest() {} });
+  protocol.start();
+  const outcome = await protocol.request('initialize', {}, { signal: AbortSignal.timeout(1000), timeoutMs: 30 });
+  assert.equal(outcome.kind, 'timeout');
+  protocol.stop();
+});
+
+test('a throwing beforeWrite still settles the request', async () => {
+  const protocol = openOpenCodeProtocol({
+    listen() { return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, { onNotification() {}, onRequest() {} });
+  protocol.start();
+  const outcome = await protocol.request('initialize', {}, {
+    signal: AbortSignal.timeout(1000),
+    timeoutMs: 1000,
+    beforeWrite() { throw new Error('secret-before'); },
+  });
+  assert.equal(outcome.kind, 'ended');
+  assert.equal(JSON.stringify(outcome).includes('secret-before'), false);
+  protocol.stop();
 });
 
 test('a malformed byte and a stopped reader drop the stdout sink', async () => {

@@ -2,7 +2,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AdapterError, AdapterIdentity, Outcome } from '../../core/contracts.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
-import type { DispatchIdentity } from '../../core/dispatch.js';
+import type { DispatchHandle, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
@@ -155,14 +155,31 @@ function promptFrameFits(sessionId: string, text: string): boolean {
   });
   return Buffer.byteLength(encoded) + 1 <= maxFrameBytes;
 }
-function releaseSpawn(value: unknown): void {
+async function releaseSpawn(value: unknown): Promise<void> {
+  let detach = () => {};
+  const exiting = record(value) && isPromiseLike(value.processExit)
+    ? Promise.resolve(value.processExit).then(() => undefined, () => undefined)
+    : Promise.resolve();
   try {
-    if (record(value) && isPromiseLike(value.processExit)) {
-      void Promise.resolve(value.processExit).then(() => undefined, () => undefined);
+    if (!record(value) || !record(value.channel)) return;
+    const channel = value.channel;
+    if (typeof channel.listen === 'function') {
+      try {
+        const sink = Object.assign((_chunk: Uint8Array) => {}, { ended() {} });
+        const remove = channel.listen(sink);
+        if (typeof remove === 'function') detach = remove;
+      } catch { /* still end stdin */ }
     }
-    if (!record(value) || !record(value.channel) || typeof value.channel.endInput !== 'function') return;
-    value.channel.endInput();
-  } catch { /* the adapter does not signal the process */ }
+    if (typeof channel.endInput === 'function') {
+      try { channel.endInput(); } catch { /* the adapter does not signal the process */ }
+    }
+    await Promise.race([
+      exiting,
+      new Promise<void>((resolve) => { setTimeout(resolve, exitMs); }),
+    ]);
+  } finally {
+    try { detach(); } catch { /* the sink is already gone */ }
+  }
 }
 function chunkText(update: Record<string, unknown>): string | undefined {
   if (!record(update.content) || update.content.type !== 'text' || typeof update.content.text !== 'string') return undefined;
@@ -310,22 +327,20 @@ export const opencodeHostAdapter: HostAdapterRegistration<OpenCodeHostOpenOption
     if (builtInTools !== undefined) return fail({ code: 'unavailable', feature: 'built-in-tools', message: 'OpenCode text sessions cannot switch built-in tools off' });
     if (subagents !== undefined) return fail({ code: 'unavailable', feature: 'subagents', message: 'OpenCode text sessions cannot switch child sessions off' });
     const callerModel = model;
-    let spawned: OpenCodeHostSpawned;
     let raw: unknown;
     try {
       raw = await launch.spawn({ executable: native.executable, args: [native.executable, 'acp'], cwd: native.cwd, env: variables }, signal);
       const parsed = spawnedOf(raw);
       if (!parsed) {
-        releaseSpawn(raw);
+        await releaseSpawn(raw);
         return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher returned no channel' });
       }
-      spawned = parsed;
+      return await openSession({ signal, native, model: callerModel, channel: parsed.channel, processExit: parsed.processExit });
     } catch {
-      releaseSpawn(raw);
+      await releaseSpawn(raw);
       if (signal.aborted) return fail({ code: 'closed', message: 'open was aborted' });
       return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher denied the process' });
     }
-    return openSession({ signal, native, model: callerModel, channel: spawned.channel, processExit: spawned.processExit });
   },
 });
 
@@ -371,8 +386,7 @@ async function openSession(ready: {
   }
   function failActive(active: Turn, error: SegmentError): void {
     if (active.settled || active.failure) return;
-    if (active.promptWritten) active.sawTraffic = true;
-    else unusable ??= error;
+    if (!active.promptWritten) unusable ??= error;
     active.failure = error;
     sendCancel(active);
   }
@@ -423,14 +437,18 @@ async function openSession(ready: {
           } catch { /* the original error stays */ }
         }
         try { channel.endInput(); } catch { /* the original error stays */ }
-        rpc().stop();
       })();
     }
     return shuttingDown;
   }
+  async function releaseAfterExit(): Promise<ExitWatch> {
+    const watched = await shutdownChannel().then(() => watchExit());
+    try { rpc().stop(); } catch { /* the reader is already gone */ }
+    return watched;
+  }
   function cleanup(error: HostAdapterError): Promise<HostAdapterError> {
     setupError ??= error;
-    return shutdownChannel().then(() => setupError ?? error);
+    return releaseAfterExit().then(() => setupError ?? error);
   }
   function noteDisallowed(): void {
     const error: SegmentError = { code: 'native-failure', message: rejectedUpdate };
@@ -440,6 +458,7 @@ async function openSession(ready: {
     }
     const active = turn;
     if (active && !active.settled) {
+      if (active.promptWritten) active.sawTraffic = true;
       failActive(active, error);
       return;
     }
@@ -490,7 +509,12 @@ async function openSession(ready: {
     },
     onStopped() { markReaderStopped(); },
   });
-  rpc().start();
+  try {
+    rpc().start();
+  } catch {
+    await releaseSpawn({ channel, processExit });
+    return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher denied the process' });
+  }
 
   const onAbort = () => { void cleanup({ code: 'closed', message: 'open was aborted' }); };
   signal.addEventListener('abort', onAbort, { once: true });
@@ -562,7 +586,7 @@ async function openSession(ready: {
       };
       return { kind: 'conclusive', evidence: evidence(recorded), result };
     }
-    if (active.promptWritten && (active.sawTraffic || active.failure)) return { kind: 'accepted', evidence: evidence(recorded) };
+    if (active.promptWritten && active.sawTraffic) return { kind: 'accepted', evidence: evidence(recorded) };
     return { kind: 'outcome-unknown' };
   }
   function applyOutcome(active: Turn, outcome: OpenCodeRpcOutcome): void {
@@ -598,7 +622,7 @@ async function openSession(ready: {
   }
 
   async function finish(): Promise<Outcome<void, AdapterError>> {
-    const watched = await shutdownChannel().then(() => watchExit());
+    const watched = await releaseAfterExit();
     stream.close();
     if (turn && !turn.settled) finishTurn(turn);
     if (watched === 'rejected') return { kind: 'error', error: { code: 'native-failure', message: exitFailed } };
@@ -622,6 +646,9 @@ async function openSession(ready: {
       notAttempted,
     )),
     async run(input: HostRunInput): Promise<HostSegmentResult> {
+      if (input === null || typeof input !== 'object') {
+        return failed({ code: 'invalid-input', message: 'the segment request is malformed' }, notAttempted);
+      }
       if (closePromise || phase === 'closed') return failed({ code: 'closed', message: 'the adapter is closed' }, notAttempted);
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);
@@ -637,7 +664,9 @@ async function openSession(ready: {
       };
       turn = active;
       try {
-        const handle = createDispatchOperation<CompleteSegment>({
+        let handle: DispatchHandle<CompleteSegment>;
+        try {
+          handle = createDispatchOperation<CompleteSegment>({
           mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
           identity: { hostOperationId: input.hostOperationId, target: { kind: 'session', reference } },
           dispatchNative: async (recorded) => {
@@ -665,7 +694,10 @@ async function openSession(ready: {
             finishTurn(active);
             return observation;
           },
-        });
+          });
+        } catch {
+          return failed({ code: 'invalid-input', message: 'the segment request is malformed' }, notAttempted);
+        }
         const snapshot = await handle.run();
         const observation = snapshot.observation;
         if (observation.kind === 'conclusive') return observation.result;

@@ -141,24 +141,21 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     };
     const onAbort = () => complete({ kind: 'ended' });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const armTimer = () => {
-      if (settled || stopped || options.timeoutMs === undefined || timer !== undefined) return;
-      timer = setTimeout(() => complete({ kind: 'timeout' }), options.timeoutMs);
-      timers.add(timer);
-    };
     waiters.set(id, complete);
     options.signal.addEventListener('abort', onAbort, { once: true });
-    options.beforeWrite?.();
-    let frame: Uint8Array;
     try {
-      frame = encode({ jsonrpc: '2.0', id, method, params });
+      options.beforeWrite?.();
+      if (options.timeoutMs !== undefined) {
+        timer = setTimeout(() => complete({ kind: 'timeout' }), options.timeoutMs);
+        timers.add(timer);
+      }
+      const frame = encode({ jsonrpc: '2.0', id, method, params });
+      void enqueueWrite(frame).then(() => undefined, () => {
+        complete({ kind: 'ended' });
+      });
     } catch {
       complete({ kind: 'ended' });
-      return promise;
     }
-    void enqueueWrite(frame).then(() => armTimer(), () => {
-      complete({ kind: 'ended' });
-    });
     return promise;
   }
 
@@ -325,9 +322,17 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   function start(): void {
     if (started) return;
     started = true;
+    let detach = () => {};
+    unsubscribe = () => { detach(); };
     const sink = Object.assign((chunk: Uint8Array) => accept(chunk), { ended });
-    const remove = channel.listen(sink);
-    unsubscribe = typeof remove === 'function' ? remove : () => {};
+    try {
+      const remove = channel.listen(sink);
+      detach = typeof remove === 'function' ? remove : () => {};
+    } catch (error) {
+      stop();
+      throw error;
+    }
+    if (stopped) unsubscribe();
   }
 
   return { request, notify, respond, respondError, start, stop };
