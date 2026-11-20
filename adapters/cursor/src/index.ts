@@ -168,14 +168,19 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
   function ownLateAgent(late: AgentHandle): void {
     if (!opened.includes(late)) opened.push(late);
-    void dispose(late).catch(() => { closing = undefined; });
+    const owner = closing;
+    void dispose(late).catch(() => {
+      void owner?.then(() => {
+        if (closing === owner && !disposals.has(late)) closing = undefined;
+      }, () => { /* close() clears closing when shutdown rejects */ });
+    });
   }
 
   function ownLateRun(late: RunHandle): void {
     if (drained) {
       void (async () => {
         try { if (late.supports('cancel')) await late.cancel(); }
-        catch { closing = undefined; }
+        catch { /* this run is not queued for a later close */ }
       })();
       return;
     }

@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { qualificationBody, replaceRecord } from './cursor-live-record.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -63,8 +64,10 @@ function otherPaths(porcelain) {
 function adapterEvent(event) {
   if (event === null || typeof event !== 'object') return true;
   if (Object.hasOwn(event, 'args') || Object.hasOwn(event, 'result')) return true;
-  if (event.kind !== 'tool') return false;
   const keys = Object.keys(event);
+  if (event.kind === 'text') return keys.length !== 2 || keys.some(key => key !== 'kind' && key !== 'text');
+  if (event.kind === 'ended') return keys.length !== 2 || keys.some(key => key !== 'kind' && key !== 'outcome');
+  if (event.kind !== 'tool') return false;
   return keys.length !== 4 || keys.some(key => !['kind', 'callId', 'name', 'status'].includes(key));
 }
 
@@ -142,23 +145,7 @@ async function attempt(cursor, localOptions, current, signal, gate) {
 }
 
 async function publish(local, attempts) {
-  const body = `${JSON.stringify({
-    sdk: '1.4.2',
-    sandbox: local.sandboxOptions.enabled,
-    settingSources: [...local.settingSources],
-    modelSupplied: true,
-    firstTurn: 'completed',
-    followUp: 'completed',
-    toolCompleted: true,
-    fileCreated: true,
-    fileUpdated: true,
-    resumedSameAgent: true,
-    attempts,
-  }, null, 2)}\n`;
-  const temporary = join(root, 'docs/qualification', `.cursor-live-${process.pid}.json`);
-  await writeFile(temporary, body);
-  try { await rename(temporary, recordPath); }
-  finally { await rm(temporary, { force: true }); }
+  await replaceRecord(join(root, 'docs/qualification'), recordPath, qualificationBody(local, attempts));
 }
 
 async function main() {

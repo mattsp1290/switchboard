@@ -41,6 +41,9 @@ test('this test process runs under the native SDK tripwire', () => {
 
 test('a native SDK load fails the process even when the error is caught', () => {
   try {
+    for (const name of ['@cursor/sdk', '@cursor/sdk-darwin-arm64', '@cursor/sdk-darwin-x64', '@cursor/sdk-linux-arm64', '@cursor/sdk-linux-x64', '@cursor/sdk-win32-x64']) {
+      assert.equal(NATIVE_SDK_PACKAGES.includes(name), true, name);
+    }
     for (const name of NATIVE_SDK_PACKAGES) {
       const result = load(specifier(name));
       assert.equal(result.stdout.trim(), 'ERR_SWITCHBOARD_NATIVE_SDK_TRIPWIRE', name);

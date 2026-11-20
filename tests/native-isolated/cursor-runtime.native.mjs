@@ -140,6 +140,8 @@ serial('Cursor runtime sandboxes, accumulates text, and hides tool payloads', as
     assistant(' world'),
     tool('running', 'args', 'do-not-leak'),
     tool('completed', 'result', 'do-not-leak'),
+    { type: 'tool_call', status: 'running', call_id: 'call-2', name: 'edit', path: '/tmp/do-not-leak' },
+    { type: 'tool_call', status: 'error', call_id: 'call-3', name: 'edit', error: 'do-not-leak' },
   ], [assistant('Done')]]);
   const events = [];
   const follow = [];
@@ -164,6 +166,8 @@ serial('Cursor runtime sandboxes, accumulates text, and hides tool payloads', as
     assert.deepEqual(tools, [
       { kind: 'tool', callId: 'call-1', name: 'edit', status: 'running' },
       { kind: 'tool', callId: 'call-1', name: 'edit', status: 'completed' },
+      { kind: 'tool', callId: 'call-2', name: 'edit', status: 'running' },
+      { kind: 'tool', callId: 'call-3', name: 'edit', status: 'error' },
     ]);
     for (const event of tools) assert.deepEqual(Object.keys(event).sort(), ['callId', 'kind', 'name', 'status']);
     assert.equal(JSON.stringify(events).includes('do-not-leak'), false);
@@ -213,7 +217,11 @@ serial('create and send failures reject start and emit no ended', async () => {
   try {
     const runtime = createCursorRuntime(options(place.cwd, place.session));
     const events = [];
-    await assert.rejects(runtime.start({ text: 'Hello', onEvent: event => events.push(event) }), /Cursor operation failed/);
+    await assert.rejects(runtime.start({ text: 'Hello', onEvent: event => events.push(event) }), (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      assert.equal(JSON.stringify(error, Object.getOwnPropertyNames(error)).includes('create secret'), false);
+      return true;
+    });
     assert.deepEqual(events, []);
     assert.equal(fake.sends, 0);
     await runtime.close();
@@ -268,7 +276,13 @@ serial('illegal caller options throw before the SDK create', async () => {
     options('relative', place.session),
   ];
   try {
-    for (const value of illegal) assert.throws(() => createCursorRuntime(value), /Cursor operation failed/);
+    for (const value of illegal) {
+      assert.throws(() => createCursorRuntime(value), (error) => {
+        assert.equal(error.message, 'Cursor operation failed.');
+        assert.equal(JSON.stringify(error, Object.getOwnPropertyNames(error)).includes(key), false);
+        return true;
+      });
+    }
     assert.equal(fake.created.length, 0);
   } finally { restore(); await place.remove(); }
 });
@@ -304,7 +318,11 @@ serial('a rejected dispose is tried again on the next close', async () => {
     const runtime = createCursorRuntime(options(place.cwd, place.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     assert.equal(await turn.finished, 'completed');
-    await assert.rejects(runtime.close(), /Cursor operation failed/);
+    await assert.rejects(runtime.close(), (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      assert.equal(JSON.stringify(error, Object.getOwnPropertyNames(error)).includes('dispose secret'), false);
+      return true;
+    });
     await runtime.close();
     assert.equal(attempts, 2);
     assert.equal(fake.created.length, 1);
@@ -374,7 +392,16 @@ serial('readiness stays unverified and a closed runtime does not create a sessio
     assert.equal(report.facts.version.state, 'unsupported');
     assert.equal(report.facts.authentication.state, 'unsupported');
     await access(place.session);
+    await runtime.checkReady();
+    await assert.rejects(runtime.readinessReport({ signal: {} }), (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      return true;
+    });
     const missing = createCursorRuntime(options(join(place.root, 'missing'), join(place.root, 'missing-session')));
+    await assert.rejects(missing.checkReady(), (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      return true;
+    });
     const blocked = await missing.readinessReport();
     assert.equal(blocked.verdict, 'blocked');
     assert.equal(blocked.remediation.code, 'workspace_unavailable');
@@ -383,7 +410,9 @@ serial('readiness stays unverified and a closed runtime does not create a sessio
     ]);
     const closed = createCursorRuntime(options(place.cwd, join(place.root, 'closed-session')));
     await closed.close();
-    const after = await closed.readinessReport();
+    const after = assertCoherentReport(await closed.readinessReport(), [
+      key, caller, place.cwd, join(place.root, 'closed-session'),
+    ]);
     assert.equal(after.verdict, 'unverified');
     assert.equal(after.remediation.code, 'runtime_closed');
     await assert.rejects(access(join(place.root, 'closed-session')));
@@ -411,7 +440,10 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
     assert.equal(creating.created.length, 1);
     const stopping = runtime.close();
     created.open();
-    await assert.rejects(pending, /Cursor operation failed/);
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      return true;
+    });
     assert.deepEqual(events, []);
     await stopping;
     for (let attempt = 0; attempt < 10 && creating.state.disposals.length === 0; attempt += 1) await Promise.resolve();
@@ -432,7 +464,10 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
     assert.equal(slowSend.sends, 1);
     let closeSettled = false;
     const stopping = runtime.close().finally(() => { closeSettled = true; });
-    await assert.rejects(pending, /Cursor operation failed/);
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      return true;
+    });
     assert.equal(closeSettled, false);
     assert.deepEqual(events, []);
     disposed.open();
