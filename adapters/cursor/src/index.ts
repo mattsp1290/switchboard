@@ -139,6 +139,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   const opened: AgentHandle[] = [];
   const lateRuns: RunHandle[] = [];
   const disposals = new Map<AgentHandle, Promise<void>>();
+  let drained = false;
   const cancellers = new Set<() => Promise<void>>();
   let closed = false;
   let closing: Promise<void> | undefined;
@@ -171,11 +172,14 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   }
 
   function ownLateRun(late: RunHandle): void {
+    if (drained) {
+      void (async () => {
+        try { if (late.supports('cancel')) await late.cancel(); }
+        catch { closing = undefined; }
+      })();
+      return;
+    }
     lateRuns.push(late);
-    void (async () => {
-      try { if (late.supports('cancel')) await late.cancel(); }
-      catch { closing = undefined; }
-    })();
   }
 
   async function observe(signal?: AbortSignal): Promise<CursorReadinessReport> {
@@ -316,8 +320,10 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     const stops = [...cancellers];
     for (const stop of stops) { try { await stop(); } catch { /* the turn records the cancel failure */ } }
     await Promise.allSettled([...active]);
+    drained = true;
+    const runs = lateRuns.splice(0);
     let cancelFailed = false;
-    for (const late of lateRuns) {
+    for (const late of runs) {
       try { if (late.supports('cancel')) await late.cancel(); }
       catch { cancelFailed = true; }
     }
@@ -396,7 +402,6 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
       if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';
       state.text += block.text;
     }
-    if (Buffer.byteLength(state.text) > SNAPSHOT_LIMIT) return 'overflow';
     if (state.text !== state.sent) {
       state.sent = state.text;
       onEvent({ kind: 'text', text: state.text });
