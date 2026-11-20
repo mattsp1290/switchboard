@@ -423,10 +423,12 @@ async function openSession(ready: {
     void shutdownChannel().catch(() => undefined);
   }
   function latchExit(status: ExitWatch): void {
-    retire({
+    const error: SegmentError = {
       code: 'native-failure',
       message: status === 'rejected' ? exitFailed : incompleteTurn,
-    }, true);
+    };
+    if (turn && !turn.settled && !turn.failure) turn.failure = error;
+    retire(error, false);
   }
   function markReaderStopped(reason: 'stop' | 'eof' | 'bad-frame' = 'stop'): void {
     retire({ code: 'native-failure', message: incompleteTurn }, false);
@@ -470,8 +472,16 @@ async function openSession(ready: {
     }
     const active = turn;
     if (active && !active.settled) {
-      if (active.promptWritten) active.sawTraffic = true;
+      if (active.promptWritten) {
+        active.sawTraffic = true;
+        failActive(active, error);
+        return;
+      }
       failActive(active, error);
+      if (promptArmed && phase === 'live' && sessionId && !trailingCancelSent) {
+        trailingCancelSent = true;
+        rpc().notify('session/cancel', { sessionId });
+      }
       return;
     }
     unusable ??= error;
@@ -697,7 +707,12 @@ async function openSession(ready: {
           dispatchNative: async (recorded) => {
             active.phase = 'native';
             if (!active.failure && phase !== 'closed') {
-              const onRunAbort = () => { if (active.promptWritten) sendCancel(active); };
+              const onRunAbort = () => {
+                if (!active.promptWritten || active.settled) return;
+                if (!active.nativeTerminal) sendCancel(active);
+                if (!active.failure) active.failure = { code: 'native-failure', message: incompleteTurn };
+                retire({ code: 'native-failure', message: incompleteTurn }, false);
+              };
               input.signal.addEventListener('abort', onRunAbort);
               try {
                 const outcome = await rpc().request('session/prompt', {

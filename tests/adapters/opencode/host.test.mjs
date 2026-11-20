@@ -667,6 +667,73 @@ test('a refusal followed by a model change still cancels once', async () => {
   });
 });
 
+test('EOF after a yielded line still judges the rest of the chunk', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'eof-yield', signal, hostOperationId: 'eof-yield', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } }),
+      JSON.stringify(textUpdate('before-tool')),
+      JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'late-tool' } } }),
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    agent.endOutput();
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.notEqual(result.kind, 'complete');
+    assert.equal(result.error.message, rejectedUpdate);
+    assert.equal(result.write.kind, 'accepted');
+  });
+});
+
+test('abort after the prompt terminal does not cancel or complete', async () => {
+  const controller = new AbortController();
+  await withSession(async ({ adapter, agent }) => {
+    adapter.events.subscribe((event) => {
+      if (event.kind === 'text-delta') controller.abort();
+    });
+    const running = adapter.run({ prompt: 'abort-after', signal: controller.signal, hostOperationId: 'abort-after', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } }),
+      JSON.stringify(textUpdate('then-abort')),
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.notEqual(result.kind, 'complete');
+    assert.equal(result.error.message, incompleteTurn);
+    assert.equal(agent.state.notifications.some((message) => message.method === 'session/cancel'), false);
+    const again = await adapter.run({ prompt: 'next', signal: AbortSignal.timeout(1000), hostOperationId: 'abort-after-2', recordIntent() {} });
+    assert.equal(again.write.kind, 'not-attempted');
+    assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+  });
+});
+
+test('a disallowed update during the next intent still cancels the written prompt', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const first = adapter.run({ prompt: 'first', signal, hostOperationId: 'intent-cancel-1', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    assert.equal((await first).kind, 'complete');
+    let release = () => {};
+    const second = adapter.run({
+      prompt: 'second', signal, hostOperationId: 'intent-cancel-2',
+      recordIntent() { return new Promise((resolve) => { release = resolve; }); },
+    });
+    await setImmediate();
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'during-intent' } } });
+    await setImmediate();
+    assert.equal(agent.state.notifications.filter((message) => message.method === 'session/cancel').length, 1);
+    assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+    release();
+    const result = await second;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, rejectedUpdate);
+    assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+  });
+});
+
 test('interrupt stays quiet after the prompt terminal is recorded', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     let seen;
@@ -688,7 +755,7 @@ test('interrupt stays quiet after the prompt terminal is recorded', async () => 
   });
 });
 
-test('a blank line after end_turn keeps the prompt result', async () => {
+test('a blank line after end_turn fails the latched turn', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const running = adapter.run({ prompt: 'blank-after', signal, hostOperationId: 'blank-after', recordIntent() {} });
     const prompt = await untilRequest(agent, 'session/prompt');
@@ -1168,6 +1235,7 @@ test('a process exit during a prompt fails that segment and blocks the next run'
   assert.equal(again.write.kind, 'not-attempted');
   assert.equal(called, false);
   assert.equal(agent.state.requests.filter((message) => message.method === 'session/prompt').length, 1);
+  assert.equal(agent.state.notifications.some((message) => message.method === 'session/cancel'), false);
   assert.equal(agent.state.signals, 0);
   await adapter.close();
 });

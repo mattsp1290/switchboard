@@ -69,6 +69,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   let pending = Buffer.alloc(0);
   let queuedBytes = 0;
   let stopped = false;
+  let sawEnd = false;
   let pumping = false;
   let started = false;
   let unsubscribe: (() => void) | undefined;
@@ -258,9 +259,17 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         return;
       }
     }
+    finishDrain();
+  }
+
+  function finishDrain(): void {
     flushDeferred();
     pumping = false;
-    if (!stopped && queue.length > 0) ensurePump();
+    if (!stopped && queue.length > 0) {
+      ensurePump();
+      return;
+    }
+    if (sawEnd && !stopped) stop(pending.length > 0 ? 'bad-frame' : 'eof');
   }
 
   function ensurePump(): void {
@@ -332,7 +341,14 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function ended(): void {
-    stop(pending.length > 0 ? 'bad-frame' : 'eof');
+    if (stopped) return;
+    if (pending.length > 0) {
+      stop('bad-frame');
+      return;
+    }
+    sawEnd = true;
+    if (!pumping && queue.length > 0) ensurePump();
+    if (!stopped && !pumping && queue.length === 0) stop('eof');
   }
 
   function start(): void {
