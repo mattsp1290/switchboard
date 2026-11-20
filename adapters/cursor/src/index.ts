@@ -1,6 +1,6 @@
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { cursorLocalOptions, readCursorOptions, type CursorRuntimeOptions } from './config.js';
+import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
 
 export type { CursorRuntimeOptions } from './config.js';
@@ -84,28 +84,21 @@ const remedies = {
   check_unavailable: 'Local Cursor checks passed. Sign-in and version are confirmed when a chat starts.',
 } as const;
 
-function agentIdText(value: unknown): value is string {
-  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256) return false;
-  for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) <= 31) return false;
-  return true;
-}
-
 function toolCallId(value: unknown): string | undefined {
-  if (agentIdText(value)) return value;
+  if (callerAgentId(value)) return value;
   if (typeof value !== 'string') return undefined;
   const splitAt = value.indexOf('\n');
-  if (splitAt <= 0 || value.indexOf('\n', splitAt + 1) !== -1) return undefined;
+  if (splitAt <= 0 || splitAt >= value.length - 1 || value.indexOf('\n', splitAt + 1) !== -1) return undefined;
   const prefix = value.slice(0, splitAt);
   const suffix = value.slice(splitAt + 1);
   if (prefix.includes(':') || suffix.includes(':')) return undefined;
   const joined = `${prefix}:${suffix}`;
-  return agentIdText(joined) ? joined : undefined;
+  return callerAgentId(joined) ? joined : undefined;
 }
 
 function toolName(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 128) return false;
-  for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) <= 31) return false;
-  return true;
+  return textWithoutControls(value);
 }
 
 function toolStatus(value: unknown): value is CursorToolStatus {
@@ -144,6 +137,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   const options: CursorRuntimeOptions = read;
   const active = new Set<Promise<void>>();
   const opened: AgentHandle[] = [];
+  const lateRuns: RunHandle[] = [];
   const disposals = new Map<AgentHandle, Promise<void>>();
   const cancellers = new Set<() => Promise<void>>();
   let closed = false;
@@ -171,21 +165,39 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     };
   }
 
+  function ownLateAgent(late: AgentHandle): void {
+    if (!opened.includes(late)) opened.push(late);
+    void dispose(late).catch(() => { closing = undefined; });
+  }
+
+  function ownLateRun(late: RunHandle): void {
+    lateRuns.push(late);
+    void (async () => {
+      try { if (late.supports('cancel')) await late.cancel(); }
+      catch { closing = undefined; }
+    })();
+  }
+
   async function observe(signal?: AbortSignal): Promise<CursorReadinessReport> {
-    let workspace: CursorFacts['workspace'] = { state: 'accessible' };
-    if (closed) workspace = { state: 'not_checked' };
-    else if (signal?.aborted) workspace = { state: 'cancelled' };
-    else {
+    const halted = (): CursorFacts['workspace'] | undefined =>
+      closed ? { state: 'not_checked' } : signal?.aborted ? { state: 'cancelled' } : undefined;
+    let stop = halted();
+    let workspace: CursorFacts['workspace'] = stop ?? { state: 'accessible' };
+    if (stop === undefined) {
       try { await access(options.cwd, constants.R_OK); }
       catch (error) { workspace = { state: workspaceErrno(error) }; }
-      if (signal?.aborted) workspace = { state: 'cancelled' };
-      else try {
-        await mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
-        await access(options.sessionDirectory, constants.R_OK | constants.W_OK);
-      } catch (error) {
-        if (workspace.state === 'accessible') workspace = { state: workspaceErrno(error) };
+      stop = halted();
+      if (stop !== undefined) workspace = stop;
+      else {
+        try {
+          await mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
+          await access(options.sessionDirectory, constants.R_OK | constants.W_OK);
+        } catch (error) {
+          if (workspace.state === 'accessible') workspace = { state: workspaceErrno(error) };
+        }
+        const afterCreate = halted();
+        if (afterCreate !== undefined) workspace = afterCreate;
       }
-      if (signal?.aborted && workspace.state === 'accessible') workspace = { state: 'cancelled' };
     }
     const facts = {
       installation: { state: 'unsupported' }, version: { state: 'unsupported' },
@@ -220,7 +232,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
     const { text, agentId: requested, onEvent } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
-      || typeof onEvent !== 'function' || (requested !== undefined && (!agentIdText(requested) || writers.has(requested)))) {
+      || typeof onEvent !== 'function' || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
     let trackedId = requested;
@@ -260,21 +272,19 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         const local = localOptions();
         const model = { id: options.model };
         const opening = requested === undefined
-          ? limitAdmission(sdk.create({ apiKey: options.apiKey, model, local }), (late) => { void dispose(late).catch(() => {}); })
-          : limitAdmission(sdk.resume(requested, { apiKey: options.apiKey, model, local }), (late) => { void dispose(late).catch(() => {}); });
+          ? limitAdmission(sdk.create({ apiKey: options.apiKey, model, local }), ownLateAgent)
+          : limitAdmission(sdk.resume(requested, { apiKey: options.apiKey, model, local }), ownLateAgent);
         abandonAdmission = opening.abandon;
         const launched = await opening.promise;
         agent = launched;
         opened.push(agent);
         if (closed) throw failure();
         if (requested === undefined) {
-          if (!agentIdText(agent.agentId) || writers.has(agent.agentId)) throw failure();
+          if (!callerAgentId(agent.agentId) || writers.has(agent.agentId)) throw failure();
           writers.add(agent.agentId);
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
-        const sending = limitAdmission(agent.send(text), (late) => {
-          if (late.supports('cancel')) void late.cancel().catch(() => {});
-        });
+        const sending = limitAdmission(agent.send(text), ownLateRun);
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
@@ -290,12 +300,12 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch {
-        if (agent !== undefined) { try { await dispose(agent); } catch { /* start still rejects the generic error */ } }
         release();
         if (admitted) {
           try { onEvent({ kind: 'ended', outcome: 'failed' }); } catch { /* discarded */ }
           done.resolve('failed');
         } else admission.reject(failure());
+        if (agent !== undefined) void dispose(agent).catch(() => { /* uncached; shutdown retries */ });
       } finally {
         cancellers.delete(cancelActive);
       }
@@ -306,12 +316,17 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     const stops = [...cancellers];
     for (const stop of stops) { try { await stop(); } catch { /* the turn records the cancel failure */ } }
     await Promise.allSettled([...active]);
+    let cancelFailed = false;
+    for (const late of lateRuns) {
+      try { if (late.supports('cancel')) await late.cancel(); }
+      catch { cancelFailed = true; }
+    }
     let disposalFailed = false;
     for (const agent of opened) {
       try { await dispose(agent); }
       catch { disposalFailed = true; }
     }
-    if (disposalFailed) throw failure();
+    if (disposalFailed || cancelFailed) throw failure();
   }
 
   return {
@@ -377,7 +392,9 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
   if (message.type === 'assistant') {
     const content = isRecord(message.message) && Array.isArray(message.message.content) ? message.message.content : [];
     for (const block of content) {
-      if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') state.text += block.text;
+      if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') continue;
+      if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';
+      state.text += block.text;
     }
     if (Buffer.byteLength(state.text) > SNAPSHOT_LIMIT) return 'overflow';
     if (state.text !== state.sent) {

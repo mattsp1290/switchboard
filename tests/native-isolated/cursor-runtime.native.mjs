@@ -59,7 +59,11 @@ function install(scripted) {
   const roots = [];
   const cancels = [];
   let sends = 0;
-  const state = { createError: undefined, resumeError: undefined, sendError: undefined, scripts: scripted };
+  const state = {
+    createError: undefined, resumeError: undefined, sendError: undefined, scripts: scripted,
+    waitStatus: 'finished', cancelError: undefined, holdCreate: undefined, holdSend: undefined,
+    holdStream: undefined, holdWait: undefined, holdDispose: undefined, disposals: [],
+  };
   class Store {
     constructor(dir) { this.dir = dir; roots.push(dir); }
   }
@@ -68,6 +72,7 @@ function install(scripted) {
       agentId: id,
       async send() {
         sends += 1;
+        if (state.holdSend) await state.holdSend;
         if (state.sendError) throw state.sendError;
         const events = state.scripts.shift() ?? [];
         let used = false;
@@ -77,22 +82,33 @@ function install(scripted) {
             if (used) throw new Error('second stream');
             used = true;
             return (async function* () {
+              if (state.holdStream) await state.holdStream;
               for (const event of events) {
                 if (event instanceof Error) throw event;
                 yield event;
               }
             })();
           },
-          async wait() { return { status: 'finished' }; },
-          async cancel() { cancels.push('cancel'); },
+          async wait() {
+            if (state.holdWait) await state.holdWait;
+            return { status: state.waitStatus };
+          },
+          async cancel() {
+            cancels.push('cancel');
+            if (state.cancelError) throw state.cancelError;
+          },
         };
       },
-      async [Symbol.asyncDispose]() {},
+      async [Symbol.asyncDispose]() {
+        state.disposals.push(id);
+        if (state.holdDispose) await state.holdDispose;
+      },
     };
   }
   sdk.Store = Store;
   sdk.create = async (value) => {
     created.push(value);
+    if (state.holdCreate) await state.holdCreate;
     if (state.createError) throw state.createError;
     return agent('agent-1');
   };
@@ -362,7 +378,9 @@ serial('readiness stays unverified and a closed runtime does not create a sessio
     const blocked = await missing.readinessReport();
     assert.equal(blocked.verdict, 'blocked');
     assert.equal(blocked.remediation.code, 'workspace_unavailable');
-    assertCoherentReport(blocked, [key, caller]);
+    assertCoherentReport(blocked, [
+      key, caller, join(place.root, 'missing'), join(place.root, 'missing-session'),
+    ]);
     const closed = createCursorRuntime(options(place.cwd, join(place.root, 'closed-session')));
     await closed.close();
     const after = await closed.readinessReport();
@@ -374,3 +392,179 @@ serial('readiness stays unverified and a closed runtime does not create a sessio
     await missing.close();
   } finally { restore(); await place.remove(); }
 });
+
+function gate() {
+  let open = () => {};
+  const promise = new Promise(resolve => { open = resolve; });
+  return { promise, open };
+}
+
+serial('admission, cancellation, and malformed tool ids settle on the public boundary', async () => {
+  const held = await workspace();
+  const creating = install([]);
+  const created = gate();
+  creating.state.holdCreate = created.promise;
+  try {
+    const runtime = createCursorRuntime(options(held.cwd, held.session));
+    const events = [];
+    const pending = runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+    assert.equal(creating.created.length, 1);
+    const stopping = runtime.close();
+    created.open();
+    await assert.rejects(pending, /Cursor operation failed/);
+    assert.deepEqual(events, []);
+    await stopping;
+    for (let attempt = 0; attempt < 10 && creating.state.disposals.length === 0; attempt += 1) await Promise.resolve();
+    assert.deepEqual(creating.state.disposals, ['agent-1']);
+  } finally { created.open(); restore(); await held.remove(); }
+
+  const sending = await workspace();
+  const slowSend = install([]);
+  const sent = gate();
+  const disposed = gate();
+  slowSend.state.holdSend = sent.promise;
+  slowSend.state.holdDispose = disposed.promise;
+  try {
+    const runtime = createCursorRuntime(options(sending.cwd, sending.session));
+    const events = [];
+    const pending = runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+    for (let attempt = 0; attempt < 10 && slowSend.sends === 0; attempt += 1) await Promise.resolve();
+    assert.equal(slowSend.sends, 1);
+    let closeSettled = false;
+    const stopping = runtime.close().finally(() => { closeSettled = true; });
+    await assert.rejects(pending, /Cursor operation failed/);
+    assert.equal(closeSettled, false);
+    assert.deepEqual(events, []);
+    disposed.open();
+    await stopping;
+    sent.open();
+    for (let attempt = 0; attempt < 10 && !slowSend.cancels.includes('cancel'); attempt += 1) await Promise.resolve();
+    assert.ok(slowSend.cancels.includes('cancel'));
+  } finally {
+    disposed.open();
+    sent.open();
+    restore();
+    await sending.remove();
+  }
+
+  const interrupted = await workspace();
+  const cancelWait = install([[assistant('Hi')]]);
+  const waited = gate();
+  cancelWait.state.holdWait = waited.promise;
+  cancelWait.state.waitStatus = 'cancelled';
+  try {
+    const runtime = createCursorRuntime(options(interrupted.cwd, interrupted.session));
+    const turn = await runtime.start({ text: 'Hello', onEvent() {} });
+    const aborting = turn.abort();
+    waited.open();
+    await aborting;
+    assert.equal(await turn.finished, 'interrupted');
+    await runtime.close();
+  } finally { restore(); await interrupted.remove(); }
+
+  const thrownCancel = await workspace();
+  const failingCancel = install([[assistant('Hi')]]);
+  const failedWait = gate();
+  failingCancel.state.holdWait = failedWait.promise;
+  failingCancel.state.cancelError = new Error('cancel secret');
+  failingCancel.state.waitStatus = 'finished';
+  try {
+    const runtime = createCursorRuntime(options(thrownCancel.cwd, thrownCancel.session));
+    const events = [];
+    const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+    const aborting = turn.abort();
+    failedWait.open();
+    await aborting;
+    assert.equal(await turn.finished, 'failed');
+    assert.equal(JSON.stringify(events).includes('cancel secret'), false);
+    await runtime.close();
+  } finally { restore(); await thrownCancel.remove(); }
+
+  const cancelledThrow = await workspace();
+  const excused = install([[assistant('Hi')]]);
+  const excusedWait = gate();
+  excused.state.holdWait = excusedWait.promise;
+  excused.state.cancelError = new Error('cancel secret');
+  excused.state.waitStatus = 'cancelled';
+  try {
+    const runtime = createCursorRuntime(options(cancelledThrow.cwd, cancelledThrow.session));
+    const turn = await runtime.start({ text: 'Hello', onEvent() {} });
+    const aborting = turn.abort();
+    excusedWait.open();
+    await aborting;
+    assert.equal(await turn.finished, 'interrupted');
+    await runtime.close();
+  } finally { restore(); await cancelledThrow.remove(); }
+
+  const callbackPlace = await workspace();
+  const callbackFake = install([[assistant('Hi')]]);
+  const stream = gate();
+  callbackFake.state.holdStream = stream.promise;
+  callbackFake.state.waitStatus = 'cancelled';
+  try {
+    const runtime = createCursorRuntime(options(callbackPlace.cwd, callbackPlace.session));
+    const events = [];
+    const turn = await runtime.start({
+      text: 'Hello',
+      onEvent(event) {
+        events.push(event.kind);
+        if (event.kind === 'text') throw new Error('callback secret');
+      },
+    });
+    const aborting = turn.abort();
+    await Promise.resolve();
+    assert.ok(callbackFake.cancels.includes('cancel'));
+    stream.open();
+    await aborting;
+    assert.equal(await turn.finished, 'interrupted');
+    assert.equal(callbackFake.state.disposals.length, 0);
+    assert.equal(JSON.stringify(events).includes('callback secret'), false);
+    await runtime.close();
+    assert.equal(callbackFake.state.disposals.length, 1);
+  } finally { restore(); await callbackPlace.remove(); }
+
+  const followPlace = await workspace();
+  install([[assistant('Hi')], [assistant('Next')]]);
+  try {
+    const runtime = createCursorRuntime(options(followPlace.cwd, followPlace.session));
+    let second;
+    const turn = await runtime.start({
+      text: 'Hello',
+      onEvent(event) {
+        if (event.kind === 'ended') second = runtime.start({ text: 'Next', agentId: turn.agentId, onEvent() {} });
+      },
+    });
+    assert.equal(await turn.finished, 'completed');
+    const follow = await second;
+    assert.equal(follow.agentId, turn.agentId);
+    assert.equal(await follow.finished, 'completed');
+    await runtime.close();
+  } finally { restore(); await followPlace.remove(); }
+
+  for (const callId of ['a\n', '\na', 'a\nb\nc', 'a:b\nc']) {
+    const place = await workspace();
+    install([[{ type: 'tool_call', status: 'completed', name: 'edit', call_id: callId }]]);
+    try {
+      const runtime = createCursorRuntime(options(place.cwd, place.session));
+      const events = [];
+      const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+      assert.equal(await turn.finished, 'failed');
+      assert.equal(events.some(event => event.kind === 'tool'), false);
+      assert.deepEqual(events, [{ kind: 'ended', outcome: 'failed' }]);
+      await runtime.close();
+    } finally { restore(); await place.remove(); }
+  }
+
+  const overflowPlace = await workspace();
+  install([[assistant(`${'x'.repeat(SNAPSHOT_BYTES)}y`)]]);
+  try {
+    const runtime = createCursorRuntime(options(overflowPlace.cwd, overflowPlace.session));
+    const events = [];
+    const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+    assert.equal(await turn.finished, 'failed');
+    assert.equal(events.some(event => event.kind === 'text'), false);
+    await runtime.close();
+  } finally { restore(); await overflowPlace.remove(); }
+});
+
+const SNAPSHOT_BYTES = 4 * 1024 * 1024;

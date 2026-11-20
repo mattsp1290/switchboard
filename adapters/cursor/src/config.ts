@@ -15,6 +15,18 @@ export interface CursorLocalOptions {
   readonly storeDirectory: string;
 }
 
+/** Agent ids and joined tool-call ids. The character class stays narrower than the model id. */
+export function callerAgentId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256) return false;
+  return textWithoutControls(value);
+}
+
+/** Rejects C0 controls. Tool names use the same loop with their own length rule. */
+export function textWithoutControls(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) <= 31) return false;
+  return true;
+}
+
 // Same caller-id rule as the text adapters. Not exported: index.ts reaches it through readCursorOptions.
 function callerModelId(value: unknown): value is string {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
