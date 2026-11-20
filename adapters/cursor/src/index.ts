@@ -48,6 +48,7 @@ export interface CursorRuntime {
 }
 
 const failure = () => new Error('Cursor operation failed.');
+const ADMISSION_MS = 30_000;
 const writers = new Set<string>();
 const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
 const refused = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EEXIST', 'EROFS', 'ELOOP']);
@@ -65,6 +66,18 @@ function agentIdText(value: unknown): value is string {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256) return false;
   for (let index = 0; index < value.length; index += 1) if (value.charCodeAt(index) <= 31) return false;
   return true;
+}
+
+function toolCallId(value: unknown): string | undefined {
+  if (agentIdText(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  const splitAt = value.indexOf('\n');
+  if (splitAt <= 0 || value.indexOf('\n', splitAt + 1) !== -1) return undefined;
+  const prefix = value.slice(0, splitAt);
+  const suffix = value.slice(splitAt + 1);
+  if (prefix.includes(':') || suffix.includes(':')) return undefined;
+  const joined = `${prefix}:${suffix}`;
+  return agentIdText(joined) ? joined : undefined;
 }
 
 function toolName(value: unknown): value is string {
@@ -117,7 +130,10 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   function dispose(agent: AgentHandle): Promise<void> {
     const existing = disposals.get(agent);
     if (existing) return existing;
-    const pending = agent[Symbol.asyncDispose]();
+    const pending = agent[Symbol.asyncDispose]().then(() => undefined, (error: unknown) => {
+      if (disposals.get(agent) === pending) disposals.delete(agent);
+      throw error;
+    });
     disposals.set(agent, pending);
     return pending;
   }
@@ -140,12 +156,14 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     else {
       try { await access(options.cwd, constants.R_OK); }
       catch (error) { workspace = { state: workspaceErrno(error) }; }
-      try {
+      if (signal?.aborted) workspace = { state: 'cancelled' };
+      else try {
         await mkdir(options.sessionDirectory, { recursive: true, mode: 0o700 });
         await access(options.sessionDirectory, constants.R_OK | constants.W_OK);
       } catch (error) {
         if (workspace.state === 'accessible') workspace = { state: workspaceErrno(error) };
       }
+      if (signal?.aborted && workspace.state === 'accessible') workspace = { state: 'cancelled' };
     }
     const facts = {
       installation: { state: 'unsupported' }, version: { state: 'unsupported' },
@@ -167,7 +185,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   async function checkReady(): Promise<void> {
     if (closed) throw failure();
     const report = await observe();
-    if (report.facts.workspace.state !== 'accessible') throw failure();
+    if (closed || report.facts.workspace.state !== 'accessible') throw failure();
   }
 
   function readinessReport(readiness?: { readonly signal?: AbortSignal }): Promise<CursorReadinessReport> {
@@ -177,6 +195,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   }
 
   function start(request: CursorRequest): Promise<CursorTurn> {
+    if (request === null || typeof request !== 'object') return Promise.reject(failure());
     const { text, agentId: requested, onEvent } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
       || typeof onEvent !== 'function' || (requested !== undefined && (!agentIdText(requested) || writers.has(requested)))) {
@@ -205,9 +224,36 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
       const faults = { cancel: false, external: false };
       let run: RunHandle | undefined;
       let cancelStarted = false;
+      let abandoned = false;
+      let abandonAdmission: (() => void) | undefined;
+      const bound = <T>(promise: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => fail(), ADMISSION_MS);
+        const fail = (): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          abandoned = true;
+          reject(failure());
+        };
+        abandonAdmission = fail;
+        promise.then((value) => {
+          if (settled) {
+            const late = value as Partial<AgentHandle> & Partial<RunHandle>;
+            if (typeof late[Symbol.asyncDispose] === 'function') void dispose(late as AgentHandle).catch(() => {});
+            else if (typeof late.cancel === 'function' && late.supports?.('cancel') === true) void late.cancel().catch(() => {});
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          abandonAdmission = undefined;
+          resolve(value);
+        }, () => fail());
+      });
       const cancelActive = async (): Promise<void> => {
-        faults.external = true;
+        if (!admitted) abandonAdmission?.();
         if (cancelStarted || !run?.supports('cancel')) return;
+        faults.external = true;
         cancelStarted = true;
         try { await run.cancel(); }
         catch { faults.cancel = true; }
@@ -217,8 +263,9 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         const local = localOptions();
         const model = { id: options.model };
         const launched = requested === undefined
-          ? await sdk.create({ apiKey: options.apiKey, model, local })
-          : await sdk.resume(requested, { apiKey: options.apiKey, model, local });
+          ? await bound(sdk.create({ apiKey: options.apiKey, model, local }))
+          : await bound(sdk.resume(requested, { apiKey: options.apiKey, model, local }));
+        if (abandoned) throw failure();
         agent = launched;
         opened.push(agent);
         if (closed) throw failure();
@@ -227,7 +274,8 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
           writers.add(agent.agentId);
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
-        run = await agent.send(text);
+        run = await bound(agent.send(text));
+        if (abandoned) throw failure();
         admitted = true;
         const turn: CursorTurn = {
           agentId: agent.agentId,
@@ -236,7 +284,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         };
         admission.resolve(turn);
         if (closed) await cancelActive();
-        const outcome = await consume(run, agent, onEvent, faults, dispose);
+        const outcome = await consume(run, onEvent, faults);
         release();
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
@@ -267,17 +315,20 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
   return {
     checkReady, readinessReport, start, close() {
-      if (closing) return closing;
       closed = true;
-      closing = shutdown();
+      if (!closing) {
+        closing = shutdown().then(() => undefined, (error: unknown) => {
+          closing = undefined;
+          throw error;
+        });
+      }
       return closing;
     },
   };
 }
 
 async function consume(
-  run: RunHandle, agent: AgentHandle, onEvent: (event: CursorEvent) => void,
-  faults: { cancel: boolean; external: boolean }, dispose: (agent: AgentHandle) => Promise<void>,
+  run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
 ): Promise<CursorOutcome> {
   const state = { text: '', sent: '' };
   let step: Step = 'next';
@@ -298,11 +349,13 @@ async function consume(
   let waitFailed = false;
   try { waited = (await run.wait()).status; }
   catch { waitFailed = true; }
-  const forced = step === 'request' || step === 'bad-tool' || step === 'overflow' || streamFailed || faults.cancel || waitFailed;
-  let outcome: CursorOutcome = callback && !forced ? (waited === 'cancelled' ? 'interrupted' : 'failed')
-    : forced ? 'failed'
-    : waited === 'finished' ? 'completed' : waited === 'cancelled' ? 'interrupted' : 'failed';
-  if (callback) { try { await dispose(agent); } catch { outcome = 'failed'; } }
+  const forced = step === 'request' || step === 'bad-tool' || step === 'overflow' || streamFailed || waitFailed
+    || (faults.cancel && waited !== 'cancelled');
+  let outcome: CursorOutcome = forced ? 'failed'
+    : waited === 'finished' ? 'completed'
+    : waited === 'cancelled' ? 'interrupted'
+    : 'failed';
+  if (callback && !(faults.external && waited === 'cancelled')) outcome = 'failed';
   return outcome;
 }
 
@@ -322,10 +375,10 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
     return 'next';
   }
   if (message.type === 'tool_call') {
-    const callId = message.call_id;
+    const callId = toolCallId(message.call_id);
     const name = message.name;
     const status = message.status;
-    if (!agentIdText(callId) || !toolName(name) || !toolStatus(status)) return 'bad-tool';
+    if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';
   }

@@ -16,6 +16,7 @@ const FOLLOW = 'Change live.txt so its entire contents are the single line curso
 if (!process.env.CURSOR_API_KEY || !process.env.CURSOR_QUALIFICATION_MODEL) process.exit(1);
 const apiKey = process.env.CURSOR_API_KEY;
 const model = process.env.CURSOR_QUALIFICATION_MODEL;
+delete process.env.CURSOR_API_KEY;
 
 function fail() {
   process.stderr.write('cursor live qualification failed\n');
@@ -72,16 +73,24 @@ async function namedFile(dir, name) {
   return entries.some(entry => entry.isFile() && entry.name === name);
 }
 
-async function turn(runtime, text, agentId) {
+async function turn(runtime, text, agentId, signal) {
+  if (signal?.aborted) return { agentId, outcome: 'interrupted', events: [] };
   const events = [];
   const started = await runtime.start({
     text, ...(agentId === undefined ? {} : { agentId }), onEvent: event => events.push(event),
   });
-  const outcome = await started.finished;
-  return { agentId: started.agentId, outcome, events };
+  const abort = () => { void started.abort().catch(() => {}); };
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const outcome = await started.finished;
+    return { agentId: started.agentId, outcome, events };
+  } finally {
+    signal?.removeEventListener('abort', abort);
+  }
 }
 
-async function attempt(cursor, localOptions, current) {
+async function attempt(cursor, localOptions, current, signal, gate) {
   process.env.HOME = current.home;
   process.env.USERPROFILE = current.home;
   const local = localOptions(current.repo, current.session);
@@ -90,12 +99,14 @@ async function attempt(cursor, localOptions, current) {
   const runtime = cursor.createCursorRuntime({
     cwd: current.repo, sessionDirectory: current.session, apiKey, model,
   });
+  gate.runtimes.push(runtime);
   try {
     const report = await runtime.readinessReport();
     if (report.verdict === 'blocked') return { kind: 'hard', local };
     if (report.verdict !== 'unverified' || report.remediation.code !== 'check_unavailable') return { kind: 'hard', local };
+    if (signal?.aborted) return { kind: 'deadline', local };
     let first;
-    try { first = await turn(runtime, FIRST); }
+    try { first = await turn(runtime, FIRST, undefined, signal); }
     catch (error) { return { kind: error instanceof Error && error.message === 'Cursor operation failed.' ? 'hard' : 'adapter', local }; }
     if (first.events.some(adapterEvent)) return { kind: 'adapter', local };
     if (first.outcome !== 'completed' || !first.events.some(event => event.kind === 'tool' && event.status === 'completed')) {
@@ -106,13 +117,16 @@ async function attempt(cursor, localOptions, current) {
     catch { text = undefined; }
     const status = await git(['status', '--porcelain'], current.repo);
     if (!fileOk(text, 'cursor-live-file') || otherPaths(status).length > 0) return { kind: 'miss', local };
+    if (signal?.aborted) return { kind: 'deadline', local };
     await runtime.close();
     const followRuntime = cursor.createCursorRuntime({
       cwd: current.repo, sessionDirectory: current.session, apiKey, model,
     });
+    gate.runtimes.push(followRuntime);
     try {
+      if (signal?.aborted) return { kind: 'deadline', local };
       let follow;
-      try { follow = await turn(followRuntime, FOLLOW, first.agentId); }
+      try { follow = await turn(followRuntime, FOLLOW, first.agentId, signal); }
       catch (error) { return { kind: error instanceof Error && error.message === 'Cursor operation failed.' ? 'hard' : 'adapter', local }; }
       if (follow.events.some(adapterEvent)) return { kind: 'adapter', local };
       if (follow.agentId !== first.agentId) return { kind: 'adapter', local };
@@ -156,6 +170,8 @@ async function main() {
     let current;
     let timer;
     let pending;
+    const gate = { runtimes: [] };
+    const deadline = new AbortController();
     try {
       current = await scratch();
       process.env.HOME = current.home;
@@ -164,10 +180,15 @@ async function main() {
         ({ cursorLocalOptions: localOptions } = await import(configUrl));
         ({ createCursorRuntime } = await import(cursorUrl));
       }
-      pending = attempt({ createCursorRuntime }, localOptions, current);
+      pending = attempt({ createCursorRuntime }, localOptions, current, deadline.signal, gate);
       const result = await Promise.race([
         pending,
-        new Promise(resolve => { timer = setTimeout(() => resolve({ kind: 'deadline' }), DEADLINE_MS); }),
+        new Promise(resolve => {
+          timer = setTimeout(() => {
+            deadline.abort();
+            resolve({ kind: 'deadline' });
+          }, DEADLINE_MS);
+        }),
       ]);
       if (result.kind === 'pass') {
         await publish(result.local, attempts);
@@ -177,7 +198,10 @@ async function main() {
     } catch { fail(); return; }
     finally {
       clearTimeout(timer);
-      pending?.catch(() => {});
+      if (deadline.signal.aborted) {
+        await Promise.all(gate.runtimes.map(runtime => runtime.close().catch(() => {})));
+      }
+      await pending?.catch(() => {});
       if (current) await current.remove();
     }
   }

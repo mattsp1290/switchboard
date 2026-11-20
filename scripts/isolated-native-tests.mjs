@@ -33,7 +33,7 @@ const STRACE_PACKAGES = {
     } } },
 };
 const DECOY_FILES = ['.claude.json', '.claude/.credentials.json', '.codex/auth.json', '.pi/agent/auth.json',
-  '.aws/credentials', '.config/gcloud/application_default_credentials.json', '.netrc'];
+  '.cursor/sdk/auth.json', '.aws/credentials', '.config/gcloud/application_default_credentials.json', '.netrc'];
 const SDK_ROOTS = ['@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', '@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@cursor/sdk'];
 const FIXTURES = ['tests/adapters/readiness-oracle.mjs', 'tests/adapters/claude/fixture.mjs', 'tests/adapters/codex/sdk-cli.mjs'];
 const SCRIPTS = new Set([...FIXTURES.slice(1), 'node_modules/@openai/codex/bin/codex.js'].map((path) => `${STAGE}/${path}`));

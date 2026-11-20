@@ -257,6 +257,93 @@ serial('illegal caller options throw before the SDK create', async () => {
   } finally { restore(); await place.remove(); }
 });
 
+serial('a non-object start rejects with the generic error', async () => {
+  const place = await workspace();
+  const fake = install([]);
+  try {
+    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    await assert.rejects(async () => runtime.start(null), (error) => {
+      assert.equal(error.message, 'Cursor operation failed.');
+      return true;
+    });
+    assert.equal(fake.created.length, 0);
+    await runtime.close();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('a rejected dispose is tried again on the next close', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('Hi')]]);
+  let attempts = 0;
+  const created = sdk.create;
+  sdk.create = async (value) => {
+    const handle = await created(value);
+    handle[Symbol.asyncDispose] = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('dispose secret');
+    };
+    return handle;
+  };
+  try {
+    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const turn = await runtime.start({ text: 'Hello', onEvent() {} });
+    assert.equal(await turn.finished, 'completed');
+    await assert.rejects(runtime.close(), /Cursor operation failed/);
+    await runtime.close();
+    assert.equal(attempts, 2);
+    assert.equal(fake.created.length, 1);
+  } finally { restore(); await place.remove(); }
+});
+
+serial('a throwing callback fails the turn and leaves disposal to close', async () => {
+  const place = await workspace();
+  install([[assistant('Hi')]]);
+  let disposed = 0;
+  const created = sdk.create;
+  sdk.create = async (value) => {
+    const handle = await created(value);
+    handle[Symbol.asyncDispose] = async () => { disposed += 1; };
+    return handle;
+  };
+  try {
+    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const events = [];
+    const turn = await runtime.start({
+      text: 'Hello',
+      onEvent(event) {
+        events.push(event.kind);
+        if (event.kind === 'text') throw new Error('callback secret');
+      },
+    });
+    assert.equal(await turn.finished, 'failed');
+    assert.deepEqual(events, ['text', 'ended']);
+    assert.equal(JSON.stringify(events).includes('callback secret'), false);
+    assert.equal(disposed, 0);
+    await runtime.close();
+    assert.equal(disposed, 1);
+  } finally { restore(); await place.remove(); }
+});
+
+serial('a newline inside a tool call id is reported without a control character', async () => {
+  const place = await workspace();
+  const prefix = 'a'.repeat(64);
+  const suffix = 'b'.repeat(41);
+  install([[{
+    type: 'tool_call', status: 'completed', name: 'edit', call_id: `${prefix}\n${suffix}`, args: { secret: 'do-not-leak' },
+  }]]);
+  try {
+    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const events = [];
+    const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+    assert.equal(await turn.finished, 'completed');
+    assert.deepEqual(events.filter(event => event.kind === 'tool'), [
+      { kind: 'tool', callId: `${prefix}:${suffix}`, name: 'edit', status: 'completed' },
+    ]);
+    assert.equal(events.some(event => event.kind === 'tool' && event.callId.includes('\n')), false);
+    await runtime.close();
+  } finally { restore(); await place.remove(); }
+});
+
 serial('readiness stays unverified and a closed runtime does not create a session', async () => {
   const place = await workspace();
   install([]);
