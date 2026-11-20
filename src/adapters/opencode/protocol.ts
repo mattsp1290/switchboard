@@ -52,6 +52,10 @@ function encode(value: unknown): Uint8Array {
   return Buffer.from(`${JSON.stringify(value)}\n`);
 }
 
+function isThenable<T>(value: void | T | Promise<T>): value is Promise<T> {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null && 'then' in value && typeof value.then === 'function';
+}
+
 export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: OpenCodeProtocolHandlers): OpenCodeProtocol {
   const output = new AbortController();
   const waiters = new Map<number, (outcome: OpenCodeRpcOutcome) => void>();
@@ -133,7 +137,14 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     waiters.set(id, complete);
     options.signal.addEventListener('abort', onAbort, { once: true });
     options.beforeWrite?.();
-    void enqueueWrite(encode({ jsonrpc: '2.0', id, method, params })).then(() => undefined, () => {
+    let frame: Uint8Array;
+    try {
+      frame = encode({ jsonrpc: '2.0', id, method, params });
+    } catch {
+      complete({ kind: 'ended' });
+      return promise;
+    }
+    void enqueueWrite(frame).then(() => undefined, () => {
       complete({ kind: 'ended' });
     });
     return promise;
@@ -155,7 +166,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     stop();
   }
 
-  function dispatchLine(line: Buffer): void | 'yield' {
+  function dispatchLine(line: Buffer): void | 'yield' | Promise<void | 'yield'> {
     const text = line.toString('utf8');
     let value: unknown;
     try {
@@ -171,13 +182,11 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     const id = typeof value.id === 'number' || typeof value.id === 'string' ? value.id : undefined;
     const method = typeof value.method === 'string' ? value.method : undefined;
     if (id !== undefined && method !== undefined) {
-      void handlers.onRequest({ id, method, params: value.params });
+      const incoming = handlers.onRequest({ id, method, params: value.params });
+      if (isThenable(incoming)) void Promise.resolve(incoming).then(() => undefined, () => { stop(); });
       return;
     }
-    if (method !== undefined && !Object.hasOwn(value, 'id')) {
-      const step = handlers.onNotification({ method, params: value.params });
-      return step === 'yield' ? 'yield' : undefined;
-    }
+    if (method !== undefined && !Object.hasOwn(value, 'id')) return handlers.onNotification({ method, params: value.params });
     if (typeof id === 'number') {
       const complete = waiters.get(id);
       if (!complete) return;
@@ -196,20 +205,37 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     failLine();
   }
 
+  function pauseDrain(step: 'yield' | Promise<void | 'yield'>): void {
+    void Promise.resolve(step).then((value) => {
+      if (stopped) {
+        flushDeferred();
+        return undefined;
+      }
+      return value === 'yield' ? Promise.resolve() : undefined;
+    }).then(() => {
+      if (stopped) flushDeferred();
+      else drain();
+    }, () => {
+      stop();
+      pumping = false;
+    });
+  }
+
   function drain(): void {
     while (!stopped && queue.length > 0) {
       const line = queue.shift();
       if (line === undefined) break;
-      const step = dispatchLine(line);
+      let step: void | 'yield' | Promise<void | 'yield'>;
+      try {
+        step = dispatchLine(line);
+      } catch {
+        stop();
+        pumping = false;
+        return;
+      }
       if (stopped) break;
-      if (step === 'yield') {
-        void Promise.resolve().then(() => {
-          if (stopped) {
-            flushDeferred();
-            return;
-          }
-          drain();
-        });
+      if (step === 'yield' || isThenable(step)) {
+        pauseDrain(step);
         return;
       }
     }

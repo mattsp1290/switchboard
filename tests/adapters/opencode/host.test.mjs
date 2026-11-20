@@ -16,6 +16,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { opencodeHostAdapter, OPENCODE_HOST_ACP_VERSION } = await import(new URL('adapters/opencode/index.ts', src).href);
+const { openOpenCodeProtocol } = await import(new URL('adapters/opencode/protocol.ts', src).href);
 hook.deregister();
 
 const executable = '/usr/bin/opencode';
@@ -771,6 +772,45 @@ test('a rejected process exit uses the fixed failure and drops the reason', asyn
   assert.equal(closed.error.message, 'OpenCode process exit failed.');
   assert.equal(JSON.stringify(closed).includes('secret-exit-detail'), false);
   assert.equal(agent.state.signals, 0);
+});
+
+test('a throwing notification ends the in-flight request', async () => {
+  let sink;
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, {
+    onNotification() { throw new Error('secret-handler'); },
+    onRequest() {},
+  });
+  protocol.start();
+  const pending = protocol.request('initialize', {}, { signal: AbortSignal.timeout(1000), timeoutMs: 1000 });
+  sink(Buffer.from('{"jsonrpc":"2.0","method":"session/update","params":{}}\n'));
+  const outcome = await pending;
+  assert.equal(outcome.kind, 'ended');
+  protocol.stop();
+});
+
+test('a notification promise can yield before the next line', async () => {
+  const seen = [];
+  let sink;
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, {
+    onNotification(message) {
+      seen.push(message.params);
+      return Promise.resolve('yield');
+    },
+    onRequest() {},
+  });
+  protocol.start();
+  sink(Buffer.from('{"jsonrpc":"2.0","method":"a","params":1}\n{"jsonrpc":"2.0","method":"b","params":2}\n'));
+  await setImmediate();
+  assert.deepEqual(seen, [1, 2]);
+  protocol.stop();
 });
 
 test('prompt bytes followed by channel EOF are outcome-unknown', async () => {
