@@ -28,7 +28,7 @@ export interface OpenCodeNotification {
 export interface OpenCodeProtocolHandlers {
   onNotification: (message: OpenCodeNotification) => void | 'yield' | Promise<void | 'yield'>;
   onRequest: (message: OpenCodeIncomingRequest) => void | Promise<void>;
-  onStopped?: () => void;
+  onStopped?: (reason: 'stop' | 'eof' | 'bad-frame') => void;
 }
 
 export interface OpenCodeProtocol {
@@ -77,7 +77,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     for (const deliver of ready) deliver();
   }
 
-  function stop(): void {
+  function stop(reason: 'stop' | 'eof' | 'bad-frame' = 'stop'): void {
     if (stopped) return;
     stopped = true;
     output.abort();
@@ -93,7 +93,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     }
     flushDeferred();
     try { unsubscribe?.(); } catch { /* the sink is already gone */ }
-    try { handlers.onStopped?.(); } catch { /* the adapter records this itself */ }
+    try { handlers.onStopped?.(reason); } catch { /* the adapter records this itself */ }
   }
 
   function enqueueWrite(frame: Uint8Array): Promise<void> {
@@ -172,14 +172,14 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function failLine(): void {
-    stop();
+    stop('bad-frame');
   }
 
   function dispatchLine(line: Buffer): void | 'yield' | Promise<void | 'yield'> {
     const body = line.length > 0 && line[line.length - 1] === 0x0d ? line.subarray(0, -1) : line;
     let text: string;
     try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body);
     } catch {
       failLine();
       return;
@@ -264,8 +264,8 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function takeLine(line: Buffer): boolean {
-    if (line.length > maxLineBytes || queuedBytes + line.length > maxLineBytes) {
-      stop();
+    if (line.length === 0 || line.length > maxLineBytes || queuedBytes + line.length > maxLineBytes) {
+      stop('bad-frame');
       return false;
     }
     queuedBytes += line.length;
@@ -274,22 +274,30 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function accept(chunk: Uint8Array): void {
+    try {
+      consume(chunk);
+    } catch {
+      stop('bad-frame');
+    }
+  }
+
+  function consume(chunk: Uint8Array): void {
     if (stopped) return;
     if (!(chunk instanceof Uint8Array)) {
-      stop();
+      stop('bad-frame');
       return;
     }
     let offset = 0;
     while (offset < chunk.length && !stopped) {
       const room = maxLineBytes + 1 - pending.length;
       if (room <= 0) {
-        stop();
+        stop('bad-frame');
         return;
       }
       const slice = chunk.subarray(offset, offset + Math.min(room, chunk.length - offset));
       const newlineAt = slice.indexOf(0x0a);
       if (newlineAt === -1 && offset + slice.length < chunk.length) {
-        stop();
+        stop('bad-frame');
         return;
       }
       const incoming = newlineAt === -1 ? slice : slice.subarray(0, newlineAt + 1);
@@ -300,23 +308,24 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         const newline = pending.indexOf(0x0a);
         if (newline === -1) break;
         if (newline > maxLineBytes) {
-          stop();
+          stop('bad-frame');
           return;
         }
         const line = Buffer.from(pending.subarray(0, newline));
         pending = pending.subarray(newline + 1);
+        if (pending.length === 0) pending = Buffer.alloc(0);
         if (!takeLine(line)) return;
       }
     }
     if (pending.length > maxLineBytes) {
-      stop();
+      stop('bad-frame');
       return;
     }
     ensurePump();
   }
 
   function ended(): void {
-    stop();
+    stop('eof');
   }
 
   function start(): void {

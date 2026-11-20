@@ -385,9 +385,14 @@ async function openSession(ready: {
     if (index >= 0) permissions.splice(index, 1);
   }
   function failActive(active: Turn, error: SegmentError): void {
-    if (active.settled || active.failure) return;
-    if (!active.promptWritten) unusable ??= error;
-    active.failure = error;
+    if (active.settled) return;
+    if (!active.promptWritten) {
+      if (active.failure) return;
+      unusable ??= error;
+      active.failure = error;
+      return;
+    }
+    if (!active.failure) active.failure = error;
     sendCancel(active);
   }
   function watchExit(): Promise<ExitWatch> {
@@ -420,8 +425,11 @@ async function openSession(ready: {
     }, true);
   }
   void exitReady.then((status) => latchExit(status));
-  function markReaderStopped(): void {
+  function markReaderStopped(reason: 'stop' | 'eof' | 'bad-frame' = 'stop'): void {
     retire({ code: 'native-failure', message: incompleteTurn }, false);
+    if (reason === 'bad-frame' && turn && !turn.settled && !turn.failure) {
+      turn.failure = { code: 'native-failure', message: incompleteTurn };
+    }
   }
   function shutdownChannel(): Promise<void> {
     if (!shuttingDown) {
@@ -507,7 +515,7 @@ async function openSession(ready: {
       rpc().respondError(message.id, -32601);
       noteDisallowed();
     },
-    onStopped() { markReaderStopped(); },
+    onStopped(reason) { markReaderStopped(reason); },
   });
   try {
     rpc().start();

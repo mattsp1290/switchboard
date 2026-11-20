@@ -628,6 +628,62 @@ test('a disallowed update before the prompt is written is outcome-unknown', asyn
   });
 });
 
+test('a prompt error followed by a tool call still cancels once', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'err-then-tool', signal, hostOperationId: 'err-then-tool', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, error: { code: -32603, message: 'raw body secret' } }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'SECRET_AFTER_ERROR' } } }),
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, incompleteTurn);
+    assert.equal(result.write.kind, 'accepted');
+    assert.equal(JSON.stringify(result).includes('raw body secret'), false);
+    const cancels = agent.state.notifications.filter((message) => message.method === 'session/cancel');
+    assert.equal(cancels.length, 1);
+    assert.equal(Object.hasOwn(cancels[0], 'id'), false);
+    assert.equal(agent.state.signals, 0);
+  });
+});
+
+test('a refusal followed by a model change still cancels once', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'refuse-then-model', signal, hostOperationId: 'refuse-then-model', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'refusal', usage: {} } }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: {
+        sessionUpdate: 'config_option_update', configOptions: [{ id: 'model', currentValue: 'other/model' }] } } }),
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, incompleteTurn);
+    assert.equal(agent.state.notifications.filter((message) => message.method === 'session/cancel').length, 1);
+    assert.equal(agent.state.signals, 0);
+  });
+});
+
+test('a corrupt line after end_turn does not complete the segment', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'corrupt-after', signal, hostOperationId: 'corrupt-after', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } }),
+      '{bad',
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.notEqual(result.kind, 'complete');
+    assert.equal(result.error.message, incompleteTurn);
+    assert.equal(result.write.kind, 'accepted');
+  });
+});
+
 test('a tool call after end_turn in the same chunk fails that segment', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const running = adapter.run({ prompt: 'race', signal, hostOperationId: 'race', recordIntent() {} });
@@ -947,6 +1003,37 @@ test('a throwing beforeWrite still settles the request', async () => {
   });
   assert.equal(outcome.kind, 'ended');
   assert.equal(JSON.stringify(outcome).includes('secret-before'), false);
+  protocol.stop();
+});
+
+test('a bare newline ends the request instead of queueing empty lines', async () => {
+  let sink;
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, { onNotification() {}, onRequest() {} });
+  protocol.start();
+  const pending = protocol.request('initialize', {}, { signal: AbortSignal.timeout(1000), timeoutMs: 1000 });
+  sink(Buffer.from('\n\n\n'));
+  assert.equal((await pending).kind, 'ended');
+  protocol.stop();
+});
+
+test('a leading BOM does not complete a waiter', async () => {
+  let sink;
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, { onNotification() {}, onRequest() {} });
+  protocol.start();
+  const pending = protocol.request('initialize', {}, { signal: AbortSignal.timeout(1000), timeoutMs: 1000 });
+  sink(Buffer.concat([
+    Buffer.from([0xef, 0xbb, 0xbf]),
+    Buffer.from('{"jsonrpc":"2.0","id":1,"result":{}}\n'),
+  ]));
+  assert.equal((await pending).kind, 'ended');
   protocol.stop();
 });
 
