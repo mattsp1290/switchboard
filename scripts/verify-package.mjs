@@ -16,6 +16,16 @@ const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-package-')));
 try {
+  const modelRule = (file, name) => {
+    const source = readFileSync(join(root, file), 'utf8');
+    const match = source.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`));
+    assert(match, `${file} defines ${name}`);
+    return match[0].slice(match[0].indexOf('{') + 1, -1).replace('> limit', '> 256');
+  };
+  const plainRule = modelRule('src/adapters/codex/route.ts', 'plain');
+  for (const file of ['adapters/pi/src/index.ts', 'adapters/claude/src/index.ts', 'adapters/codex/src/index.ts']) {
+    assert.equal(modelRule(file, 'callerModelId'), plainRule, `${file} callerModelId matches plain(value, 256)`);
+  }
   process.stdout.write(runNpm(['run', 'build']));
   const artifacts = join(temporary, 'artifacts');
   const consumer = join(temporary, 'consumer');

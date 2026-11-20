@@ -226,6 +226,21 @@ test('glm-5.3-flash is forwarded as the provider request model', { timeout: 10_0
   });
 });
 
+test('a resumed session uses the runtime model, not the model that wrote the journal', { timeout: 10_000 }, async () => {
+  await fixture(async ({ runtime, requests }) => {
+    const first = await runtime({ model: 'glm-5.3' });
+    const session = await first.open();
+    await prompt(session);
+    const sessionFile = session.sessionFile;
+    await first.close();
+    const second = await runtime({ model: 'glm-5.3-flash' });
+    const resumed = await second.open({ sessionFile });
+    await prompt(resumed, 'After a different model');
+    assert.equal(requests[0].model, 'glm-5.3');
+    assert.equal(requests.at(-1).model, 'glm-5.3-flash');
+  });
+});
+
 test('createPiRuntime rejects an illegal model id before a session directory or fetch', { timeout: 10_000 }, async () => {
   await fixture(async ({ directory, options, requests }) => {
     const withoutModel = { ...options };
@@ -243,6 +258,8 @@ test('createPiRuntime rejects an illegal model id before a session directory or 
       { ...options, model: '\u007f' },
       { ...options, model: '\u009f' },
       { ...options, model: '\uD800' },
+      { ...options, model: 'id\u0085x' },
+      { ...options, model: 'id\tx' },
       { ...options, model: 1 },
     ];
     for (const [index, input] of cases.entries()) {
@@ -256,7 +273,7 @@ test('createPiRuntime rejects an illegal model id before a session directory or 
 
 test('catalog misses fail after the session directory exists and do not fetch', { timeout: 10_000 }, async () => {
   await fixture(async ({ directory, options, requests }) => {
-    for (const model of ['a', 'm'.repeat(256), 'unsupported']) {
+    for (const model of ['a', 'm'.repeat(256), 'unsupported', 'modèle-1', 'm\u{1F600}']) {
       const sessionDirectory = join(directory, `catalog-${model.length}`);
       await assert.rejects(createPiRuntime({ ...options, sessionDirectory, model }), /Pi operation failed/);
       await access(sessionDirectory);

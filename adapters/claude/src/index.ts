@@ -226,10 +226,9 @@ export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntim
               publish(`${streamId}:${event.index}`, snapshot);
             }
           } else if (message.type === 'assistant') {
-            if (!session || message.session_id !== session.id || message.error || message.parent_tool_use_id !== null) throw failure();
-            if (message.message.model !== options.model) throw failure();
+            if (!session || message.session_id !== session.id || message.error || message.parent_tool_use_id !== null
+              || message.message.model !== options.model) throw failure();
             if (!admitted) session.model = message.message.model;
-            else if (session.model !== message.message.model) throw failure();
             admit();
             const id = message.message.id;
             if (!id || id.length > 512) throw failure();

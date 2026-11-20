@@ -351,7 +351,7 @@ test('host cancellation and close report cancelled or closed checks and reap the
 
 test('createCodexRuntime accepts a one-character and 256-character model id without a child', async t => {
   const { dir } = await fixture(t);
-  for (const model of ['a', 'm'.repeat(256)]) {
+  for (const model of ['a', 'm'.repeat(256), 'modèle-1', 'm\u{1F600}']) {
     const runtime = createCodexRuntime({ cwd: dir, model, codexHome: dir, codexPathOverride: executable });
     t.after(() => runtime.close());
   }
@@ -362,7 +362,7 @@ test('createCodexRuntime rejects an illegal model id before a child', async t =>
   const { dir } = await fixture(t);
   const base = { cwd: dir, codexHome: dir, codexPathOverride: executable };
   assert.throws(() => createCodexRuntime(base), /Codex operation failed/);
-  for (const model of [null, '', '   ', ' id', 'id ', 'x'.repeat(257), '\n', '\u0000', '\u007f', '\u009f', '\uD800', 1]) {
+  for (const model of [null, '', '   ', ' id', 'id ', 'x'.repeat(257), '\n', '\u0000', '\u007f', '\u009f', '\uD800', 'id\u0085x', 'id\tx', 1]) {
     assert.throws(() => createCodexRuntime({ ...base, model }), /Codex operation failed/);
   }
   await assert.rejects(readFile(join(dir, 'args.json')), { code: 'ENOENT' });
