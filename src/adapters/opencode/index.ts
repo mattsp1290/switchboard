@@ -389,30 +389,25 @@ async function openSession(ready: {
       void exitReady.then((status) => finishWatch(status));
     });
   }
-  function latchExit(status: ExitWatch): void {
+  function retire(error: SegmentError, failTurn: boolean): void {
     if (phase === 'closed') return;
-    const error: SegmentError = {
-      code: 'native-failure',
-      message: status === 'rejected' ? exitFailed : incompleteTurn,
-    };
     if (phase === 'setup') {
       void cleanup(error);
       return;
     }
     unusable ??= error;
-    if (turn && !turn.settled) failActive(turn, error);
+    if (failTurn && turn && !turn.settled) failActive(turn, error);
     void shutdownChannel();
+  }
+  function latchExit(status: ExitWatch): void {
+    retire({
+      code: 'native-failure',
+      message: status === 'rejected' ? exitFailed : incompleteTurn,
+    }, true);
   }
   void exitReady.then((status) => latchExit(status));
   function markReaderStopped(): void {
-    if (phase === 'closed') return;
-    const error: SegmentError = { code: 'native-failure', message: incompleteTurn };
-    if (phase === 'setup') {
-      if (!setupError) void cleanup(error);
-      return;
-    }
-    unusable ??= error;
-    void shutdownChannel();
+    retire({ code: 'native-failure', message: incompleteTurn }, false);
   }
   function shutdownChannel(): Promise<void> {
     if (!shuttingDown) {
@@ -593,10 +588,7 @@ async function openSession(ready: {
       }
       return;
     }
-    if (phase === 'live') {
-      unusable ??= { code: 'native-failure', message: incompleteTurn };
-      void shutdownChannel();
-    }
+    if (phase === 'live') retire({ code: 'native-failure', message: incompleteTurn }, false);
     if (active.sawTraffic && !active.failure) active.failure = { code: 'native-failure', message: incompleteTurn };
   }
   function finishTurn(active: Turn): void {
