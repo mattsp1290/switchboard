@@ -96,6 +96,8 @@ process.stdout.write(answer);
 await runtime.close();
 ```
 
+The optional `./host/opencode` entry drives one local `opencode acp` process. The host supplies the spawn, the absolute executable, the absolute cwd, and the environment. The spawn receives `args` exactly \`[executable, 'acp']\`. That array is the full argv. A host that prepends the executable again launches the wrong process. The host drains or discards the child stderr. The adapter does not read it. An unread stderr pipe can stall the session. `model` is required and is sent as the ACP `model` config value, such as a caller-supplied `provider/model` string. The library does not choose one. Permission, filesystem, and terminal requests fail the segment. `npm test` does not qualify a live OpenCode binary. This entry is not `./pi`.
+
 The `model` field is required and is not filled by the library. `glm-5.3` in the example is an argument the caller supplied.
 
 Text events contain the complete assistant text so far. Replace the displayed text for each event.
