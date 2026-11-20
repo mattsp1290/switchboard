@@ -368,6 +368,8 @@ async function openSession(ready: {
   let closePromise: Promise<Outcome<void, AdapterError>> | undefined;
   let shuttingDown: Promise<void> | undefined;
   let protocol: OpenCodeProtocol | undefined;
+  let promptArmed = false;
+  let trailingCancelSent = false;
   function rpc(): OpenCodeProtocol {
     if (protocol === undefined) throw new Error('OpenCode protocol is not open');
     return protocol;
@@ -439,7 +441,7 @@ async function openSession(ready: {
         signal.removeEventListener('abort', onAbort);
         for (const item of [...permissions]) answerCancelled(item);
         const closeAbort = new AbortController();
-        void exitReady.then(() => closeAbort.abort());
+        void exitReady.then(() => closeAbort.abort()).catch(() => undefined);
         if (sessionId) {
           try {
             await rpc().request('session/close', { sessionId }, { signal: closeAbort.signal, timeoutMs: acknowledgementMs });
@@ -453,6 +455,7 @@ async function openSession(ready: {
   async function releaseAfterExit(): Promise<ExitWatch> {
     const watched = await shutdownChannel().then(() => watchExit());
     try { rpc().stop(); } catch { /* the reader is already gone */ }
+    try { rpc().releaseReader(); } catch { /* the sink is already gone */ }
     return watched;
   }
   function cleanup(error: HostAdapterError): Promise<HostAdapterError> {
@@ -472,6 +475,10 @@ async function openSession(ready: {
       return;
     }
     unusable ??= error;
+    if (promptArmed && phase === 'live' && sessionId && !trailingCancelSent) {
+      trailingCancelSent = true;
+      rpc().notify('session/cancel', { sessionId });
+    }
   }
   function handleUpdate(params: unknown): void | 'yield' {
     const decision = readUpdate(params, { phase, sessionId, modelPinned, model, turn });
@@ -493,7 +500,9 @@ async function openSession(ready: {
     }
     active.text += decision.text;
     const published = stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: decision.nativeItemId, text: decision.text }));
-    if (published.kind === 'closed' || published.disconnected > 0) noteDisallowed();
+    if (published.kind === 'closed' || published.disconnected > 0) {
+      failActive(active, { code: 'native-failure', message: incompleteTurn });
+    }
     return 'yield';
   }
 
@@ -533,7 +542,7 @@ async function openSession(ready: {
       message: 'The host launcher denied the process',
     });
   }
-  void exitReady.then((status) => latchExit(status));
+  void exitReady.then((status) => latchExit(status)).catch(() => undefined);
 
   async function exchange(
     method: string,
@@ -695,7 +704,7 @@ async function openSession(ready: {
                   sessionId, prompt: [{ type: 'text', text: prompt }],
                 }, {
                   signal: input.signal,
-                  beforeWrite() { active.promptWritten = true; },
+                  beforeWrite() { active.promptWritten = true; promptArmed = true; },
                   onOutcome(next) { applyOutcome(active, next); },
                 });
                 applyOutcome(active, outcome);
@@ -729,7 +738,7 @@ async function openSession(ready: {
     },
     async interrupt({ timeoutMs }) {
       const active = turn;
-      if (!active || (active.settled && active.nativeTerminal)) return { kind: 'terminal-observed' };
+      if (!active || active.nativeTerminal) return { kind: 'terminal-observed' };
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return { kind: 'unconfirmed-within-bound' };
       if (active.settled || active.phase === 'intent' || !active.promptWritten) return { kind: 'unconfirmed-within-bound' };
       sendCancel(active);

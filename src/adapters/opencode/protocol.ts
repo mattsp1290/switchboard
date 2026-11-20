@@ -43,6 +43,7 @@ export interface OpenCodeProtocol {
   respondError(id: number | string, code: number): void;
   start(): void;
   stop(): void;
+  releaseReader(): void;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -92,8 +93,13 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
       try { complete({ kind: 'ended' }); } catch { /* the waiter is already resolved */ }
     }
     flushDeferred();
-    try { unsubscribe?.(); } catch { /* the sink is already gone */ }
     try { handlers.onStopped?.(reason); } catch { /* the adapter records this itself */ }
+  }
+
+  function releaseReader(): void {
+    const remove = unsubscribe;
+    unsubscribe = undefined;
+    try { remove?.(); } catch { /* the sink is already gone */ }
   }
 
   function enqueueWrite(frame: Uint8Array): Promise<void> {
@@ -228,7 +234,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
       if (stopped) flushDeferred();
       else drain();
     }, () => {
-      stop();
+      stop('bad-frame');
       pumping = false;
     });
   }
@@ -242,7 +248,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
       try {
         step = dispatchLine(line);
       } catch {
-        stop();
+        stop('bad-frame');
         pumping = false;
         return;
       }
@@ -264,10 +270,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function takeLine(line: Buffer): boolean {
-    if (line.length === 0 || line.length > maxLineBytes || queuedBytes + line.length > maxLineBytes) {
-      stop('bad-frame');
-      return false;
-    }
+    if (line.length === 0 || line.length > maxLineBytes || queuedBytes + line.length > maxLineBytes) return false;
     queuedBytes += line.length;
     queue.push(line);
     return true;
@@ -314,7 +317,11 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         const line = Buffer.from(pending.subarray(0, newline));
         pending = pending.subarray(newline + 1);
         if (pending.length === 0) pending = Buffer.alloc(0);
-        if (!takeLine(line)) return;
+        if (!takeLine(line)) {
+          ensurePump();
+          stop('bad-frame');
+          return;
+        }
       }
     }
     if (pending.length > maxLineBytes) {
@@ -325,7 +332,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function ended(): void {
-    stop('eof');
+    stop(pending.length > 0 ? 'bad-frame' : 'eof');
   }
 
   function start(): void {
@@ -342,10 +349,10 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         stopped = true;
         output.abort();
       }
+      try { unsubscribe?.(); } catch { /* the sink is already gone */ }
       throw error;
     }
-    if (stopped) unsubscribe();
   }
 
-  return { request, notify, respond, respondError, start, stop };
+  return { request, notify, respond, respondError, start, stop, releaseReader };
 }
