@@ -64,13 +64,16 @@ try {
     './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
     './host/codex': { types: './dist/adapters/codex/index.d.ts', import: './dist/adapters/codex/index.js' },
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
+    './cursor': { types: './dist/cursor/index.d.ts', import: './dist/cursor/index.js' },
     './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
     './host/pi': { types: './dist/host/pi/index.d.ts', import: './dist/host/pi/index.js' },
   });
-  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@opentelemetry/api': '1.9.0' });
-  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
+  assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@cursor/sdk': '1.4.2', '@opentelemetry/api': '1.9.0' });
+  assert.deepEqual(installedManifest.peerDependenciesMeta, { '@ag-ui/core': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-coding-agent': { optional: true }, '@openai/codex-sdk': { optional: true }, '@anthropic-ai/claude-agent-sdk': { optional: true }, '@cursor/sdk': { optional: true }, '@opentelemetry/api': { optional: true } });
   assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
+  assert(!existsSync(join(consumer, 'node_modules/@cursor/sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/index.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/sdk.d.ts'), 'utf8'), /@anthropic-ai/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/index.js'), 'utf8'), /from ['"]\.\/sdk\.js['"]/);
@@ -119,6 +122,7 @@ assert.equal(typeof switchboard.createEventStream, 'function');
 await assert.rejects(import('${manifest.name}/pi'), { code: 'ERR_MODULE_NOT_FOUND' });
 await assert.rejects(import('${manifest.name}/codex'), { code: 'ERR_MODULE_NOT_FOUND' });
 await assert.rejects(import('${manifest.name}/claude'), { code: 'ERR_MODULE_NOT_FOUND' });
+await assert.rejects(import('${manifest.name}/cursor'), { code: 'ERR_MODULE_NOT_FOUND' });
 for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, path.replace(/^dist\//, '')]), ...readdirSync(join(root, 'src/testkit')).map((file) => `src/testkit/${file}`)])}) {
   await assert.rejects(import('${manifest.name}/' + subpath), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 }
@@ -179,6 +183,7 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   assert(!coreTypes.includes('/dist/pi/'), 'Root declarations do not reference the Pi adapter.');
   assert(!coreTypes.includes('/@earendil-works/'), 'Root declarations do not reference the Pi SDK.');
   assert(!coreTypes.includes('/dist/claude/') && !coreTypes.includes('/@anthropic-ai/'), 'Root declarations do not reference the Claude adapter or SDK.');
+  assert(!coreTypes.includes('/dist/cursor/') && !coreTypes.includes('/@cursor/sdk/'), 'Root declarations do not reference the Cursor adapter or SDK.');
   assert(!coreTypes.includes('/observability/'), 'Root declarations do not reference observability.');
   assert(!coreTypes.includes('/@opentelemetry/'), 'Root declarations do not reference telemetry.');
   assertCoreIsolation(consumer, coreTypes.trim().split('\n'), {
@@ -194,16 +199,20 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';
 import type { PiReadinessReport, PiRuntime } from '${manifest.name}/pi';
-declare const codex: CodexRuntime; declare const claude: ClaudeRuntime; declare const pi: PiRuntime;
+import type { CursorReadinessReport, CursorRuntime, CursorRuntimeOptions } from '${manifest.name}/cursor';
+declare const codex: CodexRuntime; declare const claude: ClaudeRuntime; declare const pi: PiRuntime; declare const cursor: CursorRuntime;
 const claudeOptions: ClaudeRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key', model: 'caller-selected-model' };
 const codexOptions: CodexRuntimeOptions = { cwd: '/work', model: 'caller-selected-model' };
 // @ts-expect-error Property 'model' is missing.
 const missingClaude: ClaudeRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key' };
 // @ts-expect-error Property 'model' is missing.
 const missingCodex: CodexRuntimeOptions = { cwd: '/work' };
-declare const wide: ReadinessReport; declare const claudeReport: ClaudeReadinessReport;
-const sources: readonly ReadinessSource[] = [codex, claude, pi];
-const narrowed: readonly ReadinessReport[] = [] as (CodexReadinessReport | ClaudeReadinessReport | PiReadinessReport)[];
+declare const wide: ReadinessReport; declare const claudeReport: ClaudeReadinessReport; declare const cursorReport: CursorReadinessReport;
+const cursorOptions: CursorRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key', model: 'caller-selected-model' };
+// @ts-expect-error Property 'model' is missing.
+const missingCursor: CursorRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key' };
+const sources: readonly ReadinessSource[] = [codex, claude, pi, cursor];
+const narrowed: readonly ReadinessReport[] = [] as (CodexReadinessReport | ClaudeReadinessReport | PiReadinessReport | CursorReadinessReport)[];
 const ready = { provider: 'codex', observedAt: '', checked: ['installation', 'version', 'authentication'], verdict: 'ready', remediation: null, facts: {
   installation: { state: 'available' }, version: { state: 'qualified', required: '0.169.0', observed: '0.169.0' },
   authentication: { state: 'signed_in', method: 'chatgpt' }, workspace: { state: 'unsupported' } } } satisfies ReadinessReport;
@@ -234,15 +243,20 @@ const raw: ReadinessReport = { ...ready, verdict: 'unverified', remediation: { c
 const claudeSignedIn: ClaudeReadinessReport['facts']['authentication'] = { state: 'signed_in', method: 'chatgpt' };
 // @ts-expect-error Claude cannot report ready.
 const claudeReady = claudeReport.verdict === 'ready';
+// @ts-expect-error Cursor cannot report ready.
+const cursorReady: CursorReadinessReport = { provider: 'cursor', observedAt: '', checked: [], verdict: 'ready', remediation: null, facts: {
+  installation: { state: 'unsupported' }, version: { state: 'unsupported' }, authentication: { state: 'unsupported' }, workspace: { state: 'accessible' } } };
+const cursorBlocked: CursorReadinessReport = { provider: 'cursor', observedAt: '', checked: ['workspace'], verdict: 'blocked', remediation: { code: 'workspace_unavailable', message: 'Make the working directory readable and the Cursor session directory writable.' }, facts: {
+  installation: { state: 'unsupported' }, version: { state: 'unsupported' }, authentication: { state: 'unsupported' }, workspace: { state: 'inaccessible' } } };
 // @ts-expect-error A wide report is not a Codex report.
 const codexOnly: CodexReadinessReport = wide;
 // @ts-expect-error Reports are read-only.
 wide.verdict = 'ready';
-void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, codexOnly, claudeOptions, codexOptions, missingClaude, missingCodex];
+void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, cursorReady, cursorBlocked, cursorReport, codexOnly, claudeOptions, codexOptions, cursorOptions, missingClaude, missingCodex, missingCursor];
 `);
   writeFileSync(join(consumer, 'readiness-types.json'), JSON.stringify({ ...consumerConfig, files: ['readiness-types.test.ts'] }));
   const readinessTypes = run(process.execPath, [compiler, '-p', 'readiness-types.json', '--listFilesOnly'], consumer);
-  assert(!/\/@(?:openai|anthropic-ai|earendil-works)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
+  assert(!/\/@(?:openai|anthropic-ai|earendil-works|cursor)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'readiness-types.json'], consumer);
 
   // These two consumers execute the packed adapters, which load the Pi and Codex SDKs.

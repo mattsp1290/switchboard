@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,9 +9,17 @@ import { NATIVE_SDK_PACKAGES } from './support/native-sdk-tripwire.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const tripwire = fileURLToPath(new URL('./support/native-sdk-tripwire.mjs', import.meta.url));
 const probes = [];
+const created = [];
 // A package with no built entry never reaches the load hook. Point at a file under its directory.
 const specifier = (name) => {
   const dir = join(root, 'node_modules', ...name.split('/'));
+  if (!existsSync(join(dir, 'package.json'))) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name, type: 'module' })}\n`);
+    writeFileSync(join(dir, 'switchboard-tripwire-probe.mjs'), 'export {};\n');
+    created.push(dir);
+    return pathToFileURL(join(dir, 'switchboard-tripwire-probe.mjs')).href;
+  }
   if (name === '@openai/codex') return pathToFileURL(join(dir, 'bin/codex.js')).href;
   const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   const target = pkg.exports?.['.'];
@@ -22,6 +30,7 @@ const specifier = (name) => {
   probes.push(probe);
   return pathToFileURL(probe).href;
 };
+process.on('exit', () => { for (const dir of created) rmSync(dir, { recursive: true, force: true }); });
 const load = (specifier) => spawnSync(process.execPath, ['--import', tripwire, '--input-type=module', '-e',
   `try { await import(${JSON.stringify(specifier)}); console.log('loaded'); } catch (error) { console.log(error.code); }`],
   { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH } });

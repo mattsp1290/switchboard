@@ -5,7 +5,9 @@ import { registerHooks } from 'node:module';
 
 export const NATIVE_SDK_PACKAGES = Object.freeze(['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk',
   '@openai/codex-sdk', '@openai/codex', '@earendil-works/pi-ai', '@earendil-works/pi-coding-agent',
-  '@earendil-works/pi-agent-core', '@modelcontextprotocol/sdk']);
+  '@earendil-works/pi-agent-core', '@modelcontextprotocol/sdk', '@cursor/sdk',
+  '@cursor/sdk-darwin-arm64', '@cursor/sdk-darwin-x64', '@cursor/sdk-linux-arm64',
+  '@cursor/sdk-linux-x64', '@cursor/sdk-win32-x64']);
 
 const paths = NATIVE_SDK_PACKAGES.map((name) => `/node_modules/${name}/`);
 const write = writeSync;

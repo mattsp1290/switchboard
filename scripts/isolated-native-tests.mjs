@@ -34,11 +34,11 @@ const STRACE_PACKAGES = {
 };
 const DECOY_FILES = ['.claude.json', '.claude/.credentials.json', '.codex/auth.json', '.pi/agent/auth.json',
   '.aws/credentials', '.config/gcloud/application_default_credentials.json', '.netrc'];
-const SDK_ROOTS = ['@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', '@earendil-works/pi-ai', '@earendil-works/pi-coding-agent'];
+const SDK_ROOTS = ['@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', '@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@cursor/sdk'];
 const FIXTURES = ['tests/adapters/readiness-oracle.mjs', 'tests/adapters/claude/fixture.mjs', 'tests/adapters/codex/sdk-cli.mjs'];
 const SCRIPTS = new Set([...FIXTURES.slice(1), 'node_modules/@openai/codex/bin/codex.js'].map((path) => `${STAGE}/${path}`));
 const CODEX_VENDOR = /^\/stage\/node_modules\/@openai\/codex-linux-(x64|arm64)\/vendor\/[a-z0-9_-]+\/bin\/codex$/;
-const SUITES = ['claude-runtime', 'codex-sdk-chat', 'pi-runtime', 'pi-host'].map((name) => `tests/native-isolated/${name}.native.mjs`);
+const SUITES = ['claude-runtime', 'codex-sdk-chat', 'pi-runtime', 'pi-host', 'cursor-runtime'].map((name) => `tests/native-isolated/${name}.native.mjs`);
 const CONTROLS = [['decoy-read', 'decoy'], ['network', 'network'], ['launch', 'launch']]
   .map(([name, expect]) => ({ entry: `tests/native-isolated/controls/${name}.mjs`, expect }));
 const RUN_DEADLINE_MS = 300_000;
