@@ -7,10 +7,10 @@ import { createClaudeRuntime } from '@mattsp1290/switchboard/claude';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
 const id = '12345678-1234-1234-1234-123456789abc';
-async function fixture(config, run) {
+async function fixture(config, run, model = 'claude-sonnet-4-6') {
   const dir = await mkdtemp(resolve(tmpdir(), 'switchboard-claude-'));
   await writeFile(resolve(dir, 'fixture.json'), JSON.stringify(config));
-  const runtime = createClaudeRuntime({ cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', model: 'sonnet', claudePathOverride: resolve('tests/adapters/claude/fixture.mjs') });
+  const runtime = createClaudeRuntime({ cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', model, claudePathOverride: resolve('tests/adapters/claude/fixture.mjs') });
   try { await run(runtime, dir); } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -29,10 +29,106 @@ test('SDK creates and resumes a session and retains text blocks', async () => fi
   assert.equal(observed.env.CLAUDE_CONFIG_DIR, resolve(dir, 'sessions'));
   assert.equal(observed.env.ANTHROPIC_BASE_URL, undefined);
   assert.ok(observed.args.includes(`--resume=${id}`));
-  assert.ok(observed.args.includes('--model=sonnet'));
+  assert.ok(observed.args.includes('--model=claude-sonnet-4-6'));
   assert.ok(observed.args.includes('--tools='));
   assert.ok(observed.args.includes('--bare'));
 }));
+
+test('a caller model id is passed through and admitted unchanged', async () => fixture({}, async (runtime, dir) => {
+  const turn = await runtime.start({ text: 'hello', onEvent() {} });
+  assert.equal(turn.model, 'claude-haiku-4-5');
+  assert.equal((await turn.finished).outcome, 'completed');
+  const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+  assert.ok(observed.args.includes('--model=claude-haiku-4-5'));
+  assert.ok(!observed.args.includes('--model=sonnet'));
+  assert.ok(!observed.args.includes('--model=opus'));
+}, 'claude-haiku-4-5'));
+
+test('an init model that differs from the caller id rejects before admission', async () => fixture({ initModel: 'claude-sonnet-4-6' }, async runtime => {
+  const events = [];
+  await assert.rejects(runtime.start({ text: 'hello', onEvent: event => events.push(event) }), /Claude operation failed/);
+  assert.deepEqual(events, []);
+}, 'sonnet'));
+
+test('an assistant model that differs from the caller id rejects before admission', async () => fixture({ assistantModel: 'claude-sonnet-4-6' }, async runtime => {
+  const events = [];
+  await assert.rejects(runtime.start({ text: 'hello', onEvent: event => events.push(event) }), /Claude operation failed/);
+  assert.deepEqual(events, []);
+}, 'sonnet'));
+
+test('a stream message_start model that differs from the caller id rejects before admission', async () => fixture({ mode: 'stream', streamModel: 'claude-sonnet-4-6' }, async runtime => {
+  const events = [];
+  await assert.rejects(runtime.start({ text: 'hello', onEvent: event => events.push(event) }), /Claude operation failed/);
+  assert.deepEqual(events, []);
+}, 'sonnet'));
+
+test('case and null native models reject the caller id before admission', async () => {
+  for (const initModel of ['SONNET', 'Sonnet', null]) {
+    await fixture({ initModel }, async runtime => {
+      const events = [];
+      await assert.rejects(runtime.start({ text: 'hello', onEvent: event => events.push(event) }), /Claude operation failed/);
+      assert.deepEqual(events, []);
+    }, 'sonnet');
+  }
+});
+
+test('a stream assistant model that changes after admission fails the turn', async () => fixture({ mode: 'stream', assistantModel: 'claude-sonnet-4-6' }, async runtime => {
+  const turn = await runtime.start({ text: 'hello', onEvent() {} });
+  assert.equal((await turn.finished).outcome, 'failed');
+}, 'sonnet'));
+
+test('createClaudeRuntime accepts a one-character and 256-character model id without a child', async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), 'switchboard-claude-'));
+  try {
+    for (const model of ['a', 'm'.repeat(256), 'modèle-1', 'm\u{1F600}']) {
+      const runtime = createClaudeRuntime({ cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', model, claudePathOverride: resolve('tests/adapters/claude/fixture.mjs') });
+      await runtime.close();
+    }
+    await assert.rejects(readFile(resolve(dir, 'observed.json')), { code: 'ENOENT' });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('createClaudeRuntime rejects an illegal model id before a child', async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), 'switchboard-claude-'));
+  try {
+    const base = { cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', claudePathOverride: resolve('tests/adapters/claude/fixture.mjs') };
+    assert.throws(() => createClaudeRuntime(base), /Claude operation failed/);
+    for (const model of [null, '', '   ', ' id', 'id ', 'x'.repeat(257), '\n', '\u0000', '\u007f', '\u009f', '\uD800', 'id\u0085x', 'id\tx', 1]) {
+      assert.throws(() => createClaudeRuntime({ ...base, model }), /Claude operation failed/);
+    }
+    const legal = { ...base, model: 'claude-sonnet-4-6' };
+    for (const input of [
+      { ...legal, apiKey: undefined },
+      { ...legal, apiKey: null },
+      { ...legal, apiKey: 1 },
+      { ...legal, apiKey: '' },
+      { ...legal, apiKey: '   ' },
+      { ...legal, cwd: 1 },
+      { ...legal, sessionDirectory: 1 },
+      { ...legal, claudePathOverride: 1 },
+    ]) assert.throws(() => createClaudeRuntime(input), /Claude operation failed/);
+    for (const input of [undefined, null, 1, 'x', new Proxy({}, { get() { throw new Error('host secret'); } })]) {
+      assert.throws(() => createClaudeRuntime(input), { message: 'Claude operation failed.' });
+    }
+    await assert.rejects(readFile(resolve(dir, 'observed.json')), { code: 'ENOENT' });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('createClaudeRuntime keeps the model captured at creation', async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), 'switchboard-claude-'));
+  await writeFile(resolve(dir, 'fixture.json'), JSON.stringify({}));
+  const options = { cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', model: 'claude-sonnet-4-6', claudePathOverride: resolve('tests/adapters/claude/fixture.mjs') };
+  const runtime = createClaudeRuntime(options);
+  options.model = 'claude-haiku-4-5';
+  try {
+    const turn = await runtime.start({ text: 'hello', onEvent() {} });
+    assert.equal(turn.model, 'claude-sonnet-4-6');
+    assert.equal((await turn.finished).outcome, 'completed');
+    const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+    assert.ok(observed.args.includes('--model=claude-sonnet-4-6'));
+    assert.ok(!observed.args.includes('--model=claude-haiku-4-5'));
+  } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
+});
 
 test('SDK error frames are suppressed and do not admit the turn', async () => fixture({mode:'error'}, async runtime => {
   const events = [];

@@ -9,7 +9,7 @@ import type { ThreadOptions } from '@openai/codex-sdk';
 
 export interface CodexRuntimeOptions {
   readonly cwd: string;
-  readonly model: 'gpt-6.1-sol';
+  readonly model: string;
   readonly codexHome?: string;
   readonly codexPathOverride?: string;
 }
@@ -66,6 +66,18 @@ const run = promisify(execFile);
 const writers = new Set<string>();
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const failure = () => new Error('Codex operation failed.');
+// Matches plain(value, 256) and must stay identical in the three text adapters.
+function callerModelId(value: unknown): boolean {
+  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
+  }
+  return true;
+}
+function absolutePath(value: unknown): boolean {
+  return typeof value === 'string' && isAbsolute(value);
+}
 const QUALIFIED = '0.169.0';
 const INSTALL = 'Install Codex CLI 0.169.0 to use Codex chat.';
 const SIGN_IN = 'Sign in with ChatGPT using codex login to use Codex chat.';
@@ -92,10 +104,21 @@ function nativeEnvironment(codexHome: string | undefined): Record<string, string
   return env;
 }
 
-export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
-  if (options.model !== 'gpt-6.1-sol' || !isAbsolute(options.cwd)
-    || (options.codexHome !== undefined && !isAbsolute(options.codexHome))
-    || (options.codexPathOverride !== undefined && !isAbsolute(options.codexPathOverride))) throw failure();
+function readCodexOptions(value: unknown): CodexRuntimeOptions | undefined {
+  try {
+    if (value === null || typeof value !== 'object') return undefined;
+    const { cwd, model, codexHome, codexPathOverride } = value as Record<string, unknown>;
+    if (!callerModelId(model) || !absolutePath(cwd)
+      || (codexHome !== undefined && !absolutePath(codexHome))
+      || (codexPathOverride !== undefined && !absolutePath(codexPathOverride))) return undefined;
+    return { cwd, model, ...(codexHome === undefined ? {} : { codexHome }), ...(codexPathOverride === undefined ? {} : { codexPathOverride }) } as CodexRuntimeOptions;
+  } catch { return undefined; }
+}
+
+export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
+  const read = readCodexOptions(input);
+  if (!read) throw failure();
+  const options: CodexRuntimeOptions = read;
   const cwd = resolve(options.cwd);
   const env = nativeEnvironment(options.codexHome);
   const executable = options.codexPathOverride ?? (env.PATH === undefined ? [] : env.PATH.split(delimiter)).map(dir => resolve(dir, 'codex')).find(path => {

@@ -13,7 +13,7 @@ export interface PiRuntimeOptions {
   readonly sessionDirectory: string;
   readonly apiKey: string;
   readonly provider: 'opencode-go';
-  readonly model: 'glm-5.3';
+  readonly model: string;
 }
 export interface PiTerminal {
   readonly kind: 'ended';
@@ -54,6 +54,15 @@ export interface PiRuntime {
 const writers = new Set<string>();
 const MAX_SESSIONS = 32;
 const failure = () => new Error('Pi operation failed.');
+// Matches plain(value, 256) and must stay identical in the three text adapters.
+function callerModelId(value: unknown): boolean {
+  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
+  }
+  return true;
+}
 const remedies = {
   workspace_unavailable: 'Make the Pi working directory and session directory available.',
   retry_check: 'Pi did not finish the readiness check. Try again.',
@@ -212,7 +221,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
 
 export async function createPiRuntime(options: PiRuntimeOptions): Promise<PiRuntime> {
   try {
-    if (options.provider !== 'opencode-go' || options.model !== 'glm-5.3'
+    if (options.provider !== 'opencode-go' || !callerModelId(options.model)
       || typeof options.apiKey !== 'string' || !options.apiKey.trim()) throw failure();
     const cwd = await realpath(options.cwd);
     if (!(await stat(cwd)).isDirectory()) throw failure();

@@ -83,11 +83,14 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.js'), 'utf8'), /from ['"]\.\/runtime\.js['"]/);
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
+// @ts-expect-error Property 'model' is missing.
+const missingModel: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go' };
 declare const runtime: PiRuntime;
 const session = await runtime.open();
 const accepted = await session.prompt('hello', (event: PiEvent) => { if (event.kind === 'text') event.text.toUpperCase(); });
 const terminal: PiTerminal = await accepted.finished;
-void [options, terminal];
+void [options, flash, missingModel, terminal];
 `);
   assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
   assert(!existsSync(join(consumer, 'node_modules/@opentelemetry')), 'Core consumer has no telemetry installed.');
@@ -188,10 +191,16 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   assert(!piTypes.includes('/@earendil-works/'), 'Pi declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'pi-types.json'], consumer);
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
-import type { CodexReadinessReport, CodexRuntime } from '${manifest.name}/codex';
-import type { ClaudeReadinessReport, ClaudeRuntime } from '${manifest.name}/claude';
+import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
+import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';
 import type { PiReadinessReport, PiRuntime } from '${manifest.name}/pi';
 declare const codex: CodexRuntime; declare const claude: ClaudeRuntime; declare const pi: PiRuntime;
+const claudeOptions: ClaudeRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key', model: 'caller-selected-model' };
+const codexOptions: CodexRuntimeOptions = { cwd: '/work', model: 'caller-selected-model' };
+// @ts-expect-error Property 'model' is missing.
+const missingClaude: ClaudeRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key' };
+// @ts-expect-error Property 'model' is missing.
+const missingCodex: CodexRuntimeOptions = { cwd: '/work' };
 declare const wide: ReadinessReport; declare const claudeReport: ClaudeReadinessReport;
 const sources: readonly ReadinessSource[] = [codex, claude, pi];
 const narrowed: readonly ReadinessReport[] = [] as (CodexReadinessReport | ClaudeReadinessReport | PiReadinessReport)[];
@@ -229,7 +238,7 @@ const claudeReady = claudeReport.verdict === 'ready';
 const codexOnly: CodexReadinessReport = wide;
 // @ts-expect-error Reports are read-only.
 wide.verdict = 'ready';
-void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, codexOnly];
+void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, codexOnly, claudeOptions, codexOptions, missingClaude, missingCodex];
 `);
   writeFileSync(join(consumer, 'readiness-types.json'), JSON.stringify({ ...consumerConfig, files: ['readiness-types.test.ts'] }));
   const readinessTypes = run(process.execPath, [compiler, '-p', 'readiness-types.json', '--listFilesOnly'], consumer);
@@ -252,7 +261,7 @@ import assert from 'node:assert/strict';
 const pi = await import('${manifest.name}/pi');
 assert.equal(typeof pi.createPiRuntime, 'function');
 globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
-const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
+const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
 await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
 const runtime = await pi.createPiRuntime(options);
 try {
@@ -274,14 +283,17 @@ try {
     writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
     writeFileSync(join(codexConsumer, 'runtime.mjs'), `
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { createCodexRuntime } from '${manifest.name}/codex';
-const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'gpt-6.1-sol',
+const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'caller-selected-model',
   codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
 try {
   assert.equal((await runtime.readinessReport()).verdict, 'ready');
   const turn = await runtime.start({ text: 'packaged', onEvent() {} });
   assert.equal(turn.threadId, '${fixtureId}');
   assert.equal((await turn.finished).outcome, 'completed');
+  const { args } = JSON.parse(readFileSync('args.json', 'utf8'));
+  assert.equal(args[args.indexOf('--model') + 1], 'caller-selected-model');
 } finally { await runtime.close(); }
 `);
     run(process.execPath, ['runtime.mjs'], codexConsumer);
