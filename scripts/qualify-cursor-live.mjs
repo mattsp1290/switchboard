@@ -18,6 +18,7 @@ if (!process.env.CURSOR_API_KEY || !process.env.CURSOR_QUALIFICATION_MODEL) proc
 const apiKey = process.env.CURSOR_API_KEY;
 const model = process.env.CURSOR_QUALIFICATION_MODEL;
 delete process.env.CURSOR_API_KEY;
+delete process.env.CURSOR_QUALIFICATION_MODEL;
 
 function fail() {
   process.stderr.write('cursor live qualification failed\n');

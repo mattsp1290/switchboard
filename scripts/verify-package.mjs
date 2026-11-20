@@ -77,7 +77,10 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/sdk.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/config.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
   for (const name of ['index.d.ts', 'index.js']) {
-    assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor', name), 'utf8'), /export\s*\{[^}]*\bsdk\b/);
+    const source = readFileSync(join(installed, 'dist/cursor', name), 'utf8');
+    assert.doesNotMatch(source, /export\s*\{[^}]*\bsdk\b/);
+    assert.doesNotMatch(source, /export\s+(?:declare\s+)?(?:const|function|class)\s+sdk\b/);
+    assert.doesNotMatch(source, /export\s*\*\s*from\s*['"]\.\/sdk\.js['"]/);
   }
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/claude/sdk.d.ts'), 'utf8'), /@anthropic-ai/);

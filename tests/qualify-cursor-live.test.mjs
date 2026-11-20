@@ -10,6 +10,7 @@ import { qualificationBody, replaceRecord } from '../scripts/cursor-live-record.
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = join(root, 'scripts/qualify-cursor-live.mjs');
+const tripwire = join(root, 'tests/support/native-sdk-tripwire.mjs');
 const recordPath = join(root, 'docs/qualification/cursor-live.json');
 const fields = [
   'sdk', 'sandbox', 'settingSources', 'modelSupplied', 'firstTurn', 'followUp',
@@ -29,32 +30,45 @@ test('a missing qualification variable exits before the record or the SDK', () =
     delete env.CURSOR_API_KEY;
     delete env.CURSOR_QUALIFICATION_MODEL;
     env[item.keep] = item.canary;
-    const result = spawnSync(process.execPath, [script], { cwd: root, encoding: 'utf8', env });
+    const result = spawnSync(process.execPath, ['--import', tripwire, script], { cwd: root, encoding: 'utf8', env });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
     assert.equal(result.status, 1);
-    assert.equal(`${result.stdout ?? ''}${result.stderr ?? ''}`.includes(item.canary), false);
+    assert.equal(output.includes(item.canary), false);
+    assert.equal(output.includes('native SDK tripwire'), false);
   }
   assert.deepEqual(readFileSync(recordPath), before);
 });
 
 test('the qualification record keeps its shape and a failed rename keeps the old bytes', async () => {
-  const canaries = ['canary-key', 'canary-model', 'canary-agent', 'canary-prompt', '/tmp/canary-path', 'canary-transcript'];
+  const canaries = {
+    apiKey: 'canary-key',
+    model: 'canary-model',
+    agentId: 'canary-agent',
+    prompt: 'canary-prompt',
+    path: '/tmp/canary-path',
+    transcript: 'canary-transcript',
+    cwd: '/tmp/canary-cwd',
+    storeDirectory: '/tmp/canary-store',
+  };
   const body = qualificationBody({
     sandboxOptions: { enabled: true },
     settingSources: ['project'],
-    apiKey: canaries[0],
-    model: canaries[1],
-    agentId: canaries[2],
-    prompt: canaries[3],
-    path: canaries[4],
-    transcript: canaries[5],
+    ...canaries,
   }, 1);
   const parsed = JSON.parse(body);
   assert.deepEqual(Object.keys(parsed), fields);
-  assert.equal(parsed.modelSupplied, true);
-  assert.deepEqual(parsed.settingSources, ['project']);
+  assert.equal(parsed.sdk, '1.4.2');
   assert.equal(parsed.sandbox, true);
+  assert.deepEqual(parsed.settingSources, ['project']);
+  assert.equal(parsed.modelSupplied, true);
+  assert.equal(parsed.firstTurn, 'completed');
+  assert.equal(parsed.followUp, 'completed');
+  assert.equal(parsed.toolCompleted, true);
+  assert.equal(parsed.fileCreated, true);
+  assert.equal(parsed.fileUpdated, true);
+  assert.equal(parsed.resumedSameAgent, true);
   assert.equal(parsed.attempts, 1);
-  for (const canary of canaries) assert.equal(body.includes(canary), false);
+  for (const canary of Object.values(canaries)) assert.equal(body.includes(canary), false);
   const directory = await mkdtemp(join(tmpdir(), 'cursor-live-record-'));
   const copy = join(directory, 'cursor-live.json');
   const original = await readFile(recordPath);
