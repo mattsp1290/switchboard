@@ -157,6 +157,7 @@ function promptFrameFits(sessionId: string, text: string): boolean {
 }
 async function releaseSpawn(value: unknown): Promise<void> {
   let detach = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const exiting = record(value) && isPromiseLike(value.processExit)
     ? Promise.resolve(value.processExit).then(() => undefined, () => undefined)
     : Promise.resolve();
@@ -175,9 +176,10 @@ async function releaseSpawn(value: unknown): Promise<void> {
     }
     await Promise.race([
       exiting,
-      new Promise<void>((resolve) => { setTimeout(resolve, exitMs); }),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, exitMs); }),
     ]);
   } finally {
+    if (timer !== undefined) clearTimeout(timer);
     try { detach(); } catch { /* the sink is already gone */ }
   }
 }
@@ -411,12 +413,12 @@ async function openSession(ready: {
   function retire(error: SegmentError, failTurn: boolean): void {
     if (phase === 'closed') return;
     if (phase === 'setup') {
-      void cleanup(error);
+      void cleanup(error).catch(() => undefined);
       return;
     }
     unusable ??= error;
     if (failTurn && turn && !turn.settled) failActive(turn, error);
-    void shutdownChannel();
+    void shutdownChannel().catch(() => undefined);
   }
   function latchExit(status: ExitWatch): void {
     retire({
@@ -424,8 +426,13 @@ async function openSession(ready: {
       message: status === 'rejected' ? exitFailed : incompleteTurn,
     }, true);
   }
-  void exitReady.then((status) => latchExit(status));
+  let readerArmed = false;
+  let pendingStop: 'stop' | 'eof' | 'bad-frame' | undefined;
   function markReaderStopped(reason: 'stop' | 'eof' | 'bad-frame' = 'stop'): void {
+    if (!readerArmed) {
+      pendingStop ??= reason;
+      return;
+    }
     retire({ code: 'native-failure', message: incompleteTurn }, false);
     if (reason === 'bad-frame' && turn && !turn.settled && !turn.failure) {
       turn.failure = { code: 'native-failure', message: incompleteTurn };
@@ -461,7 +468,7 @@ async function openSession(ready: {
   function noteDisallowed(): void {
     const error: SegmentError = { code: 'native-failure', message: rejectedUpdate };
     if (phase === 'setup') {
-      void cleanup(error);
+      void cleanup(error).catch(() => undefined);
       return;
     }
     const active = turn;
@@ -517,15 +524,24 @@ async function openSession(ready: {
     },
     onStopped(reason) { markReaderStopped(reason); },
   });
+  const onAbort = () => {
+    void cleanup({ code: 'closed', message: 'open was aborted' }).catch(() => undefined);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
   try {
     rpc().start();
   } catch {
-    await releaseSpawn({ channel, processExit });
-    return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher denied the process' });
+    if (shuttingDown) await shuttingDown.catch(() => undefined);
+    else await releaseSpawn({ channel, processExit: exitReady });
+    return fail(setupError ?? {
+      code: 'unavailable',
+      feature: 'host-launcher',
+      message: 'The host launcher denied the process',
+    });
   }
-
-  const onAbort = () => { void cleanup({ code: 'closed', message: 'open was aborted' }); };
-  signal.addEventListener('abort', onAbort, { once: true });
+  readerArmed = true;
+  void exitReady.then((status) => latchExit(status));
+  if (pendingStop) markReaderStopped(pendingStop);
 
   async function exchange(
     method: string,

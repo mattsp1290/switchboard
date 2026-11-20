@@ -228,7 +228,7 @@ test('open fails when the model option is missing, rejected, or different', asyn
     assert.equal(JSON.stringify(ready.opened).includes('RAW secret'), false);
     assert.equal(JSON.stringify(ready.opened).includes('other/model'), false);
     assert.equal(agent.state.requests.some((message) => message.method === 'session/prompt'), false);
-    assert.equal(agent.state.stdinEnded > 0, true);
+    assert.equal(agent.state.stdinEnded, 1);
     if (item.close) assert.equal(agent.state.requests.some((message) => message.method === 'session/close'), true);
   }
 });
@@ -416,7 +416,7 @@ test('authentication failures use the fixed message', async () => {
     assert.equal(ready.opened.kind, 'error');
     assert.equal(ready.opened.error.message, authenticationRequired);
     assert.equal(JSON.stringify(ready.opened).includes('secret.example'), false);
-    assert.equal(ready.agent.state.stdinEnded > 0, true);
+    assert.equal(ready.agent.state.stdinEnded, 1);
   }
   await withSession(async ({ adapter, agent, signal }) => {
     const running = adapter.run({ prompt: 'auth', signal, hostOperationId: 'auth', recordIntent() {} });
@@ -767,6 +767,65 @@ test('a string response id does not end the turn', async () => {
     agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
     assert.equal((await running).kind, 'complete');
   });
+});
+
+test('a frame delivered inside listen fails open once and does not crash', async () => {
+  const failures = [];
+  const onRejection = (error) => { failures.push(error); };
+  process.on('unhandledRejection', onRejection);
+  try {
+    let ended = 0;
+    const opened = await opencodeHostAdapter.open({
+      model, environment: { variables: { PATH: '/host/bin' }, nativeConfig: { cwd, executable, account } },
+      launch: { kind: 'spawn', spawn() {
+        return {
+          channel: {
+            listen(next) { next(Buffer.from('\n')); return () => {}; },
+            write() { return Promise.resolve(); },
+            endInput() { ended += 1; },
+          },
+          processExit: Promise.resolve(),
+        };
+      } },
+    }, AbortSignal.timeout(10000));
+    await setImmediate();
+    assert.equal(opened.kind, 'error');
+    assert.equal(opened.error.message, 'OpenCode turn did not complete.');
+    assert.equal(ended, 1);
+    assert.deepEqual(failures, []);
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+});
+
+test('a listen throw fails open once and does not crash', async () => {
+  const failures = [];
+  const onRejection = (error) => { failures.push(error); };
+  process.on('unhandledRejection', onRejection);
+  try {
+    let ended = 0;
+    const opened = await opencodeHostAdapter.open({
+      model, environment: { variables: { PATH: '/host/bin' }, nativeConfig: { cwd, executable, account } },
+      launch: { kind: 'spawn', spawn() {
+        return {
+          channel: {
+            listen() { throw new Error('listen-failed'); },
+            write() { return Promise.resolve(); },
+            endInput() { ended += 1; },
+          },
+          processExit: Promise.resolve(),
+        };
+      } },
+    }, AbortSignal.timeout(10000));
+    await setImmediate();
+    assert.equal(opened.kind, 'error');
+    assert.equal(opened.error.code, 'unavailable');
+    assert.equal(opened.error.feature, 'host-launcher');
+    assert.equal(ended, 1);
+    assert.deepEqual(failures, []);
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
 });
 
 test('an unusable spawn handle ends stdin and does not signal', async () => {
