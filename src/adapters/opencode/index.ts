@@ -22,6 +22,8 @@ const rejectedUpdate = 'OpenCode sent an update this session cannot accept.';
 const incompleteTurn = 'OpenCode turn did not complete.';
 const authenticationRequired = 'OpenCode authentication is required.';
 const exitUnobserved = 'OpenCode process exit was not observed.';
+const exitFailed = 'OpenCode process exit failed.';
+const maxFrameBytes = 1_048_576;
 const inspectReason = 'OpenCode text sessions do not expose pending host calls.';
 const fingerprintReason = 'OpenCode text sessions do not expose a history fingerprint.';
 const ignoredUpdates = new Set([
@@ -92,7 +94,8 @@ function nativeOf(value: unknown): OpenCodeHostNativeConfig | undefined {
   const { cwd, executable, account } = value;
   if (typeof cwd !== 'string' || typeof executable !== 'string' || typeof account !== 'string') return undefined;
   if (!isAbsolute(cwd) || cwd !== resolve(cwd) || !isAbsolute(executable) || executable !== resolve(executable)) return undefined;
-  if (!identifier(cwd, sessionLimits.identifierLength) || !identifier(account, sessionLimits.identifierLength)) return undefined;
+  if (!identifier(cwd, sessionLimits.identifierLength) || !identifier(executable, sessionLimits.identifierLength)
+    || !identifier(account, sessionLimits.identifierLength)) return undefined;
   return { cwd, executable, account };
 }
 function variablesOf(value: unknown): Record<string, string> | undefined {
@@ -132,11 +135,24 @@ function currentModel(value: unknown): unknown {
   return record(option) ? option.currentValue : undefined;
 }
 function modelStillCaller(update: Record<string, unknown>, model: string): boolean {
-  if (!Array.isArray(update.configOptions)) return false;
-  return update.configOptions.some((entry) => record(entry) && entry.id === 'model' && entry.currentValue === model);
+  if (!Array.isArray(update.configOptions)) return true;
+  const option = update.configOptions.find((entry) => record(entry) && entry.id === 'model');
+  if (!record(option)) return true;
+  return option.currentValue === model;
 }
-function childSession(update: Record<string, unknown>): boolean {
-  return record(update._meta) && Object.hasOwn(update._meta, 'opencode/child-session');
+function childMeta(value: unknown): boolean {
+  return record(value) && Object.hasOwn(value, 'opencode/child-session');
+}
+function promptFrameFits(sessionId: string, text: string): boolean {
+  const encoded = JSON.stringify({
+    jsonrpc: '2.0', id: 2_147_483_647, method: 'session/prompt',
+    params: { sessionId, prompt: [{ type: 'text', text }] },
+  });
+  return Buffer.byteLength(encoded) + 1 <= maxFrameBytes;
+}
+function releaseSpawn(value: unknown): void {
+  if (!record(value) || !record(value.channel) || typeof value.channel.endInput !== 'function') return;
+  try { value.channel.endInput(); } catch { /* the adapter does not signal the process */ }
 }
 function chunkText(update: Record<string, unknown>): string | undefined {
   if (!record(update.content) || update.content.type !== 'text' || typeof update.content.text !== 'string') return undefined;
@@ -145,9 +161,9 @@ function chunkText(update: Record<string, unknown>): string | undefined {
 function itemId(value: unknown): string {
   return identifier(value, sessionLimits.identifierLength) ? value : 'turn';
 }
-function usageData(value: unknown): Record<string, unknown> | null {
+function usageData(value: unknown): Readonly<Record<string, unknown>> | null {
   if (!record(value)) return null;
-  return { ...value };
+  return Object.freeze({ ...value });
 }
 function rpcError(outcome: OpenCodeRpcOutcome): HostAdapterError {
   if (outcome.kind === 'error' && outcome.error.code === -32000) {
@@ -156,17 +172,18 @@ function rpcError(outcome: OpenCodeRpcOutcome): HostAdapterError {
   if (outcome.kind === 'error') return { code: 'native-failure', message: 'OpenCode rejected the session.' };
   return { code: 'native-failure', message: 'OpenCode did not acknowledge the session.' };
 }
-function observeExit(processExit: PromiseLike<unknown>): Promise<boolean> {
+type ExitWatch = 'observed' | 'rejected' | 'timeout';
+function observeExit(processExit: PromiseLike<unknown>): Promise<ExitWatch> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (observed: boolean) => {
+    const finish = (status: ExitWatch) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(observed);
+      resolve(status);
     };
-    const timer = setTimeout(() => finish(false), exitMs);
-    Promise.resolve(processExit).then(() => finish(true), () => finish(false));
+    const timer = setTimeout(() => finish('timeout'), exitMs);
+    Promise.resolve(processExit).then(() => finish('observed'), () => finish('rejected'));
   });
 }
 
@@ -207,39 +224,66 @@ export const opencodeHostAdapter: HostAdapterRegistration<OpenCodeHostOpenOption
   async open(options: OpenCodeHostOpenOptions, signal: AbortSignal) {
     if (!(signal instanceof AbortSignal)) return fail({ code: 'invalid-input', message: 'open requires an AbortSignal' });
     if (signal.aborted) return fail({ code: 'closed', message: 'open was aborted' });
-    if (!record(options) || !plain(options.model, 256)) return fail({ code: 'invalid-input', message: 'model must be a caller-supplied id' });
-    const native = nativeOf(options.environment?.nativeConfig);
-    const variables = variablesOf(options.environment?.variables);
-    if (!options.environment || !native || !variables) {
+    let model: unknown;
+    let environment: OpenCodeHostOpenOptions['environment'] | undefined;
+    let launch: OpenCodeHostOpenOptions['launch'] | undefined;
+    let resume: unknown;
+    let route: unknown;
+    let instructions: unknown;
+    let tools: unknown;
+    let builtInTools: unknown;
+    let subagents: unknown;
+    try {
+      if (!record(options)) return fail({ code: 'invalid-input', message: 'model must be a caller-supplied id' });
+      model = options.model;
+      environment = options.environment;
+      launch = options.launch;
+      resume = options.resume;
+      route = options.route;
+      instructions = options.instructions;
+      tools = options.tools;
+      builtInTools = options.builtInTools;
+      subagents = options.subagents;
+    } catch {
       return fail({ code: 'invalid-input', message: 'OpenCode requires a complete host environment and native config' });
     }
-    const launch = options.launch;
+    if (!plain(model, 256)) return fail({ code: 'invalid-input', message: 'model must be a caller-supplied id' });
+    const native = nativeOf(environment?.nativeConfig);
+    const variables = variablesOf(environment?.variables);
+    if (!environment || !native || !variables) {
+      return fail({ code: 'invalid-input', message: 'OpenCode requires a complete host environment and native config' });
+    }
     if (!launch) return fail({ code: 'unsupported', feature: 'host-launcher', message: 'OpenCode opens only through a host launch' });
     if (launch.kind === 'in-process') return fail({ code: 'unavailable', feature: 'in-process', message: 'OpenCode has no in-process launch' });
     if (launch.kind === 'channel') return fail({ code: 'unavailable', feature: 'channel', message: 'OpenCode has no host channel launch' });
     if (launch.kind !== 'spawn' || typeof launch.spawn !== 'function') {
       return fail({ code: 'invalid-input', message: 'OpenCode opens only through a host spawn' });
     }
-    if (options.resume !== undefined) return fail({ code: 'unsupported', feature: 'session-load', message: 'OpenCode text sessions cannot be resumed' });
-    if (options.route !== undefined) return fail({ code: 'unavailable', feature: 'host-route', message: 'OpenCode text sessions have no host route' });
-    if (options.instructions !== undefined) return fail({ code: 'unavailable', feature: 'instructions', message: 'OpenCode text sessions cannot take host instructions' });
-    if (options.tools !== undefined && (!Array.isArray(options.tools) || options.tools.length > 0)) {
+    if (resume !== undefined) return fail({ code: 'unsupported', feature: 'session-load', message: 'OpenCode text sessions cannot be resumed' });
+    if (route !== undefined) return fail({ code: 'unavailable', feature: 'host-route', message: 'OpenCode text sessions have no host route' });
+    if (instructions !== undefined) return fail({ code: 'unavailable', feature: 'instructions', message: 'OpenCode text sessions cannot take host instructions' });
+    if (tools !== undefined && (!Array.isArray(tools) || tools.length > 0)) {
       return fail({ code: 'unavailable', feature: 'host-tools', message: 'OpenCode text sessions have no host tools' });
     }
-    if (options.builtInTools !== undefined) return fail({ code: 'unavailable', feature: 'built-in-tools', message: 'OpenCode text sessions cannot switch built-in tools off' });
-    if (options.subagents !== undefined) return fail({ code: 'unavailable', feature: 'subagents', message: 'OpenCode text sessions cannot switch child sessions off' });
-    const model = options.model;
+    if (builtInTools !== undefined) return fail({ code: 'unavailable', feature: 'built-in-tools', message: 'OpenCode text sessions cannot switch built-in tools off' });
+    if (subagents !== undefined) return fail({ code: 'unavailable', feature: 'subagents', message: 'OpenCode text sessions cannot switch child sessions off' });
+    const callerModel = model;
     let spawned: OpenCodeHostSpawned;
+    let raw: unknown;
     try {
-      const raw = await launch.spawn({ executable: native.executable, args: [native.executable, 'acp'], cwd: native.cwd, env: variables }, signal);
+      raw = await launch.spawn({ executable: native.executable, args: [native.executable, 'acp'], cwd: native.cwd, env: variables }, signal);
       const parsed = spawnedOf(raw);
-      if (!parsed) return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher returned no channel' });
+      if (!parsed) {
+        releaseSpawn(raw);
+        return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher returned no channel' });
+      }
       spawned = parsed;
     } catch {
+      releaseSpawn(raw);
       if (signal.aborted) return fail({ code: 'closed', message: 'open was aborted' });
       return fail({ code: 'unavailable', feature: 'host-launcher', message: 'The host launcher denied the process' });
     }
-    return openSession({ signal, native, model, channel: spawned.channel, processExit: spawned.processExit });
+    return openSession({ signal, native, model: callerModel, channel: spawned.channel, processExit: spawned.processExit });
   },
 });
 
@@ -256,15 +300,16 @@ async function openSession(ready: {
   let phase: 'setup' | 'live' | 'closed' = 'setup';
   let sessionId: string | undefined;
   let setupError: HostAdapterError | undefined;
-  let cleaned = false;
+  let modelPinned = false;
   let unusable: SegmentError | undefined;
   let turn: Turn | undefined;
   let closePromise: Promise<Outcome<void, AdapterError>> | undefined;
+  let shuttingDown: Promise<void> | undefined;
   let protocol: OpenCodeProtocol = undefined as unknown as OpenCodeProtocol;
 
   function sendCancel(active: Turn): void {
     if (!sessionId || active.cancelSent || !active.promptWritten) return;
-    for (const item of permissions) answerCancelled(item);
+    for (const item of [...permissions]) answerCancelled(item);
     active.cancelSent = true;
     protocol.notify('session/cancel', { sessionId });
   }
@@ -272,89 +317,115 @@ async function openSession(ready: {
     if (item.answered) return;
     item.answered = true;
     protocol.respond(item.id, { outcome: { outcome: 'cancelled' } });
+    const index = permissions.indexOf(item);
+    if (index >= 0) permissions.splice(index, 1);
   }
-  function rejectTurn(active: Turn, error: SegmentError): void {
+  function failActive(active: Turn, error: SegmentError): void {
     if (active.settled || active.failure) return;
-    active.sawTraffic = true;
+    if (active.promptWritten) active.sawTraffic = true;
+    else unusable ??= error;
     active.failure = error;
     sendCancel(active);
   }
-  function cleanup(error: HostAdapterError): HostAdapterError {
-    if (cleaned) return setupError ?? error;
-    cleaned = true;
+  function shutdownChannel(): Promise<void> {
+    if (!shuttingDown) {
+      shuttingDown = (async () => {
+        phase = 'closed';
+        signal.removeEventListener('abort', onAbort);
+        for (const item of [...permissions]) answerCancelled(item);
+        if (sessionId) {
+          try {
+            await protocol.request('session/close', { sessionId }, { signal: new AbortController().signal, timeoutMs: acknowledgementMs });
+          } catch { /* the original error stays */ }
+        }
+        try { channel.endInput(); } catch { /* the original error stays */ }
+        protocol.stop();
+      })();
+    }
+    return shuttingDown;
+  }
+  function cleanup(error: HostAdapterError): Promise<HostAdapterError> {
     setupError ??= error;
-    phase = 'closed';
-    try {
-      if (sessionId) protocol.request('session/close', { sessionId }, { signal: new AbortController().signal, timeoutMs: acknowledgementMs });
-    } catch { /* the original open error stays */ }
-    try { channel.endInput(); } catch { /* the original open error stays */ }
-    protocol.stop();
-    return setupError;
+    return shutdownChannel().then(() => setupError ?? error);
   }
-  function failSetup(error: HostAdapterError): void {
-    if (phase !== 'setup') return;
-    cleanup(error);
-  }
-  function noteIncoming(): void {
+  function noteDisallowed(): void {
+    const error: SegmentError = { code: 'native-failure', message: rejectedUpdate };
     if (phase === 'setup') {
-      failSetup({ code: 'native-failure', message: rejectedUpdate });
+      void cleanup(error);
       return;
     }
-    if (turn && !turn.settled) {
-      rejectTurn(turn, { code: 'native-failure', message: rejectedUpdate });
+    const active = turn;
+    if (active && !active.settled) {
+      failActive(active, error);
       return;
     }
-    unusable ??= { code: 'native-failure', message: rejectedUpdate };
+    unusable ??= error;
   }
   function handleUpdate(params: unknown): void | 'yield' {
     if (!record(params) || !record(params.update) || typeof params.update.sessionUpdate !== 'string') {
-      if (phase === 'setup') failSetup({ code: 'native-failure', message: rejectedUpdate });
-      else if (turn && !turn.settled) rejectTurn(turn, { code: 'native-failure', message: rejectedUpdate });
-      else unusable ??= { code: 'native-failure', message: rejectedUpdate };
+      noteDisallowed();
+      return;
+    }
+    if (sessionId !== undefined && (params.sessionId !== sessionId || childMeta(params._meta))) {
+      noteDisallowed();
       return;
     }
     const update = params.update;
     const name = update.sessionUpdate;
-    if (typeof name !== 'string') return;
-    if (childSession(update)) {
-      if (phase === 'setup') failSetup({ code: 'native-failure', message: rejectedUpdate });
-      else if (turn && !turn.settled) rejectTurn(turn, { code: 'native-failure', message: rejectedUpdate });
-      else unusable ??= { code: 'native-failure', message: rejectedUpdate };
+    if (typeof name !== 'string') {
+      noteDisallowed();
+      return;
+    }
+    if (childMeta(update._meta)) {
+      noteDisallowed();
       return;
     }
     if (phase === 'setup') {
-      if (ignoredUpdates.has(name) || name === 'config_option_update') return;
-      failSetup({ code: 'native-failure', message: rejectedUpdate });
+      if (ignoredUpdates.has(name)) return;
+      if (name === 'config_option_update' && (!modelPinned || modelStillCaller(update, model))) return;
+      noteDisallowed();
       return;
     }
     const active = turn;
-    if (!active || active.settled) return;
-    active.sawTraffic = true;
-    if (ignoredUpdates.has(name)) return;
+    if (!active || active.settled) {
+      if (ignoredUpdates.has(name) || (name === 'config_option_update' && modelStillCaller(update, model))) return;
+      if (name === 'agent_message_chunk' && chunkText(update) !== undefined) return;
+      noteDisallowed();
+      return;
+    }
+    if (ignoredUpdates.has(name)) {
+      if (active.promptWritten) active.sawTraffic = true;
+      return;
+    }
     if (name === 'config_option_update') {
-      if (!modelStillCaller(update, model)) rejectTurn(active, { code: 'native-failure', message: rejectedUpdate });
+      if (active.promptWritten) active.sawTraffic = true;
+      if (!modelStillCaller(update, model)) noteDisallowed();
       return;
     }
     if (name === 'agent_message_chunk') {
-      if (active.failure) return;
       const text = chunkText(update);
       if (text === undefined) {
-        rejectTurn(active, { code: 'native-failure', message: rejectedUpdate });
+        noteDisallowed();
         return;
       }
-      if (!active.promptWritten) return;
+      if (!active.promptWritten || active.failure) return;
+      active.sawTraffic = true;
+      if (active.text.length + text.length > maxPrompt) {
+        failActive(active, { code: 'native-failure', message: incompleteTurn });
+        return;
+      }
       active.text += text;
-      stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: itemId(update.messageId), text }));
+      const published = stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: itemId(update.messageId), text }));
+      if (published.kind === 'closed' || published.disconnected > 0) noteDisallowed();
       return 'yield';
     }
-    rejectTurn(active, { code: 'native-failure', message: rejectedUpdate });
+    noteDisallowed();
   }
 
   protocol = openOpenCodeProtocol(channel, {
     onNotification(message) {
       if (message.method !== 'session/update') {
-        if (phase === 'setup') failSetup({ code: 'native-failure', message: rejectedUpdate });
-        else if (turn && !turn.settled) rejectTurn(turn, { code: 'native-failure', message: rejectedUpdate });
+        noteDisallowed();
         return;
       }
       return handleUpdate(message.params);
@@ -364,21 +435,26 @@ async function openSession(ready: {
         const item = { id: message.id, answered: false };
         permissions.push(item);
         answerCancelled(item);
-        noteIncoming();
+        noteDisallowed();
         return;
       }
       protocol.respondError(message.id, -32601);
-      noteIncoming();
+      noteDisallowed();
     },
   });
   protocol.start();
 
-  const onAbort = () => failSetup({ code: 'closed', message: 'open was aborted' });
+  const onAbort = () => { void cleanup({ code: 'closed', message: 'open was aborted' }); };
   signal.addEventListener('abort', onAbort, { once: true });
 
-  async function exchange(method: string, params: unknown, accept: (value: unknown) => HostAdapterError | undefined): Promise<HostAdapterError | undefined> {
+  async function exchange(
+    method: string,
+    params: unknown,
+    accept: (value: unknown) => HostAdapterError | undefined,
+    onOutcome?: (outcome: OpenCodeRpcOutcome) => void,
+  ): Promise<HostAdapterError | undefined> {
     if (setupError || signal.aborted) return setupError ?? { code: 'closed', message: 'open was aborted' };
-    const outcome = await protocol.request(method, params, { signal, timeoutMs: acknowledgementMs });
+    const outcome = await protocol.request(method, params, { signal, timeoutMs: acknowledgementMs, ...(onOutcome ? { onOutcome } : {}) });
     if (setupError) return setupError;
     if (signal.aborted) return { code: 'closed', message: 'open was aborted' };
     if (outcome.kind !== 'result') return rpcError(outcome);
@@ -390,7 +466,7 @@ async function openSession(ready: {
   }, (value) => record(value) && value.protocolVersion === protocolVersion
     ? undefined
     : { code: 'native-failure', message: 'OpenCode ACP protocol version is not 1.' });
-  if (handshake) return fail(cleanup(handshake));
+  if (handshake) return fail(await cleanup(handshake));
   const created = await exchange('session/new', { cwd: native.cwd, mcpServers: [] }, (value) => {
     if (!record(value) || !identifier(value.sessionId, sessionLimits.opaqueLength)) {
       return { code: 'native-failure', message: 'OpenCode did not return a session.' };
@@ -398,15 +474,21 @@ async function openSession(ready: {
     sessionId = value.sessionId;
     if (!modelSelect(value)) return { code: 'unavailable', feature: 'model', message: 'OpenCode did not offer a model option.' };
     return undefined;
+  }, (outcome) => {
+    if (outcome.kind === 'result' && record(outcome.value) && identifier(outcome.value.sessionId, sessionLimits.opaqueLength)) {
+      sessionId = outcome.value.sessionId;
+    }
   });
-  if (created) return fail(cleanup(created));
+  if (created) return fail(await cleanup(created));
   const configured = await exchange('session/set_config_option', { sessionId, configId: 'model', value: model }, (value) => (
     currentModel(value) === model ? undefined : { code: 'native-failure', message: 'OpenCode did not apply the caller model.' }
-  ));
-  if (configured || !sessionId) return fail(cleanup(configured ?? { code: 'native-failure', message: 'OpenCode did not return a session.' }));
+  ), (outcome) => {
+    if (outcome.kind === 'result' && currentModel(outcome.value) === model) modelPinned = true;
+  });
+  if (configured || !sessionId) return fail(await cleanup(configured ?? { code: 'native-failure', message: 'OpenCode did not return a session.' }));
   phase = 'live';
   signal.removeEventListener('abort', onAbort);
-  if (signal.aborted || setupError) return fail(cleanup(setupError ?? { code: 'closed', message: 'open was aborted' }));
+  if (signal.aborted || setupError) return fail(await cleanup(setupError ?? { code: 'closed', message: 'open was aborted' }));
 
   const reference: SessionReference = Object.freeze({
     kind: 'session', formatVersion: 1, opaque: sessionId,
@@ -419,7 +501,7 @@ async function openSession(ready: {
   function classify(active: Turn, recorded: DispatchIdentity): { kind: 'outcome-unknown' } | { kind: 'accepted'; evidence: ReturnType<typeof evidence> } | {
     kind: 'conclusive'; evidence: ReturnType<typeof evidence>; result: CompleteSegment;
   } {
-    if (!active.failure && (active.stopReason === 'end_turn' || active.stopReason === 'max_tokens')) {
+    if (active.promptWritten && !active.failure && (active.stopReason === 'end_turn' || active.stopReason === 'max_tokens')) {
       const result: CompleteSegment = {
         kind: 'complete', session: reference, text: active.text,
         usage: Object.freeze({
@@ -432,11 +514,11 @@ async function openSession(ready: {
       };
       return { kind: 'conclusive', evidence: evidence(recorded), result };
     }
-    if (active.sawTraffic || active.failure) return { kind: 'accepted', evidence: evidence(recorded) };
+    if (active.promptWritten && (active.sawTraffic || active.failure)) return { kind: 'accepted', evidence: evidence(recorded) };
     return { kind: 'outcome-unknown' };
   }
   function applyOutcome(active: Turn, outcome: OpenCodeRpcOutcome): void {
-    if (active.settled) return;
+    if (active.settled || !active.promptWritten) return;
     if (outcome.kind === 'result') {
       active.sawTraffic = true;
       const stopReason = record(outcome.value) && typeof outcome.value.stopReason === 'string' ? outcome.value.stopReason : '';
@@ -466,14 +548,11 @@ async function openSession(ready: {
   }
 
   async function finish(): Promise<Outcome<void, AdapterError>> {
-    phase = 'closed';
-    for (const item of permissions) answerCancelled(item);
-    if (sessionId) protocol.request('session/close', { sessionId }, { signal: new AbortController().signal, timeoutMs: acknowledgementMs });
-    try { channel.endInput(); } catch { /* exit attestation is separate from stdin */ }
-    const observed = await observeExit(processExit);
-    protocol.stop();
+    const watched = await shutdownChannel().then(() => observeExit(processExit));
     stream.close();
-    if (!observed) return { kind: 'error', error: { code: 'native-failure', message: exitUnobserved } };
+    if (turn && !turn.settled) finishTurn(turn);
+    if (watched === 'rejected') return { kind: 'error', error: { code: 'native-failure', message: exitFailed } };
+    if (watched === 'timeout') return { kind: 'error', error: { code: 'native-failure', message: exitUnobserved } };
     return { kind: 'ok', value: undefined };
   }
 
@@ -497,7 +576,9 @@ async function openSession(ready: {
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);
       const prompt = promptText(input.prompt);
-      if (prompt === undefined) return failed({ code: 'invalid-input', message: 'the prompt must be plain text without a slash command' }, notAttempted);
+      if (prompt === undefined || !sessionId || !promptFrameFits(sessionId, prompt)) {
+        return failed({ code: 'invalid-input', message: 'the prompt must be plain text without a slash command' }, notAttempted);
+      }
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, text: '', usage: null,
@@ -511,19 +592,22 @@ async function openSession(ready: {
           identity: { hostOperationId: input.hostOperationId, target: { kind: 'session', reference } },
           dispatchNative: async (recorded) => {
             active.phase = 'native';
-            if (!active.failure) {
-              const outcome = await protocol.request('session/prompt', {
-                sessionId, prompt: [{ type: 'text', text: prompt }],
-              }, {
-                signal: input.signal,
-                beforeWrite() { active.promptWritten = true; },
-                onOutcome(next) {
-                  applyOutcome(active, next);
-                  finishTurn(active);
-                },
-              });
-              applyOutcome(active, outcome);
-              await Promise.resolve();
+            if (!active.failure && phase !== 'closed') {
+              const onRunAbort = () => { if (active.promptWritten) sendCancel(active); };
+              input.signal.addEventListener('abort', onRunAbort);
+              try {
+                const outcome = await protocol.request('session/prompt', {
+                  sessionId, prompt: [{ type: 'text', text: prompt }],
+                }, {
+                  signal: input.signal,
+                  beforeWrite() { active.promptWritten = true; },
+                  onOutcome(next) { applyOutcome(active, next); },
+                });
+                applyOutcome(active, outcome);
+                await Promise.resolve();
+              } finally {
+                input.signal.removeEventListener('abort', onRunAbort);
+              }
             }
             const observation = classify(active, recorded);
             finishTurn(active);
@@ -537,7 +621,7 @@ async function openSession(ready: {
           return failed({ code: 'native-failure', message: observation.reason }, observation);
         }
         if (observation.kind === 'accepted') return failed(active.failure ?? { code: 'native-failure', message: incompleteTurn }, observation);
-        return failed({ code: 'native-failure', message: incompleteTurn }, { kind: 'outcome-unknown' });
+        return failed(active.failure ?? { code: 'native-failure', message: incompleteTurn }, { kind: 'outcome-unknown' });
       } finally {
         finishTurn(active);
         if (turn === active) turn = undefined;

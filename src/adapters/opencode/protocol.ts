@@ -57,15 +57,23 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   const waiters = new Map<number, (outcome: OpenCodeRpcOutcome) => void>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const queue: Buffer[] = [];
+  const deferred: Array<() => void> = [];
+  let writeChain: Promise<void> = Promise.resolve();
   let nextId = 1;
   let pending = Buffer.alloc(0);
   let stopped = false;
   let pumping = false;
   let started = false;
 
+  function flushDeferred(): void {
+    const ready = deferred.splice(0);
+    for (const deliver of ready) deliver();
+  }
+
   function stop(): void {
     if (stopped) return;
     stopped = true;
+    output.abort();
     queue.length = 0;
     pending = Buffer.alloc(0);
     for (const timer of timers) clearTimeout(timer);
@@ -73,13 +81,21 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     const waiting = [...waiters.values()];
     waiters.clear();
     for (const complete of waiting) complete({ kind: 'ended' });
+    flushDeferred();
+  }
+
+  function enqueueWrite(frame: Uint8Array): Promise<void> {
+    const pendingWrite = writeChain.then(() => {
+      if (stopped) return undefined;
+      return Promise.resolve(channel.write(frame, output.signal));
+    });
+    writeChain = pendingWrite.then(() => undefined, () => undefined);
+    return pendingWrite;
   }
 
   function writeMessage(value: unknown): void {
     if (stopped) return;
-    try {
-      void Promise.resolve(channel.write(encode(value), output.signal)).then(() => {}, () => {});
-    } catch { /* a rejected host write does not replace the session error */ }
+    void enqueueWrite(encode(value)).then(() => undefined, () => undefined);
   }
 
   function request(method: string, params: unknown, options: {
@@ -104,7 +120,9 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
       }
       options.signal.removeEventListener('abort', onAbort);
       options.onOutcome?.(outcome);
-      resolve(outcome);
+      const deliver = () => resolve(outcome);
+      if (pumping && !stopped) deferred.push(deliver);
+      else deliver();
     };
     const onAbort = () => complete({ kind: 'ended' });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -115,13 +133,9 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     waiters.set(id, complete);
     options.signal.addEventListener('abort', onAbort, { once: true });
     options.beforeWrite?.();
-    try {
-      void Promise.resolve(channel.write(encode({ jsonrpc: '2.0', id, method, params }), output.signal)).then(() => {}, () => {
-        complete({ kind: 'ended' });
-      });
-    } catch {
+    void enqueueWrite(encode({ jsonrpc: '2.0', id, method, params })).then(() => undefined, () => {
       complete({ kind: 'ended' });
-    }
+    });
     return promise;
   }
 
@@ -141,10 +155,11 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     stop();
   }
 
-  async function dispatchLine(line: Buffer): Promise<void | 'yield'> {
+  function dispatchLine(line: Buffer): void | 'yield' {
+    const text = line.toString('utf8');
     let value: unknown;
     try {
-      value = JSON.parse(line.toString('utf8'));
+      value = JSON.parse(text.endsWith('\r') ? text.slice(0, -1) : text);
     } catch {
       failLine();
       return;
@@ -156,11 +171,12 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     const id = typeof value.id === 'number' || typeof value.id === 'string' ? value.id : undefined;
     const method = typeof value.method === 'string' ? value.method : undefined;
     if (id !== undefined && method !== undefined) {
-      await handlers.onRequest({ id, method, params: value.params });
+      void handlers.onRequest({ id, method, params: value.params });
       return;
     }
     if (method !== undefined && !Object.hasOwn(value, 'id')) {
-      return handlers.onNotification({ method, params: value.params });
+      const step = handlers.onNotification({ method, params: value.params });
+      return step === 'yield' ? 'yield' : undefined;
     }
     if (typeof id === 'number') {
       const complete = waiters.get(id);
@@ -173,27 +189,39 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         complete({ kind: 'result', value: value.result });
         return;
       }
+      failLine();
+      return;
     }
+    if (id !== undefined) return;
     failLine();
   }
 
-  async function pump(): Promise<void> {
+  function drain(): void {
     while (!stopped && queue.length > 0) {
       const line = queue.shift();
       if (line === undefined) break;
-      const step = await dispatchLine(line);
+      const step = dispatchLine(line);
       if (stopped) break;
-      if (step === 'yield') await Promise.resolve();
+      if (step === 'yield') {
+        void Promise.resolve().then(() => {
+          if (stopped) {
+            flushDeferred();
+            return;
+          }
+          drain();
+        });
+        return;
+      }
     }
+    flushDeferred();
+    pumping = false;
+    if (!stopped && queue.length > 0) ensurePump();
   }
 
   function ensurePump(): void {
     if (pumping || stopped) return;
     pumping = true;
-    void pump().finally(() => {
-      pumping = false;
-      if (!stopped && queue.length > 0) ensurePump();
-    });
+    drain();
   }
 
   function accept(chunk: Uint8Array): void {

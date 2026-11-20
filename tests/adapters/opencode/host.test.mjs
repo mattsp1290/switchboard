@@ -33,7 +33,9 @@ function createAgent() {
   const options = { auto: true, eofOnEndInput: true, resolveOnEndInput: true, sessionId: 'session-1' };
   let sink;
   let resolveExit = () => {};
-  const processExit = new Promise((resolve) => { resolveExit = resolve; });
+  let rejectExit = () => {};
+  const processExit = new Promise((resolve, reject) => { resolveExit = resolve; rejectExit = reject; });
+  let releaseClose = () => {};
   function deliver(bytes) {
     if (typeof sink !== 'function') throw new Error('the channel is not listening');
     sink(bytes);
@@ -52,7 +54,12 @@ function createAgent() {
     } else state.responses.push(message);
   }
   function autoRespond(message) {
-    if (!options.auto || message.id === undefined || message.method === undefined) return;
+    if (message.id === undefined || message.method === undefined) return;
+    if (message.method === 'session/close') {
+      push({ jsonrpc: '2.0', id: message.id, result: {} });
+      return;
+    }
+    if (!options.auto) return;
     if (message.method === 'initialize') push({ jsonrpc: '2.0', id: message.id, result: options.initializeResult ?? { protocolVersion: 1 } });
     else if (message.method === 'session/new') {
       if (options.newResult) {
@@ -67,7 +74,7 @@ function createAgent() {
     } else if (message.method === 'session/set_config_option') {
       push({ jsonrpc: '2.0', id: message.id, ...(options.configResult ?? { result: { configOptions: [
         { id: 'model', currentValue: message.params.value, options: [{ group: 'provider', options: ['ignored'] }] }] } }) });
-    } else if (message.method === 'session/close') push({ jsonrpc: '2.0', id: message.id, result: {} });
+    }
   }
   const channel = {
     listen(next) { sink = next; return () => {}; },
@@ -81,7 +88,11 @@ function createAgent() {
         note(message);
         recorded.push(message);
       }
-      for (const message of recorded) autoRespond(message);
+      const respond = () => { for (const message of recorded) autoRespond(message); };
+      if (options.deferCloseWrite && recorded.some((message) => message.method === 'session/close')) {
+        return new Promise((resolve) => { releaseClose = () => { respond(); resolve(); }; });
+      }
+      respond();
       return Promise.resolve();
     },
     endInput() {
@@ -90,7 +101,7 @@ function createAgent() {
       if (options.resolveOnEndInput) resolveExit();
     },
   };
-  return { state, channel, processExit, resolveExit, options, push, deliver, endOutput() { sink.ended(); } };
+  return { state, channel, processExit, resolveExit, rejectExit, options, push, deliver, releaseClose() { releaseClose(); }, endOutput() { sink.ended(); } };
 }
 
 function launchOf(agent, deny = false) {
@@ -593,6 +604,173 @@ test('intent failure and an aborted run do not send the prompt', async () => {
     assert.equal(called, false);
     assert.deepEqual(aborted.write, { kind: 'not-dispatched', reason: 'aborted' });
   });
+});
+
+test('a disallowed update before the prompt is written is outcome-unknown', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    let release = () => {};
+    const gate = new Promise((resolve) => { release = resolve; });
+    const running = adapter.run({ prompt: 'early-tool', signal, hostOperationId: 'early-tool', recordIntent: () => gate });
+    await setImmediate();
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'SECRET_EARLY' } } });
+    release();
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, rejectedUpdate);
+    assert.equal(result.write.kind, 'outcome-unknown');
+    assert.equal(JSON.stringify(result).includes('SECRET_EARLY'), false);
+    assert.equal(agent.state.requests.some((message) => message.method === 'session/prompt'), false);
+    assert.equal(agent.state.notifications.some((message) => message.method === 'session/cancel'), false);
+    const next = await adapter.run({ prompt: 'after', signal, hostOperationId: 'after-early', recordIntent() {} });
+    assert.equal(next.write.kind, 'not-attempted');
+    assert.equal(next.error.message, rejectedUpdate);
+  });
+});
+
+test('a tool call after end_turn in the same chunk fails that segment', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'race', signal, hostOperationId: 'race', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'SECRET_AFTER' } } }),
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, rejectedUpdate);
+    assert.equal(result.write.kind, 'accepted');
+    assert.equal(JSON.stringify(result).includes('SECRET_AFTER'), false);
+  });
+});
+
+test('a model change while idle makes the next run not attempted', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'idle', signal, hostOperationId: 'idle-model', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    assert.equal((await running).kind, 'complete');
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: {
+      sessionUpdate: 'config_option_update', configOptions: [{ id: 'model', currentValue: 'other/model' }] } } });
+    const next = await adapter.run({ prompt: 'later', signal, hostOperationId: 'later-model', recordIntent() {} });
+    assert.equal(next.write.kind, 'not-attempted');
+    assert.equal(next.error.message, rejectedUpdate);
+    assert.equal(JSON.stringify(next).includes('other/model'), false);
+  });
+});
+
+test('a config update that omits the model does not fail the turn', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'partial', signal, hostOperationId: 'partial-model', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: {
+      sessionUpdate: 'config_option_update', configOptions: [{ id: 'theme', currentValue: 'dark' }] } } });
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    const result = await running;
+    assert.equal(result.kind, 'complete', JSON.stringify(result));
+  });
+});
+
+test('a foreign session id and a child marker on the params fail the segment', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'foreign', signal, hostOperationId: 'foreign', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'other-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'SECRET_FOREIGN' } } } });
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, rejectedUpdate);
+    assert.equal(JSON.stringify(result).includes('SECRET_FOREIGN'), false);
+    assert.equal(result.text === undefined || result.text === '', true);
+  });
+});
+
+test('a carriage return before newline still completes initialize', async () => {
+  const agent = createAgent();
+  agent.options.auto = false;
+  const opening = opencodeHostAdapter.open({
+    model, environment: { variables: { PATH: '/host/bin' }, nativeConfig: { cwd, executable, account } }, launch: launchOf(agent),
+  }, AbortSignal.timeout(10000));
+  const init = await untilRequest(agent, 'initialize');
+  agent.deliver(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1 } })}\r\n`));
+  const created = await untilRequest(agent, 'session/new');
+  agent.push({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'session-1', configOptions: [{ id: 'model', type: 'select', currentValue: 'dir/default' }] } });
+  const configured = await untilRequest(agent, 'session/set_config_option');
+  agent.push({ jsonrpc: '2.0', id: configured.id, result: { configOptions: [{ id: 'model', currentValue: model }] } });
+  const opened = await opening;
+  assert.equal(opened.kind, 'ok', JSON.stringify(opened));
+  await opened.value.close();
+});
+
+test('a string response id does not end the turn', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'string-id', signal, hostOperationId: 'string-id', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', id: 'not-a-waiter', result: { stopReason: 'end_turn' } });
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    assert.equal((await running).kind, 'complete');
+  });
+});
+
+test('an unusable spawn handle ends stdin and does not signal', async () => {
+  let ended = 0;
+  const opened = await opencodeHostAdapter.open({
+    model, environment: { variables: { PATH: '/host/bin' }, nativeConfig: { cwd, executable, account } },
+    launch: { kind: 'spawn', spawn() { return { channel: { listen() { return () => {}; }, write() { return Promise.resolve(); }, endInput() { ended += 1; } }, kill() {} }; } },
+  }, AbortSignal.timeout(10000));
+  assert.equal(opened.kind, 'error');
+  assert.equal(opened.error.code, 'unavailable');
+  assert.equal(opened.error.feature, 'host-launcher');
+  assert.equal(ended, 1);
+});
+
+test('a control character in the executable never reaches spawn', async () => {
+  const ready = await openReady({ executable: `/usr/bin/opencode\n` });
+  assert.equal(ready.opened.kind, 'error');
+  assert.equal(ready.opened.error.code, 'invalid-input');
+  assert.equal(ready.agent.state.attempts, 0);
+});
+
+test('a prompt whose JSON frame exceeds the line limit is not sent', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const prompt = '\\'.repeat(600_000);
+    let called = false;
+    const result = await adapter.run({ prompt, signal, hostOperationId: 'wide-frame', recordIntent() { called = true; } });
+    assert.equal(result.kind, 'failed');
+    assert.equal(result.error.code, 'invalid-input');
+    assert.equal(result.write.kind, 'not-attempted');
+    assert.equal(called, false);
+    assert.equal(agent.state.requests.some((message) => message.method === 'session/prompt'), false);
+  });
+});
+
+test('close waits to end stdin until session/close has been written', async () => {
+  const agent = createAgent();
+  agent.options.deferCloseWrite = true;
+  const ready = await openReady({ agent });
+  assert.equal(ready.opened.kind, 'ok');
+  const closing = ready.opened.value.close();
+  await untilRequest(agent, 'session/close');
+  assert.equal(agent.state.stdinEnded, 0);
+  agent.releaseClose();
+  const closed = await closing;
+  assert.equal(closed.kind, 'ok', JSON.stringify(closed));
+  assert.equal(agent.state.stdinEnded, 1);
+  assert.equal(agent.state.requests.filter((message) => message.method === 'session/close').length, 1);
+});
+
+test('a rejected process exit uses the fixed failure and drops the reason', async () => {
+  const agent = createAgent();
+  agent.options.resolveOnEndInput = false;
+  const ready = await openReady({ agent });
+  assert.equal(ready.opened.kind, 'ok');
+  const closing = ready.opened.value.close();
+  agent.rejectExit(new Error('secret-exit-detail'));
+  const closed = await closing;
+  assert.equal(closed.kind, 'error');
+  assert.equal(closed.error.message, 'OpenCode process exit failed.');
+  assert.equal(JSON.stringify(closed).includes('secret-exit-detail'), false);
+  assert.equal(agent.state.signals, 0);
 });
 
 test('prompt bytes followed by channel EOF are outcome-unknown', async () => {
