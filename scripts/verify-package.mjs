@@ -84,7 +84,7 @@ try {
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
-// @ts-expect-error TS2741 Property 'model' is missing.
+// @ts-expect-error Property 'model' is missing.
 const missingModel: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go' };
 declare const runtime: PiRuntime;
 const session = await runtime.open();
@@ -197,9 +197,9 @@ import type { PiReadinessReport, PiRuntime } from '${manifest.name}/pi';
 declare const codex: CodexRuntime; declare const claude: ClaudeRuntime; declare const pi: PiRuntime;
 const claudeOptions: ClaudeRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key', model: 'caller-selected-model' };
 const codexOptions: CodexRuntimeOptions = { cwd: '/work', model: 'caller-selected-model' };
-// @ts-expect-error TS2741 Property 'model' is missing.
+// @ts-expect-error Property 'model' is missing.
 const missingClaude: ClaudeRuntimeOptions = { cwd: '/work', sessionDirectory: '/work/sessions', apiKey: 'key' };
-// @ts-expect-error TS2741 Property 'model' is missing.
+// @ts-expect-error Property 'model' is missing.
 const missingCodex: CodexRuntimeOptions = { cwd: '/work' };
 declare const wide: ReadinessReport; declare const claudeReport: ClaudeReadinessReport;
 const sources: readonly ReadinessSource[] = [codex, claude, pi];

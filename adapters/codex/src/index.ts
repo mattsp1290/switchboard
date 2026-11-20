@@ -104,10 +104,21 @@ function nativeEnvironment(codexHome: string | undefined): Record<string, string
   return env;
 }
 
-export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
-  if (!callerModelId(options.model) || !absolutePath(options.cwd)
-    || (options.codexHome !== undefined && !absolutePath(options.codexHome))
-    || (options.codexPathOverride !== undefined && !absolutePath(options.codexPathOverride))) throw failure();
+function readCodexOptions(value: unknown): CodexRuntimeOptions | undefined {
+  try {
+    if (value === null || typeof value !== 'object') return undefined;
+    const { cwd, model, codexHome, codexPathOverride } = value as Record<string, unknown>;
+    if (!callerModelId(model) || !absolutePath(cwd)
+      || (codexHome !== undefined && !absolutePath(codexHome))
+      || (codexPathOverride !== undefined && !absolutePath(codexPathOverride))) return undefined;
+    return { cwd, model, ...(codexHome === undefined ? {} : { codexHome }), ...(codexPathOverride === undefined ? {} : { codexPathOverride }) } as CodexRuntimeOptions;
+  } catch { return undefined; }
+}
+
+export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
+  const read = readCodexOptions(input);
+  if (!read) throw failure();
+  const options: CodexRuntimeOptions = read;
   const cwd = resolve(options.cwd);
   const env = nativeEnvironment(options.codexHome);
   const executable = options.codexPathOverride ?? (env.PATH === undefined ? [] : env.PATH.split(delimiter)).map(dir => resolve(dir, 'codex')).find(path => {

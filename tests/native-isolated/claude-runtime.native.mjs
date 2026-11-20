@@ -107,8 +107,27 @@ test('createClaudeRuntime rejects an illegal model id before a child', async () 
       { ...legal, sessionDirectory: 1 },
       { ...legal, claudePathOverride: 1 },
     ]) assert.throws(() => createClaudeRuntime(input), /Claude operation failed/);
+    for (const input of [undefined, null, 1, 'x', new Proxy({}, { get() { throw new Error('host secret'); } })]) {
+      assert.throws(() => createClaudeRuntime(input), { message: 'Claude operation failed.' });
+    }
     await assert.rejects(readFile(resolve(dir, 'observed.json')), { code: 'ENOENT' });
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('createClaudeRuntime keeps the model captured at creation', async () => {
+  const dir = await mkdtemp(resolve(tmpdir(), 'switchboard-claude-'));
+  await writeFile(resolve(dir, 'fixture.json'), JSON.stringify({}));
+  const options = { cwd: dir, sessionDirectory: resolve(dir, 'sessions'), apiKey: 'fixture-key', model: 'claude-sonnet-4-6', claudePathOverride: resolve('tests/adapters/claude/fixture.mjs') };
+  const runtime = createClaudeRuntime(options);
+  options.model = 'claude-haiku-4-5';
+  try {
+    const turn = await runtime.start({ text: 'hello', onEvent() {} });
+    assert.equal(turn.model, 'claude-sonnet-4-6');
+    assert.equal((await turn.finished).outcome, 'completed');
+    const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+    assert.ok(observed.args.includes('--model=claude-sonnet-4-6'));
+    assert.ok(!observed.args.includes('--model=claude-haiku-4-5'));
+  } finally { await runtime.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('SDK error frames are suppressed and do not admit the turn', async () => fixture({mode:'error'}, async runtime => {

@@ -37,8 +37,10 @@ test('native SDK streams message snapshots and resumes with the same subscriptio
   assert.equal(turn.threadId, id);
   assert.deepEqual(out, []);
   assert.deepEqual(await turn.finished, { kind: 'ended', outcome: 'completed' });
-  assert.deepEqual(out, [{ kind: 'text', itemId: 'item_0', text: 'first' },
+    assert.deepEqual(out, [{ kind: 'text', itemId: 'item_0', text: 'first' },
     { kind: 'text', itemId: 'item_0', text: 'first second' }, { kind: 'ended', outcome: 'completed' }]);
+  const started = JSON.parse(await readFile(join(dir, 'args.json'), 'utf8')).args;
+  assert.equal(started[started.indexOf('--model') + 1], 'caller-selected-model');
   await first.close();
 
   const next = open('caller-selected-model');
@@ -372,6 +374,9 @@ test('createCodexRuntime rejects an illegal model id before a child', async t =>
     { ...legal, codexHome: 1 },
     { ...legal, codexPathOverride: 1 },
   ]) assert.throws(() => createCodexRuntime(input), /Codex operation failed/);
+  for (const input of [undefined, null, 1, 'x', new Proxy({}, { get() { throw new Error('host secret'); } })]) {
+    assert.throws(() => createCodexRuntime(input), { message: 'Codex operation failed.' });
+  }
   await assert.rejects(readFile(join(dir, 'args.json')), { code: 'ENOENT' });
 });
 

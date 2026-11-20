@@ -77,10 +77,20 @@ const remedies = {
   check_unavailable: 'Local Claude checks passed. Sign-in and version are confirmed when a chat starts.',
 } as const;
 
-export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntime {
-  if (!absolutePath(options.cwd) || !absolutePath(options.sessionDirectory)
-    || typeof options.apiKey !== 'string' || !options.apiKey.trim() || !callerModelId(options.model)
-    || (options.claudePathOverride !== undefined && !absolutePath(options.claudePathOverride))) throw failure();
+function readClaudeOptions(value: unknown): ClaudeRuntimeOptions | undefined {
+  try {
+    if (value === null || typeof value !== 'object') return undefined;
+    const { cwd, sessionDirectory, apiKey, model, claudePathOverride } = value as Record<string, unknown>;
+    if (!absolutePath(cwd) || !absolutePath(sessionDirectory) || typeof apiKey !== 'string' || !apiKey.trim()
+      || !callerModelId(model) || (claudePathOverride !== undefined && !absolutePath(claudePathOverride))) return undefined;
+    return { cwd, sessionDirectory, apiKey, model, ...(claudePathOverride === undefined ? {} : { claudePathOverride }) } as ClaudeRuntimeOptions;
+  } catch { return undefined; }
+}
+
+export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime {
+  const read = readClaudeOptions(input);
+  if (!read) throw failure();
+  const options: ClaudeRuntimeOptions = read;
   const cwd = resolve(options.cwd);
   const config = resolve(options.sessionDirectory);
   const env: Record<string, string> = { ANTHROPIC_API_KEY: options.apiKey, CLAUDE_CONFIG_DIR: config };
