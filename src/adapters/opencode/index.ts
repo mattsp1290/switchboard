@@ -116,14 +116,18 @@ function promptText(value: unknown): string | undefined {
   }
   return value;
 }
+function isHostChannel(value: unknown): value is OpenCodeHostChannel {
+  return record(value)
+    && typeof value.listen === 'function'
+    && typeof value.write === 'function'
+    && typeof value.endInput === 'function';
+}
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null && 'then' in value && typeof value.then === 'function';
+}
 function spawnedOf(value: unknown): OpenCodeHostSpawned | undefined {
-  if (!record(value) || !record(value.channel)) return undefined;
-  const { listen, write, endInput } = value.channel;
-  const processExit = value.processExit;
-  if (typeof listen !== 'function' || typeof write !== 'function' || typeof endInput !== 'function') return undefined;
-  if (!record(processExit) && typeof processExit !== 'object') return undefined;
-  if (typeof (processExit as { then?: unknown } | null)?.then !== 'function') return undefined;
-  return { channel: value.channel as unknown as OpenCodeHostChannel, processExit: processExit as PromiseLike<unknown> };
+  if (!record(value) || !isHostChannel(value.channel) || !isPromiseLike(value.processExit)) return undefined;
+  return { channel: value.channel, processExit: value.processExit };
 }
 function modelSelect(value: unknown): boolean {
   if (!record(value) || !Array.isArray(value.configOptions)) return false;
@@ -205,6 +209,50 @@ interface Turn {
   readonly done: Promise<void>;
 }
 type CompleteSegment = Extract<HostSegmentResult, { kind: 'complete' }>;
+type UpdateDecision =
+  | 'ignore'
+  | 'traffic'
+  | 'reject'
+  | { readonly kind: 'text'; readonly text: string; readonly nativeItemId: string };
+
+function readUpdate(params: unknown, context: {
+  readonly phase: 'setup' | 'live' | 'closed';
+  readonly sessionId: string | undefined;
+  readonly modelPinned: boolean;
+  readonly model: string;
+  readonly turn: Turn | undefined;
+}): UpdateDecision {
+  if (!record(params) || !record(params.update) || typeof params.update.sessionUpdate !== 'string') return 'reject';
+  if (context.sessionId !== undefined && (params.sessionId !== context.sessionId || childMeta(params._meta))) return 'reject';
+  const update = params.update;
+  const name = update.sessionUpdate;
+  if (typeof name !== 'string') return 'reject';
+  if (childMeta(update._meta)) return 'reject';
+  const active = context.phase === 'setup' ? undefined : context.turn;
+  const live = active && !active.settled ? active : undefined;
+  if (context.phase === 'setup') {
+    if (ignoredUpdates.has(name)) return 'ignore';
+    if (name === 'config_option_update' && (!context.modelPinned || modelStillCaller(update, context.model))) return 'ignore';
+    return 'reject';
+  }
+  if (!live) {
+    if (ignoredUpdates.has(name) || (name === 'config_option_update' && modelStillCaller(update, context.model))) return 'ignore';
+    if (name === 'agent_message_chunk' && chunkText(update) !== undefined) return 'ignore';
+    return 'reject';
+  }
+  if (ignoredUpdates.has(name)) return live.promptWritten ? 'traffic' : 'ignore';
+  if (name === 'config_option_update') {
+    if (!modelStillCaller(update, context.model)) return 'reject';
+    return live.promptWritten ? 'traffic' : 'ignore';
+  }
+  if (name === 'agent_message_chunk') {
+    const text = chunkText(update);
+    if (text === undefined) return 'reject';
+    if (!live.promptWritten || live.failure) return 'ignore';
+    return { kind: 'text', text, nativeItemId: itemId(update.messageId) };
+  }
+  return 'reject';
+}
 
 function evidence(recorded: DispatchIdentity) {
   return {
@@ -305,18 +353,22 @@ async function openSession(ready: {
   let turn: Turn | undefined;
   let closePromise: Promise<Outcome<void, AdapterError>> | undefined;
   let shuttingDown: Promise<void> | undefined;
-  let protocol: OpenCodeProtocol = undefined as unknown as OpenCodeProtocol;
+  let protocol: OpenCodeProtocol | undefined;
+  function rpc(): OpenCodeProtocol {
+    if (protocol === undefined) throw new Error('OpenCode protocol is not open');
+    return protocol;
+  }
 
   function sendCancel(active: Turn): void {
     if (!sessionId || active.cancelSent || !active.promptWritten) return;
     for (const item of [...permissions]) answerCancelled(item);
     active.cancelSent = true;
-    protocol.notify('session/cancel', { sessionId });
+    rpc().notify('session/cancel', { sessionId });
   }
   function answerCancelled(item: PermissionAnswer): void {
     if (item.answered) return;
     item.answered = true;
-    protocol.respond(item.id, { outcome: { outcome: 'cancelled' } });
+    rpc().respond(item.id, { outcome: { outcome: 'cancelled' } });
     const index = permissions.indexOf(item);
     if (index >= 0) permissions.splice(index, 1);
   }
@@ -335,11 +387,11 @@ async function openSession(ready: {
         for (const item of [...permissions]) answerCancelled(item);
         if (sessionId) {
           try {
-            await protocol.request('session/close', { sessionId }, { signal: new AbortController().signal, timeoutMs: acknowledgementMs });
+            await rpc().request('session/close', { sessionId }, { signal: new AbortController().signal, timeoutMs: acknowledgementMs });
           } catch { /* the original error stays */ }
         }
         try { channel.endInput(); } catch { /* the original error stays */ }
-        protocol.stop();
+        rpc().stop();
       })();
     }
     return shuttingDown;
@@ -362,64 +414,27 @@ async function openSession(ready: {
     unusable ??= error;
   }
   function handleUpdate(params: unknown): void | 'yield' {
-    if (!record(params) || !record(params.update) || typeof params.update.sessionUpdate !== 'string') {
-      noteDisallowed();
+    const decision = readUpdate(params, { phase, sessionId, modelPinned, model, turn });
+    if (decision === 'ignore') return;
+    if (decision === 'traffic') {
+      if (turn && !turn.settled && turn.promptWritten) turn.sawTraffic = true;
       return;
     }
-    if (sessionId !== undefined && (params.sessionId !== sessionId || childMeta(params._meta))) {
-      noteDisallowed();
-      return;
-    }
-    const update = params.update;
-    const name = update.sessionUpdate;
-    if (typeof name !== 'string') {
-      noteDisallowed();
-      return;
-    }
-    if (childMeta(update._meta)) {
-      noteDisallowed();
-      return;
-    }
-    if (phase === 'setup') {
-      if (ignoredUpdates.has(name)) return;
-      if (name === 'config_option_update' && (!modelPinned || modelStillCaller(update, model))) return;
+    if (decision === 'reject') {
       noteDisallowed();
       return;
     }
     const active = turn;
-    if (!active || active.settled) {
-      if (ignoredUpdates.has(name) || (name === 'config_option_update' && modelStillCaller(update, model))) return;
-      if (name === 'agent_message_chunk' && chunkText(update) !== undefined) return;
-      noteDisallowed();
+    if (!active || active.settled || !active.promptWritten || active.failure) return;
+    active.sawTraffic = true;
+    if (active.text.length + decision.text.length > maxPrompt) {
+      failActive(active, { code: 'native-failure', message: incompleteTurn });
       return;
     }
-    if (ignoredUpdates.has(name)) {
-      if (active.promptWritten) active.sawTraffic = true;
-      return;
-    }
-    if (name === 'config_option_update') {
-      if (active.promptWritten) active.sawTraffic = true;
-      if (!modelStillCaller(update, model)) noteDisallowed();
-      return;
-    }
-    if (name === 'agent_message_chunk') {
-      const text = chunkText(update);
-      if (text === undefined) {
-        noteDisallowed();
-        return;
-      }
-      if (!active.promptWritten || active.failure) return;
-      active.sawTraffic = true;
-      if (active.text.length + text.length > maxPrompt) {
-        failActive(active, { code: 'native-failure', message: incompleteTurn });
-        return;
-      }
-      active.text += text;
-      const published = stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: itemId(update.messageId), text }));
-      if (published.kind === 'closed' || published.disconnected > 0) noteDisallowed();
-      return 'yield';
-    }
-    noteDisallowed();
+    active.text += decision.text;
+    const published = stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: decision.nativeItemId, text: decision.text }));
+    if (published.kind === 'closed' || published.disconnected > 0) noteDisallowed();
+    return 'yield';
   }
 
   protocol = openOpenCodeProtocol(channel, {
@@ -438,11 +453,11 @@ async function openSession(ready: {
         noteDisallowed();
         return;
       }
-      protocol.respondError(message.id, -32601);
+      rpc().respondError(message.id, -32601);
       noteDisallowed();
     },
   });
-  protocol.start();
+  rpc().start();
 
   const onAbort = () => { void cleanup({ code: 'closed', message: 'open was aborted' }); };
   signal.addEventListener('abort', onAbort, { once: true });
@@ -454,7 +469,7 @@ async function openSession(ready: {
     onOutcome?: (outcome: OpenCodeRpcOutcome) => void,
   ): Promise<HostAdapterError | undefined> {
     if (setupError || signal.aborted) return setupError ?? { code: 'closed', message: 'open was aborted' };
-    const outcome = await protocol.request(method, params, { signal, timeoutMs: acknowledgementMs, ...(onOutcome ? { onOutcome } : {}) });
+    const outcome = await rpc().request(method, params, { signal, timeoutMs: acknowledgementMs, ...(onOutcome ? { onOutcome } : {}) });
     if (setupError) return setupError;
     if (signal.aborted) return { code: 'closed', message: 'open was aborted' };
     if (outcome.kind !== 'result') return rpcError(outcome);
@@ -596,7 +611,7 @@ async function openSession(ready: {
               const onRunAbort = () => { if (active.promptWritten) sendCancel(active); };
               input.signal.addEventListener('abort', onRunAbort);
               try {
-                const outcome = await protocol.request('session/prompt', {
+                const outcome = await rpc().request('session/prompt', {
                   sessionId, prompt: [{ type: 'text', text: prompt }],
                 }, {
                   signal: input.signal,
