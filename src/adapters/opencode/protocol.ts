@@ -338,7 +338,10 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
       const remove = channel.listen(sink);
       detach = typeof remove === 'function' ? remove : () => {};
     } catch (error) {
-      stop();
+      if (!stopped) {
+        stopped = true;
+        output.abort();
+      }
       throw error;
     }
     if (stopped) unsubscribe();

@@ -426,13 +426,7 @@ async function openSession(ready: {
       message: status === 'rejected' ? exitFailed : incompleteTurn,
     }, true);
   }
-  let readerArmed = false;
-  let pendingStop: 'stop' | 'eof' | 'bad-frame' | undefined;
   function markReaderStopped(reason: 'stop' | 'eof' | 'bad-frame' = 'stop'): void {
-    if (!readerArmed) {
-      pendingStop ??= reason;
-      return;
-    }
     retire({ code: 'native-failure', message: incompleteTurn }, false);
     if (reason === 'bad-frame' && turn && !turn.settled && !turn.failure) {
       turn.failure = { code: 'native-failure', message: incompleteTurn };
@@ -539,9 +533,7 @@ async function openSession(ready: {
       message: 'The host launcher denied the process',
     });
   }
-  readerArmed = true;
   void exitReady.then((status) => latchExit(status));
-  if (pendingStop) markReaderStopped(pendingStop);
 
   async function exchange(
     method: string,
