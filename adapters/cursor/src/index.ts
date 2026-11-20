@@ -49,6 +49,28 @@ export interface CursorRuntime {
 
 const failure = () => new Error('Cursor operation failed.');
 const ADMISSION_MS = 30_000;
+
+function limitAdmission<T>(promise: Promise<T>, onLate: (value: T) => void): { promise: Promise<T>; abandon(): void } {
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout>;
+  let giveUp = (): void => {};
+  const limited = new Promise<T>((resolve, reject) => {
+    giveUp = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(failure());
+    };
+    timer = setTimeout(giveUp, ADMISSION_MS);
+    promise.then((value) => {
+      if (settled) { onLate(value); return; }
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    }, () => giveUp());
+  });
+  return { promise: limited, abandon: () => giveUp() };
+}
 const writers = new Set<string>();
 const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
 const refused = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EEXIST', 'EROFS', 'ELOOP']);
@@ -224,34 +246,9 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
       const faults = { cancel: false, external: false };
       let run: RunHandle | undefined;
       let cancelStarted = false;
-      let abandoned = false;
-      let abandonAdmission: (() => void) | undefined;
-      const bound = <T>(promise: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
-        let settled = false;
-        const timer = setTimeout(() => fail(), ADMISSION_MS);
-        const fail = (): void => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          abandoned = true;
-          reject(failure());
-        };
-        abandonAdmission = fail;
-        promise.then((value) => {
-          if (settled) {
-            const late = value as Partial<AgentHandle> & Partial<RunHandle>;
-            if (typeof late[Symbol.asyncDispose] === 'function') void dispose(late as AgentHandle).catch(() => {});
-            else if (typeof late.cancel === 'function' && late.supports?.('cancel') === true) void late.cancel().catch(() => {});
-            return;
-          }
-          settled = true;
-          clearTimeout(timer);
-          abandonAdmission = undefined;
-          resolve(value);
-        }, () => fail());
-      });
+      let abandonAdmission = (): void => {};
       const cancelActive = async (): Promise<void> => {
-        if (!admitted) abandonAdmission?.();
+        if (!admitted) abandonAdmission();
         if (cancelStarted || !run?.supports('cancel')) return;
         faults.external = true;
         cancelStarted = true;
@@ -262,10 +259,11 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
       try {
         const local = localOptions();
         const model = { id: options.model };
-        const launched = requested === undefined
-          ? await bound(sdk.create({ apiKey: options.apiKey, model, local }))
-          : await bound(sdk.resume(requested, { apiKey: options.apiKey, model, local }));
-        if (abandoned) throw failure();
+        const opening = requested === undefined
+          ? limitAdmission(sdk.create({ apiKey: options.apiKey, model, local }), (late) => { void dispose(late).catch(() => {}); })
+          : limitAdmission(sdk.resume(requested, { apiKey: options.apiKey, model, local }), (late) => { void dispose(late).catch(() => {}); });
+        abandonAdmission = opening.abandon;
+        const launched = await opening.promise;
         agent = launched;
         opened.push(agent);
         if (closed) throw failure();
@@ -274,8 +272,11 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
           writers.add(agent.agentId);
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
-        run = await bound(agent.send(text));
-        if (abandoned) throw failure();
+        const sending = limitAdmission(agent.send(text), (late) => {
+          if (late.supports('cancel')) void late.cancel().catch(() => {});
+        });
+        abandonAdmission = sending.abandon;
+        run = await sending.promise;
         admitted = true;
         const turn: CursorTurn = {
           agentId: agent.agentId,
@@ -349,13 +350,24 @@ async function consume(
   let waitFailed = false;
   try { waited = (await run.wait()).status; }
   catch { waitFailed = true; }
-  const forced = step === 'request' || step === 'bad-tool' || step === 'overflow' || streamFailed || waitFailed
-    || (faults.cancel && waited !== 'cancelled');
+  return turnOutcome({ step, callback, streamFailed, waitFailed, faults, waited });
+}
+
+function turnOutcome(input: {
+  step: Step;
+  callback: boolean;
+  streamFailed: boolean;
+  waitFailed: boolean;
+  faults: { cancel: boolean; external: boolean };
+  waited: string;
+}): CursorOutcome {
+  const forced = input.step === 'request' || input.step === 'bad-tool' || input.step === 'overflow'
+    || input.streamFailed || input.waitFailed || (input.faults.cancel && input.waited !== 'cancelled');
   let outcome: CursorOutcome = forced ? 'failed'
-    : waited === 'finished' ? 'completed'
-    : waited === 'cancelled' ? 'interrupted'
+    : input.waited === 'finished' ? 'completed'
+    : input.waited === 'cancelled' ? 'interrupted'
     : 'failed';
-  if (callback && !(faults.external && waited === 'cancelled')) outcome = 'failed';
+  if (input.callback && !(input.faults.external && input.waited === 'cancelled')) outcome = 'failed';
   return outcome;
 }
 
