@@ -365,6 +365,13 @@ test('createCodexRuntime rejects an illegal model id before a child', async t =>
   for (const model of [null, '', '   ', ' id', 'id ', 'x'.repeat(257), '\n', '\u0000', '\u007f', '\u009f', '\uD800', 'id\u0085x', 'id\tx', 1]) {
     assert.throws(() => createCodexRuntime({ ...base, model }), /Codex operation failed/);
   }
+  const legal = { ...base, model: 'caller-selected-model' };
+  for (const input of [
+    { ...legal, cwd: 1 },
+    { ...legal, cwd: null },
+    { ...legal, codexHome: 1 },
+    { ...legal, codexPathOverride: 1 },
+  ]) assert.throws(() => createCodexRuntime(input), /Codex operation failed/);
   await assert.rejects(readFile(join(dir, 'args.json')), { code: 'ENOENT' });
 });
 

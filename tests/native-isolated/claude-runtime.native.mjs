@@ -96,6 +96,17 @@ test('createClaudeRuntime rejects an illegal model id before a child', async () 
     for (const model of [null, '', '   ', ' id', 'id ', 'x'.repeat(257), '\n', '\u0000', '\u007f', '\u009f', '\uD800', 'id\u0085x', 'id\tx', 1]) {
       assert.throws(() => createClaudeRuntime({ ...base, model }), /Claude operation failed/);
     }
+    const legal = { ...base, model: 'claude-sonnet-4-6' };
+    for (const input of [
+      { ...legal, apiKey: undefined },
+      { ...legal, apiKey: null },
+      { ...legal, apiKey: 1 },
+      { ...legal, apiKey: '' },
+      { ...legal, apiKey: '   ' },
+      { ...legal, cwd: 1 },
+      { ...legal, sessionDirectory: 1 },
+      { ...legal, claudePathOverride: 1 },
+    ]) assert.throws(() => createClaudeRuntime(input), /Claude operation failed/);
     await assert.rejects(readFile(resolve(dir, 'observed.json')), { code: 'ENOENT' });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

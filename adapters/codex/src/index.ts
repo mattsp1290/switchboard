@@ -75,6 +75,9 @@ function callerModelId(value: unknown): boolean {
   }
   return true;
 }
+function absolutePath(value: unknown): boolean {
+  return typeof value === 'string' && isAbsolute(value);
+}
 const QUALIFIED = '0.169.0';
 const INSTALL = 'Install Codex CLI 0.169.0 to use Codex chat.';
 const SIGN_IN = 'Sign in with ChatGPT using codex login to use Codex chat.';
@@ -102,9 +105,9 @@ function nativeEnvironment(codexHome: string | undefined): Record<string, string
 }
 
 export function createCodexRuntime(options: CodexRuntimeOptions): CodexRuntime {
-  if (!callerModelId(options.model) || !isAbsolute(options.cwd)
-    || (options.codexHome !== undefined && !isAbsolute(options.codexHome))
-    || (options.codexPathOverride !== undefined && !isAbsolute(options.codexPathOverride))) throw failure();
+  if (!callerModelId(options.model) || !absolutePath(options.cwd)
+    || (options.codexHome !== undefined && !absolutePath(options.codexHome))
+    || (options.codexPathOverride !== undefined && !absolutePath(options.codexPathOverride))) throw failure();
   const cwd = resolve(options.cwd);
   const env = nativeEnvironment(options.codexHome);
   const executable = options.codexPathOverride ?? (env.PATH === undefined ? [] : env.PATH.split(delimiter)).map(dir => resolve(dir, 'codex')).find(path => {

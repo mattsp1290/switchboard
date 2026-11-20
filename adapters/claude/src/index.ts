@@ -60,6 +60,9 @@ function callerModelId(value: unknown): boolean {
   }
   return true;
 }
+function absolutePath(value: unknown): boolean {
+  return typeof value === 'string' && isAbsolute(value);
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const writers = new Set<string>();
 const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
@@ -75,9 +78,9 @@ const remedies = {
 } as const;
 
 export function createClaudeRuntime(options: ClaudeRuntimeOptions): ClaudeRuntime {
-  if (!isAbsolute(options.cwd) || !isAbsolute(options.sessionDirectory) || !options.apiKey.trim()
-    || !callerModelId(options.model)
-    || (options.claudePathOverride !== undefined && !isAbsolute(options.claudePathOverride))) throw failure();
+  if (!absolutePath(options.cwd) || !absolutePath(options.sessionDirectory)
+    || typeof options.apiKey !== 'string' || !options.apiKey.trim() || !callerModelId(options.model)
+    || (options.claudePathOverride !== undefined && !absolutePath(options.claudePathOverride))) throw failure();
   const cwd = resolve(options.cwd);
   const config = resolve(options.sessionDirectory);
   const env: Record<string, string> = { ANTHROPIC_API_KEY: options.apiKey, CLAUDE_CONFIG_DIR: config };

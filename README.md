@@ -160,7 +160,7 @@ The child uses the existing ChatGPT login and official OpenAI provider endpoint.
 
 ### Claude text adapter
 
-`@mattsp1290/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies a model id. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals that id. An alias the engine rewrites to a different string is a legal caller string and a failed turn.
+`@mattsp1290/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies a model id. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals that id. An alias the engine rewrites to a different string is a legal caller string and a failed turn. `claude-haiku-4-5` in the example is only a caller-supplied id; this package does not claim the live API reports it unchanged. A mismatch on the init frame rejects before admission. A mismatch on `message_start` or an assistant frame happens after the provider request was sent, so the provider may bill it and the native transcript may remain in the session directory. The turn still rejects with `Claude operation failed.`
 
 ```js
 import { createClaudeRuntime } from '@mattsp1290/switchboard/claude';
