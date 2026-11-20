@@ -686,6 +686,68 @@ test('EOF after a yielded line still judges the rest of the chunk', async () => 
   });
 });
 
+test('a later bad frame is judged before a yielded turn completes', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'later-bad', signal, hostOperationId: 'later-bad', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.deliver(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } })}\n`));
+    agent.deliver(Buffer.from(`${JSON.stringify(textUpdate('held'))}\n{bad\n`));
+    agent.endOutput();
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.notEqual(result.kind, 'complete');
+    assert.equal(result.error.message, incompleteTurn);
+  });
+});
+
+test('a later tool call is judged before a yielded turn completes', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'later-tool-chunk', signal, hostOperationId: 'later-tool-chunk', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.deliver(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } })}\n`));
+    const follow = [
+      JSON.stringify(textUpdate('held')),
+      JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'held-tool' } } }),
+    ].join('\n');
+    agent.deliver(Buffer.from(`${follow}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, rejectedUpdate);
+  });
+});
+
+test('a blank line after a yielded tool call keeps that rejection', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'blank-yield', signal, hostOperationId: 'blank-yield', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    const lines = [
+      JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } }),
+      JSON.stringify(textUpdate('before-blank')),
+      JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'kept' } } }),
+      '',
+    ].join('\n');
+    agent.deliver(Buffer.from(`${lines}\n`));
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    assert.equal(result.error.message, rejectedUpdate);
+    assert.equal(agent.state.notifications.filter((message) => message.method === 'session/cancel').length, 1);
+  });
+});
+
+test('an in-turn cancel is not repeated after the segment returns', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'one-cancel', signal, hostOperationId: 'one-cancel', recordIntent() {} });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'during' } } });
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: {} } });
+    const result = await running;
+    assert.equal(result.kind, 'failed', JSON.stringify(result));
+    agent.push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate: 'tool_call', title: 'after' } } });
+    await setImmediate();
+    assert.equal(agent.state.notifications.filter((message) => message.method === 'session/cancel').length, 1);
+  });
+});
+
 test('abort after the prompt terminal does not cancel or complete', async () => {
   const controller = new AbortController();
   await withSession(async ({ adapter, agent }) => {
@@ -1240,6 +1302,28 @@ test('a process exit during a prompt fails that segment and blocks the next run'
   await adapter.close();
 });
 
+test('a process exit stays quiet for a later abort and interrupt', async () => {
+  const agent = createAgent();
+  agent.options.resolveOnEndInput = false;
+  const controller = new AbortController();
+  const ready = await openReady({ agent });
+  assert.equal(ready.opened.kind, 'ok');
+  const adapter = ready.opened.value;
+  const running = adapter.run({ prompt: 'quiet-exit', signal: controller.signal, hostOperationId: 'quiet-exit', recordIntent() {} });
+  await untilRequest(agent, 'session/prompt');
+  agent.rejectExit(new Error('secret-exit-detail'));
+  await setImmediate();
+  controller.abort();
+  const interrupted = await adapter.interrupt({ timeoutMs: 20 });
+  const result = await running;
+  assert.equal(result.kind, 'failed', JSON.stringify(result));
+  assert.equal(interrupted.kind, 'unconfirmed-within-bound');
+  assert.equal(agent.state.notifications.some((message) => message.method === 'session/cancel'), false);
+  const blocked = await adapter.run({ prompt: 'blocked', signal: AbortSignal.timeout(1000), hostOperationId: 'blocked', recordIntent() {} });
+  assert.equal(blocked.write.kind, 'not-attempted');
+  await adapter.close();
+});
+
 test('a malformed run returns invalid input and does not stay busy', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const missing = await adapter.run(null);
@@ -1336,6 +1420,39 @@ test('a malformed byte and a stopped reader drop the stdout sink', async () => {
   assert.equal(removed, 1);
   protocol.stop();
   assert.equal(removed, 1);
+});
+
+test('a blank line after a yielded notification stops once as a bad frame', async () => {
+  let sink;
+  const reasons = [];
+  const seen = [];
+  const protocol = openOpenCodeProtocol({
+    listen(next) { sink = next; return () => {}; },
+    write() { return Promise.resolve(); },
+    endInput() {},
+  }, {
+    onNotification() {
+      seen.push('note');
+      if (seen.length === 1) return 'yield';
+    },
+    onRequest() {},
+    onStopped(reason) { reasons.push(reason); },
+  });
+  protocol.start();
+  const pending = protocol.request('initialize', {}, { signal: AbortSignal.timeout(1000), timeoutMs: 1000 });
+  const lines = [
+    '{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}',
+    '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk"}}}',
+    '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call"}}}',
+    '',
+  ].join('\n');
+  sink(Buffer.from(`${lines}\n`));
+  await setImmediate();
+  await setImmediate();
+  assert.equal((await pending).kind, 'result');
+  assert.deepEqual(seen, ['note', 'note']);
+  assert.deepEqual(reasons, ['bad-frame']);
+  protocol.releaseReader();
 });
 
 test('a throwing or rejected line handler stops as a bad frame', async () => {

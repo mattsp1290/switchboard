@@ -70,6 +70,8 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   let queuedBytes = 0;
   let stopped = false;
   let sawEnd = false;
+  let pendingStop = false;
+  let flushScheduled = false;
   let pumping = false;
   let started = false;
   let unsubscribe: (() => void) | undefined;
@@ -77,6 +79,27 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   function flushDeferred(): void {
     const ready = deferred.splice(0);
     for (const deliver of ready) deliver();
+  }
+
+  function scheduleFlush(): void {
+    if (flushScheduled || deferred.length === 0) return;
+    flushScheduled = true;
+    queueMicrotask(() => {
+      flushScheduled = false;
+      if (pumping || queue.length > 0) {
+        scheduleFlush();
+        return;
+      }
+      flushDeferred();
+    });
+  }
+
+  function stopAfterDrain(): void {
+    if (pumping) {
+      pendingStop = true;
+      return;
+    }
+    stop('bad-frame');
   }
 
   function stop(reason: 'stop' | 'eof' | 'bad-frame' = 'stop'): void {
@@ -104,10 +127,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function enqueueWrite(frame: Uint8Array): Promise<void> {
-    const pendingWrite = writeChain.then(() => {
-      if (stopped) return undefined;
-      return Promise.resolve(channel.write(frame, output.signal));
-    });
+    const pendingWrite = writeChain.then(() => Promise.resolve(channel.write(frame, output.signal)));
     writeChain = pendingWrite.then(() => undefined, () => undefined);
     return pendingWrite;
   }
@@ -263,13 +283,21 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
   }
 
   function finishDrain(): void {
-    flushDeferred();
     pumping = false;
     if (!stopped && queue.length > 0) {
       ensurePump();
       return;
     }
-    if (sawEnd && !stopped) stop(pending.length > 0 ? 'bad-frame' : 'eof');
+    if (!stopped && pendingStop) {
+      pendingStop = false;
+      stop('bad-frame');
+      return;
+    }
+    if (sawEnd && !stopped) {
+      stop(pending.length > 0 ? 'bad-frame' : 'eof');
+      return;
+    }
+    scheduleFlush();
   }
 
   function ensurePump(): void {
@@ -303,13 +331,13 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
     while (offset < chunk.length && !stopped) {
       const room = maxLineBytes + 1 - pending.length;
       if (room <= 0) {
-        stop('bad-frame');
+        stopAfterDrain();
         return;
       }
       const slice = chunk.subarray(offset, offset + Math.min(room, chunk.length - offset));
       const newlineAt = slice.indexOf(0x0a);
       if (newlineAt === -1 && offset + slice.length < chunk.length) {
-        stop('bad-frame');
+        stopAfterDrain();
         return;
       }
       const incoming = newlineAt === -1 ? slice : slice.subarray(0, newlineAt + 1);
@@ -320,7 +348,7 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         const newline = pending.indexOf(0x0a);
         if (newline === -1) break;
         if (newline > maxLineBytes) {
-          stop('bad-frame');
+          stopAfterDrain();
           return;
         }
         const line = Buffer.from(pending.subarray(0, newline));
@@ -328,13 +356,13 @@ export function openOpenCodeProtocol(channel: OpenCodeHostChannel, handlers: Ope
         if (pending.length === 0) pending = Buffer.alloc(0);
         if (!takeLine(line)) {
           ensurePump();
-          stop('bad-frame');
+          stopAfterDrain();
           return;
         }
       }
     }
     if (pending.length > maxLineBytes) {
-      stop('bad-frame');
+      stopAfterDrain();
       return;
     }
     ensurePump();

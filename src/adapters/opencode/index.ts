@@ -370,15 +370,17 @@ async function openSession(ready: {
   let protocol: OpenCodeProtocol | undefined;
   let promptArmed = false;
   let trailingCancelSent = false;
+  let exitQuiet = false;
   function rpc(): OpenCodeProtocol {
     if (protocol === undefined) throw new Error('OpenCode protocol is not open');
     return protocol;
   }
 
   function sendCancel(active: Turn): void {
-    if (!sessionId || active.cancelSent || !active.promptWritten) return;
+    if (exitQuiet || !sessionId || active.cancelSent || !active.promptWritten) return;
     for (const item of [...permissions]) answerCancelled(item);
     active.cancelSent = true;
+    trailingCancelSent = true;
     rpc().notify('session/cancel', { sessionId });
   }
   function answerCancelled(item: PermissionAnswer): void {
@@ -423,6 +425,7 @@ async function openSession(ready: {
     void shutdownChannel().catch(() => undefined);
   }
   function latchExit(status: ExitWatch): void {
+    exitQuiet = true;
     const error: SegmentError = {
       code: 'native-failure',
       message: status === 'rejected' ? exitFailed : incompleteTurn,
@@ -753,6 +756,7 @@ async function openSession(ready: {
     },
     async interrupt({ timeoutMs }) {
       const active = turn;
+      if (exitQuiet && (!active || !active.nativeTerminal)) return { kind: 'unconfirmed-within-bound' };
       if (!active || active.nativeTerminal) return { kind: 'terminal-observed' };
       if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return { kind: 'unconfirmed-within-bound' };
       if (active.settled || active.phase === 'intent' || !active.promptWritten) return { kind: 'unconfirmed-within-bound' };
