@@ -2,8 +2,8 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
-import { createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, runtimeOutcome, tokenCount, usageFromCounts } from '#switchboard';
-import type { RunObservationListener, RunObservationUsage } from '#switchboard';
+import { createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome, tokenCount } from '#switchboard';
+import type { RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
 
@@ -364,7 +364,7 @@ async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
   onObservation: RunObservationListener | undefined,
 ): Promise<CursorOutcome> {
-  const state: PublishState = { text: '', sent: '', reasoningStep: 0, reasoningOpen: false, ...(onObservation ? { trackTool: createToolTracker() } : {}) };
+  const state: PublishState = { text: '', sent: '', reasoningStep: 0, reasoningOpen: false, trackTool: createToolTracker() };
   let step: Step = 'next';
   let callback = false;
   let streamFailed = false;
@@ -407,11 +407,11 @@ function turnOutcome(input: {
 interface PublishState {
   text: string;
   sent: string;
-  /** Reasoning step number; bumps when assistant text or a tool call follows reasoning. Kept only when a listener is present. */
+  /** Reasoning step number; bumps when assistant text or a tool call follows reasoning. */
   reasoningStep: number;
   reasoningOpen: boolean;
-  /** Emits each call's `started` and arguments once. Present only when a listener is present. */
-  readonly trackTool?: ReturnType<typeof createToolTracker>;
+  /** Emits each call's `started` and arguments once. */
+  readonly trackTool: ToolTracker;
 }
 
 function observedUsage(value: unknown): RunObservationUsage | undefined {
@@ -419,18 +419,17 @@ function observedUsage(value: unknown): RunObservationUsage | undefined {
   const inputTokens = tokenCount(value.inputTokens);
   const outputTokens = tokenCount(value.outputTokens);
   const totalTokens = tokenCount(value.totalTokens);
-  const row = usageFromCounts({
+  return normalizedUsageFromCounts({
     inputTokens, outputTokens,
     cachedInputTokens: value.cacheReadTokens,
     cacheWriteInputTokens: value.cacheWriteTokens,
     reasoningTokens: value.reasoningTokens,
     ...(totalTokens !== undefined && inputTokens !== undefined && outputTokens !== undefined && totalTokens === inputTokens + outputTokens ? { totalTokens } : {}),
   });
-  return row === undefined ? undefined : normalizeUsage(row);
 }
 
 function observeTool(message: Record<string, unknown>, callId: string, name: string, status: CursorToolStatus,
-  track: NonNullable<PublishState['trackTool']>, onObservation: RunObservationListener): void {
+  track: ToolTracker, onObservation: RunObservationListener): void {
   const argumentsJson = message.args === undefined ? undefined : jsonString(message.args);
   for (const observation of track(callId, name, argumentsJson)) emitObservation(onObservation, observation);
   if (status === 'running') return;
@@ -462,7 +461,7 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
       if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';
       state.text += block.text;
     }
-    if (onObservation && content.some((block) => isRecord(block) && block.type === 'text')) endReasoning(state);
+    if (content.some((block) => isRecord(block) && block.type === 'text')) endReasoning(state);
     if (state.text !== state.sent) {
       state.sent = state.text;
       emitObservation(onObservation, { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: state.text });
@@ -472,7 +471,7 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
   }
   if (message.type === 'thinking') {
     if (typeof message.text === 'string' && message.text.length > 0) {
-      if (onObservation) state.reasoningOpen = true;
+      state.reasoningOpen = true;
       emitObservation(onObservation, { kind: 'reasoning', messageId: `reasoning:${state.reasoningStep}`, mode: 'delta', text: message.text });
     }
     return 'next';
@@ -487,8 +486,8 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
     const name = message.name;
     const status = message.status;
     if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
-    if (onObservation) endReasoning(state);
-    if (onObservation && state.trackTool) observeTool(message, callId, name, status, state.trackTool, onObservation);
+    endReasoning(state);
+    if (onObservation) observeTool(message, callId, name, status, state.trackTool, onObservation);
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';
   }

@@ -113,6 +113,12 @@ export function usageFromCounts(raw: { readonly [K in UsageCountKey]?: unknown }
   return Object.keys(row).length === 0 ? undefined : row;
 }
 
+/** `usageFromCounts` then `normalizeUsage`: the shared tail of every adapter's native-usage mapping. */
+export function normalizedUsageFromCounts(raw: Parameters<typeof usageFromCounts>[0]): RunObservationUsage | undefined {
+  const row = usageFromCounts(raw);
+  return row === undefined ? undefined : normalizeUsage(row);
+}
+
 /** The text runtimes' public outcome as a terminal observation outcome. */
 export const runtimeOutcome = Object.freeze({ completed: 'success', failed: 'failed', interrupted: 'cancelled' } as const);
 
@@ -129,14 +135,21 @@ export function segmentTerminal(result: HostSegmentResult, failedAs: Exclude<Run
   }
 }
 
-/** Replays one answered host tool call into a continuation segment: started, its arguments, then the observed result. */
-export function answeredToolObservations(callId: string, name: string, args: unknown,
-  result: Outcome<NativeExtension, NativeExtension>): readonly RunObservation[] {
+/** A host tool call's declaration: `started`, then `arguments-ended` (with the JSON-safe arguments when there are any). */
+export function declaredToolObservations(callId: string, name: string, args: unknown): readonly RunObservation[] {
   const argumentsJson = jsonString(args);
-  const resultJson = result.kind === 'ok' ? jsonString(result.value.data) : undefined;
   return [
     { kind: 'tool', callId, name, phase: 'started' },
     { kind: 'tool', callId, name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) },
+  ];
+}
+
+/** Replays one answered host tool call into a continuation segment: started, its arguments, then the observed result. */
+export function answeredToolObservations(callId: string, name: string, args: unknown,
+  result: Outcome<NativeExtension, NativeExtension>): readonly RunObservation[] {
+  const resultJson = result.kind === 'ok' ? jsonString(result.value.data) : undefined;
+  return [
+    ...declaredToolObservations(callId, name, args),
     { kind: 'tool', callId, name, phase: result.kind === 'ok' ? 'completed' : 'failed', ...(resultJson === undefined ? {} : { resultJson }) },
   ];
 }

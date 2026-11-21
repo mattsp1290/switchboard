@@ -5,7 +5,7 @@ import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
 import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
-import { answeredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
+import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
@@ -405,7 +405,7 @@ async function openAdapter(ready: {
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 4, capacity: 64 });
   let session: CodexSession | undefined;
   let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
-  /** Per-segment observation state: whether `run-started` went out, and the native terminal a failed result hides. */
+  /** Whether `run-started` went out for this segment. */
   type SegmentState = { started: boolean };
   /** A segment result plus the native terminal a failed result hides. */
   type Settled = { readonly result: HostSegmentResult; readonly failedAs?: 'failed' | 'cancelled' | 'outcome-unknown' };
@@ -428,10 +428,7 @@ async function openAdapter(ready: {
     publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(event.call.arguments ?? null) });
     publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
     if (segment?.observer) {
-      const callId = target.nativeToolCallId;
-      const argumentsJson = jsonString(event.call.arguments ?? null);
-      observe({ kind: 'tool', callId, name: event.call.name, phase: 'started' });
-      observe({ kind: 'tool', callId, name: event.call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
+      for (const o of declaredToolObservations(target.nativeToolCallId, event.call.name, event.call.arguments ?? null)) observe(o);
     }
   });
   const resume = options.resume;

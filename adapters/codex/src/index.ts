@@ -5,7 +5,7 @@ import { delimiter, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import { withSdkProcess } from './process.js';
-import { emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, runtimeOutcome, usageFromCounts } from '#switchboard';
+import { emitObservation, emitRunStarted, isObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
 import type { ThreadItem, ThreadOptions } from '@openai/codex-sdk';
 
@@ -71,23 +71,26 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const failure = () => new Error('Codex operation failed.');
 function usageRow(usage: unknown): RunObservationUsage | undefined {
   if (usage === null || typeof usage !== 'object') return undefined;
-  const row = usageFromCounts({
+  return normalizedUsageFromCounts({
     inputTokens: Reflect.get(usage, 'input_tokens'),
     outputTokens: Reflect.get(usage, 'output_tokens'),
     cachedInputTokens: Reflect.get(usage, 'cached_input_tokens'),
     cacheWriteInputTokens: Reflect.get(usage, 'cache_write_input_tokens'),
     reasoningTokens: Reflect.get(usage, 'reasoning_output_tokens'),
   });
-  return row === undefined ? undefined : normalizeUsage(row);
 }
 /**
- * A declared tool-like item as observations, or none for items that stay off. `item.updated` adds nothing a tool needs.
+ * An item as observations, or none for items that stay off. Reasoning is a snapshot on every item event.
+ * A declared tool-like item adds nothing on `item.updated`.
  * `item.started` emits `started` then `arguments`, so the arguments reach AG-UI even if the item never completes.
  */
-function toolObservations(type: 'item.started' | 'item.updated' | 'item.completed', item: ThreadItem): readonly RunObservation[] {
+function itemObservations(type: 'item.started' | 'item.updated' | 'item.completed', item: ThreadItem): readonly RunObservation[] {
   let name: string;
   let args: unknown;
   switch (item.type) {
+    case 'reasoning':
+      return typeof item.id === 'string' && item.id && item.id.length <= 512 && typeof item.text === 'string'
+        ? [{ kind: 'reasoning', messageId: item.id, mode: 'snapshot', text: item.text }] : [];
     case 'mcp_tool_call': name = typeof item.tool === 'string' ? item.tool : ''; args = item.arguments; break;
     case 'command_execution': name = item.type; args = { command: item.command }; break;
     case 'file_change': name = item.type; args = { changes: item.changes }; break;
@@ -357,16 +360,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                       || Buffer.byteLength(snapshot) > 4 * 1024 * 1024) throw failure();
                     onEvent({ kind: 'text', itemId: id, text: snapshot });
                     emitObservation(onObservation, { kind: 'text', messageId: id, mode: 'snapshot', text: snapshot });
-                  } else if (onObservation && admitted) {
-                    const { item } = event;
-                    if (item.type === 'reasoning') {
-                      if (typeof item.id === 'string' && item.id && item.id.length <= 512 && typeof item.text === 'string') {
-                        emitObservation(onObservation, { kind: 'reasoning', messageId: item.id, mode: 'snapshot', text: item.text });
-                      }
-                    } else {
-                      for (const tool of toolObservations(event.type, item)) emitObservation(onObservation, tool);
-                    }
-                  }
+                  } else if (onObservation && admitted) for (const o of itemObservations(event.type, event.item)) emitObservation(onObservation, o);
                   break;
                 }
                 case 'turn.completed':

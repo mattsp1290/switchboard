@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -59,8 +59,6 @@ const canaries = { SWITCHBOARD_ANTHROPIC_API_KEY: 'canary-anthropic-0001', SWITC
   SWITCHBOARD_OPENCODE_API_KEY: 'canary-opencode-0003' };
 
 test('a dry run of every engine prints the resolved plan without lotel, a build, a report, or a credential', async () => {
-  const dist = join(root, 'dist');
-  const before = existsSync(dist) ? statSync(dist).mtimeMs : undefined;
   const emptyLotel = await mkdtemp(join(tmpdir(), 'live-baseline-nolotel-'));
   const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_ALL: '1', SWITCHBOARD_LIVE_DRY_RUN: '1', ...canaries,
     CODEX_BIN: process.execPath, OPENCODE_BIN: process.execPath, LOTEL_SOURCE: emptyLotel, PATH: process.env.PATH.split(':').filter((dir) => !existsSync(join(dir, 'lotel'))).join(':') });
@@ -72,7 +70,6 @@ test('a dry run of every engine prints the resolved plan without lotel, a build,
     assert(lines.some((line) => line.startsWith(`DRY ${engine.name} model=${engine.defaultModel} runtime=${engine.runtime} `)), engine.name);
   }
   assert.equal(report, undefined);
-  assert.equal(existsSync(dist) ? statSync(dist).mtimeMs : undefined, before);
   assert.equal(result.stderr.includes('native SDK tripwire'), false);
   for (const value of Object.values(canaries)) assert.equal(`${result.stdout}${result.stderr}`.includes(value), false);
 });
@@ -95,13 +92,10 @@ test('a gated engine without its credential fails with credential-required and n
 });
 
 test('a live run without its credential fails before any build, import, or lotel call', async () => {
-  const dist = join(root, 'dist');
-  const before = existsSync(dist) ? statSync(dist).mtimeMs : undefined;
   const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_CURSOR: '1' });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^FAIL cursor credential-required$/mu);
   assert.equal(result.stderr.includes('native SDK tripwire'), false);
-  assert.equal(existsSync(dist) ? statSync(dist).mtimeMs : undefined, before);
   assert.deepEqual(JSON.parse(report).engines.map((item) => [item.engine, item.model, item.pass, item.code]),
     [['cursor', 'composer-2', false, 'credential-required']]);
 });

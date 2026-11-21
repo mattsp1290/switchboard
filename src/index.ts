@@ -111,10 +111,10 @@ export type {
   VersionObservation, WorkspaceObservation,
 } from './core/readiness.js';
 export {
-  answeredToolObservations, createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage,
+  answeredToolObservations, createToolTracker, declaredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, normalizedUsageFromCounts,
   runObservationFamilies, runtimeOutcome, segmentTerminal, tokenCount, unobservedFamilies, usageFromCounts,
 } from './core/run-observation.js';
 export type {
   RunObservation, RunObservationFamily, RunObservationListener, RunObservationOutcome, RunObservationToolPhase,
-  RunObservationUsage,
+  RunObservationUsage, ToolTracker,
 } from './core/run-observation.js';

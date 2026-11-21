@@ -8,8 +8,7 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
 import {
-  createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, segmentTerminal, tokenCount,
-  usageFromCounts,
+  createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
 } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage, ToolTracker } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
@@ -199,7 +198,7 @@ function usageRow(update: Record<string, unknown>): RunObservationUsage | undefi
   const inputTokens = tokenCount(update.inputTokens);
   const outputTokens = tokenCount(update.outputTokens);
   const totalTokens = tokenCount(update.totalTokens);
-  const row = usageFromCounts({
+  return normalizedUsageFromCounts({
     inputTokens,
     outputTokens,
     totalTokens: totalTokens !== undefined && totalTokens === (inputTokens ?? NaN) + (outputTokens ?? NaN) ? totalTokens : undefined,
@@ -207,7 +206,6 @@ function usageRow(update: Record<string, unknown>): RunObservationUsage | undefi
     cachedInputTokens: update.cachedReadTokens,
     cacheWriteInputTokens: update.cachedWriteTokens,
   });
-  return row && normalizeUsage(row);
 }
 function toolObservation(update: Record<string, unknown>, track: ToolTracker): readonly RunObservation[] {
   const callId = update.toolCallId;
@@ -532,6 +530,10 @@ async function openSession(ready: {
       rpc().notify('session/cancel', { sessionId });
     }
   }
+  /** The turn whose listener may receive observations now: live, prompt written, unsettled, with a listener. */
+  function observingTurn(): Turn | undefined {
+    return phase === 'live' && turn && !turn.settled && turn.promptWritten && turn.onObservation ? turn : undefined;
+  }
   function observeQuiet(active: Turn, update: Record<string, unknown>): void {
     if (update.sessionUpdate === 'agent_thought_chunk') {
       const text = chunkText(update);
@@ -549,15 +551,19 @@ async function openSession(ready: {
   function handleUpdate(params: unknown): void | 'yield' {
     const decision = readUpdate(params, { phase, sessionId, modelPinned, model, turn });
     if (decision === 'ignore') return;
-    const watcher = phase === 'live' && turn && !turn.settled && turn.promptWritten && turn.onObservation ? turn : undefined;
-    const update = record(params) && record(params.update) ? params.update : undefined;
     if (decision === 'traffic') {
       if (turn && !turn.settled && turn.promptWritten) turn.sawTraffic = true;
-      if (watcher && update && !watcher.failure) observeQuiet(watcher, update);
+      const watcher = observingTurn();
+      if (watcher && !watcher.failure && record(params) && record(params.update)) observeQuiet(watcher, params.update);
       return;
     }
-    if (decision === 'reject' || decision.kind === 'tool') {
-      if (watcher && decision !== 'reject') {
+    if (decision === 'reject') {
+      noteDisallowed();
+      return;
+    }
+    if (decision.kind === 'tool') {
+      const watcher = observingTurn();
+      if (watcher) {
         for (const observation of toolObservation(decision.update, watcher.trackTool)) emitObservation(watcher.onObservation, observation);
       }
       noteDisallowed();
@@ -590,8 +596,8 @@ async function openSession(ready: {
     onRequest(message) {
       if (message.method === 'session/request_permission') {
         const item = { id: message.id, answered: false };
-        const active = turn;
-        if (active?.onObservation && !active.settled && active.promptWritten && phase === 'live') {
+        const active = observingTurn();
+        if (active) {
           const call = record(message.params) && record(message.params.toolCall) ? message.params.toolCall.toolCallId : undefined;
           emitObservation(active.onObservation, {
             kind: 'interrupt', id: identifier(call, sessionLimits.identifierLength) ? call : String(message.id), reason: 'permission',

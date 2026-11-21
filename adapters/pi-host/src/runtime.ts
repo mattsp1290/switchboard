@@ -499,52 +499,52 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       hostSignal.addEventListener('abort', stopping, { once: true });
       // The terminal goes out with the final result, after native work and state export are done. A segment that never reached native dispatch has no baseline.
       const attempt = async (): Promise<HostSegmentResult> => {
-      try {
-        const handle = createDispatchOperation<WorkResult>({
-          mode: 'fresh', signal: hostSignal, identity, recordIntent,
-          dispatchNative: async () => {
-            started = true;
-            emitRunStarted(observer, ['reasoning']);
-            await work();
-            const assistant = session.messages.findLast((message) => message.role === 'assistant');
-            const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
-            if (aborted) {
-              undoContinuation();
+        try {
+          const handle = createDispatchOperation<WorkResult>({
+            mode: 'fresh', signal: hostSignal, identity, recordIntent,
+            dispatchNative: async () => {
+              started = true;
+              emitRunStarted(observer, ['reasoning']);
+              await work();
+              const assistant = session.messages.findLast((message) => message.role === 'assistant');
+              const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
+              if (aborted) {
+                undoContinuation();
+                continuedIds = [];
+                deliveries.length = 0;
+                return { kind: 'outcome-unknown' };
+              }
+              const result = await finish(hostSignal);
+              if (result.kind === 'model-failed') undoContinuation();
+              else {
+                for (const id of continuedIds) answered.add(id);
+                for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
+              }
               continuedIds = [];
               deliveries.length = 0;
-              return { kind: 'outcome-unknown' };
+              return { kind: 'conclusive', evidence, result };
+            },
+          });
+          const snapshot = await handle.run();
+          const observation = snapshot.observation;
+          if (observation.kind === 'conclusive') {
+            const value = observation.result;
+            if (value.kind === 'model-failed') {
+              const write = { kind: 'accepted' as const, evidence: observation.evidence };
+              // The branches look identical but TypeScript needs `pending-limit` narrowed to pair it with an accepted write.
+              return value.error.code === 'pending-limit'
+                ? { kind: 'failed', error: value.error, write }
+                : { kind: 'failed', error: value.error, write };
             }
-            const result = await finish(hostSignal);
-            if (result.kind === 'model-failed') undoContinuation();
-            else {
-              for (const id of continuedIds) answered.add(id);
-              for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
-            }
-            continuedIds = [];
-            deliveries.length = 0;
-            return { kind: 'conclusive', evidence, result };
-          },
-        });
-        const snapshot = await handle.run();
-        const observation = snapshot.observation;
-        if (observation.kind === 'conclusive') {
-          const value = observation.result;
-          if (value.kind === 'model-failed') {
-            const write = { kind: 'accepted' as const, evidence: observation.evidence };
-            // The branches look identical but TypeScript needs `pending-limit` narrowed to pair it with an accepted write.
-            return value.error.code === 'pending-limit'
-              ? { kind: 'failed', error: value.error, write }
-              : { kind: 'failed', error: value.error, write };
+            return { ...value, session: sessionReference };
           }
-          return { ...value, session: sessionReference };
+          return { kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation };
+        } catch (error) {
+          if (error instanceof OpenRefusal && error.failure.code !== 'pending-limit') {
+            return { kind: 'failed', error: error.failure, write: { kind: 'not-attempted' } };
+          }
+          return { kind: 'failed', error: { code: 'invalid-input', message: 'The segment was refused before dispatch.' }, write: { kind: 'not-attempted' } };
         }
-        return { kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation };
-      } catch (error) {
-        if (error instanceof OpenRefusal && error.failure.code !== 'pending-limit') {
-          return { kind: 'failed', error: error.failure, write: { kind: 'not-attempted' } };
-        }
-        return { kind: 'failed', error: { code: 'invalid-input', message: 'The segment was refused before dispatch.' }, write: { kind: 'not-attempted' } };
-      }
       };
       try {
         const result = await attempt();

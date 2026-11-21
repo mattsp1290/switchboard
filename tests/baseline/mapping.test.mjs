@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { createToolTracker, jsonString, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
+const { createToolTracker, declaredToolObservations, jsonString, normalizedUsageFromCounts, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -384,4 +384,19 @@ test('the report says whether a terminal was processed', t => {
   const open = setup(t);
   open.feed(started);
   assert.equal(open.baseline.close().terminated, false);
+});
+
+test('declaredToolObservations declares a call with JSON-safe arguments only', () => {
+  assert.deepEqual(declaredToolObservations('c1', 'tool', { a: 1 }), [
+    { kind: 'tool', callId: 'c1', name: 'tool', phase: 'started' },
+    { kind: 'tool', callId: 'c1', name: 'tool', phase: 'arguments-ended', argumentsJson: '{"a":1}' },
+  ]);
+  assert.deepEqual(declaredToolObservations('c1', 'tool', undefined).map(o => o.phase), ['started', 'arguments-ended']);
+  assert.equal('argumentsJson' in declaredToolObservations('c1', 'tool', undefined)[1], false);
+});
+
+test('normalizedUsageFromCounts maps counts then normalizes, or is undefined without counts', () => {
+  assert.equal(normalizedUsageFromCounts({ inputTokens: -1, outputTokens: 'x' }), undefined);
+  assert.deepEqual(normalizedUsageFromCounts({ inputTokens: 3, outputTokens: 2 }),
+    normalizeUsage({ inputTokens: 3, outputTokens: 2 }));
 });
