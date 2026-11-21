@@ -1,6 +1,6 @@
 import type { Context, Tracer } from '@opentelemetry/api';
 import type { Outcome } from '../core/contracts.js';
-import { runObservationFamilies, tokenCount } from '../core/run-observation.js';
+import { runObservationFamilies, tokenCount, usageCountKeys } from '../core/run-observation.js';
 import type { RunObservation, RunObservationFamily, RunObservationUsage } from '../core/run-observation.js';
 import { createAguiProjection, describeProjection } from '../agui/index.js';
 import type {
@@ -114,13 +114,8 @@ type OpenEntry = { readonly kind: 'text' | 'reasoning' | 'tool'; readonly id: st
 const runningOnly: ReadonlySet<RunObservation['kind']> = Object.freeze(
   new Set<RunObservation['kind']>(['text', 'reasoning', 'tool', 'usage', 'model-boundary', 'terminal']));
 
-const knownKinds: ReadonlySet<string> = Object.freeze(new Set<RunObservation['kind']>([
-  'run-started', 'text', 'reasoning', 'tool', 'usage', 'interrupt', 'terminal', 'unsupported', 'model-boundary']));
-
 const toolPhases: ReadonlySet<unknown> = new Set(['started', 'arguments', 'arguments-ended', 'completed', 'failed']);
 const terminalOutcomes: ReadonlySet<unknown> = new Set(['success', 'failed', 'cancelled', 'outcome-unknown']);
-const usageCountKeys: readonly string[] = ['inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens',
-  'cachedInputTokens', 'cacheWriteInputTokens'];
 const usageRowKeys: ReadonlySet<string> = new Set(['provider', 'model', ...usageCountKeys]);
 
 const isString = (value: unknown): value is string => typeof value === 'string';
@@ -135,7 +130,7 @@ function usageRowValid(row: unknown): boolean {
 }
 
 /** Whether `observation` (whose `kind` is already known) has the field types its `RunObservation` member requires. */
-export function observationValid(observation: unknown): boolean {
+function observationValid(observation: unknown): boolean {
   if (typeof observation !== 'object' || observation === null || Array.isArray(observation)) return false;
   const o = observation as Record<string, unknown>;
   switch (o.kind) {
@@ -164,8 +159,7 @@ function usageKey(row: RunObservationUsage): string {
 
 function usageRow(row: RunObservationUsage): NativeTokenUsage {
   const result: Record<string, string | number> = {};
-  for (const key of ['provider', 'model', 'inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens',
-    'cachedInputTokens', 'cacheWriteInputTokens'] as const) {
+  for (const key of ['provider', 'model', ...usageCountKeys] as const) {
     const value = row[key];
     if (value !== undefined) result[key] = value;
   }
@@ -384,10 +378,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
 
   function accept(observation: RunObservation): RunBaselineAccept {
     batch = { events: [], diagnostics: [] };
-    if (typeof observation !== 'object' || observation === null || Array.isArray(observation)
-      || typeof observation.kind !== 'string' || !knownKinds.has(observation.kind)) {
-      note('invalid-observation');
-    } else if (!observationValid(observation)) {
+    if (!observationValid(observation)) {
       note('invalid-observation');
     } else if (closed) {
       note('after-close');

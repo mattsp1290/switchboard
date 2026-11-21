@@ -409,7 +409,7 @@ async function openAdapter(ready: {
   /** Whether `run-started` went out for this segment. */
   type SegmentState = { started: boolean };
   /** A segment result plus the native terminal a failed result hides. */
-  type Settled = { readonly result: HostSegmentResult; readonly failedAs?: 'failed' | 'cancelled' | 'outcome-unknown' };
+  type Settled = { readonly result: HostSegmentResult; readonly failedAs?: 'cancelled' | 'outcome-unknown' };
   let turnCompletion: Promise<CodexTurnCompletion> | undefined;
   let turnResult: CodexTurnCompletion | undefined;
   let capacityRefused = false;
@@ -523,8 +523,7 @@ async function openAdapter(ready: {
         return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted }),
           failedAs: 'outcome-unknown' };
       case 'wait':
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }),
-          failedAs: 'outcome-unknown' };
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       default: {
         const leftover: never = choice;
         void leftover;
@@ -542,7 +541,7 @@ async function openAdapter(ready: {
             return { result: pending.length > 0 ? pendingSegment(active, current, pending)
               : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage } };
           case 'failed':
-            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite), failedAs: 'failed' };
+            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite) };
           case 'interrupted':
             return { result: failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite),
               failedAs: 'cancelled' };

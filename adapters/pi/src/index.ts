@@ -6,8 +6,9 @@ import {
   createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
-import { emitObservation, emitRunStarted, isOptionalObservationListener, runtimeOutcome, tokenCount, usageFromCounts } from '#switchboard';
-import type { RunObservationListener, RunObservationUsage } from '#switchboard';
+import { emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
+import type { RunObservationListener } from '#switchboard';
+import { createMessageObserver } from './observe.js';
 import { terminalOutcome } from './terminal.js';
 
 export interface PiRuntimeOptions {
@@ -149,9 +150,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       let stopped = false;
       let callbackFailed = false;
       let latestText = '';
-      // Observation-only state. Snapshots are per native assistant message, so a second message in one prompt starts a new id.
-      const observed: { messageIndex: number; text: string; thinking: string; thinkingSeen: boolean; usage?: RunObservationUsage | undefined } =
-        { messageIndex: 0, text: '', thinking: '', thinkingSeen: false };
+      const observer = createMessageObserver(onObservation);
       const emit = (event: PiEvent) => {
         try { onEvent(event); } catch { callbackFailed = true; stopped = true; void native.abort().catch(() => {}); }
       };
@@ -187,28 +186,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
             latestText = text;
             emit({ kind: 'text', text });
           }
-          if (onObservation && admissionState.current === 'admitted') {
-            const messageId = `assistant:${observed.messageIndex}`;
-            if (text !== '' && text !== observed.text) {
-              observed.text = text;
-              emitObservation(onObservation, { kind: 'text', messageId, mode: 'snapshot', text });
-            }
-            const thinking = event.message.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('');
-            if (thinking !== '' && thinking !== observed.thinking) {
-              observed.thinkingSeen = true;
-              observed.thinking = thinking;
-              emitObservation(onObservation, { kind: 'reasoning', messageId, mode: 'snapshot', text: thinking });
-            }
-            if (event.type === 'message_end') {
-              const { input, output } = event.message.usage ?? {};
-              if (tokenCount(input) !== undefined && tokenCount(output) !== undefined) {
-                observed.usage = usageFromCounts({ inputTokens: input, outputTokens: output });
-              }
-              observed.messageIndex++;
-              observed.text = '';
-              observed.thinking = '';
-            }
-          }
+          if (admissionState.current === 'admitted') observer.message(event.message, event.type === 'message_end');
         }
       });
       void (async () => {
@@ -235,9 +213,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           const terminal: PiTerminal = { kind: 'ended', outcome };
           if (admissionState.current === 'admitted') {
             emit(terminal);
-            if (!observed.thinkingSeen) emitObservation(onObservation, { kind: 'unsupported', family: 'reasoning' });
-            if (observed.usage) emitObservation(onObservation, { kind: 'usage', rows: [observed.usage] });
-            emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[callbackFailed ? 'failed' : outcome] });
+            observer.finish(runtimeOutcome[callbackFailed ? 'failed' : outcome]);
           }
           running = undefined;
           completion.resolve(callbackFailed ? { kind: 'ended', outcome: 'failed' } : terminal);

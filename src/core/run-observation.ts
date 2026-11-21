@@ -100,7 +100,8 @@ export function tokenCount(value: unknown): number | undefined {
 }
 
 type UsageCountKey = Exclude<keyof RunObservationUsage, 'provider' | 'model'>;
-const usageCountKeys: readonly UsageCountKey[] = [
+/** The token-count fields of a `RunObservationUsage`. Not part of the root barrel. */
+export const usageCountKeys: readonly UsageCountKey[] = [
   'inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens', 'cachedInputTokens', 'cacheWriteInputTokens',
 ];
 /** Keeps each count that passes `tokenCount`; `undefined` when none does. Native names are mapped by the caller. */
