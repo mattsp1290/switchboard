@@ -61,7 +61,7 @@ assert.equal(observer.diagnostics().telemetryFailures, 0);
     ...dependencies.map(pinned)], installed));
   assertInstalledForkCore(installed, 'Observability SDK consumer');
   process.stdout.write(runNpm(['ls', ...dependencies], installed));
-  for (const file of ['recording.consumer.mjs', 'host.consumer.mjs', 'types.test.ts']) {
+  for (const file of ['recording.consumer.mjs', 'host.consumer.mjs', 'baseline.consumer.mjs', 'types.test.ts']) {
     copyFileSync(join(root, 'tests/observability', file), join(installed, 'tests/observability', file));
   }
   cpSync(join(root, 'tests/observability/fixtures'), join(installed, 'tests/observability/fixtures'), { recursive: true });
@@ -71,16 +71,17 @@ assert.equal(observer.diagnostics().telemetryFailures, 0);
   writeFileSync(join(installed, 'coexistence.ts'), `
 import { createGenAiObserver } from '${manifest.name}/observability';
 import { createAguiProjection } from '${manifest.name}/agui';
+import { createRunBaseline } from '${manifest.name}/baseline';
 import { contracts, createFakeFixture } from '${manifest.name}/testkit';
 import * as core from '${manifest.name}';
-void [createGenAiObserver, createAguiProjection, contracts, createFakeFixture, core];
+void [createGenAiObserver, createAguiProjection, createRunBaseline, contracts, createFakeFixture, core];
 `);
   writeFileSync(join(installed, 'tsconfig.json'), JSON.stringify({ compilerOptions,
     files: ['tests/observability/types.test.ts', 'coexistence.ts'] }));
   run(process.execPath, [compiler, '-p', 'tsconfig.json'], installed);
   run(process.execPath, ['coexistence.ts'], installed, testEnvironment());
   const output = run(process.execPath, ['--test', '--test-reporter=tap', 'tests/observability/recording.consumer.mjs',
-    'tests/observability/host.consumer.mjs'], installed, testEnvironment());
+    'tests/observability/host.consumer.mjs', 'tests/observability/baseline.consumer.mjs'], installed, testEnvironment());
   assert.match(output, /^# tests [1-9]\d*$/m, 'Installed observability tests execute.');
   assert.match(output, /^# fail 0$/m, 'Installed observability tests pass.');
   assert.match(output, /^ok \d+ - observability sanitized text matches independently pinned upstream schemas$/m);

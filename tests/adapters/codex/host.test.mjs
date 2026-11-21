@@ -105,6 +105,9 @@ function fakeServer(home, tool) {
         arm(threadId, turnId, [{ id: `ask-${turnId}`, frame: { id: `ask-${turnId}`, method: 'item/tool/requestUserInput', params: { threadId, turnId, itemId: 'question-1', questions: [{ id: 'q1', prompt: 'Go?' }] } } }]);
       } else {
         queueMicrotask(() => {
+          // Pinned 0.169.0 ServerNotification names `item/reasoning/textDelta` { itemId, delta }; `ThreadItem` has no separate reasoning-text item to classify.
+          send({ method: 'item/reasoning/textDelta', params: { threadId, turnId, itemId: 'think-1', delta: 'hmm', contentIndex: 0 } });
+          send({ method: 'item/reasoning/summaryTextDelta', params: { threadId, turnId, itemId: 'think-1', delta: 'sum', summaryIndex: 1 } });
           send({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId: 'item-1', delta: 'hello' } });
           finishTurn(threadId, turnId);
         });
@@ -281,5 +284,93 @@ test('a host that cannot run a helper is unavailable and launches nothing', asyn
     assert.equal(opened.error.code, 'unavailable');
     assert.equal(opened.error.feature, 'helper');
     assert.equal(attempts, 0);
+  } finally { await made.dispose(); }
+});
+
+const toolAnswer = (target, result) => ({ formatVersion: 1, kind: 'tool', outcome: { target, result, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } });
+const unsupported = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'];
+
+test('a listener receives the observations of a text segment, a pending segment, and its continuation', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool] }, signal);
+    assert.equal(opened.kind, 'ok', JSON.stringify(opened));
+    const adapter = opened.value;
+    const text = [];
+    const complete = await adapter.run({ prompt: prompts.text, signal, hostOperationId: 'text', recordIntent: () => {}, onObservation: (o) => text.push(o) });
+    assert.equal(complete.kind, 'complete');
+    assert.equal(text[0].kind, 'run-started');
+    assert.deepEqual(text.filter((o) => o.kind === 'unsupported').map((o) => o.family), unsupported);
+    assert.deepEqual(text.find((o) => o.kind === 'text'), { kind: 'text', messageId: 'item-1', mode: 'delta', text: 'hello' });
+    assert.deepEqual(text.find((o) => o.kind === 'reasoning'), { kind: 'reasoning', messageId: 'think-1:text', mode: 'delta', text: 'hmm' });
+    assert.deepEqual(text.find((o) => o.kind === 'reasoning' && o.messageId.includes('summary')),
+      { kind: 'reasoning', messageId: 'think-1:summary:1', mode: 'delta', text: 'sum' });
+    assert.deepEqual(text.find((o) => o.kind === 'usage'), { kind: 'usage', rows: [{ inputTokens: 2, outputTokens: 1, cachedInputTokens: 0,
+      cacheWriteInputTokens: 0, reasoningTokens: 0, totalTokens: 3 }] });
+    assert.equal(text.some((o) => o.kind === 'model-boundary'), false);
+    assert.deepEqual(text.at(-1), { kind: 'terminal', outcome: 'success' });
+    assert.equal(text.filter((o) => o.kind === 'terminal').length, 1);
+
+    const run = [];
+    const pending = await adapter.run({ prompt: prompts.toolCall, signal, hostOperationId: 'tool', recordIntent: () => {}, onObservation: (o) => run.push(o) });
+    assert.equal(pending.kind, 'pending', JSON.stringify(pending));
+    const callId = pending.calls[0].pending.target.nativeToolCallId;
+    assert.deepEqual(run.filter((o) => o.kind === 'tool'), [
+      { kind: 'tool', callId, name: toolName, phase: 'started' },
+      { kind: 'tool', callId, name: toolName, phase: 'arguments-ended', argumentsJson: '{"city":"Paris"}' }]);
+    assert.deepEqual(run.at(-1), { kind: 'terminal', outcome: 'success', pendingTools: [callId] });
+
+    const next = [];
+    const done = await adapter.continue({ answers: [toolAnswer(pending.calls[0].pending.target, { kind: 'ok', value: { namespace: 'host', schemaVersion: 1, data: { text: 'sunny' } } })],
+      signal, hostOperationId: 'answer', recordIntent: () => {}, onObservation: (o) => next.push(o) });
+    assert.equal(done.kind, 'complete', JSON.stringify(done));
+    assert.equal(next[0].kind, 'run-started');
+    assert.deepEqual(next.filter((o) => o.kind === 'tool'), [
+      { kind: 'tool', callId, name: toolName, phase: 'started' },
+      { kind: 'tool', callId, name: toolName, phase: 'arguments-ended', argumentsJson: '{"city":"Paris"}' },
+      { kind: 'tool', callId, name: toolName, phase: 'completed', resultJson: '{"text":"sunny"}' }]);
+    assert.deepEqual(next.at(-1), { kind: 'terminal', outcome: 'success' });
+    await adapter.close();
+  } finally { await made.dispose(); }
+});
+
+test('a failed host answer is a failed tool observation carrying the error payload', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool] }, signal);
+    const adapter = opened.value;
+    const pending = await adapter.run({ prompt: prompts.toolCall, signal, hostOperationId: 'tool', recordIntent: () => {} });
+    assert.equal(pending.kind, 'pending', JSON.stringify(pending));
+    const seen = [];
+    const done = await adapter.continue({ answers: [toolAnswer(pending.calls[0].pending.target, { kind: 'error', error: { namespace: 'host', schemaVersion: 1, data: { text: 'no' } } })],
+      signal, hostOperationId: 'answer', recordIntent: () => {}, onObservation: (o) => seen.push(o) });
+    assert.equal(done.kind, 'complete', JSON.stringify(done));
+    const failedTool = seen.find((o) => o.kind === 'tool' && o.phase === 'failed');
+    assert.deepEqual(failedTool, { kind: 'tool', callId: pending.calls[0].pending.target.nativeToolCallId, name: toolName, phase: 'failed', resultJson: '{"text":"no"}' });
+    await adapter.close();
+  } finally { await made.dispose(); }
+});
+
+test('a throwing or invalid listener does not change a segment', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool] }, signal);
+    const adapter = opened.value;
+    const events = [];
+    adapter.events.subscribe((event) => events.push(event.kind));
+    const result = await adapter.run({ prompt: prompts.text, signal, hostOperationId: 'throws', recordIntent: () => {}, onObservation: () => { throw new Error('boom'); } });
+    assert.equal(result.kind, 'complete');
+    assert.equal(result.text, 'hello');
+    assert.equal(events.includes('text-delta'), true);
+    const intents = [];
+    const invalid = await adapter.run({ prompt: prompts.text, signal, hostOperationId: 'invalid', recordIntent: (i) => intents.push(i), onObservation: 'nope' });
+    assert.equal(invalid.kind, 'failed');
+    assert.equal(invalid.error.code, 'invalid-input');
+    assert.equal(invalid.write.kind, 'not-attempted');
+    assert.equal(intents.length, 0);
+    await adapter.close();
   } finally { await made.dispose(); }
 });

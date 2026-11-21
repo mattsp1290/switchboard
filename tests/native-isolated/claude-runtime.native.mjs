@@ -172,6 +172,75 @@ test('partial text is published once and final assistant frames do not duplicate
 }));
 
 
+test('an observation listener sees run-started, text deltas and one terminal without changing the callback events', async () => fixture({mode:'stream'}, async runtime => {
+  const events = [];
+  const observations = [];
+  const turn = await runtime.start({text:'hello',onEvent:event => events.push(event),onObservation:observation => observations.push(observation)});
+  assert.equal((await turn.finished).outcome, 'completed');
+  assert.deepEqual(events, [{kind:'text',itemId:'stream-1:0',text:'hello'},{kind:'text',itemId:'stream-1:1',text:' world'},{kind:'ended',outcome:'completed'}]);
+  assert.equal(observations[0].kind, 'run-started');
+  assert.equal(observations.filter(observation => observation.kind === 'run-started').length, 1);
+  assert.deepEqual(observations.filter(observation => observation.kind === 'unsupported').map(observation => observation.family).sort(),
+    ['activity', 'custom', 'interrupts', 'messages', 'raw', 'state', 'subagents']);
+  assert.deepEqual(observations.filter(observation => observation.kind === 'text'),
+    [{kind:'text',messageId:'stream-1:0',mode:'delta',text:'hello'},{kind:'text',messageId:'stream-1:1',mode:'delta',text:' world'}]);
+  assert.deepEqual(observations.filter(observation => observation.kind === 'terminal'), [{kind:'terminal',outcome:'success'}]);
+  assert.equal(observations.at(-1).kind, 'terminal');
+}));
+
+test('streamed thinking, tool_use and message_stop reach only the listener as reasoning, tool phases and one model boundary', async () => fixture({mode:'stream-rich'}, async runtime => {
+  const events = [];
+  const observations = [];
+  const turn = await runtime.start({text:'hello',onEvent:event => events.push(event),onObservation:observation => observations.push(observation)});
+  assert.equal((await turn.finished).outcome, 'completed');
+  assert.deepEqual(events, [{kind:'text',itemId:'stream-1:2',text:'pong'},{kind:'ended',outcome:'completed'}]);
+  assert.ok(!JSON.stringify(events).includes('private plan') && !JSON.stringify(events).includes('a.txt'));
+  assert.deepEqual(observations.filter(observation => observation.kind === 'reasoning'),
+    [{kind:'reasoning',messageId:'stream-1:0',mode:'delta',text:'private plan'}]);
+  assert.deepEqual(observations.filter(observation => observation.kind === 'tool'), [
+    {kind:'tool',callId:'toolu_1',name:'read_file',phase:'started'},
+    {kind:'tool',callId:'toolu_1',name:'read_file',phase:'arguments',argumentsJson:'{"path":'},
+    {kind:'tool',callId:'toolu_1',name:'read_file',phase:'arguments',argumentsJson:'"a.txt"}'},
+    {kind:'tool',callId:'toolu_1',name:'read_file',phase:'arguments-ended'},
+  ]);
+  assert.deepEqual(observations.filter(observation => observation.kind === 'model-boundary'), [{kind:'model-boundary',
+    requestModel:'claude-sonnet-4-6',responseModel:'claude-sonnet-4-6',
+    usage:{inputTokens:10,outputTokens:7,cachedInputTokens:5,cacheWriteInputTokens:2}}]);
+  assert.deepEqual(observations.filter(observation => observation.kind === 'usage'),
+    [{kind:'usage',rows:[{inputTokens:10,outputTokens:7,cachedInputTokens:5,cacheWriteInputTokens:2}]}]);
+  assert.deepEqual(observations.slice(-2).map(observation => observation.kind), ['usage', 'terminal']);
+  assert.ok(observations.every(observation => Object.isFrozen(observation)));
+}));
+
+test('a throwing observation listener does not change admission, callback events or outcome', async () => fixture({mode:'stream'}, async runtime => {
+  const events = [];
+  const turn = await runtime.start({text:'hello',onEvent:event => events.push(event),onObservation() { throw new Error('listener'); }});
+  assert.equal((await turn.finished).outcome, 'completed');
+  assert.deepEqual(events.map(event => event.kind === 'text' ? event.text : event.outcome), ['hello', ' world', 'completed']);
+}));
+
+test('the non-stream assistant path emits one text snapshot per block and a failed terminal for an error result', async () => fixture({mode:'result-error'}, async runtime => {
+  const observations = [];
+  const turn = await runtime.start({text:'hello',onEvent() {},onObservation:observation => observations.push(observation)});
+  assert.equal((await turn.finished).outcome, 'failed');
+  assert.deepEqual(observations.filter(observation => observation.kind === 'text'),
+    [{kind:'text',messageId:'message-1',mode:'snapshot',text:'hello'},{kind:'text',messageId:'message-1',mode:'snapshot',text:'hello world'}]);
+  assert.deepEqual(observations.at(-1), {kind:'terminal',outcome:'failed'});
+}));
+
+test('a stopped turn reports a cancelled terminal observation', async () => fixture({mode:'stream-hold'}, async runtime => {
+  const observations = [];
+  const turn = await runtime.start({text:'hello',onEvent() {},onObservation:observation => observations.push(observation)});
+  await turn.abort();
+  assert.equal((await turn.finished).outcome, 'interrupted');
+  assert.deepEqual(observations.at(-1), {kind:'terminal',outcome:'cancelled'});
+}));
+
+test('a non-function observation listener is rejected before a child starts', async () => fixture({}, async runtime => {
+  await assert.rejects(runtime.start({text:'hello',onEvent() {},onObservation:'listener'}), /Claude operation failed/);
+}));
+
+
 test('a missing resumed session is rejected without starting a new turn', async () => fixture({mode:'missing'}, async runtime => {
   await assert.rejects(runtime.start({text:'hello',threadId:id,onEvent() {}}), /Claude operation failed/);
 }));

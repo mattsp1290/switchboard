@@ -28,6 +28,8 @@ Default policy does not traverse message content. Explicit sanitized text passes
 The host chooses safe public identifiers and sanitizer rules. Library validation establishes the allowed data paths, rather than proving arbitrary strings are non-secret.
 Datadog metadata adaptation belongs in the host exporter. A distinct export view preserves outcome and safe correlation without changing lotel spans.
 
+The `./baseline` entry is the adapter-facing caller of this observer and of the AG-UI projector. It records a model span only for a `model-boundary` observation; a missing model boundary stays unobserved.
+
 [Usage](../observability/usage.md) and [destination verification](../observability/validation.md) describe host setup and deterministic qualification.
 
 ## Host ownership
@@ -73,6 +75,7 @@ The host-facing adapter contract is [host-adapter-contract.md](host-adapter-cont
 | `adapters/pi/src/` | Pi native integration (`./pi` entry) | May import Pi SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/pi/tsconfig.json` |
 | `adapters/cursor/src/` | Cursor text adapter (`./cursor` entry) | May import the Cursor SDK peer and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/cursor/tsconfig.json` |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
+| `src/baseline/` | `./baseline` entry: maps `RunObservation` into AG-UI facts and GenAI spans. Loads both optional peers | May import core, `src/agui/`, and `src/observability/`. Never imported by core, the root entry, the testkit, or an adapter |
 | `src/testkit/` | Controlled qualification scenarios, the reference fake, and the host-adapter conformance suite | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |
 
 AgentUI keeps its separately qualified production core while adopting a newer testkit as a development dependency under an npm alias.
@@ -80,6 +83,8 @@ The aliased testkit must use its own artifact's public core at runtime and in de
 Production pruning must remove the development alias while retaining the qualified core.
 The package gate checks the standalone alias; AgentUI's consumer qualification checks coexistence and pruning against its pinned production artifact.
 Relative public-barrel imports keep this identity within the aliased artifact.
+
+Adapters may import any value or type export of `src/core/run-observation.ts` (such as `emitRunStarted`, `jsonString`, `segmentTerminal`, and `RunObservationListener`) from `#switchboard` (separate adapter projects) or from a relative `src/core/run-observation.js` path (`src/adapters/`). They never import `src/agui`, `src/observability`, `src/baseline`, `@ag-ui/core`, or `@opentelemetry/api`.
 
 Native adapters need their own explicit entry points when implemented.
 AG-UI imports only the SDK main entry. Optional Zod and SDK schemas are not integration runtime dependencies.

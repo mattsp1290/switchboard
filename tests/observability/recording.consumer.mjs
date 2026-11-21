@@ -443,3 +443,19 @@ test('observability contains rejected Promise sanitizer results without reading 
   unwrap(unwrap(thenable.observer.start({ ...model, inputMessages: input() }, ROOT_CONTEXT)).finish(success));
   assert.equal(thenable.observer.diagnostics().contentDropped, 1);
 });
+
+test('observability admits an observed tool name only when the host opts in, and never records tool payloads', t => {
+  const closed = host(t);
+  assert.equal(closed.observer.start({ kind: 'tool', name: 'read_file', callId: 'call-1' }, ROOT_CONTEXT).kind, 'error');
+  const open = host(t, { admitObservedToolNames: true, allowedToolNames: [] });
+  unwrap(unwrap(open.observer.start({ kind: 'tool', name: 'read_file', callId: 'call-1' }, ROOT_CONTEXT)).finish(success));
+  rejected(open.observer.start({ kind: 'tool', name: 'bad\nname' }, ROOT_CONTEXT), 'invalid-input');
+  rejected(open.observer.start({ kind: 'tool', name: 'read_file', arguments: '{}' }, ROOT_CONTEXT), 'invalid-input');
+  const [span] = spans(open.exporter);
+  assert.equal(span.name, 'execute_tool read_file');
+  assert.equal(span.attributes['gen_ai.tool.name'], 'read_file');
+  assert.equal(span.attributes['gen_ai.tool.call.id'], 'call-1');
+  assert(!Object.keys(span.attributes).some(key => /argument|result/u.test(key)), JSON.stringify(span.attributes));
+  const { tracer } = faultTracer();
+  assert.throws(() => observerWith(tracer, { admitObservedToolNames: 'yes' }), { name: 'TypeError', message: 'Invalid observability configuration' });
+});

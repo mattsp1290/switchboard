@@ -6,6 +6,9 @@ import {
   createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
+import { emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
+import type { RunObservationListener } from '#switchboard';
+import { createMessageObserver } from './observe.js';
 import { terminalOutcome } from './terminal.js';
 
 export interface PiRuntimeOptions {
@@ -24,7 +27,8 @@ export interface PiPrompt { readonly finished: Promise<PiTerminal> }
 export interface PiSession {
   readonly id: string;
   readonly sessionFile: string;
-  prompt(text: string, onEvent: (event: PiEvent) => void): Promise<PiPrompt>;
+  /** `onObservation` receives the final `usage` and `terminal` observations after the `ended` callback, because the terminal outcome depends on whether a callback failed. */
+  prompt(text: string, onEvent: (event: PiEvent) => void, onObservation?: RunObservationListener): Promise<PiPrompt>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -134,10 +138,11 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
   return {
     id: native.sessionId,
     sessionFile: basename(file),
-    async prompt(text, onEvent) {
+    async prompt(text, onEvent, onObservation) {
       if (closing) throw new Error('Pi session is closed.');
       if (running) throw new Error('Pi session is busy.');
-      if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function') throw failure();
+      if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function'
+        || !isOptionalObservationListener(onObservation)) throw failure();
       const admission = Promise.withResolvers<PiPrompt>();
       const completion = Promise.withResolvers<PiTerminal>();
       let started = false;
@@ -145,6 +150,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       let stopped = false;
       let callbackFailed = false;
       let latestText = '';
+      const observer = createMessageObserver(onObservation);
       const emit = (event: PiEvent) => {
         try { onEvent(event); } catch { callbackFailed = true; stopped = true; void native.abort().catch(() => {}); }
       };
@@ -166,6 +172,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
               stop(); rejectAdmission(); void native.abort().catch(() => {}); return;
             }
             admissionState.current = 'admitted';
+            emitRunStarted(onObservation);
             admission.resolve({ finished: completion.promise });
           });
         }
@@ -175,7 +182,13 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
             event.message.errorMessage = 'Pi operation failed.';
           }
           const text = event.message.content.filter(part => part.type === 'text').map(part => part.text).join('');
-          if (text !== latestText) { latestText = text; emit({ kind: 'text', text }); }
+          if (text !== latestText) {
+            latestText = text;
+            emit({ kind: 'text', text });
+          }
+          if (admissionState.current === 'admitted') {
+            observer.message(event.message, event.type === 'message_end');
+          }
         }
       });
       void (async () => {
@@ -200,7 +213,10 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           unsubscribe();
           rejectAdmission();
           const terminal: PiTerminal = { kind: 'ended', outcome };
-          if (admissionState.current === 'admitted') emit(terminal);
+          if (admissionState.current === 'admitted') {
+            emit(terminal);
+            observer.finish(runtimeOutcome[callbackFailed ? 'failed' : outcome]);
+          }
           running = undefined;
           completion.resolve(callbackFailed ? { kind: 'ended', outcome: 'failed' } : terminal);
         }

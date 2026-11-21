@@ -4,6 +4,7 @@ import type { AdapterError, AdapterIdentity, AdapterInstance, NativeExtension, O
 import type { DispatchObservation, FreshDispatchOptions } from './dispatch.js';
 import type { EventObserver } from './events.js';
 import type { InteractionContinuation, NativeDelivery, PendingInteraction, ToolTarget } from './interaction.js';
+import type { RunObservationListener } from './run-observation.js';
 import type { CheckpointReference, SessionReference } from './sessions.js';
 
 /**
@@ -52,6 +53,11 @@ export interface HostSegmentRequest {
   /** Runs before native dispatch, as in `createDispatchOperation`. */
   readonly recordIntent: FreshDispatchOptions<unknown>['recordIntent'];
   readonly signal: AbortSignal;
+  /**
+   * Receives this segment's `RunObservation` values. One segment is one baseline: a continuation passes its own
+   * listener. A listener exception never changes the segment result.
+   */
+  readonly onObservation?: RunObservationListener;
 }
 export interface HostRunInput extends HostSegmentRequest {
   readonly prompt: string;

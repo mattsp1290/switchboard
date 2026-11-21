@@ -110,3 +110,11 @@ export type {
   ReadinessRemediationCode, ReadinessReport, ReadinessSource, ReadinessUnknownCode, UnobservedState,
   VersionObservation, WorkspaceObservation,
 } from './core/readiness.js';
+export {
+  answeredToolObservations, createToolTracker, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizeUsage, normalizedUsageFromCounts,
+  runObservationFamilies, runtimeOutcome, segmentTerminal, tokenCount, unobservedFamilies, usageFromCounts, usageFromUncachedCounts,
+} from './core/run-observation.js';
+export type {
+  RunObservation, RunObservationFamily, RunObservationListener, RunObservationOutcome, RunObservationToolPhase,
+  RunObservationUsage, ToolTracker,
+} from './core/run-observation.js';

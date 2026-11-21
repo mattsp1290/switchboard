@@ -26,6 +26,26 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   send({type:'system',subtype:'init',session_id:id,model:frameModel('initModel'),apiKeySource:'ANTHROPIC_API_KEY',tools:[],mcp_servers:[]});
   if (config.mode === 'init-only' || config.mode === 'stubborn-init') continue;
   if (config.mode === 'missing') { send({type:'result',subtype:'error_during_execution',is_error:true,session_id:id}); continue; }
+  if (config.mode === 'stream-rich') {
+    const stream = event => send({type:'stream_event',session_id:id,parent_tool_use_id:null,event});
+    const model = frameModel('streamModel');
+    stream({type:'message_start',message:{id:'stream-1',model,usage:{input_tokens:3,output_tokens:1,cache_read_input_tokens:5,cache_creation_input_tokens:2}}});
+    stream({type:'content_block_start',index:0,content_block:{type:'thinking',thinking:'',signature:''}});
+    stream({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'private plan'}});
+    stream({type:'content_block_stop',index:0});
+    stream({type:'content_block_start',index:1,content_block:{type:'tool_use',id:'toolu_1',name:'read_file',input:{}}});
+    stream({type:'content_block_delta',index:1,delta:{type:'input_json_delta',partial_json:'{"path":'}});
+    stream({type:'content_block_delta',index:1,delta:{type:'input_json_delta',partial_json:'"a.txt"}'}});
+    stream({type:'content_block_stop',index:1});
+    stream({type:'content_block_start',index:2,content_block:{type:'text',text:''}});
+    stream({type:'content_block_delta',index:2,delta:{type:'text_delta',text:'pong'}});
+    stream({type:'content_block_stop',index:2});
+    stream({type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:7}});
+    stream({type:'message_stop'});
+    send({type:'assistant',session_id:id,parent_tool_use_id:null,message:{id:'stream-1',model:frameModel('assistantModel'),content:[{type:'text',text:'pong'}]}});
+    send({type:'result',subtype:'success',is_error:false,session_id:id,usage:{input_tokens:3,output_tokens:7,cache_read_input_tokens:5,cache_creation_input_tokens:2}});
+    continue;
+  }
   if (config.mode === 'stream' || config.mode === 'stream-hold' || config.mode === 'stubborn') {
     const stream = event => send({type:'stream_event',session_id:id,parent_tool_use_id:null,event});
     stream({type:'message_start',message:{id:'stream-1',model:frameModel('streamModel')}});

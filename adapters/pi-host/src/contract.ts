@@ -39,6 +39,7 @@ export interface PiHostModelRequest {
 export type PiHostModelEvent =
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'tool-call'; readonly id: string; readonly name: string; readonly arguments: unknown }
+  /** `input` is the total prompt input including any cached tokens, so a stream over Pi's uncached `usage.input` must add `cacheRead` and `cacheWrite`. */
   | { readonly kind: 'usage'; readonly input: number; readonly output: number };
 
 /**

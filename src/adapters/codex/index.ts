@@ -5,15 +5,17 @@ import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
 import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
+import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
-  HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
+  HostLaunch, HostOpenOptions, HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
   HostWriteStatus,
 } from '../../core/host-adapter.js';
 import type { InteractionContinuation } from '../../core/interaction.js';
 import { parseInteractionContinuation } from '../../core/interaction.js';
 import type { SessionBinding } from '../../core/sessions.js';
 import { createCodexWriters, openCodexExecution } from './execution.js';
-import type { CleanupStep, CodexSession, CodexTurnCompletion } from './execution.js';
+import type { CleanupStep, CodexSession, CodexTokenUsage, CodexTurnCompletion } from './execution.js';
 import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
 import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
 import { codexNativeToolReply, createCodexInteraction } from './interaction.js';
@@ -106,6 +108,19 @@ function failed(error: HostAdapterError, write: HostWriteStatus): HostSegmentRes
   }
   return { kind: 'failed', error, write };
 }
+/** Native `total` as one observation row. `reasoningOutputTokens` is the AG-UI `reasoningTokens`. */
+function usageRow(total: CodexTokenUsage): RunObservationUsage {
+  return { inputTokens: total.inputTokens, outputTokens: total.outputTokens, cachedInputTokens: total.cachedInputTokens,
+    cacheWriteInputTokens: total.cacheWriteInputTokens, reasoningTokens: total.reasoningOutputTokens,
+    totalTokens: total.totalTokens };
+}
+/**
+ * Pinned 0.169.0 `ServerNotification` reasoning methods, checked against `codex app-server generate-ts`:
+ * `item/reasoning/textDelta` carries `{ itemId, delta }` and `item/reasoning/summaryTextDelta` adds a numeric
+ * `summaryIndex`, which keeps each summary part in its own message. `execution.ts` leaves them
+ * as opaque `native` events, so `watch` projects only these two methods as `reasoning` deltas.
+ */
+const reasoningMethods = ['item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'] as const;
 const emptyUsage = (): HostUsage => Object.freeze({ scope: 'cumulative', native: Object.freeze({
   namespace: 'codex-app-server/token-usage', schemaVersion: 1, data: null }) });
 
@@ -390,12 +405,17 @@ async function openAdapter(ready: {
   const canonical = canonicalTools(tools);
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 4, capacity: 64 });
   let session: CodexSession | undefined;
-  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage } | undefined;
+  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
+  /** Whether `run-started` went out for this segment. */
+  type SegmentState = { started: boolean };
+  /** A segment result plus the native terminal a failed result hides. */
+  type Settled = { readonly result: HostSegmentResult; readonly failedAs?: 'cancelled' | 'outcome-unknown' };
   let turnCompletion: Promise<CodexTurnCompletion> | undefined;
   let turnResult: CodexTurnCompletion | undefined;
   let capacityRefused = false;
   let closing: ReturnType<HostAdapter['close']> | undefined;
   const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') stream.publish(Object.freeze(event)); };
+  const observe = (observation: RunObservation) => { if (segment && segment.phase !== 'intent') emitObservation(segment.observer, observation); };
   const calls = () => bridge.hostCalls().map(toCall);
   bridge.events.subscribe((event) => {
     if (event.kind === 'refused' && event.reason === 'capacity') { capacityRefused = true; return; }
@@ -408,6 +428,9 @@ async function openAdapter(ready: {
     publish({ kind: 'tool-call-start', target, name: event.call.name });
     publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(event.call.arguments ?? null) });
     publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
+    if (segment?.observer) {
+      for (const o of declaredToolObservations(target.nativeToolCallId, event.call.name, event.call.arguments ?? null)) observe(o);
+    }
   });
   const resume = options.resume;
   const resumedKey = resume ? declarationKey(native.home, resume.session.opaque) : undefined;
@@ -439,10 +462,20 @@ async function openAdapter(ready: {
       if (event.kind === 'text-delta') {
         segment.text += event.delta;
         publish({ kind: 'text-delta', nativeItemId: event.itemId, text: event.delta });
+        observe({ kind: 'text', messageId: event.itemId, mode: 'delta', text: event.delta });
+      } else if (event.kind === 'native') {
+        if (segment.observer && reasoningMethods.some((method) => method === event.method) && record(event.params)
+          && typeof event.params.itemId === 'string' && typeof event.params.delta === 'string') {
+          const index = event.params.summaryIndex;
+          const part = event.method === 'item/reasoning/textDelta' ? 'text'
+            : typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? `summary:${index}` : 'summary';
+          observe({ kind: 'reasoning', messageId: `${event.params.itemId}:${part}`, mode: 'delta', text: event.params.delta });
+        }
       } else if (event.kind === 'usage') {
         segment.usage = Object.freeze({ scope: 'cumulative', native: Object.freeze({ namespace: 'codex-app-server/token-usage',
           schemaVersion: 1, data: { total: event.total, last: event.last, modelContextWindow: event.modelContextWindow } }) });
         publish({ kind: 'usage', usage: segment.usage });
+        observe({ kind: 'usage', rows: [normalizeUsage(usageRow(event.total))] });
       }
     });
   }
@@ -470,60 +503,62 @@ async function openAdapter(ready: {
   function pendingSegment(active: CodexSession, current: NonNullable<typeof segment>, pending: readonly CodexHostCall[]): HostSegmentResult {
     return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), usage: current.usage };
   }
-  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<HostSegmentResult> {
+  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<Settled> {
     const current = segment;
     const active = session;
-    if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
+    if (!current || !active) return { result: failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' }) };
     const choice = await collectSettleChoice({ signal: hostSignal, bridge, turnDone: turnCompletion,
       turnFinished: () => turnResult !== undefined, capacityRefused: () => capacityRefused });
     const pending = bridge.hostCalls();
     switch (choice) {
       case 'limit':
-        return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-          { kind: 'accepted', evidence: accepted });
+        return { result: failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
+          { kind: 'accepted', evidence: accepted }) };
       case 'pending':
-        return pendingSegment(active, current, pending);
+        return { result: pendingSegment(active, current, pending) };
       case 'completion':
         return turnResult ? completionResult(active, current, turnResult, accepted, pending)
-          : failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+          : { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       case 'aborted':
-        return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
+        return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted }),
+          failedAs: 'outcome-unknown' };
       case 'wait':
-        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       default: {
         const leftover: never = choice;
         void leftover;
-        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       }
     }
   }
   function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion,
-    accepted: DispatchEvidence, pending: readonly CodexHostCall[]): HostSegmentResult {
+    accepted: DispatchEvidence, pending: readonly CodexHostCall[]): Settled {
     const acceptedWrite = { kind: 'accepted' as const, evidence: accepted };
     switch (completion.kind) {
       case 'terminal':
         switch (completion.terminal.status) {
           case 'completed':
-            return pending.length > 0 ? pendingSegment(active, current, pending)
-              : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage };
+            return { result: pending.length > 0 ? pendingSegment(active, current, pending)
+              : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage } };
           case 'failed':
-            return failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite);
+            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite) };
           case 'interrupted':
-            return failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite);
+            return { result: failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite),
+              failedAs: 'cancelled' };
           default: {
             const status: never = completion.terminal.status;
-            return failed({ code: 'native-failure', message: `the native turn status is ${String(status)}` }, acceptedWrite);
+            return { result: failed({ code: 'native-failure', message: `the native turn status is ${String(status)}` }, acceptedWrite) };
           }
         }
       case 'rejected':
-        return failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite);
+        return { result: failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite) };
       case 'unconcluded':
       case 'not-sent':
       case 'not-dispatched':
-        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       default: {
         const leftover: never = completion;
-        return failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' }) };
       }
     }
   }
@@ -551,9 +586,18 @@ async function openAdapter(ready: {
     const active = session;
     if (!active) return { kind: 'outcome-unknown' as const };
     if (answers) {
+      const observer = segment?.observer;
+      const known = observer ? bridge.hostCalls() : [];
       for (const answer of answers) {
         const replied = await bridge.reply({ value: answer, signal: hostSignal, recordIntent: () => {} });
         if (replied.kind === 'error') return { kind: 'outcome-unknown' as const };
+        if (observer && answer.kind === 'tool') {
+          const callId = answer.outcome.target.nativeToolCallId;
+          const call = known.find((candidate) => candidate.pending.target.nativeToolCallId === callId);
+          if (call) {
+            for (const o of answeredToolObservations(callId, call.name, call.arguments ?? null, answer.outcome.result)) observe(o);
+          }
+        }
       }
     }
     if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
@@ -581,35 +625,57 @@ async function openAdapter(ready: {
         && codexNativeToolReply(expected, answer) !== undefined;
     }) && ids.size === 0;
   }
-  async function segmentOf(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
-    readonly signal: AbortSignal }, prompt: string | undefined, answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
-    if (closing) return failed({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
-    if (segment) return failed({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
-    if (answers && !answersMatch(answers)) return failed({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
+  async function segmentOf(input: HostSegmentRequest, prompt: string | undefined,
+  answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
+    if (!isOptionalObservationListener(input.onObservation)) {
+      return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
+    }
+    const state: SegmentState = { started: false };
+    let settled: Settled | undefined;
+    try {
+      settled = await segmentInner(input, prompt, answers, state);
+      return settled.result;
+    } finally {
+      // A throw after the run started still gives the baseline its one terminal.
+      if (state.started) {
+        emitObservation(input.onObservation, segmentTerminal(settled?.result, settled?.failedAs));
+      }
+    }
+  }
+  async function segmentInner(input: HostSegmentRequest, prompt: string | undefined,
+  answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<Settled> {
+    const refuse = (...args: Parameters<typeof failed>): Settled => ({ result: failed(...args) });
+    if (closing) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
+    if (segment) return refuse({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
+    if (answers && !answersMatch(answers)) return refuse({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
     if (prompt !== undefined && (bridge.hostCalls().length > 0 || (turnCompletion !== undefined && turnResult === undefined))) {
-      return failed({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
+      return refuse({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
     }
     capacityRefused = false;
-    segment = { phase: 'intent', text: '', usage: emptyUsage() };
+    segment = { phase: 'intent', text: '', usage: emptyUsage(), observer: input.onObservation };
     const target: DispatchIdentity['target'] = session
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };
     try {
       const denied = await credentialOk(input.signal);
-      if (denied) return failed(denied, { kind: 'not-attempted' });
+      if (denied) return refuse(denied, { kind: 'not-attempted' });
       const handle = createDispatchOperation({ mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
         identity: { hostOperationId: input.hostOperationId, target },
         dispatchNative: async (recorded) => {
-          if (segment) segment.phase = 'native';
+          if (segment) {
+            segment.phase = 'native';
+            state.started = true;
+            emitRunStarted(segment.observer);
+          }
           const observation = await dispatchTurn(prompt, answers, input.signal);
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
           return { kind: 'accepted', evidence: { ...observation.evidence, identity: recorded } };
         } });
       const snapshot = await handle.run();
       if (snapshot.observation.kind === 'not-dispatched') {
-        return failed({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
+        return refuse({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
       }
       if (snapshot.observation.kind !== 'accepted' && snapshot.observation.kind !== 'conclusive') {
-        return failed({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
+        return refuse({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
       }
       return await settle(input.signal, snapshot.observation.evidence);
     } finally { segment = undefined; }

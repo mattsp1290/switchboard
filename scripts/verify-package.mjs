@@ -67,6 +67,7 @@ try {
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
     './cursor': { types: './dist/cursor/index.d.ts', import: './dist/cursor/index.js' },
     './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
+    './baseline': { types: './dist/baseline/index.d.ts', import: './dist/baseline/index.js' },
     './host/pi': { types: './dist/host/pi/index.d.ts', import: './dist/host/pi/index.js' },
   });
   assert.deepEqual(installedManifest.peerDependencies, { '@ag-ui/core': '1.0.4', '@earendil-works/pi-ai': '1.5.2', '@earendil-works/pi-coding-agent': '1.5.2', '@openai/codex-sdk': '0.169.0', '@anthropic-ai/claude-agent-sdk': '0.3.323', '@cursor/sdk': '1.4.2', '@opentelemetry/api': '1.9.0' });
@@ -95,6 +96,15 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.js'), 'utf8'), /from ['"]\.\/runtime\.js['"]/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/adapters/opencode/index.d.ts'), 'utf8'), /@agentclientprotocol/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/adapters/opencode/index.js'), 'utf8'), /@agentclientprotocol/);
+  for (const directory of ['claude', 'codex', 'cursor', 'pi', 'host/pi', 'adapters/codex', 'adapters/opencode']) {
+    const files = readdirSync(join(installed, 'dist', directory), { recursive: true })
+      .filter(file => typeof file === 'string' && /\.(?:js|d\.ts)$/.test(file));
+    assert(files.length > 0, `dist/${directory} ships files.`);
+    for (const file of files) {
+      assert.doesNotMatch(readFileSync(join(installed, 'dist', directory, file), 'utf8'), /@ag-ui|@opentelemetry/,
+        `dist/${directory}/${file} does not name the AG-UI or OpenTelemetry peers.`);
+    }
+  }
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };

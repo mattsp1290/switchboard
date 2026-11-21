@@ -3,6 +3,9 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { emitObservation, emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
+import { createStreamObserver } from './observe.js';
 
 export interface ClaudeRuntimeOptions {
   readonly cwd: string;
@@ -23,6 +26,7 @@ export interface ClaudeRequest {
   readonly text: string;
   readonly threadId?: string;
   readonly onEvent: (event: ClaudeEvent) => void;
+  readonly onObservation?: RunObservationListener;
 }
 type ClaudeFacts = {
   readonly installation: { readonly state: 'available' | 'not_installed' | 'not_executable' | 'unknown' | 'cancelled' | 'not_checked' | 'unsupported' };
@@ -139,9 +143,9 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
     return signal !== undefined && !(signal instanceof AbortSignal) ? Promise.reject(failure()) : observe(signal);
   }
   function start(request: ClaudeRequest): Promise<ClaudeTurn> {
-    const { text, threadId: requested, onEvent } = request;
+    const { text, threadId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
-      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
+      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation)
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved) writers.add(reserved);
@@ -155,6 +159,8 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
       if (!fault) stopping = true;
       native?.close();
     });
+    const observe = (observation: RunObservation): void => emitObservation(onObservation, observation);
+    let resultUsage: RunObservationUsage | undefined;
     let child: ChildProcess | undefined;
     let exited: Promise<void> | undefined;
     const timeout = setTimeout(() => { fault = true; controller.abort(); }, 30_000);
@@ -186,10 +192,12 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
         let streamId: string | undefined;
         const streamed = new Set<string>();
         const blocks = new Map<number, string>();
+        const streamObserver = onObservation ? createStreamObserver(observe, options.model) : undefined;
         function admit(): void {
           if (!session || admitted) return;
           admitted = true;
           clearTimeout(timeout);
+          emitRunStarted(onObservation);
           admission.resolve({ threadId: session.id, model: session.model, finished,
             async abort() { controller.abort(); await finished; } });
         }
@@ -227,17 +235,22 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
               streamId = event.message.id;
               streamed.add(streamId);
               blocks.clear();
+              streamObserver?.messageStart(event.message);
               admit();
             } else if (event.type === 'content_block_start' && event.content_block.type === 'text') {
               if (!streamId) throw failure();
               blocks.set(event.index, event.content_block.text);
-              if (event.content_block.text) publish(`${streamId}:${event.index}`, event.content_block.text);
+              if (event.content_block.text) {
+                publish(`${streamId}:${event.index}`, event.content_block.text);
+                observe({ kind: 'text', messageId: `${streamId}:${event.index}`, mode: 'delta', text: event.content_block.text });
+              }
             } else if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
               if (!streamId || !blocks.has(event.index)) throw failure();
               const snapshot = (blocks.get(event.index) ?? '') + event.delta.text;
               blocks.set(event.index, snapshot);
               publish(`${streamId}:${event.index}`, snapshot);
-            }
+              observe({ kind: 'text', messageId: `${streamId}:${event.index}`, mode: 'delta', text: event.delta.text });
+            } else if (streamObserver && streamId) streamObserver.event(streamId, event);
           } else if (message.type === 'assistant') {
             if (!session || message.session_id !== session.id || message.error || message.parent_tool_use_id !== null
               || message.message.model !== options.model) throw failure();
@@ -251,9 +264,11 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
               const snapshot = (snapshots.get(id) ?? '') + block.text;
               snapshots.set(id, snapshot);
               publish(id, snapshot);
+              observe({ kind: 'text', messageId: id, mode: 'snapshot', text: snapshot });
             }
           } else if (message.type === 'result') {
             if (!session || message.session_id !== session.id) throw failure();
+            if (streamObserver) resultUsage = streamObserver.resultUsage(message.usage);
             terminal = message.subtype === 'success' && !message.is_error ? 'completed' : 'failed';
           }
         }
@@ -277,7 +292,11 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
       else if (terminal) outcome = terminal;
       else if (stopping) outcome = 'interrupted';
       const end: ClaudeTerminal = { kind: 'ended', outcome };
-      if (admitted) { try { onEvent(end); } catch {} } else admission.reject(failure());
+      if (admitted) {
+        if (resultUsage) observe({ kind: 'usage', rows: [resultUsage] });
+        observe({ kind: 'terminal', outcome: runtimeOutcome[outcome] });
+        try { onEvent(end); } catch {}
+      } else admission.reject(failure());
       return end;
     }
     const finished = consume();

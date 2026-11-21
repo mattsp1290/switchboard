@@ -7,11 +7,13 @@ import type { AssistantMessage, Message, Model, Provider, Usage } from '@earendi
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import {
-  createDispatchOperation, createEventStream, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
+  answeredToolObservations, createDispatchOperation, createEventStream, emitObservation, emitRunStarted,
+  isOptionalObservationListener, jsonString, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
+  segmentTerminal, usageFromCounts,
 } from '#switchboard';
 import type {
-  DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentResult, HostToolCall, HostToolDeclaration,
-  HostUsage, Outcome, SessionBinding, SessionReference,
+  DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration,
+  HostUsage, Outcome, RunObservation, RunObservationListener, SessionBinding, SessionReference,
 } from '#switchboard';
 import { piHostIdentity, piHostLimits, validatePiHostSessionState } from './contract.js';
 import type { PiHostAdapter, PiHostModelEvent, PiHostOpenOptions, PiHostSessionState, PiHostTurn } from './contract.js';
@@ -125,45 +127,48 @@ function messagesFrom(turns: readonly PiHostTurn[]): Message[] {
 interface Collected {
   readonly text: string;
   readonly calls: readonly { readonly id: string; readonly name: string; readonly arguments: Record<string, never> }[];
-  readonly input: number;
-  readonly output: number;
+  /** Absent when no `usage` event arrived for this request. */
+  readonly usage?: { readonly input: number; readonly output: number } | undefined;
   readonly failure?: 'mixed' | 'limit' | 'arguments' | 'duplicate';
 }
 
 function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<string>, answered: ReadonlySet<string>): Collected {
   let text = '';
-  let input = 0;
-  let output = 0;
+  let usage: Collected['usage'];
   const calls: Collected['calls'][number][] = [];
   const ids = new Set<string>();
   for (const event of events) {
     if (event.kind === 'text') text += event.text;
-    else if (event.kind === 'usage') { input = event.input; output = event.output; }
+    else if (event.kind === 'usage') usage = { input: event.input, output: event.output };
     else {
       const argumentsValue = jsonObject(event.arguments);
       if (argumentsValue === undefined || !identifier(event.id, 1024) || !identifier(event.name, 256)) {
-        return { text, calls: [], input, output, failure: 'arguments' };
+        return { text, calls: [], usage, failure: 'arguments' };
       }
-      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], input, output, failure: 'duplicate' };
+      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], usage, failure: 'duplicate' };
       ids.add(event.id);
       calls.push({ id: event.id, name: event.name, arguments: argumentsValue });
     }
   }
-  if (calls.length > piHostLimits.maxPendingPerMessage) return { text, calls: [], input, output, failure: 'limit' };
-  if (calls.some((call) => !names.has(call.name))) return { text, calls: [], input, output, failure: 'mixed' };
-  return { text, calls, input, output };
+  if (calls.length > piHostLimits.maxPendingPerMessage) return { text, calls: [], usage, failure: 'limit' };
+  if (calls.some((call) => !names.has(call.name))) return { text, calls: [], usage, failure: 'mixed' };
+  return { text, calls, usage };
 }
 
 function emitAssistant(stream: AssistantMessageEventStream, collected: Collected, sink: {
   text: (delta: string) => void;
   tool: (call: Collected['calls'][number], phase: 'start' | 'end') => void;
-  usage: (input: number, output: number) => void;
+  /** One call per provider request; `usage` is absent when the request reported none. */
+  boundary: (usage: { input: number; output: number } | undefined) => void;
+  /** The public usage publish counts an unreported request as zero; the observation row exists only when reported. */
+  usage: (usage: { input: number; output: number } | undefined) => void;
 }): void {
   const message: AssistantMessage = {
     role: 'assistant', content: [], api: providerId, provider: providerId, model: modelId,
-    usage: usageCounters(collected.input, collected.output), stopReason: 'stop', timestamp: Date.now(),
+    usage: usageCounters(collected.usage?.input ?? 0, collected.usage?.output ?? 0), stopReason: 'stop', timestamp: Date.now(),
   };
   stream.push({ type: 'start', partial: message });
+  sink.boundary(collected.usage);
   let index = 0;
   if (collected.text.length > 0) {
     message.content = [{ type: 'text', text: '' }];
@@ -190,17 +195,18 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
     index += 1;
   }
   message.stopReason = collected.calls.length > 0 ? 'toolUse' : 'stop';
-  sink.usage(collected.input, collected.output);
+  sink.usage(collected.usage);
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
-function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, sink: Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
+function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, makeSink: () => Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
   const model: Model<string> = {
     id: modelId, name: 'host', api: providerId, provider: providerId, baseUrl: 'http://127.0.0.1:9', reasoning: false,
     input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
   };
     const deliver = (messages: readonly Message[], signal: AbortSignal | undefined) => {
     const stream = new AssistantMessageEventStream();
+    const sink = makeSink();
     void (async () => {
       try {
         const body: PiHostRouteBody = { model: modelId, protocol: 'switchboard-host', instructions,
@@ -334,20 +340,43 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     const load = (body: PiHostRouteBody, requestSignal: AbortSignal) => active.kind === 'stream'
       ? eventsFromStream(active.stream, body, requestSignal)
       : eventsFromRoute(active, body, requestSignal);
-    const sink = {
-      text: (delta: string) => { publish({ kind: 'text-delta', nativeItemId: 'assistant', text: delta }); },
+    // The current segment's listener. One segment is one baseline, so `dispatch` sets and clears it.
+    let observer: RunObservationListener | undefined;
+    const observe = (observation: RunObservation) => { emitObservation(observer, observation); };
+    // Native counts reach the baseline only when valid; an invalid count drops its field, never the model boundary.
+    const observedCounts = (usage: { input: number; output: number } | undefined) =>
+      usage === undefined ? undefined : usageFromCounts({ inputTokens: usage.input, outputTokens: usage.output });
+    // A request binds the listener of the segment that issued it, so a late event from an aborted segment cannot reach the next one.
+    const sinkFor = (listener: RunObservationListener | undefined) => ({
+      text: (delta: string) => {
+        publish({ kind: 'text-delta', nativeItemId: 'assistant', text: delta });
+        emitObservation(listener, { kind: 'text', messageId: 'assistant', mode: 'delta', text: delta });
+      },
       tool: (call: { id: string; name: string; arguments: unknown }, phase: 'start' | 'end') => {
         const target = { kind: 'tool' as const, session: reference(), nativeToolCallId: call.id };
         if (phase === 'start') {
           publish({ kind: 'tool-call-start', target, name: call.name });
           publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(call.arguments) });
+          emitObservation(listener, { kind: 'tool', callId: call.id, name: call.name, phase: 'started' });
         } else {
           publish({ kind: 'tool-call-end', target, arguments: call.arguments });
+          const argumentsJson = listener ? jsonString(call.arguments) : undefined;
+          emitObservation(listener, { kind: 'tool', callId: call.id, name: call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
         }
       },
-      usage: (input: number, output: number) => { publish({ kind: 'usage', usage: hostUsage(input, output) }); },
-    };
-    const provider = hostProvider(load, names, answered, sink, () => segmentNumber, admitted.instructions, admitted.tools, note);
+      // Each provider request is one model boundary, with usage only when that request reported it. A later request's
+      // terminal usage row replaces an earlier one (same key), so the final request's counts stand.
+      boundary: (usage: { input: number; output: number } | undefined) => {
+        const row = observedCounts(usage);
+        emitObservation(listener, { kind: 'model-boundary', ...(row === undefined ? {} : { usage: row }) });
+      },
+      usage: (usage: { input: number; output: number } | undefined) => {
+        publish({ kind: 'usage', usage: hostUsage(usage?.input ?? 0, usage?.output ?? 0) });
+        const row = observedCounts(usage);
+        if (row !== undefined) emitObservation(listener, { kind: 'usage', rows: [row] });
+      },
+    });
+    const provider = hostProvider(load, names, answered, () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
     const credentials = new InMemoryCredentialStore();
     const models = await ModelRuntime.create({
       credentials, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
@@ -457,10 +486,16 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       pending = [];
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
-    async function dispatch(hostOperationId: string, recordIntent: Parameters<PiHostAdapter['run']>[0]['recordIntent'], hostSignal: AbortSignal, work: () => Promise<void>): Promise<HostSegmentResult> {
+    async function dispatch(input: HostSegmentRequest, work: () => Promise<void>): Promise<HostSegmentResult> {
+      const { hostOperationId, recordIntent, signal: hostSignal, onObservation } = input;
+      if (!isOptionalObservationListener(onObservation)) {
+        return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
+      }
       if (closed) return { kind: 'failed', error: { code: 'closed', message: 'The Pi host adapter is closed.' }, write: { kind: 'not-attempted' } };
       if (running) return { kind: 'failed', error: { code: 'busy', message: 'A segment is already running.' }, write: { kind: 'not-attempted' } };
       running = true;
+      observer = onObservation;
+      let started = false;
       const identity: DispatchIdentity = { hostOperationId, target: { kind: 'session', reference: sessionReference } };
       const evidence: DispatchEvidence = { identity, source: 'native-acknowledgement',
         nativeOperation: { namespace: 'pi-host', id: hostOperationId },
@@ -469,49 +504,61 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       stopped = new Promise<void>((resolve) => { settle = resolve; });
       stopping = () => { session.agent.abort(); };
       hostSignal.addEventListener('abort', stopping, { once: true });
-      try {
-        const handle = createDispatchOperation<WorkResult>({
-          mode: 'fresh', signal: hostSignal, identity, recordIntent,
-          dispatchNative: async () => {
-            await work();
-            const assistant = session.messages.findLast((message) => message.role === 'assistant');
-            const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
-            if (aborted) {
-              undoContinuation();
+      // The terminal goes out with the final result, after native work and state export are done. A segment that never reached native dispatch has no baseline.
+      const attempt = async (): Promise<HostSegmentResult> => {
+        try {
+          const handle = createDispatchOperation<WorkResult>({
+            mode: 'fresh', signal: hostSignal, identity, recordIntent,
+            dispatchNative: async () => {
+              started = true;
+              emitRunStarted(observer, ['reasoning']);
+              await work();
+              const assistant = session.messages.findLast((message) => message.role === 'assistant');
+              const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
+              if (aborted) {
+                undoContinuation();
+                continuedIds = [];
+                deliveries.length = 0;
+                return { kind: 'outcome-unknown' };
+              }
+              const result = await finish(hostSignal);
+              if (result.kind === 'model-failed') undoContinuation();
+              else {
+                for (const id of continuedIds) answered.add(id);
+                for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
+              }
               continuedIds = [];
               deliveries.length = 0;
-              return { kind: 'outcome-unknown' };
+              return { kind: 'conclusive', evidence, result };
+            },
+          });
+          const snapshot = await handle.run();
+          const observation = snapshot.observation;
+          if (observation.kind === 'conclusive') {
+            const value = observation.result;
+            if (value.kind === 'model-failed') {
+              const write = { kind: 'accepted' as const, evidence: observation.evidence };
+              // The branches look identical but TypeScript needs `pending-limit` narrowed to pair it with an accepted write.
+              return value.error.code === 'pending-limit'
+                ? { kind: 'failed', error: value.error, write }
+                : { kind: 'failed', error: value.error, write };
             }
-            const result = await finish(hostSignal);
-            if (result.kind === 'model-failed') undoContinuation();
-            else {
-              for (const id of continuedIds) answered.add(id);
-              for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
-            }
-            continuedIds = [];
-            deliveries.length = 0;
-            return { kind: 'conclusive', evidence, result };
-          },
-        });
-        const snapshot = await handle.run();
-        const observation = snapshot.observation;
-        if (observation.kind === 'conclusive') {
-          const value = observation.result;
-          if (value.kind === 'model-failed') {
-            const write = { kind: 'accepted' as const, evidence: observation.evidence };
-            return value.error.code === 'pending-limit'
-              ? { kind: 'failed', error: value.error, write }
-              : { kind: 'failed', error: value.error, write };
+            return { ...value, session: sessionReference };
           }
-          return { ...value, session: sessionReference };
+          return { kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation };
+        } catch (error) {
+          if (error instanceof OpenRefusal && error.failure.code !== 'pending-limit') {
+            return { kind: 'failed', error: error.failure, write: { kind: 'not-attempted' } };
+          }
+          return { kind: 'failed', error: { code: 'invalid-input', message: 'The segment was refused before dispatch.' }, write: { kind: 'not-attempted' } };
         }
-        return { kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation };
-      } catch (error) {
-        if (error instanceof OpenRefusal && error.failure.code !== 'pending-limit') {
-          return { kind: 'failed', error: error.failure, write: { kind: 'not-attempted' } };
-        }
-        return { kind: 'failed', error: { code: 'invalid-input', message: 'The segment was refused before dispatch.' }, write: { kind: 'not-attempted' } };
+      };
+      try {
+        const result = await attempt();
+        if (started) observe(segmentTerminal(result));
+        return result;
       } finally {
+        observer = undefined;
         hostSignal.removeEventListener('abort', stopping);
         stopping = undefined;
         running = false;
@@ -542,7 +589,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (typeof input.prompt !== 'string' || input.prompt.length === 0 || input.prompt.length > piHostLimits.maxText) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The prompt must be a non-empty string.' }, write: { kind: 'not-attempted' } };
         }
-        return dispatch(input.hostOperationId, input.recordIntent, input.signal, async () => {
+        return dispatch(input, async () => {
           await session.prompt(input.prompt, { expandPromptTemplates: false });
           await session.waitForIdle();
         });
@@ -553,6 +600,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         }
         const expected = new Map(pending.map((call) => [call.pending.target.nativeToolCallId, call]));
         const replacements = new Map<string, { text: string; isError: boolean }>();
+        const observedAnswers: RunObservation[] = [];
         for (const answer of input.answers) {
           const id = answerId(answer);
           const call = id === undefined ? undefined : expected.get(id);
@@ -566,11 +614,14 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           const result = parsed.value.outcome.result;
           const data = result.kind === 'ok' ? result.value.data : result.error.data;
           replacements.set(id, { text: JSON.stringify(data) ?? 'null', isError: result.kind === 'error' });
+          if (input.onObservation) {
+            observedAnswers.push(...answeredToolObservations(id, call.name, call.arguments, result));
+          }
         }
         if (replacements.size !== expected.size) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
         }
-        return dispatch(input.hostOperationId, input.recordIntent, input.signal, async () => {
+        return dispatch(input, async () => {
           const prior = new Map<string, { content: Message['content']; isError: boolean; details: unknown }>();
           const applyReplacement = (message: Message) => {
             if (message.role !== 'toolResult' || !replacements.has(message.toolCallId)) return;
@@ -601,6 +652,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
             if (entry.type === 'message' && entry.message.role === 'toolResult') applyReplacement(entry.message);
           }
           undoContinuation = restore;
+          for (const o of observedAnswers) observe(o);
           continuedIds = [...replacements.keys()];
           for (const call of expected.values()) deliveries.push({ target: call.pending.target });
           try {

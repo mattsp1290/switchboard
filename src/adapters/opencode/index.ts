@@ -7,6 +7,11 @@ import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
+import {
+  emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
+  usageFromUncachedCounts,
+} from '../../core/run-observation.js';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
 import { sessionLimits } from '../../core/sessions.js';
 import { openOpenCodeProtocol } from './protocol.js';
@@ -190,6 +195,52 @@ function chunkText(update: Record<string, unknown>): string | undefined {
 function itemId(value: unknown): string {
   return identifier(value, sessionLimits.identifierLength) ? value : 'turn';
 }
+function usageRow(update: Record<string, unknown>): RunObservationUsage | undefined {
+  const input = tokenCount(update.inputTokens);
+  const output = tokenCount(update.outputTokens);
+  const thought = tokenCount(update.thoughtTokens) ?? 0;
+  const read = tokenCount(update.cachedReadTokens) ?? 0;
+  const write = tokenCount(update.cachedWriteTokens) ?? 0;
+  const total = tokenCount(update.totalTokens);
+  // OpenCode counts input without cache and output without reasoning, and totals all five buckets.
+  if (input !== undefined && output !== undefined && total !== undefined && total === input + output + thought + read + write) {
+    return usageFromUncachedCounts({
+      input,
+      output: output + thought,
+      total: input + output + thought + read + write,
+      reasoning: thought > 0 ? thought : undefined,
+      cacheRead: read > 0 ? read : undefined,
+      cacheWrite: write > 0 ? write : undefined,
+    });
+  }
+  return normalizedUsageFromCounts({
+    inputTokens: update.inputTokens,
+    outputTokens: update.outputTokens,
+    totalTokens: update.totalTokens,
+    reasoningTokens: update.thoughtTokens,
+    cachedInputTokens: update.cachedReadTokens,
+    cacheWriteInputTokens: update.cachedWriteTokens,
+  });
+}
+/** The one observed tool update of a turn (the segment fails on it): `started`, then its arguments or its closing phase. */
+function toolObservation(update: Record<string, unknown>): readonly RunObservation[] {
+  const callId = update.toolCallId;
+  if (!identifier(callId, sessionLimits.identifierLength)) return [];
+  const name = identifier(update.kind, 64) ? update.kind : 'other';
+  const argumentsJson = jsonString(update.rawInput);
+  const resultJson = jsonString(update.rawOutput);
+  const started: RunObservation = { kind: 'tool', callId, name, phase: 'started' };
+  const status = update.status;
+  if (status === undefined || status === 'pending' || status === 'in_progress') {
+    return argumentsJson === undefined || argumentsJson === '{}' ? [started]
+      : [started, { kind: 'tool', callId, name, phase: 'arguments', argumentsJson }];
+  }
+  if (status !== 'completed' && status !== 'failed') return [];
+  return [started, {
+    kind: 'tool', callId, name, phase: status === 'completed' ? 'arguments-ended' : 'failed',
+    ...(argumentsJson === undefined ? {} : { argumentsJson }), ...(resultJson === undefined ? {} : { resultJson }),
+  }];
+}
 function usageData(value: unknown): Readonly<Record<string, unknown>> | null {
   if (!record(value)) return null;
   return Object.freeze({ ...value });
@@ -215,6 +266,7 @@ interface Turn {
   settled: boolean;
   nativeTerminal: boolean;
   text: string;
+  readonly onObservation: RunObservationListener | undefined;
   failure?: SegmentError;
   stopReason?: string;
   usage: unknown;
@@ -226,6 +278,7 @@ type UpdateDecision =
   | 'ignore'
   | 'traffic'
   | 'reject'
+  | { readonly kind: 'tool'; readonly update: Record<string, unknown> }
   | { readonly kind: 'text'; readonly text: string; readonly nativeItemId: string };
 
 function readUpdate(params: unknown, context: {
@@ -264,6 +317,7 @@ function readUpdate(params: unknown, context: {
     if (!live.promptWritten || live.failure) return 'ignore';
     return { kind: 'text', text, nativeItemId: itemId(update.messageId) };
   }
+  if ((name === 'tool_call' || name === 'tool_call_update') && context.sessionId !== undefined) return { kind: 'tool', update };
   return 'reject';
 }
 
@@ -493,14 +547,37 @@ async function openSession(ready: {
       rpc().notify('session/cancel', { sessionId });
     }
   }
+  /** The turn whose listener may receive observations now: live, prompt written, unsettled, not failed, with a listener. */
+  function observingTurn(): Turn | undefined {
+    return phase === 'live' && turn && !turn.settled && !turn.failure && turn.promptWritten && turn.onObservation ? turn : undefined;
+  }
+  function observeQuiet(active: Turn, update: Record<string, unknown>): void {
+    if (update.sessionUpdate === 'agent_thought_chunk') {
+      const text = chunkText(update);
+      if (text !== undefined && text.length > 0) {
+        emitObservation(active.onObservation, { kind: 'reasoning', messageId: itemId(update.messageId), mode: 'delta', text });
+      }
+    }
+    // `usage_update` carries only `{ used, size, cost }`, no token counts, so it yields no usage row.
+  }
   function handleUpdate(params: unknown): void | 'yield' {
     const decision = readUpdate(params, { phase, sessionId, modelPinned, model, turn });
     if (decision === 'ignore') return;
     if (decision === 'traffic') {
       if (turn && !turn.settled && turn.promptWritten) turn.sawTraffic = true;
+      const watcher = observingTurn();
+      if (watcher && record(params) && record(params.update)) observeQuiet(watcher, params.update);
       return;
     }
     if (decision === 'reject') {
+      noteDisallowed();
+      return;
+    }
+    if (decision.kind === 'tool') {
+      const watcher = observingTurn();
+      if (watcher) {
+        for (const observation of toolObservation(decision.update)) emitObservation(watcher.onObservation, observation);
+      }
       noteDisallowed();
       return;
     }
@@ -512,6 +589,7 @@ async function openSession(ready: {
       return;
     }
     active.text += decision.text;
+    emitObservation(active.onObservation, { kind: 'text', messageId: decision.nativeItemId, mode: 'delta', text: decision.text });
     const published = stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: decision.nativeItemId, text: decision.text }));
     if (published.kind === 'closed' || published.disconnected > 0) {
       failActive(active, { code: 'native-failure', message: incompleteTurn });
@@ -530,6 +608,13 @@ async function openSession(ready: {
     onRequest(message) {
       if (message.method === 'session/request_permission') {
         const item = { id: message.id, answered: false };
+        const active = observingTurn();
+        if (active) {
+          const call = record(message.params) && record(message.params.toolCall) ? message.params.toolCall.toolCallId : undefined;
+          emitObservation(active.onObservation, {
+            kind: 'interrupt', id: identifier(call, sessionLimits.identifierLength) ? call : String(message.id), reason: 'permission',
+          });
+        }
         permissions.push(item);
         answerCancelled(item);
         noteDisallowed();
@@ -668,6 +753,65 @@ async function openSession(ready: {
     return { kind: 'ok', value: undefined };
   }
 
+  async function segment(active: Turn, input: HostRunInput, prompt: string): Promise<HostSegmentResult> {
+    try {
+      let handle: DispatchHandle<CompleteSegment>;
+      try {
+        handle = createDispatchOperation<CompleteSegment>({
+          mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
+          identity: { hostOperationId: input.hostOperationId, target: { kind: 'session', reference } },
+          dispatchNative: async (recorded) => {
+            active.phase = 'native';
+            if (!active.failure && phase !== 'closed') {
+              const onRunAbort = () => {
+                if (!active.promptWritten || active.settled) return;
+                if (!active.nativeTerminal) sendCancel(active);
+                if (!active.failure) active.failure = { code: 'native-failure', message: incompleteTurn };
+                retire({ code: 'native-failure', message: incompleteTurn }, false);
+              };
+              input.signal.addEventListener('abort', onRunAbort);
+              try {
+                const outcome = await rpc().request('session/prompt', {
+                  sessionId, prompt: [{ type: 'text', text: prompt }],
+                }, {
+                  signal: input.signal,
+                  beforeWrite() {
+                    active.promptWritten = true;
+                    promptArmed = true;
+                    emitRunStarted(active.onObservation);
+                  },
+                  onOutcome(next) { applyOutcome(active, next); },
+                });
+                applyOutcome(active, outcome);
+                // A line queued behind the prompt result can fail the turn before classify.
+                // Yielding also lets flushDeferred leave the drain stack.
+                await Promise.resolve();
+              } finally {
+                input.signal.removeEventListener('abort', onRunAbort);
+              }
+            }
+            const observation = classify(active, recorded);
+            finishTurn(active);
+            return observation;
+          },
+        });
+      } catch {
+        return failed({ code: 'invalid-input', message: 'the segment request is malformed' }, notAttempted);
+      }
+      const snapshot = await handle.run();
+      const observation = snapshot.observation;
+      if (observation.kind === 'conclusive') return observation.result;
+      if (observation.kind === 'not-dispatched') {
+        return failed({ code: 'native-failure', message: observation.reason }, observation);
+      }
+      if (observation.kind === 'accepted') return failed(active.failure ?? { code: 'native-failure', message: incompleteTurn }, observation);
+      return failed(active.failure ?? { code: 'native-failure', message: incompleteTurn }, { kind: 'outcome-unknown' });
+    } finally {
+      finishTurn(active);
+      if (turn === active) turn = undefined;
+    }
+  }
+
   const adapter: HostAdapter<'opencode'> = {
     identity,
     capabilities: Object.freeze({
@@ -690,6 +834,10 @@ async function openSession(ready: {
       if (closePromise || phase === 'closed') return failed({ code: 'closed', message: 'the adapter is closed' }, notAttempted);
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);
+      const onObservation: RunObservationListener | undefined = input.onObservation;
+      if (!isOptionalObservationListener(onObservation)) {
+        return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, notAttempted);
+      }
       const prompt = promptText(input.prompt);
       if (prompt === undefined || !sessionId || !promptFrameFits(sessionId, prompt)) {
         return failed({ code: 'invalid-input', message: 'the prompt must be plain text without a slash command' }, notAttempted);
@@ -697,61 +845,22 @@ async function openSession(ready: {
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
+        onObservation,
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
       turn = active;
+      let result: HostSegmentResult | undefined;
       try {
-        let handle: DispatchHandle<CompleteSegment>;
-        try {
-          handle = createDispatchOperation<CompleteSegment>({
-          mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
-          identity: { hostOperationId: input.hostOperationId, target: { kind: 'session', reference } },
-          dispatchNative: async (recorded) => {
-            active.phase = 'native';
-            if (!active.failure && phase !== 'closed') {
-              const onRunAbort = () => {
-                if (!active.promptWritten || active.settled) return;
-                if (!active.nativeTerminal) sendCancel(active);
-                if (!active.failure) active.failure = { code: 'native-failure', message: incompleteTurn };
-                retire({ code: 'native-failure', message: incompleteTurn }, false);
-              };
-              input.signal.addEventListener('abort', onRunAbort);
-              try {
-                const outcome = await rpc().request('session/prompt', {
-                  sessionId, prompt: [{ type: 'text', text: prompt }],
-                }, {
-                  signal: input.signal,
-                  beforeWrite() { active.promptWritten = true; promptArmed = true; },
-                  onOutcome(next) { applyOutcome(active, next); },
-                });
-                applyOutcome(active, outcome);
-                // A line queued behind the prompt result can fail the turn before classify.
-                // Yielding also lets flushDeferred leave the drain stack.
-                await Promise.resolve();
-              } finally {
-                input.signal.removeEventListener('abort', onRunAbort);
-              }
-            }
-            const observation = classify(active, recorded);
-            finishTurn(active);
-            return observation;
-          },
-          });
-        } catch {
-          return failed({ code: 'invalid-input', message: 'the segment request is malformed' }, notAttempted);
-        }
-        const snapshot = await handle.run();
-        const observation = snapshot.observation;
-        if (observation.kind === 'conclusive') return observation.result;
-        if (observation.kind === 'not-dispatched') {
-          return failed({ code: 'native-failure', message: observation.reason }, observation);
-        }
-        if (observation.kind === 'accepted') return failed(active.failure ?? { code: 'native-failure', message: incompleteTurn }, observation);
-        return failed(active.failure ?? { code: 'native-failure', message: incompleteTurn }, { kind: 'outcome-unknown' });
+        result = await segment(active, input, prompt);
+        return result;
       } finally {
-        finishTurn(active);
-        if (turn === active) turn = undefined;
+        if (active.promptWritten && onObservation) {
+          // A segment that threw after the run started (no result) still gives the baseline its one terminal.
+          const promptUsage = result === undefined || !record(active.usage) ? undefined : usageRow(active.usage);
+          if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
+          emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
+        }
       }
     },
     async interrupt({ timeoutMs }) {

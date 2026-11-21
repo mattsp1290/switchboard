@@ -5,7 +5,9 @@ import { delimiter, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import { withSdkProcess } from './process.js';
-import type { ThreadOptions } from '@openai/codex-sdk';
+import { emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
+import type { ThreadItem, ThreadOptions } from '@openai/codex-sdk';
 
 export interface CodexRuntimeOptions {
   readonly cwd: string;
@@ -27,6 +29,7 @@ export interface CodexRequest {
   readonly text: string;
   readonly threadId?: string;
   readonly onEvent: (event: CodexEvent) => void;
+  readonly onObservation?: RunObservationListener;
 }
 type Inconclusive = { readonly state: 'timed_out' | 'cancelled' | 'unknown' | 'not_checked' };
 // Narrower than the root types on purpose: Codex pins one exact version and one login method.
@@ -66,6 +69,49 @@ const run = promisify(execFile);
 const writers = new Set<string>();
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const failure = () => new Error('Codex operation failed.');
+function usageRow(usage: unknown): RunObservationUsage | undefined {
+  if (usage === null || typeof usage !== 'object') return undefined;
+  return normalizedUsageFromCounts({
+    inputTokens: Reflect.get(usage, 'input_tokens'),
+    outputTokens: Reflect.get(usage, 'output_tokens'),
+    cachedInputTokens: Reflect.get(usage, 'cached_input_tokens'),
+    cacheWriteInputTokens: Reflect.get(usage, 'cache_write_input_tokens'),
+    reasoningTokens: Reflect.get(usage, 'reasoning_output_tokens'),
+  });
+}
+/**
+ * An item as observations, or none for items that stay off. Reasoning is a snapshot on every item event.
+ * A declared tool-like item adds nothing on `item.updated`.
+ * `item.started` emits `started` then `arguments`, so the arguments reach AG-UI even if the item never completes.
+ */
+function itemObservations(type: 'item.started' | 'item.updated' | 'item.completed', item: ThreadItem): readonly RunObservation[] {
+  let name: string;
+  let args: unknown;
+  switch (item.type) {
+    case 'reasoning':
+      return typeof item.id === 'string' && item.id && item.id.length <= 512 && typeof item.text === 'string'
+        ? [{ kind: 'reasoning', messageId: item.id, mode: 'snapshot', text: item.text }] : [];
+    case 'mcp_tool_call': name = typeof item.tool === 'string' ? item.tool : ''; args = item.arguments; break;
+    case 'command_execution': name = item.type; args = { command: item.command }; break;
+    case 'file_change': name = item.type; args = { changes: item.changes }; break;
+    case 'web_search': name = item.type; args = { query: item.query }; break;
+    default: return [];
+  }
+  if (typeof item.id !== 'string' || !item.id || item.id.length > 512 || !name || type === 'item.updated') return [];
+  const callId = item.id;
+  const argumentsJson = jsonString(args);
+  if (type === 'item.started') {
+    return [{ kind: 'tool', callId, name, phase: 'started' },
+      ...(argumentsJson === undefined ? [] : [{ kind: 'tool', callId, name, phase: 'arguments', argumentsJson } as const])];
+  }
+  const status = 'status' in item ? item.status : undefined;
+  let result: unknown;
+  if (item.type === 'mcp_tool_call') result = item.result ?? item.error;
+  else if (item.type === 'command_execution') result = { output: item.aggregated_output, ...(item.exit_code === undefined ? {} : { exitCode: item.exit_code }) };
+  const resultJson = result === undefined ? undefined : jsonString(result);
+  return [{ kind: 'tool', callId, name, phase: status === 'failed' ? 'failed' : 'completed',
+    ...(argumentsJson === undefined ? {} : { argumentsJson }), ...(resultJson === undefined ? {} : { resultJson }) }];
+}
 // Matches plain(value, 256) and must stay identical in the three text adapters.
 function callerModelId(value: unknown): boolean {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
@@ -250,9 +296,10 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
   }
 
   function start(request: CodexRequest): Promise<CodexTurn> {
-    const { threadId: requested, text, onEvent } = request;
+    const { threadId: requested, text, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
       || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
+      || !isOptionalObservationListener(onObservation)
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved !== undefined) writers.add(reserved);
@@ -264,6 +311,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
     async function consume(): Promise<CodexTerminal> {
       let outcome: CodexTerminal['outcome'] = 'failed';
       let terminal: CodexTerminal['outcome'] | undefined;
+      let usage: RunObservationUsage | undefined;
       try {
         if (!executable) throw failure();
         assertReady(await observe(controller.signal, 10_000));
@@ -299,6 +347,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                 case 'turn.started':
                   if (observedId === undefined || admitted) throw failure();
                   admitted = true;
+                  emitRunStarted(onObservation);
                   admission.resolve({ threadId: observedId, finished, async abort() { controller.abort(); await finished; } });
                   break;
                 case 'item.started':
@@ -310,12 +359,16 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                     if (typeof id !== 'string' || !id || id.length > 512 || typeof snapshot !== 'string'
                       || Buffer.byteLength(snapshot) > 4 * 1024 * 1024) throw failure();
                     onEvent({ kind: 'text', itemId: id, text: snapshot });
+                    emitObservation(onObservation, { kind: 'text', messageId: id, mode: 'snapshot', text: snapshot });
+                  } else if (onObservation && admitted) {
+                    try { for (const o of itemObservations(event.type, event.item)) emitObservation(onObservation, o); } catch { /* observation only */ }
                   }
                   break;
                 }
                 case 'turn.completed':
                   if (!admitted) throw failure();
                   terminal = 'completed';
+                  if (onObservation) usage = usageRow(event.usage);
                   break;
                 case 'turn.failed':
                   terminal = 'failed';
@@ -339,6 +392,8 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
       }
       const end: CodexTerminal = { kind: 'ended', outcome };
       if (admitted) {
+        if (usage) emitObservation(onObservation, { kind: 'usage', rows: [usage] });
+        emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[outcome] });
         try { onEvent(end); } catch { /* A consumer exception cannot change the native outcome. */ }
       } else admission.reject(failure());
       return end;

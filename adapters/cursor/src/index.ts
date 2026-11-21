@@ -2,6 +2,8 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
+import { createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
+import type { RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
 
@@ -20,6 +22,7 @@ export interface CursorRequest {
   readonly text: string;
   readonly agentId?: string;
   readonly onEvent: (event: CursorEvent) => void;
+  readonly onObservation?: RunObservationListener;
 }
 type CursorFacts = {
   readonly installation: { readonly state: 'unsupported' };
@@ -239,9 +242,9 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
   function start(request: CursorRequest): Promise<CursorTurn> {
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
-    const { text, agentId: requested, onEvent } = request;
+    const { text, agentId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
-      || typeof onEvent !== 'function' || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
+      || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
     let trackedId = requested;
@@ -297,6 +300,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
+        emitRunStarted(onObservation);
         const turn: CursorTurn = {
           agentId: agent.agentId,
           finished: done.promise,
@@ -304,13 +308,15 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         };
         admission.resolve(turn);
         if (closed) await cancelActive();
-        const outcome = await consume(run, onEvent, faults);
+        const outcome = await consume(run, onEvent, faults, onObservation);
         release();
+        emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[outcome] });
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch {
         release();
         if (admitted) {
+          emitObservation(onObservation, { kind: 'terminal', outcome: 'failed' });
           try { onEvent({ kind: 'ended', outcome: 'failed' }); } catch { /* discarded */ }
           done.resolve('failed');
         } else admission.reject(failure());
@@ -356,14 +362,15 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
 async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
+  onObservation: RunObservationListener | undefined,
 ): Promise<CursorOutcome> {
-  const state = { text: '', sent: '' };
+  const state: PublishState = { text: '', sent: '', reasoningStep: 0, reasoningOpen: false, trackTool: createToolTracker() };
   let step: Step = 'next';
   let callback = false;
   let streamFailed = false;
   try {
     for await (const message of run.stream()) {
-      try { step = publish(message, state, onEvent); }
+      try { step = publish(message, state, onEvent, onObservation); }
       catch { callback = true; break; }
       if (step !== 'next') break;
     }
@@ -397,8 +404,53 @@ function turnOutcome(input: {
   return outcome;
 }
 
-/** Append each assistant text block. `@cursor/sdk@1.4.2` delivers one chunk per assistant message. */
-function publish(message: unknown, state: { text: string; sent: string }, onEvent: (event: CursorEvent) => void): Step {
+interface PublishState {
+  text: string;
+  sent: string;
+  /** Reasoning step number; bumps when assistant text or a tool call follows reasoning. */
+  reasoningStep: number;
+  reasoningOpen: boolean;
+  /** Emits each call's `started` and arguments once. */
+  readonly trackTool: ToolTracker;
+}
+
+function observedUsage(value: unknown): RunObservationUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  return normalizedUsageFromCounts({
+    inputTokens: value.inputTokens, outputTokens: value.outputTokens,
+    cachedInputTokens: value.cacheReadTokens,
+    cacheWriteInputTokens: value.cacheWriteTokens,
+    reasoningTokens: value.reasoningTokens,
+    totalTokens: value.totalTokens,
+  });
+}
+
+function observeTool(message: Record<string, unknown>, callId: string, name: string, status: CursorToolStatus,
+  track: ToolTracker, onObservation: RunObservationListener): void {
+  const argumentsJson = message.args === undefined ? undefined : jsonString(message.args);
+  for (const observation of track(callId, name, argumentsJson)) emitObservation(onObservation, observation);
+  if (status === 'running') return;
+  const resultJson = message.result !== undefined ? jsonString(message.result)
+    : typeof message.error === 'string' ? jsonString(message.error) : undefined;
+  emitObservation(onObservation, {
+    kind: 'tool', callId, name, phase: status === 'completed' ? 'completed' : 'failed',
+    ...(argumentsJson === undefined ? {} : { argumentsJson }),
+    ...(resultJson === undefined ? {} : { resultJson }),
+  });
+}
+
+function endReasoning(state: PublishState): void {
+  if (!state.reasoningOpen) return;
+  state.reasoningOpen = false;
+  state.reasoningStep += 1;
+}
+
+/**
+ * Append each assistant text block. `@cursor/sdk@1.4.2` delivers one chunk per assistant message.
+ * The listener sees the same accumulated text as a snapshot. Thinking messages are chunks, so they are observed as deltas.
+ */
+function publish(message: unknown, state: PublishState, onEvent: (event: CursorEvent) => void,
+  onObservation: RunObservationListener | undefined): Step {
   if (!isRecord(message) || typeof message.type !== 'string') return 'next';
   if (message.type === 'assistant') {
     const content = isRecord(message.message) && Array.isArray(message.message.content) ? message.message.content : [];
@@ -407,9 +459,27 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
       if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';
       state.text += block.text;
     }
+    if (content.some((block) => isRecord(block) && block.type === 'text')) endReasoning(state);
     if (state.text !== state.sent) {
       state.sent = state.text;
+      emitObservation(onObservation, { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: state.text });
       onEvent({ kind: 'text', text: state.text });
+    }
+    return 'next';
+  }
+  if (message.type === 'thinking') {
+    if (typeof message.text === 'string' && message.text.length > 0) {
+      state.reasoningOpen = true;
+      emitObservation(onObservation, { kind: 'reasoning', messageId: `reasoning:${state.reasoningStep}`, mode: 'delta', text: message.text });
+    }
+    return 'next';
+  }
+  if (message.type === 'usage') {
+    if (onObservation) {
+      try {
+        const row = observedUsage(message.usage);
+        if (row !== undefined) emitObservation(onObservation, { kind: 'usage', rows: [row] });
+      } catch { /* observation only */ }
     }
     return 'next';
   }
@@ -418,6 +488,10 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
     const name = message.name;
     const status = message.status;
     if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
+    endReasoning(state);
+    if (onObservation) {
+      try { observeTool(message, callId, name, status, state.trackTool, onObservation); } catch { /* observation only */ }
+    }
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';
   }
