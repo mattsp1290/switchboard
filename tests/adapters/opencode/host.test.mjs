@@ -463,7 +463,7 @@ test('a listener sees a tool call first, named by kind, while the segment still 
   }
 });
 
-test('a later tool update without a kind reuses the first valid kind for that call', async () => {
+test('only the first disallowed tool update is observed; later updates are gated after the failure', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const seen = observed();
     const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'tool-kind-reuse', recordIntent() {}, onObservation: seen.listener });
@@ -473,7 +473,7 @@ test('a later tool update without a kind reuses the first valid kind for that ca
     agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
     await running;
     const tools = seen.rows.filter((row) => row.kind === 'tool');
-    assert.deepEqual(tools.map((row) => row.phase), ['started', 'arguments']);
+    assert.deepEqual(tools.map((row) => row.phase), ['started']);
     assert.equal(tools.every((row) => row.name === 'execute'), true, JSON.stringify(tools));
   });
 });
@@ -497,14 +497,13 @@ test('a live thought and usage update are observed and do not fail the segment',
     const prompt = await untilRequest(agent, 'session/prompt');
     agent.push(update('agent_thought_chunk', { messageId: 't', content: { type: 'text', text: 'think' } }));
     agent.push(update('agent_thought_chunk', { content: { type: 'image', data: 'x' } }));
-    agent.push(update('usage_update', { used: 5, size: 10, inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedReadTokens: 1 }));
+    agent.push(update('usage_update', { used: 5, size: 10, cost: { amount: 0.1, currency: 'USD' } }));
     agent.push(textUpdate('A'));
     agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
     const result = await running;
     assert.equal(result.kind, 'complete', JSON.stringify(result));
     assert.deepEqual(seen.rows.filter((row) => row.kind === 'reasoning'), [{ kind: 'reasoning', messageId: 't', mode: 'delta', text: 'think' }]);
-    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'), [{ kind: 'usage', rows: [
-      { inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedInputTokens: 1 }] }]);
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'), []);
     assert.deepEqual(seen.rows.filter((row) => row.kind === 'text'), [{ kind: 'text', messageId: 'm', mode: 'delta', text: 'A' }]);
     assert.deepEqual(seen.rows.filter((row) => row.kind === 'unsupported').map((row) => row.family),
       ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents']);
@@ -1694,18 +1693,40 @@ test('prompt bytes followed by channel EOF report an outcome-unknown terminal ob
   });
 });
 
-test('usage rows are normalized and the prompt response usage row is the terminal row, even after a usage_update', async () => {
+test('usage_update carries no token counts and never yields a usage row; the prompt response usage is the only row', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const seen = observed();
     const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'usage-norm', recordIntent() {}, onObservation: seen.listener });
     const prompt = await untilRequest(agent, 'session/prompt');
-    agent.push(update('usage_update', { inputTokens: 2, outputTokens: 3, cachedReadTokens: 10, thoughtTokens: 9 }));
+    agent.push(update('usage_update', { used: 12, size: 100, cost: { amount: 0.1, currency: 'USD' } }));
     agent.push(textUpdate('A'));
     agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: { inputTokens: 100, outputTokens: 1 } } });
     assert.equal((await running).kind, 'complete');
     assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'),
-      [{ kind: 'usage', rows: [{ outputTokens: 3, cachedInputTokens: 10, inputTokens: 12 }] },
-        { kind: 'usage', rows: [{ outputTokens: 1, inputTokens: 100 }] }]);
+      [{ kind: 'usage', rows: [{ outputTokens: 1, inputTokens: 100 }] }]);
+  });
+  // OpenCode 1.18 shape: input excludes cache, output excludes reasoning, total sums all five buckets.
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'usage-disjoint', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(textUpdate('A'));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn',
+      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 229, thoughtTokens: 20, cachedReadTokens: 99 } } });
+    assert.equal((await running).kind, 'complete');
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'),
+      [{ kind: 'usage', rows: [{ inputTokens: 199, outputTokens: 30, totalTokens: 229, reasoningTokens: 20, cachedInputTokens: 99 }] }]);
+  });
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'usage-write', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(textUpdate('A'));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn',
+      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 211, cachedReadTokens: 100, cachedWriteTokens: 1 } } });
+    assert.equal((await running).kind, 'complete');
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'),
+      [{ kind: 'usage', rows: [{ inputTokens: 201, outputTokens: 10, totalTokens: 211, cachedInputTokens: 100, cacheWriteInputTokens: 1 }] }]);
   });
   await withSession(async ({ adapter, agent, signal }) => {
     const seen = observed();

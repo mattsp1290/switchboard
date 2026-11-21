@@ -26,6 +26,7 @@ export interface PiPrompt { readonly finished: Promise<PiTerminal> }
 export interface PiSession {
   readonly id: string;
   readonly sessionFile: string;
+  /** `onObservation` receives the final `usage` and `terminal` observations after the `ended` callback, because the terminal outcome depends on whether a callback failed. */
   prompt(text: string, onEvent: (event: PiEvent) => void, onObservation?: RunObservationListener): Promise<PiPrompt>;
   abort(): Promise<void>;
   close(): Promise<void>;

@@ -192,7 +192,7 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
         let streamId: string | undefined;
         const streamed = new Set<string>();
         const blocks = new Map<number, string>();
-        const streamObserver = onObservation ? createStreamObserver(observe) : undefined;
+        const streamObserver = onObservation ? createStreamObserver(observe, options.model) : undefined;
         function admit(): void {
           if (!session || admitted) return;
           admitted = true;
@@ -293,9 +293,9 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
       else if (stopping) outcome = 'interrupted';
       const end: ClaudeTerminal = { kind: 'ended', outcome };
       if (admitted) {
-        try { onEvent(end); } catch {}
         if (resultUsage) observe({ kind: 'usage', rows: [resultUsage] });
         observe({ kind: 'terminal', outcome: runtimeOutcome[outcome] });
+        try { onEvent(end); } catch {}
       } else admission.reject(failure());
       return end;
     }

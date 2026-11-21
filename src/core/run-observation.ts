@@ -50,7 +50,7 @@ export type RunObservation =
   /**
    * Rows are native counts and are never summed. A later row with the same (provider, model) key replaces an earlier
    * one, so the terminal usage is the most recent row per key. Scope differs by runtime: Claude and Codex text report
-   * the turn total (Cursor included: its usage message is per-turn); OpenCode reports the prompt-response usage when present, else the latest usage_update; Pi and Pi-host
+   * the turn total (Cursor included: its usage message is per-turn); OpenCode reports the prompt-response usage only (its usage_update carries no token counts); Pi and Pi-host
    * report the most recent request only (per-request rows share one key); `./host/codex` reports the thread-cumulative
    * `total`, which includes earlier segments and survives resume.
    */

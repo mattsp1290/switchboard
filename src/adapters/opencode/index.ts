@@ -8,7 +8,8 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
 import {
-  createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal,
+  createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
+  usageFromCounts,
 } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage, ToolTracker } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
@@ -195,6 +196,25 @@ function itemId(value: unknown): string {
   return identifier(value, sessionLimits.identifierLength) ? value : 'turn';
 }
 function usageRow(update: Record<string, unknown>): RunObservationUsage | undefined {
+  const input = tokenCount(update.inputTokens);
+  const output = tokenCount(update.outputTokens);
+  const thought = tokenCount(update.thoughtTokens) ?? 0;
+  const read = tokenCount(update.cachedReadTokens) ?? 0;
+  const write = tokenCount(update.cachedWriteTokens) ?? 0;
+  const total = tokenCount(update.totalTokens);
+  // OpenCode counts input without cache and output without reasoning, and totals all five buckets.
+  if (input !== undefined && output !== undefined && total !== undefined && total === input + output + thought + read + write) {
+    const inputTokens = input + read + write;
+    const outputTokens = output + thought;
+    return usageFromCounts({
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      ...(thought > 0 ? { reasoningTokens: thought } : {}),
+      ...(read > 0 ? { cachedInputTokens: read } : {}),
+      ...(write > 0 ? { cacheWriteInputTokens: write } : {}),
+    });
+  }
   return normalizedUsageFromCounts({
     inputTokens: update.inputTokens,
     outputTokens: update.outputTokens,
@@ -205,11 +225,11 @@ function usageRow(update: Record<string, unknown>): RunObservationUsage | undefi
   });
 }
 /** `kinds` remembers the first valid `kind` per call id, so later updates that omit it keep the same tool name. */
-function toolObservation(update: Record<string, unknown>, track: ToolTracker, kinds: Map<string, string>): readonly RunObservation[] {
+function toolObservation(update: Record<string, unknown>, track: ToolTracker): readonly RunObservation[] {
   const callId = update.toolCallId;
   if (!identifier(callId, sessionLimits.identifierLength)) return [];
-  if (!kinds.has(callId) && identifier(update.kind, 64)) kinds.set(callId, update.kind);
-  const name = kinds.get(callId) ?? 'other';
+  // Only the first disallowed tool update is observed (the segment fails on it), so its own kind names the call.
+  const name = identifier(update.kind, 64) ? update.kind : 'other';
   const argumentsJson = jsonString(update.rawInput);
   const resultJson = jsonString(update.rawOutput);
   const status = update.status;
@@ -247,8 +267,6 @@ interface Turn {
   text: string;
   readonly onObservation: RunObservationListener | undefined;
   readonly trackTool: ToolTracker;
-  /** The first valid `kind` seen per tool call id this turn. */
-  readonly toolKinds: Map<string, string>;
   failure?: SegmentError;
   stopReason?: string;
   usage: unknown;
@@ -529,9 +547,9 @@ async function openSession(ready: {
       rpc().notify('session/cancel', { sessionId });
     }
   }
-  /** The turn whose listener may receive observations now: live, prompt written, unsettled, with a listener. */
+  /** The turn whose listener may receive observations now: live, prompt written, unsettled, not failed, with a listener. */
   function observingTurn(): Turn | undefined {
-    return phase === 'live' && turn && !turn.settled && turn.promptWritten && turn.onObservation ? turn : undefined;
+    return phase === 'live' && turn && !turn.settled && !turn.failure && turn.promptWritten && turn.onObservation ? turn : undefined;
   }
   function observeQuiet(active: Turn, update: Record<string, unknown>): void {
     if (update.sessionUpdate === 'agent_thought_chunk') {
@@ -539,10 +557,8 @@ async function openSession(ready: {
       if (text !== undefined && text.length > 0) {
         emitObservation(active.onObservation, { kind: 'reasoning', messageId: itemId(update.messageId), mode: 'delta', text });
       }
-    } else if (update.sessionUpdate === 'usage_update') {
-      const row = usageRow(update);
-      if (row) emitObservation(active.onObservation, { kind: 'usage', rows: [row] });
     }
+    // `usage_update` carries only `{ used, size, cost }`, no token counts, so it yields no usage row.
   }
   function handleUpdate(params: unknown): void | 'yield' {
     const decision = readUpdate(params, { phase, sessionId, modelPinned, model, turn });
@@ -550,7 +566,7 @@ async function openSession(ready: {
     if (decision === 'traffic') {
       if (turn && !turn.settled && turn.promptWritten) turn.sawTraffic = true;
       const watcher = observingTurn();
-      if (watcher && !watcher.failure && record(params) && record(params.update)) observeQuiet(watcher, params.update);
+      if (watcher && record(params) && record(params.update)) observeQuiet(watcher, params.update);
       return;
     }
     if (decision === 'reject') {
@@ -560,7 +576,7 @@ async function openSession(ready: {
     if (decision.kind === 'tool') {
       const watcher = observingTurn();
       if (watcher) {
-        for (const observation of toolObservation(decision.update, watcher.trackTool, watcher.toolKinds)) emitObservation(watcher.onObservation, observation);
+        for (const observation of toolObservation(decision.update, watcher.trackTool)) emitObservation(watcher.onObservation, observation);
       }
       noteDisallowed();
       return;
@@ -829,7 +845,7 @@ async function openSession(ready: {
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
-        onObservation, trackTool: createToolTracker(), toolKinds: new Map(),
+        onObservation, trackTool: createToolTracker(),
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };

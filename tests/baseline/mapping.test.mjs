@@ -433,3 +433,24 @@ test('emitObservation delivers a deeply frozen copy and never freezes the caller
   assert.equal(Object.isFrozen(delivered.rows), true);
   assert.equal(Object.isFrozen(delivered.rows[0]), true);
 });
+
+test('invalid observer configuration returns an invalid-input error instead of throwing', () => {
+  const created = createRunBaseline({
+    projection: { threadId: 'thread-1', runId: 'run-1', sourceKey: 'fixture', bounds },
+    tracer: new BasicTracerProvider().getTracer('baseline-test'), parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' },
+    allowedToolNames: ['bad name\n'], admitObservedToolNames: true, provider: 'fixture',
+  });
+  assert.deepEqual(created, { kind: 'error', error: { code: 'invalid-input' } });
+});
+
+test('a malformed observation is reported as invalid-observation and changes no state', t => {
+  const { baseline, events, feed } = setup(t);
+  for (const bad of [null, undefined, 'text', 7, [], {}, { kind: 'bogus' }, { kind: 5 }]) {
+    const result = baseline.accept(bad);
+    assert.equal(result.projection.kind, 'mapped');
+    assert.deepEqual(result.projection.events, []);
+    assert.deepEqual(result.diagnostics, [{ code: 'invalid-observation' }]);
+  }
+  feed(started, success);
+  assert.deepEqual(types(events), ['RUN_STARTED', 'RUN_FINISHED']);
+});

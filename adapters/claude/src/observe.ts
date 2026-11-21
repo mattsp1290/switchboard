@@ -18,7 +18,7 @@ function usageRow(raw: Readonly<Record<string, unknown>>): RunObservationUsage |
 }
 
 /** The observation-only state for one Claude turn: block kinds, accumulated usage, and the request model. */
-export function createStreamObserver(observe: (observation: RunObservation) => void) {
+export function createStreamObserver(observe: (observation: RunObservation) => void, requestModel: string) {
   const kinds = new Map<number, { readonly kind: 'thinking' | 'tool'; readonly id: string; readonly name: string }>();
   let usage: Record<string, unknown> = {};
   let model: string | undefined;
@@ -51,7 +51,7 @@ export function createStreamObserver(observe: (observation: RunObservation) => v
       } else if (event.type === 'message_stop') {
         // The model boundary is emitted only here: a request interrupted before message_stop records no model span.
         const row = usageRow(usage);
-        observe({ kind: 'model-boundary', ...(model === undefined ? {} : { requestModel: model, responseModel: model }),
+        observe({ kind: 'model-boundary', requestModel, ...(model === undefined ? {} : { responseModel: model }),
           ...(row ? { usage: row } : {}) });
       }
     },

@@ -40,6 +40,7 @@ export type RunBaselineDiagnosticCode =
   | 'tool-arguments-changed'
   | 'tool-span-unrecorded'
   | 'not-running'
+  | 'invalid-observation'
   | 'pending-tool-unknown';
 
 export interface RunBaselineDiagnostic {
@@ -110,6 +111,9 @@ const maxIdentifierLength = 256;
 const runningOnly: ReadonlySet<RunObservation['kind']> = Object.freeze(
   new Set<RunObservation['kind']>(['text', 'reasoning', 'tool', 'usage', 'model-boundary', 'terminal']));
 
+const knownKinds: ReadonlySet<string> = Object.freeze(new Set<RunObservation['kind']>([
+  'run-started', 'text', 'reasoning', 'tool', 'usage', 'interrupt', 'terminal', 'unsupported', 'model-boundary']));
+
 function usageKey(row: RunObservationUsage): string {
   return JSON.stringify([row.provider ?? null, row.model ?? null]);
 }
@@ -133,10 +137,15 @@ function usageRow(row: RunObservationUsage): NativeTokenUsage {
  * and ends `outcome-unknown` at the terminal. `projection.runId` is also the correlation on every span.
  */
 export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBaseline, ProjectionError> {
-  const observer = createGenAiObserver({
-    tracer: options.tracer, contentPolicy: options.contentPolicy, allowedToolNames: options.allowedToolNames,
-    ...(options.admitObservedToolNames === undefined ? {} : { admitObservedToolNames: options.admitObservedToolNames }),
-  });
+  let observer: ReturnType<typeof createGenAiObserver>;
+  try {
+    observer = createGenAiObserver({
+      tracer: options.tracer, contentPolicy: options.contentPolicy, allowedToolNames: options.allowedToolNames,
+      ...(options.admitObservedToolNames === undefined ? {} : { admitObservedToolNames: options.admitObservedToolNames }),
+    });
+  } catch {
+    return Object.freeze({ kind: 'error', error: Object.freeze({ code: 'invalid-input' }) });
+  }
   const created = createAguiProjection(options.projection);
   if (created.kind === 'error') {
     observer.close();
@@ -325,7 +334,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
 
   function accept(observation: RunObservation): RunBaselineAccept {
     batch = { events: [], diagnostics: [] };
-    if (closed) {
+    if (typeof observation !== 'object' || observation === null || Array.isArray(observation)
+      || typeof observation.kind !== 'string' || !knownKinds.has(observation.kind)) {
+      note('invalid-observation');
+    } else if (closed) {
       note('after-close');
     } else if (phase === 'terminated') {
       note('after-terminal');
