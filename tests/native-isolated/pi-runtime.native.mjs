@@ -90,6 +90,59 @@ test('Pi SDK streams text, follows up, persists and resumes without config disco
   });
 });
 
+test('the observation listener sees admission, text snapshots, unsupported families and one terminal', { timeout: 10_000 }, async () => {
+  await fixture(async ({ runtime, respond, sse }) => {
+    const current = await runtime();
+    const session = await current.open();
+    const observed = [];
+    const events = [];
+    const accepted = await session.prompt('Hello', event => events.push(event), observation => observed.push(observation));
+    assert.deepEqual(await accepted.finished, { kind: 'ended', outcome: 'completed' });
+    assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'completed' });
+    assert.equal(observed[0].kind, 'run-started');
+    assert.deepEqual(observed.filter(o => o.kind === 'unsupported').map(o => o.family),
+      ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents', 'reasoning']);
+    assert.equal(observed.findLastIndex(o => o.kind === 'unsupported'), observed.length - (observed.some(o => o.kind === 'usage') ? 3 : 2));
+    const texts = observed.filter(o => o.kind === 'text');
+    assert(texts.length > 0 && texts.every(o => o.mode === 'snapshot' && o.messageId === texts[0].messageId));
+    assert.equal(texts.at(-1).text, 'Hello world');
+    assert(texts.every((o, index) => index === 0 || o.text.startsWith(texts[index - 1].text)));
+    const usage = observed.filter(o => o.kind === 'usage');
+    assert(usage.length <= 1);
+    for (const row of usage.flatMap(o => o.rows)) assert.deepEqual(Object.keys(row).sort(), ['inputTokens', 'outputTokens']);
+    assert.deepEqual(observed.at(-1), { kind: 'terminal', outcome: 'success' });
+    assert.equal(observed.filter(o => o.kind === 'terminal').length, 1);
+    assert(!observed.some(o => o.kind === 'tool' || o.kind === 'reasoning' || o.kind === 'model-boundary'));
+    assert(observed.every(Object.isFrozen));
+
+    const throwing = await session.prompt('Again', () => {}, () => { throw new Error('listener failure'); });
+    assert.equal((await throwing.finished).outcome, 'completed');
+    await assert.rejects(session.prompt('Bad', () => {}, 'nope'), /Pi operation failed/);
+
+    respond(() => new Response(JSON.stringify({ error: { message: key } }), { status: 401, headers: { 'content-type': 'application/json' } }));
+    const failed = [];
+    assert.equal((await (await session.prompt('Fail', () => {}, o => failed.push(o))).finished).outcome, 'failed');
+    assert.deepEqual(failed.at(-1), { kind: 'terminal', outcome: 'failed' });
+    assert(!JSON.stringify(failed).includes(key));
+
+    const requestStarted = Promise.withResolvers();
+    respond(init => {
+      let stream;
+      const body = new ReadableStream({ start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode(sse('partial'))); } });
+      init.signal.addEventListener('abort', () => stream.error(new DOMException('Aborted', 'AbortError')), { once: true });
+      requestStarted.resolve();
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+    });
+    const cancelled = [];
+    const waiting = await session.prompt('Wait', () => {}, o => cancelled.push(o));
+    await requestStarted.promise;
+    await session.abort();
+    assert.equal((await waiting.finished).outcome, 'interrupted');
+    assert.deepEqual(cancelled.at(-1), { kind: 'terminal', outcome: 'cancelled' });
+    assert.equal(cancelled.filter(o => o.kind === 'terminal').length, 1);
+  });
+});
+
 test('unprompted sessions leave no journal and cannot be resumed', { timeout: 10_000 }, async () => {
   await fixture(async ({ directory, runtime }) => {
     const current = await runtime();

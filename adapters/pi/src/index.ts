@@ -6,6 +6,8 @@ import {
   createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
+import { emitObservation } from '#switchboard';
+import type { RunObservationListener, RunObservationUsage } from '#switchboard';
 import { terminalOutcome } from './terminal.js';
 
 export interface PiRuntimeOptions {
@@ -24,7 +26,7 @@ export interface PiPrompt { readonly finished: Promise<PiTerminal> }
 export interface PiSession {
   readonly id: string;
   readonly sessionFile: string;
-  prompt(text: string, onEvent: (event: PiEvent) => void): Promise<PiPrompt>;
+  prompt(text: string, onEvent: (event: PiEvent) => void, onObservation?: RunObservationListener): Promise<PiPrompt>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -54,6 +56,9 @@ export interface PiRuntime {
 const writers = new Set<string>();
 const MAX_SESSIONS = 32;
 const failure = () => new Error('Pi operation failed.');
+const UNSUPPORTED = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
+const TERMINAL = { completed: 'success', failed: 'failed', interrupted: 'cancelled' } as const;
+const MESSAGE_ID = 'assistant';
 // Matches plain(value, 256) and must stay identical in the three text adapters.
 function callerModelId(value: unknown): boolean {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
@@ -134,10 +139,11 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
   return {
     id: native.sessionId,
     sessionFile: basename(file),
-    async prompt(text, onEvent) {
+    async prompt(text, onEvent, onObservation) {
       if (closing) throw new Error('Pi session is closed.');
       if (running) throw new Error('Pi session is busy.');
-      if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function') throw failure();
+      if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function'
+        || (onObservation !== undefined && typeof onObservation !== 'function')) throw failure();
       const admission = Promise.withResolvers<PiPrompt>();
       const completion = Promise.withResolvers<PiTerminal>();
       let started = false;
@@ -145,6 +151,9 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       let stopped = false;
       let callbackFailed = false;
       let latestText = '';
+      let latestThinking = '';
+      let thinkingSeen = false;
+      let usage: RunObservationUsage | undefined;
       const emit = (event: PiEvent) => {
         try { onEvent(event); } catch { callbackFailed = true; stopped = true; void native.abort().catch(() => {}); }
       };
@@ -166,6 +175,8 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
               stop(); rejectAdmission(); void native.abort().catch(() => {}); return;
             }
             admissionState.current = 'admitted';
+            emitObservation(onObservation, { kind: 'run-started' });
+            for (const family of UNSUPPORTED) emitObservation(onObservation, { kind: 'unsupported', family });
             admission.resolve({ finished: completion.promise });
           });
         }
@@ -175,7 +186,24 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
             event.message.errorMessage = 'Pi operation failed.';
           }
           const text = event.message.content.filter(part => part.type === 'text').map(part => part.text).join('');
-          if (text !== latestText) { latestText = text; emit({ kind: 'text', text }); }
+          if (text !== latestText) {
+            latestText = text;
+            emit({ kind: 'text', text });
+            if (admissionState.current === 'admitted') emitObservation(onObservation, { kind: 'text', messageId: MESSAGE_ID, mode: 'snapshot', text });
+          }
+          if (onObservation && admissionState.current === 'admitted') {
+            const thinking = event.message.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('');
+            if (thinking !== '' && thinking !== latestThinking) {
+              thinkingSeen = true;
+              latestThinking = thinking;
+              emitObservation(onObservation, { kind: 'reasoning', messageId: MESSAGE_ID, mode: 'snapshot', text: thinking });
+            }
+            if (event.type === 'message_end') {
+              const { input, output } = event.message.usage ?? {};
+              const valid = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+              if (valid(input) && valid(output)) usage = { inputTokens: input, outputTokens: output };
+            }
+          }
         }
       });
       void (async () => {
@@ -200,7 +228,12 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           unsubscribe();
           rejectAdmission();
           const terminal: PiTerminal = { kind: 'ended', outcome };
-          if (admissionState.current === 'admitted') emit(terminal);
+          if (admissionState.current === 'admitted') {
+            emit(terminal);
+            if (!thinkingSeen) emitObservation(onObservation, { kind: 'unsupported', family: 'reasoning' });
+            if (usage) emitObservation(onObservation, { kind: 'usage', rows: [usage] });
+            emitObservation(onObservation, { kind: 'terminal', outcome: TERMINAL[callbackFailed ? 'failed' : outcome] });
+          }
           running = undefined;
           completion.resolve(callbackFailed ? { kind: 'ended', outcome: 'failed' } : terminal);
         }

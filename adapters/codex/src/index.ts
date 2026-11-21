@@ -5,7 +5,9 @@ import { delimiter, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import { withSdkProcess } from './process.js';
-import type { ThreadOptions } from '@openai/codex-sdk';
+import { emitObservation, jsonString } from '#switchboard';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
+import type { ThreadItem, ThreadOptions } from '@openai/codex-sdk';
 
 export interface CodexRuntimeOptions {
   readonly cwd: string;
@@ -27,6 +29,7 @@ export interface CodexRequest {
   readonly text: string;
   readonly threadId?: string;
   readonly onEvent: (event: CodexEvent) => void;
+  readonly onObservation?: RunObservationListener;
 }
 type Inconclusive = { readonly state: 'timed_out' | 'cancelled' | 'unknown' | 'not_checked' };
 // Narrower than the root types on purpose: Codex pins one exact version and one login method.
@@ -66,6 +69,41 @@ const run = promisify(execFile);
 const writers = new Set<string>();
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const failure = () => new Error('Codex operation failed.');
+const UNSUPPORTED = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
+const TERMINAL = { completed: 'success', failed: 'failed', interrupted: 'cancelled' } as const;
+const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+function usageRow(usage: unknown): RunObservationUsage | undefined {
+  if (usage === null || typeof usage !== 'object') return undefined;
+  const input = count(Reflect.get(usage, 'input_tokens'));
+  const output = count(Reflect.get(usage, 'output_tokens'));
+  const cached = count(Reflect.get(usage, 'cached_input_tokens'));
+  const cacheWrite = count(Reflect.get(usage, 'cache_write_input_tokens'));
+  const reasoning = count(Reflect.get(usage, 'reasoning_output_tokens'));
+  const row: { -readonly [K in keyof RunObservationUsage]: RunObservationUsage[K] } = {};
+  if (input !== undefined) row.inputTokens = input;
+  if (output !== undefined) row.outputTokens = output;
+  if (cached !== undefined) row.cachedInputTokens = cached;
+  if (cacheWrite !== undefined) row.cacheWriteInputTokens = cacheWrite;
+  if (reasoning !== undefined) row.reasoningTokens = reasoning;
+  return Object.keys(row).length === 0 ? undefined : row;
+}
+/** A declared tool-like item as an observation, or undefined for items that stay off. `item.updated` adds nothing a tool needs. */
+function toolObservation(type: 'item.started' | 'item.updated' | 'item.completed', item: ThreadItem): RunObservation | undefined {
+  let name: string;
+  let args: unknown;
+  switch (item.type) {
+    case 'mcp_tool_call': name = typeof item.tool === 'string' ? item.tool : ''; args = item.arguments; break;
+    case 'command_execution': name = item.type; args = { command: item.command }; break;
+    case 'file_change': name = item.type; args = { changes: item.changes }; break;
+    case 'web_search': name = item.type; args = { query: item.query }; break;
+    default: return undefined;
+  }
+  if (typeof item.id !== 'string' || !item.id || item.id.length > 512 || !name || type === 'item.updated') return undefined;
+  const status = 'status' in item ? item.status : undefined;
+  const phase = type === 'item.started' ? 'started' : status === 'failed' ? 'failed' : 'completed';
+  const argumentsJson = jsonString(args);
+  return { kind: 'tool', callId: item.id, name, phase, ...(argumentsJson === undefined ? {} : { argumentsJson }) };
+}
 // Matches plain(value, 256) and must stay identical in the three text adapters.
 function callerModelId(value: unknown): boolean {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
@@ -250,9 +288,10 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
   }
 
   function start(request: CodexRequest): Promise<CodexTurn> {
-    const { threadId: requested, text, onEvent } = request;
+    const { threadId: requested, text, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
       || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
+      || (onObservation !== undefined && typeof onObservation !== 'function')
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved !== undefined) writers.add(reserved);
@@ -264,6 +303,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
     async function consume(): Promise<CodexTerminal> {
       let outcome: CodexTerminal['outcome'] = 'failed';
       let terminal: CodexTerminal['outcome'] | undefined;
+      let usage: RunObservationUsage | undefined;
       try {
         if (!executable) throw failure();
         assertReady(await observe(controller.signal, 10_000));
@@ -299,6 +339,8 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                 case 'turn.started':
                   if (observedId === undefined || admitted) throw failure();
                   admitted = true;
+                  emitObservation(onObservation, { kind: 'run-started' });
+                  for (const family of UNSUPPORTED) emitObservation(onObservation, { kind: 'unsupported', family });
                   admission.resolve({ threadId: observedId, finished, async abort() { controller.abort(); await finished; } });
                   break;
                 case 'item.started':
@@ -310,12 +352,24 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                     if (typeof id !== 'string' || !id || id.length > 512 || typeof snapshot !== 'string'
                       || Buffer.byteLength(snapshot) > 4 * 1024 * 1024) throw failure();
                     onEvent({ kind: 'text', itemId: id, text: snapshot });
+                    emitObservation(onObservation, { kind: 'text', messageId: id, mode: 'snapshot', text: snapshot });
+                  } else if (onObservation && admitted) {
+                    const { item } = event;
+                    if (item.type === 'reasoning') {
+                      if (typeof item.id === 'string' && item.id && item.id.length <= 512 && typeof item.text === 'string') {
+                        emitObservation(onObservation, { kind: 'reasoning', messageId: item.id, mode: 'snapshot', text: item.text });
+                      }
+                    } else {
+                      const tool = toolObservation(event.type, item);
+                      if (tool) emitObservation(onObservation, tool);
+                    }
                   }
                   break;
                 }
                 case 'turn.completed':
                   if (!admitted) throw failure();
                   terminal = 'completed';
+                  if (onObservation) usage = usageRow(event.usage);
                   break;
                 case 'turn.failed':
                   terminal = 'failed';
@@ -339,6 +393,8 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
       }
       const end: CodexTerminal = { kind: 'ended', outcome };
       if (admitted) {
+        if (usage && outcome === 'completed') emitObservation(onObservation, { kind: 'usage', rows: [usage] });
+        emitObservation(onObservation, { kind: 'terminal', outcome: TERMINAL[outcome] });
         try { onEvent(end); } catch { /* A consumer exception cannot change the native outcome. */ }
       } else admission.reject(failure());
       return end;

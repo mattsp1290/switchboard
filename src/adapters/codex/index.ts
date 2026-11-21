@@ -5,6 +5,8 @@ import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
 import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
+import { emitObservation, jsonString } from '../../core/run-observation.js';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
   HostWriteStatus,
@@ -13,7 +15,7 @@ import type { InteractionContinuation } from '../../core/interaction.js';
 import { parseInteractionContinuation } from '../../core/interaction.js';
 import type { SessionBinding } from '../../core/sessions.js';
 import { createCodexWriters, openCodexExecution } from './execution.js';
-import type { CleanupStep, CodexSession, CodexTurnCompletion } from './execution.js';
+import type { CleanupStep, CodexSession, CodexTokenUsage, CodexTurnCompletion } from './execution.js';
 import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
 import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
 import { codexNativeToolReply, createCodexInteraction } from './interaction.js';
@@ -106,6 +108,19 @@ function failed(error: HostAdapterError, write: HostWriteStatus): HostSegmentRes
   }
   return { kind: 'failed', error, write };
 }
+/** Native `total` as one observation row. `reasoningOutputTokens` is the AG-UI `reasoningTokens`. */
+function usageRow(total: CodexTokenUsage): RunObservationUsage {
+  return { inputTokens: total.inputTokens, outputTokens: total.outputTokens, cachedInputTokens: total.cachedInputTokens,
+    cacheWriteInputTokens: total.cacheWriteInputTokens, reasoningTokens: total.reasoningOutputTokens,
+    ...(total.totalTokens === total.inputTokens + total.outputTokens ? { totalTokens: total.totalTokens } : {}) };
+}
+const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
+/**
+ * Pinned 0.169.0 `ServerNotification` reasoning methods, checked against `codex app-server generate-ts`:
+ * `item/reasoning/textDelta` and `item/reasoning/summaryTextDelta` carry `{ itemId, delta }`. `execution.ts` leaves them
+ * as opaque `native` events, so `watch` projects only these two methods as `reasoning` deltas.
+ */
+const reasoningMethods = ['item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'] as const;
 const emptyUsage = (): HostUsage => Object.freeze({ scope: 'cumulative', native: Object.freeze({
   namespace: 'codex-app-server/token-usage', schemaVersion: 1, data: null }) });
 
@@ -390,12 +405,14 @@ async function openAdapter(ready: {
   const canonical = canonicalTools(tools);
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 4, capacity: 64 });
   let session: CodexSession | undefined;
-  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage } | undefined;
+  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
+  let terminalHint: 'failed' | 'cancelled' | 'outcome-unknown' | undefined;
   let turnCompletion: Promise<CodexTurnCompletion> | undefined;
   let turnResult: CodexTurnCompletion | undefined;
   let capacityRefused = false;
   let closing: ReturnType<HostAdapter['close']> | undefined;
   const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') stream.publish(Object.freeze(event)); };
+  const observe = (observation: RunObservation) => { if (segment && segment.phase !== 'intent') emitObservation(segment.observer, observation); };
   const calls = () => bridge.hostCalls().map(toCall);
   bridge.events.subscribe((event) => {
     if (event.kind === 'refused' && event.reason === 'capacity') { capacityRefused = true; return; }
@@ -408,6 +425,12 @@ async function openAdapter(ready: {
     publish({ kind: 'tool-call-start', target, name: event.call.name });
     publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(event.call.arguments ?? null) });
     publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
+    if (segment?.observer) {
+      const callId = target.nativeToolCallId;
+      const argumentsJson = jsonString(event.call.arguments ?? null);
+      observe({ kind: 'tool', callId, name: event.call.name, phase: 'started' });
+      observe({ kind: 'tool', callId, name: event.call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
+    }
   });
   const resume = options.resume;
   const resumedKey = resume ? declarationKey(native.home, resume.session.opaque) : undefined;
@@ -439,10 +462,18 @@ async function openAdapter(ready: {
       if (event.kind === 'text-delta') {
         segment.text += event.delta;
         publish({ kind: 'text-delta', nativeItemId: event.itemId, text: event.delta });
+        observe({ kind: 'text', messageId: event.itemId, mode: 'delta', text: event.delta });
+      } else if (event.kind === 'native') {
+        if (segment.observer && reasoningMethods.some((method) => method === event.method) && record(event.params)
+          && typeof event.params.itemId === 'string' && typeof event.params.delta === 'string') {
+          const part = event.method === 'item/reasoning/textDelta' ? 'text' : 'summary';
+          observe({ kind: 'reasoning', messageId: `${event.params.itemId}:${part}`, mode: 'delta', text: event.params.delta });
+        }
       } else if (event.kind === 'usage') {
         segment.usage = Object.freeze({ scope: 'cumulative', native: Object.freeze({ namespace: 'codex-app-server/token-usage',
           schemaVersion: 1, data: { total: event.total, last: event.last, modelContextWindow: event.modelContextWindow } }) });
         publish({ kind: 'usage', usage: segment.usage });
+        observe({ kind: 'usage', rows: [usageRow(event.total)] });
       }
     });
   }
@@ -487,8 +518,10 @@ async function openAdapter(ready: {
         return turnResult ? completionResult(active, current, turnResult, accepted, pending)
           : failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
       case 'aborted':
+        terminalHint = 'outcome-unknown';
         return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
       case 'wait':
+        terminalHint = 'outcome-unknown';
         return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
       default: {
         const leftover: never = choice;
@@ -507,8 +540,10 @@ async function openAdapter(ready: {
             return pending.length > 0 ? pendingSegment(active, current, pending)
               : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage };
           case 'failed':
+            terminalHint = 'failed';
             return failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite);
           case 'interrupted':
+            terminalHint = 'cancelled';
             return failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite);
           default: {
             const status: never = completion.terminal.status;
@@ -551,9 +586,24 @@ async function openAdapter(ready: {
     const active = session;
     if (!active) return { kind: 'outcome-unknown' as const };
     if (answers) {
+      const observer = segment?.observer;
+      const known = observer ? bridge.hostCalls() : [];
       for (const answer of answers) {
         const replied = await bridge.reply({ value: answer, signal: hostSignal, recordIntent: () => {} });
         if (replied.kind === 'error') return { kind: 'outcome-unknown' as const };
+        if (observer && answer.kind === 'tool') {
+          const callId = answer.outcome.target.nativeToolCallId;
+          const call = known.find((candidate) => candidate.pending.target.nativeToolCallId === callId);
+          if (call) {
+            const argumentsJson = jsonString(call.arguments ?? null);
+            const result = answer.outcome.result;
+            const resultJson = result.kind === 'ok' ? jsonString(result.value.data) : undefined;
+            observe({ kind: 'tool', callId, name: call.name, phase: 'started' });
+            observe({ kind: 'tool', callId, name: call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
+            observe({ kind: 'tool', callId, name: call.name, phase: result.kind === 'ok' ? 'completed' : 'failed',
+              ...(resultJson === undefined ? {} : { resultJson }) });
+          }
+        }
       }
     }
     if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
@@ -582,7 +632,25 @@ async function openAdapter(ready: {
     }) && ids.size === 0;
   }
   async function segmentOf(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
-    readonly signal: AbortSignal }, prompt: string | undefined, answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
+    readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
+  answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
+    if (input.onObservation !== undefined && typeof input.onObservation !== 'function') {
+      return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
+    }
+    const state = { started: false };
+    const result = await segmentInner(input, prompt, answers, state);
+    if (state.started) {
+      const outcome = result.kind === 'failed'
+        ? (result.write.kind === 'outcome-unknown' ? 'outcome-unknown' : terminalHint ?? 'failed') as 'failed' | 'cancelled' | 'outcome-unknown'
+        : 'success' as const;
+      const pendingTools = result.kind === 'pending' ? Object.freeze(result.calls.map((call) => call.pending.target.nativeToolCallId)) : undefined;
+      emitObservation(input.onObservation, { kind: 'terminal', outcome, ...(pendingTools ? { pendingTools } : {}) });
+    }
+    return result;
+  }
+  async function segmentInner(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
+    readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
+  answers: readonly InteractionContinuation[] | undefined, state: { started: boolean }): Promise<HostSegmentResult> {
     if (closing) return failed({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
     if (segment) return failed({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
     if (answers && !answersMatch(answers)) return failed({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
@@ -590,7 +658,8 @@ async function openAdapter(ready: {
       return failed({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
     }
     capacityRefused = false;
-    segment = { phase: 'intent', text: '', usage: emptyUsage() };
+    terminalHint = undefined;
+    segment = { phase: 'intent', text: '', usage: emptyUsage(), observer: input.onObservation };
     const target: DispatchIdentity['target'] = session
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };
     try {
@@ -599,7 +668,12 @@ async function openAdapter(ready: {
       const handle = createDispatchOperation({ mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
         identity: { hostOperationId: input.hostOperationId, target },
         dispatchNative: async (recorded) => {
-          if (segment) segment.phase = 'native';
+          if (segment) {
+            segment.phase = 'native';
+            state.started = true;
+            observe({ kind: 'run-started' });
+            for (const family of unsupportedFamilies) observe({ kind: 'unsupported', family });
+          }
           const observation = await dispatchTurn(prompt, answers, input.signal);
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
           return { kind: 'accepted', evidence: { ...observation.evidence, identity: recorded } };

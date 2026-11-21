@@ -3,6 +3,8 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { emitObservation } from '#switchboard';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
 
 export interface ClaudeRuntimeOptions {
   readonly cwd: string;
@@ -23,6 +25,7 @@ export interface ClaudeRequest {
   readonly text: string;
   readonly threadId?: string;
   readonly onEvent: (event: ClaudeEvent) => void;
+  readonly onObservation?: RunObservationListener;
 }
 type ClaudeFacts = {
   readonly installation: { readonly state: 'available' | 'not_installed' | 'not_executable' | 'unknown' | 'cancelled' | 'not_checked' | 'unsupported' };
@@ -59,6 +62,22 @@ function callerModelId(value: unknown): boolean {
     if (code <= 31 || (code >= 127 && code <= 159)) return false;
   }
   return true;
+}
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+/** `inputTokens` includes the cache fields that are present. `totalTokens` is left to the consumer. */
+function usageRow(raw: Readonly<Record<string, unknown>>): RunObservationUsage | undefined {
+  const input = tokenCount(raw.input_tokens);
+  const output = tokenCount(raw.output_tokens);
+  const read = tokenCount(raw.cache_read_input_tokens);
+  const write = tokenCount(raw.cache_creation_input_tokens);
+  const row: { -readonly [K in keyof RunObservationUsage]: RunObservationUsage[K] } = {};
+  if (input !== undefined || read !== undefined || write !== undefined) row.inputTokens = (input ?? 0) + (read ?? 0) + (write ?? 0);
+  if (output !== undefined) row.outputTokens = output;
+  if (read !== undefined) row.cachedInputTokens = read;
+  if (write !== undefined) row.cacheWriteInputTokens = write;
+  return Object.keys(row).length === 0 ? undefined : row;
 }
 function absolutePath(value: unknown): boolean {
   return typeof value === 'string' && isAbsolute(value);
@@ -139,9 +158,9 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
     return signal !== undefined && !(signal instanceof AbortSignal) ? Promise.reject(failure()) : observe(signal);
   }
   function start(request: ClaudeRequest): Promise<ClaudeTurn> {
-    const { text, threadId: requested, onEvent } = request;
+    const { text, threadId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
-      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
+      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || (onObservation !== undefined && typeof onObservation !== 'function')
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved) writers.add(reserved);
@@ -155,6 +174,8 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
       if (!fault) stopping = true;
       native?.close();
     });
+    const observe = (observation: RunObservation): void => emitObservation(onObservation, observation);
+    let resultUsage: RunObservationUsage | undefined;
     let child: ChildProcess | undefined;
     let exited: Promise<void> | undefined;
     const timeout = setTimeout(() => { fault = true; controller.abort(); }, 30_000);
@@ -186,10 +207,17 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
         let streamId: string | undefined;
         const streamed = new Set<string>();
         const blocks = new Map<number, string>();
+        const kinds = new Map<number, { readonly kind: 'thinking' | 'tool'; readonly id: string; readonly name: string }>();
+        let messageUsage: Record<string, unknown> = {};
+        let messageModel: string | undefined;
         function admit(): void {
           if (!session || admitted) return;
           admitted = true;
           clearTimeout(timeout);
+          if (onObservation) {
+            observe({ kind: 'run-started' });
+            for (const family of ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const) observe({ kind: 'unsupported', family });
+          }
           admission.resolve({ threadId: session.id, model: session.model, finished,
             async abort() { controller.abort(); await finished; } });
         }
@@ -227,16 +255,49 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
               streamId = event.message.id;
               streamed.add(streamId);
               blocks.clear();
+              if (onObservation) {
+                kinds.clear();
+                messageModel = event.message.model;
+                messageUsage = { ...event.message.usage };
+              }
               admit();
             } else if (event.type === 'content_block_start' && event.content_block.type === 'text') {
               if (!streamId) throw failure();
               blocks.set(event.index, event.content_block.text);
-              if (event.content_block.text) publish(`${streamId}:${event.index}`, event.content_block.text);
+              if (event.content_block.text) {
+                publish(`${streamId}:${event.index}`, event.content_block.text);
+                observe({ kind: 'text', messageId: `${streamId}:${event.index}`, mode: 'delta', text: event.content_block.text });
+              }
             } else if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
               if (!streamId || !blocks.has(event.index)) throw failure();
               const snapshot = (blocks.get(event.index) ?? '') + event.delta.text;
               blocks.set(event.index, snapshot);
               publish(`${streamId}:${event.index}`, snapshot);
+              observe({ kind: 'text', messageId: `${streamId}:${event.index}`, mode: 'delta', text: event.delta.text });
+            } else if (onObservation && streamId) {
+              if (event.type === 'content_block_start' && event.content_block.type === 'thinking') {
+                kinds.set(event.index, { kind: 'thinking', id: `${streamId}:${event.index}`, name: '' });
+                if (event.content_block.thinking) observe({ kind: 'reasoning', messageId: `${streamId}:${event.index}`, mode: 'delta', text: event.content_block.thinking });
+              } else if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
+                kinds.set(event.index, { kind: 'tool', id: event.content_block.id, name: event.content_block.name });
+                observe({ kind: 'tool', callId: event.content_block.id, name: event.content_block.name, phase: 'started' });
+              } else if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta') {
+                const block = kinds.get(event.index);
+                if (block?.kind === 'thinking') observe({ kind: 'reasoning', messageId: block.id, mode: 'delta', text: event.delta.thinking });
+              } else if (event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {
+                const block = kinds.get(event.index);
+                if (block?.kind === 'tool') observe({ kind: 'tool', callId: block.id, name: block.name, phase: 'arguments', argumentsJson: event.delta.partial_json });
+              } else if (event.type === 'content_block_stop') {
+                const block = kinds.get(event.index);
+                if (block?.kind === 'tool') observe({ kind: 'tool', callId: block.id, name: block.name, phase: 'arguments-ended' });
+                kinds.delete(event.index);
+              } else if (event.type === 'message_delta') {
+                for (const [key, value] of Object.entries(event.usage)) if (tokenCount(value) !== undefined) messageUsage[key] = value;
+              } else if (event.type === 'message_stop') {
+                const usage = usageRow(messageUsage);
+                observe({ kind: 'model-boundary', ...(messageModel === undefined ? {} : { requestModel: messageModel, responseModel: messageModel }),
+                  ...(usage ? { usage } : {}) });
+              }
             }
           } else if (message.type === 'assistant') {
             if (!session || message.session_id !== session.id || message.error || message.parent_tool_use_id !== null
@@ -251,9 +312,11 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
               const snapshot = (snapshots.get(id) ?? '') + block.text;
               snapshots.set(id, snapshot);
               publish(id, snapshot);
+              observe({ kind: 'text', messageId: id, mode: 'snapshot', text: snapshot });
             }
           } else if (message.type === 'result') {
             if (!session || message.session_id !== session.id) throw failure();
+            if (onObservation) resultUsage = usageRow({ ...message.usage });
             terminal = message.subtype === 'success' && !message.is_error ? 'completed' : 'failed';
           }
         }
@@ -277,7 +340,11 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
       else if (terminal) outcome = terminal;
       else if (stopping) outcome = 'interrupted';
       const end: ClaudeTerminal = { kind: 'ended', outcome };
-      if (admitted) { try { onEvent(end); } catch {} } else admission.reject(failure());
+      if (admitted) {
+        try { onEvent(end); } catch {}
+        if (resultUsage) observe({ kind: 'usage', rows: [resultUsage] });
+        observe({ kind: 'terminal', outcome: outcome === 'completed' ? 'success' : outcome === 'interrupted' ? 'cancelled' : 'failed' });
+      } else admission.reject(failure());
       return end;
     }
     const finished = consume();

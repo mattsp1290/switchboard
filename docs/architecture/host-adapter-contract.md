@@ -10,6 +10,8 @@ The host owns the store, retry, approval policy, and launcher. It records intent
 
 `run` executes one segment from a prompt. `continue` answers the whole pending set. One segment runs at a time. Both call the host's `recordIntent` and only then dispatch, using `createDispatchOperation` in `src/core/dispatch.ts`. The host must durably record the command and acquire admission before `recordIntent` resolves. The adapter does not store that command.
 
+`HostSegmentRequest.onObservation` is an optional per-segment listener: `run` and `continue` each take their own, and one segment is one baseline. The adapter emits `run-started` once admitted and `terminal` with its final result, and a listener exception is swallowed and never changes the result. Observations carry tool argument and result JSON, text, and reasoning payloads, as `HostAdapterEvent` already does, so the host treats them with the same care.
+
 `inspect`, when the capability is `supported`, reads unanswered host tool calls from native state and makes no model call. Otherwise the capability is `unsupported` or `unavailable` and the API is absent.
 
 `fingerprint`, when supported, reads a history fingerprint. `validity` is `segment-end` or `after-process-exit`. The value is a core `CheckpointReference`. Resume passes it back as `expectedHistory`. A different native history fails with `history-mismatch` and dispatches nothing.

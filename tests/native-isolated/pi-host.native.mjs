@@ -156,3 +156,64 @@ test('a mixed tool batch fails before a host tool runs', async () => {
   assert.equal(host.states.length, 0);
   await host.close();
 });
+
+test('a segment listener receives model boundaries, tool facts, usage and a terminal', async () => {
+  const tools = [{ name: 'lookup', description: 'Looks up a value.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } } }];
+  const first = await open({ tools, stream: async function* stream() {
+    yield { kind: 'text', text: 'checking' };
+    yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: { q: 'tide' } };
+    yield { kind: 'usage', input: 4, output: 2 };
+  } });
+  const seen = [];
+  const paused = await first.adapter.run({ ...run('Look up tide'), onObservation: (o) => { seen.push(o); } });
+  assert.equal(paused.kind, 'pending');
+  assert.equal(seen[0].kind, 'run-started');
+  assert.deepEqual(seen.filter((o) => o.kind === 'unsupported').map((o) => o.family),
+    ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'reasoning', 'subagents']);
+  assert.deepEqual(seen.find((o) => o.kind === 'text'), { kind: 'text', messageId: 'assistant', mode: 'delta', text: 'checking' });
+  assert.deepEqual(seen.filter((o) => o.kind === 'tool'), [
+    { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'started' },
+    { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'arguments-ended', argumentsJson: '{"q":"tide"}' }]);
+  assert.deepEqual(seen.filter((o) => o.kind === 'model-boundary'), [
+    { kind: 'model-boundary', requestModel: 'host', usage: { inputTokens: 4, outputTokens: 2 } }]);
+  assert.deepEqual(seen.find((o) => o.kind === 'usage'), { kind: 'usage', rows: [{ inputTokens: 4, outputTokens: 2 }] });
+  assert.deepEqual(seen.at(-1), { kind: 'terminal', outcome: 'success', pendingTools: ['call-1'] });
+  assert.equal(seen.filter((o) => o.kind === 'terminal').length, 1);
+  const imported = first.adapter.state();
+  await first.close();
+
+  const second = await open({ tools, state: imported, stream: async function* stream() {
+    yield { kind: 'text', text: 'the tide is high' };
+    yield { kind: 'usage', input: 5, output: 3 };
+  } });
+  const pending = await second.adapter.capabilities.inspect.api.pending(openSignal());
+  const call = pending.value[0];
+  const next = [];
+  const done = await second.adapter.continue({ hostOperationId: 'op-observed', signal: openSignal(), recordIntent: async () => {},
+    onObservation: (o) => { next.push(o); },
+    answers: [{ formatVersion: 1, kind: 'tool', outcome: { target: call.pending.target,
+      result: { kind: 'ok', value: { namespace: 'crew', schemaVersion: 1, data: { text: 'high' } } },
+      effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } }] });
+  assert.equal(done.kind, 'complete');
+  assert.equal(next[0].kind, 'run-started');
+  assert.deepEqual(next.filter((o) => o.kind === 'tool'), [
+    { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'started' },
+    { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'arguments-ended', argumentsJson: '{"q":"tide"}' },
+    { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'completed', resultJson: '{"text":"high"}' }]);
+  assert.deepEqual(next.at(-1), { kind: 'terminal', outcome: 'success' });
+  await second.close();
+});
+
+test('a throwing listener does not change a segment and an invalid one is refused', async () => {
+  const host = await open({});
+  const result = await host.adapter.run({ ...run('Say hello'), onObservation: () => { throw new Error('boom'); } });
+  assert.equal(result.kind, 'complete');
+  assert.equal(result.text, 'hello');
+  let intents = 0;
+  const refused = await host.adapter.run({ ...run('Again', async () => { intents += 1; }), onObservation: 'nope' });
+  assert.equal(refused.kind, 'failed');
+  assert.equal(refused.error.code, 'invalid-input');
+  assert.equal(refused.write.kind, 'not-attempted');
+  assert.equal(intents, 0);
+  await host.close();
+});

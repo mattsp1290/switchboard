@@ -56,6 +56,44 @@ test('native SDK streams message snapshots and resumes with the same subscriptio
   assert.equal(args[args.indexOf('--sandbox') + 1], 'read-only');
 });
 
+test('the observation listener sees text snapshots, usage and the terminal, and a throwing listener changes nothing', async t => {
+  const { open } = await fixture(t);
+  const runtime = open();
+  const observed = [];
+  const events = [];
+  const turn = await runtime.start({ text: 'one', onEvent: e => events.push(e), onObservation: o => observed.push(o) });
+  assert.deepEqual(await turn.finished, { kind: 'ended', outcome: 'completed' });
+  assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'completed' });
+  assert.deepEqual(observed.map(o => o.kind), ['run-started', ...Array(7).fill('unsupported'), 'text', 'text', 'usage', 'terminal']);
+  assert.deepEqual(observed.filter(o => o.kind === 'unsupported').map(o => o.family),
+    ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents']);
+  assert.deepEqual(observed.filter(o => o.kind === 'text'), [
+    { kind: 'text', messageId: 'item_0', mode: 'snapshot', text: 'first' },
+    { kind: 'text', messageId: 'item_0', mode: 'snapshot', text: 'first second' }]);
+  assert.deepEqual(observed.find(o => o.kind === 'usage'), { kind: 'usage', rows: [{ inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0 }] });
+  assert.deepEqual(observed.at(-1), { kind: 'terminal', outcome: 'success' });
+  assert(observed.every(Object.isFrozen));
+  assert(!observed.some(o => o.kind === 'tool' || o.kind === 'reasoning' || o.kind === 'model-boundary'));
+
+  const throwing = await runtime.start({ text: 'one', onEvent() {}, onObservation() { throw new Error('listener failure'); } });
+  assert.equal((await throwing.finished).outcome, 'completed');
+  await assert.rejects(runtime.start({ text: 'one', onEvent() {}, onObservation: 'nope' }), /Codex operation failed/);
+
+  const cancelled = [];
+  const pending = await runtime.start({ text: 'pending', onEvent() {}, onObservation: o => cancelled.push(o) });
+  await pending.abort();
+  assert.equal((await pending.finished).outcome, 'interrupted');
+  assert.deepEqual(cancelled.at(-1), { kind: 'terminal', outcome: 'cancelled' });
+  assert.equal(cancelled.filter(o => o.kind === 'terminal').length, 1);
+
+  const failed = [];
+  const broken = await runtime.start({ text: 'failed waiting', onEvent() {}, onObservation: o => failed.push(o) });
+  await setTimeout(250);
+  await broken.abort();
+  assert.deepEqual(failed.at(-1), { kind: 'terminal', outcome: 'failed' });
+  assert(!failed.some(o => o.kind === 'usage'));
+});
+
 test('alternate login and mismatched CLI are rejected with actionable safe messages before dispatch', async t => {
   const { account, dir, open } = await fixture(t);
   const runtime = open();

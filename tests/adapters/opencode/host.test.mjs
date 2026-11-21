@@ -406,6 +406,148 @@ test('permission is cancelled and filesystem or terminal requests are unknown', 
   });
 });
 
+function update(sessionUpdate, fields = {}) {
+  return { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session-1', update: { sessionUpdate, ...fields } } };
+}
+function observed(onObservation) {
+  const rows = [];
+  return { rows, listener(observation) { rows.push(observation); onObservation?.(observation); } };
+}
+
+test('a listener sees a tool call first, named by kind, while the segment still fails and cancels', async () => {
+  for (const [sessionUpdate, status] of [['tool_call', 'in_progress'], ['tool_call_update', 'completed'], ['tool_call_update', 'failed']]) {
+    await withSession(async ({ adapter, agent, signal }) => {
+      const seen = observed();
+      const running = adapter.run({ prompt: 'go', signal, hostOperationId: `tool-${status}`, recordIntent() {}, onObservation: seen.listener });
+      const prompt = await untilRequest(agent, 'session/prompt');
+      const beforeCancel = agent.state.notifications.length;
+      agent.push(update(sessionUpdate, { toolCallId: 'call-1', kind: 'execute', title: 'SECRET_TITLE', status,
+        rawInput: { command: 'ls' }, rawOutput: { out: 'ok' } }));
+      agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+      const result = await running;
+      assert.equal(result.kind, 'failed', JSON.stringify(result));
+      assert.equal(result.error.message, rejectedUpdate);
+      assert.equal(agent.state.notifications.slice(beforeCancel).some((message) => message.method === 'session/cancel'), true);
+      const tools = seen.rows.filter((row) => row.kind === 'tool');
+      assert.equal(JSON.stringify(seen.rows).includes('SECRET_TITLE'), false);
+      assert.equal(seen.rows[0].kind, 'run-started');
+      assert.equal(seen.rows.findIndex((row) => row.kind === 'tool') < seen.rows.findIndex((row) => row.kind === 'terminal'), true);
+      assert.equal(tools.every((row) => row.callId === 'call-1' && row.name === 'execute'), true);
+      if (status === 'in_progress') {
+        assert.deepEqual(tools.map((row) => row.phase), ['started', 'arguments']);
+        assert.equal(tools[1].argumentsJson, '{"command":"ls"}');
+      } else if (status === 'completed') {
+        assert.deepEqual(tools.map((row) => [row.phase, row.argumentsJson, row.resultJson]), [['arguments-ended', '{"command":"ls"}', '{"out":"ok"}']]);
+      } else assert.deepEqual(tools.map((row) => row.phase), ['failed']);
+      assert.deepEqual(seen.rows.at(-1), { kind: 'terminal', outcome: 'failed' });
+    });
+  }
+});
+
+test('a tool call without a kind is named other', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'nokind', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(update('tool_call', { toolCallId: 'call-2', title: 'SECRET_TITLE' }));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+    assert.equal((await running).kind, 'failed');
+    assert.deepEqual(seen.rows.find((row) => row.kind === 'tool'), { kind: 'tool', callId: 'call-2', name: 'other', phase: 'started' });
+  });
+});
+
+test('a live thought and usage update are observed and do not fail the segment', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'live', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(update('agent_thought_chunk', { messageId: 't', content: { type: 'text', text: 'think' } }));
+    agent.push(update('agent_thought_chunk', { content: { type: 'image', data: 'x' } }));
+    agent.push(update('usage_update', { used: 5, size: 10, inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedReadTokens: 1 }));
+    agent.push(textUpdate('A'));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+    const result = await running;
+    assert.equal(result.kind, 'complete', JSON.stringify(result));
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'reasoning'), [{ kind: 'reasoning', messageId: 't', mode: 'delta', text: 'think' }]);
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'), [{ kind: 'usage', rows: [
+      { inputTokens: 3, outputTokens: 4, totalTokens: 7, cachedInputTokens: 1 }] }]);
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'text'), [{ kind: 'text', messageId: 'm', mode: 'delta', text: 'A' }]);
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'unsupported').map((row) => row.family),
+      ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents']);
+    assert.deepEqual(seen.rows.at(-1), { kind: 'terminal', outcome: 'success' });
+    assert.equal(seen.rows.filter((row) => row.kind === 'terminal').length, 1);
+  });
+});
+
+test('thought and usage updates during setup do not fail open', async () => {
+  const agent = createAgent();
+  const original = agent.channel.write;
+  agent.channel.write = (frame) => {
+    const text = Buffer.from(frame).toString('utf8');
+    const written = original(frame);
+    if (text.includes('"session/new"')) {
+      agent.push(update('agent_thought_chunk', { content: { type: 'text', text: 'early' } }));
+      agent.push(update('usage_update', { inputTokens: 1 }));
+    }
+    return written;
+  };
+  const ready = await openReady({ agent });
+  assert.equal(ready.opened.kind, 'ok', JSON.stringify(ready.opened));
+  await ready.opened.value.close();
+});
+
+test('an idle thought or usage update is ignored without observation', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'idle', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+    assert.equal((await running).kind, 'complete');
+    agent.push(update('agent_thought_chunk', { content: { type: 'text', text: 'late' } }));
+    agent.push(update('usage_update', { inputTokens: 1 }));
+    await setImmediate();
+    assert.equal(seen.rows.some((row) => row.kind === 'reasoning' || row.kind === 'usage'), false);
+    const next = adapter.run({ prompt: 'next', signal, hostOperationId: 'idle-2', recordIntent() {} });
+    const request = await untilRequest(agent, 'session/prompt', prompt.id);
+    agent.push({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } });
+    assert.equal((await next).kind, 'complete');
+  });
+});
+
+test('a permission request still fails the segment, is observed as an interrupt, and ends failed', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'permit', signal, hostOperationId: 'perm', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push({ jsonrpc: '2.0', id: 70, method: 'session/request_permission', params: {
+      sessionId: 'session-1', toolCall: { toolCallId: 'call-9', title: 'SECRET_TITLE' }, options: [{ optionId: 'allow', kind: 'allow_once' }] } });
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+    const result = await running;
+    assert.equal(result.kind, 'failed');
+    assert.deepEqual(agent.state.responses.find((message) => message.id === 70).result, { outcome: { outcome: 'cancelled' } });
+    assert.deepEqual(seen.rows.find((row) => row.kind === 'interrupt'), { kind: 'interrupt', id: 'call-9', reason: 'permission' });
+    assert.equal(JSON.stringify(seen.rows).includes('SECRET_TITLE'), false);
+    assert.deepEqual(seen.rows.at(-1), { kind: 'terminal', outcome: 'failed' });
+  });
+});
+
+test('a throwing listener changes no result and a non-function listener is invalid input', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'throws', recordIntent() {}, onObservation() { throw new Error('boom'); } });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(textUpdate('A'));
+    agent.push(update('agent_thought_chunk', { content: { type: 'text', text: 't' } }));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+    const result = await running;
+    assert.equal(result.kind, 'complete', JSON.stringify(result));
+    assert.equal(result.text, 'A');
+    const bad = await adapter.run({ prompt: 'go', signal, hostOperationId: 'bad', recordIntent() {}, onObservation: 'nope' });
+    assert.equal(bad.kind, 'failed');
+    assert.equal(bad.error.code, 'invalid-input');
+    assert.equal(bad.write.kind, 'not-attempted');
+  });
+});
+
 test('authentication failures use the fixed message', async () => {
   for (const stage of ['session/new', 'session/set_config_option']) {
     const agent = createAgent();

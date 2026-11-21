@@ -52,6 +52,12 @@ It borrows a tracer and explicit parent contexts. The host owns SDK setup, expor
 Content stays off by default. Model usage comes from individually observed requests.
 Native dispatch phases, RPC requests, and AG-UI chunks do not establish those boundaries.
 See [record observed agent work](docs/observability/usage.md) and [validate telemetry destinations](docs/observability/validation.md).
+The separate `@mattsp1290/switchboard/baseline` entry requires both optional peers.
+Every exported runtime accepts an optional `onObservation` listener (on the request, as the third `PiSession.prompt` argument, or per host segment).
+It receives `RunObservation` values taken at the native branch, including tool arguments, tool results, reasoning text, and token counts that the public callbacks omit.
+Feed one segment's observations into one `createRunBaseline` to get AG-UI events and GenAI spans. Families with no native evidence are reported `unsupported` and every family stays `unqualified`.
+AG-UI batches can contain those payloads, so the host owns their publication. Span content still follows the host's `contentPolicy`.
+`npm run test:live-baseline` runs one opt-in live turn per engine whose gate variable is set and checks the agent span in an operator-started lotel collector. With no gate it exits 0 without loading an SDK. CI does not run it.
 Installed package tests exercise the API and a real loopback HTTP provider without backend credentials.
 Separate lotel and Datadog verification commands require their documented backends.
 The optional `@mattsp1290/switchboard/testkit` entry exports reusable controlled qualification groups and a reference fake.

@@ -2,6 +2,8 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
+import { emitObservation, jsonString } from '#switchboard';
+import type { RunObservationListener, RunObservationUsage } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
 
@@ -20,6 +22,7 @@ export interface CursorRequest {
   readonly text: string;
   readonly agentId?: string;
   readonly onEvent: (event: CursorEvent) => void;
+  readonly onObservation?: RunObservationListener;
 }
 type CursorFacts = {
   readonly installation: { readonly state: 'unsupported' };
@@ -74,6 +77,7 @@ function limitAdmission<T>(promise: Promise<T>, onLate: (value: T) => void): { p
 const writers = new Set<string>();
 const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
 const refused = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EEXIST', 'EROFS', 'ELOOP']);
+const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
 const TEXT_LIMIT = 1024 * 1024;
 const SNAPSHOT_LIMIT = 4 * 1024 * 1024;
 const remedies = {
@@ -239,9 +243,9 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
   function start(request: CursorRequest): Promise<CursorTurn> {
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
-    const { text, agentId: requested, onEvent } = request;
+    const { text, agentId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
-      || typeof onEvent !== 'function' || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
+      || typeof onEvent !== 'function' || (onObservation !== undefined && typeof onObservation !== 'function') || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
     let trackedId = requested;
@@ -297,6 +301,8 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
+        emitObservation(onObservation, { kind: 'run-started' });
+        for (const family of unsupportedFamilies) emitObservation(onObservation, { kind: 'unsupported', family });
         const turn: CursorTurn = {
           agentId: agent.agentId,
           finished: done.promise,
@@ -304,13 +310,15 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         };
         admission.resolve(turn);
         if (closed) await cancelActive();
-        const outcome = await consume(run, onEvent, faults);
+        const outcome = await consume(run, onEvent, faults, onObservation);
         release();
+        emitObservation(onObservation, { kind: 'terminal', outcome: outcome === 'completed' ? 'success' : outcome === 'interrupted' ? 'cancelled' : 'failed' });
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch {
         release();
         if (admitted) {
+          emitObservation(onObservation, { kind: 'terminal', outcome: 'failed' });
           try { onEvent({ kind: 'ended', outcome: 'failed' }); } catch { /* discarded */ }
           done.resolve('failed');
         } else admission.reject(failure());
@@ -356,14 +364,15 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
 async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
+  onObservation: RunObservationListener | undefined,
 ): Promise<CursorOutcome> {
-  const state = { text: '', sent: '' };
+  const state: PublishState = { text: '', sent: '', calls: new Map() };
   let step: Step = 'next';
   let callback = false;
   let streamFailed = false;
   try {
     for await (const message of run.stream()) {
-      try { step = publish(message, state, onEvent); }
+      try { step = publish(message, state, onEvent, onObservation); }
       catch { callback = true; break; }
       if (step !== 'next') break;
     }
@@ -397,8 +406,67 @@ function turnOutcome(input: {
   return outcome;
 }
 
-/** Append each assistant text block. `@cursor/sdk@1.4.2` delivers one chunk per assistant message. */
-function publish(message: unknown, state: { text: string; sent: string }, onEvent: (event: CursorEvent) => void): Step {
+interface PublishState {
+  text: string;
+  sent: string;
+  /** Per callId: whether `started` and the arguments were already observed. Only filled when a listener is present. */
+  readonly calls: Map<string, { argumentsSent: boolean }>;
+}
+
+function finiteCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function observedUsage(value: unknown): RunObservationUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = finiteCount(value.inputTokens);
+  const outputTokens = finiteCount(value.outputTokens);
+  const totalTokens = finiteCount(value.totalTokens);
+  const row: { -readonly [K in keyof RunObservationUsage]: RunObservationUsage[K] } = {};
+  if (inputTokens !== undefined) row.inputTokens = inputTokens;
+  if (outputTokens !== undefined) row.outputTokens = outputTokens;
+  const cachedInputTokens = finiteCount(value.cacheReadTokens);
+  if (cachedInputTokens !== undefined) row.cachedInputTokens = cachedInputTokens;
+  const cacheWriteInputTokens = finiteCount(value.cacheWriteTokens);
+  if (cacheWriteInputTokens !== undefined) row.cacheWriteInputTokens = cacheWriteInputTokens;
+  const reasoningTokens = finiteCount(value.reasoningTokens);
+  if (reasoningTokens !== undefined) row.reasoningTokens = reasoningTokens;
+  if (totalTokens !== undefined && inputTokens !== undefined && outputTokens !== undefined && totalTokens === inputTokens + outputTokens) {
+    row.totalTokens = totalTokens;
+  }
+  return Object.keys(row).length === 0 ? undefined : row;
+}
+
+function observeTool(message: Record<string, unknown>, callId: string, name: string, status: CursorToolStatus,
+  state: PublishState, onObservation: RunObservationListener): void {
+  let call = state.calls.get(callId);
+  if (call === undefined) {
+    call = { argumentsSent: false };
+    state.calls.set(callId, call);
+    emitObservation(onObservation, { kind: 'tool', callId, name, phase: 'started' });
+  }
+  if (message.args !== undefined && !call.argumentsSent) {
+    const argumentsJson = jsonString(message.args);
+    if (argumentsJson !== undefined) {
+      call.argumentsSent = true;
+      emitObservation(onObservation, { kind: 'tool', callId, name, phase: 'arguments', argumentsJson });
+    }
+  }
+  if (status === 'running') return;
+  const resultJson = message.result !== undefined ? jsonString(message.result)
+    : typeof message.error === 'string' ? jsonString(message.error) : undefined;
+  emitObservation(onObservation, {
+    kind: 'tool', callId, name, phase: status === 'completed' ? 'completed' : 'failed',
+    ...(resultJson === undefined ? {} : { resultJson }),
+  });
+}
+
+/**
+ * Append each assistant text block. `@cursor/sdk@1.4.2` delivers one chunk per assistant message.
+ * The listener sees the same accumulated text as a snapshot. Thinking messages are chunks, so they are observed as deltas.
+ */
+function publish(message: unknown, state: PublishState, onEvent: (event: CursorEvent) => void,
+  onObservation: RunObservationListener | undefined): Step {
   if (!isRecord(message) || typeof message.type !== 'string') return 'next';
   if (message.type === 'assistant') {
     const content = isRecord(message.message) && Array.isArray(message.message.content) ? message.message.content : [];
@@ -409,8 +477,20 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
     }
     if (state.text !== state.sent) {
       state.sent = state.text;
+      emitObservation(onObservation, { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: state.text });
       onEvent({ kind: 'text', text: state.text });
     }
+    return 'next';
+  }
+  if (message.type === 'thinking') {
+    if (typeof message.text === 'string' && message.text.length > 0) {
+      emitObservation(onObservation, { kind: 'reasoning', messageId: 'reasoning', mode: 'delta', text: message.text });
+    }
+    return 'next';
+  }
+  if (message.type === 'usage') {
+    const row = observedUsage(message.usage);
+    if (row !== undefined) emitObservation(onObservation, { kind: 'usage', rows: [row] });
     return 'next';
   }
   if (message.type === 'tool_call') {
@@ -418,6 +498,7 @@ function publish(message: unknown, state: { text: string; sent: string }, onEven
     const name = message.name;
     const status = message.status;
     if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
+    if (onObservation) observeTool(message, callId, name, status, state, onObservation);
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';
   }

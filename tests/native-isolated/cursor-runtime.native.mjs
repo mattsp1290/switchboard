@@ -147,7 +147,8 @@ serial('Cursor runtime sandboxes, accumulates text, and hides tool payloads', as
   const follow = [];
   try {
     const runtime = createCursorRuntime(options(place.cwd, place.session));
-    const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
+    const observed = [];
+    const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event), onObservation: o => observed.push(o) });
     assert.equal(await turn.finished, 'completed');
     assert.equal(fake.created.length, 1);
     assert.deepEqual(Object.keys(fake.created[0]).sort(), ['apiKey', 'local', 'model']);
@@ -172,6 +173,26 @@ serial('Cursor runtime sandboxes, accumulates text, and hides tool payloads', as
     for (const event of tools) assert.deepEqual(Object.keys(event).sort(), ['callId', 'kind', 'name', 'status']);
     assert.equal(JSON.stringify(events).includes('do-not-leak'), false);
     assert.deepEqual(events.at(-1), { kind: 'ended', outcome: 'completed' });
+    assert.equal(observed[0].kind, 'run-started');
+    assert.deepEqual(observed.filter(o => o.kind === 'unsupported').map(o => o.family),
+      ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents']);
+    assert.deepEqual(observed.filter(o => o.kind === 'text'), [
+      { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: 'Hello' },
+      { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: 'Hello world' },
+    ]);
+    assert.deepEqual(observed.filter(o => o.kind === 'reasoning'),
+      [{ kind: 'reasoning', messageId: 'reasoning', mode: 'delta', text: 'do-not-leak' }]);
+    const observedTools = observed.filter(o => o.kind === 'tool');
+    assert.deepEqual(observedTools, [
+      { kind: 'tool', callId: 'call-1', name: 'edit', phase: 'started' },
+      { kind: 'tool', callId: 'call-1', name: 'edit', phase: 'arguments', argumentsJson: '{"secret":"do-not-leak"}' },
+      { kind: 'tool', callId: 'call-1', name: 'edit', phase: 'completed', resultJson: '{"secret":"do-not-leak"}' },
+      { kind: 'tool', callId: 'call-2', name: 'edit', phase: 'started' },
+      { kind: 'tool', callId: 'call-3', name: 'edit', phase: 'started' },
+      { kind: 'tool', callId: 'call-3', name: 'edit', phase: 'failed', resultJson: '"do-not-leak"' },
+    ]);
+    assert.deepEqual(observed.at(-1), { kind: 'terminal', outcome: 'success' });
+    assert.equal(observed.filter(o => o.kind === 'terminal').length, 1);
     const resumed = await runtime.start({ text: 'Again', agentId: turn.agentId, onEvent: event => follow.push(event) });
     assert.equal(resumed.agentId, 'agent-1');
     assert.equal(await resumed.finished, 'completed');

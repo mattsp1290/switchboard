@@ -96,6 +96,15 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.js'), 'utf8'), /from ['"]\.\/runtime\.js['"]/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/adapters/opencode/index.d.ts'), 'utf8'), /@agentclientprotocol/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/adapters/opencode/index.js'), 'utf8'), /@agentclientprotocol/);
+  for (const directory of ['claude', 'codex', 'cursor', 'pi', 'host/pi', 'adapters/codex', 'adapters/opencode']) {
+    const files = readdirSync(join(installed, 'dist', directory), { recursive: true })
+      .filter(file => typeof file === 'string' && /\.(?:js|d\.ts)$/.test(file));
+    assert(files.length > 0, `dist/${directory} ships files.`);
+    for (const file of files) {
+      assert.doesNotMatch(readFileSync(join(installed, 'dist', directory, file), 'utf8'), /@ag-ui|@opentelemetry/,
+        `dist/${directory}/${file} does not name the AG-UI or OpenTelemetry peers.`);
+    }
+  }
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
