@@ -2,7 +2,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
-import { emitObservation, jsonString } from '#switchboard';
+import { emitObservation, jsonString, normalizeUsage } from '#switchboard';
 import type { RunObservationListener, RunObservationUsage } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
@@ -434,7 +434,7 @@ function observedUsage(value: unknown): RunObservationUsage | undefined {
   if (totalTokens !== undefined && inputTokens !== undefined && outputTokens !== undefined && totalTokens === inputTokens + outputTokens) {
     row.totalTokens = totalTokens;
   }
-  return Object.keys(row).length === 0 ? undefined : row;
+  return Object.keys(row).length === 0 ? undefined : normalizeUsage(row);
 }
 
 function observeTool(message: Record<string, unknown>, callId: string, name: string, status: CursorToolStatus,

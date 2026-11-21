@@ -27,7 +27,7 @@ export type TerminalFact = { readonly timestamp?: number; readonly usage?: reado
 const counts = [
   'inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens', 'cachedInputTokens', 'cacheWriteInputTokens',
 ] as const satisfies readonly (keyof TokenUsage)[];
-export function usage(value: unknown): TokenUsage[] {
+export function validateUsageRows(value: unknown): TokenUsage[] {
   if (!Array.isArray(value)) reject();
   const identified = new Set<string>();
   return value.map((item: unknown) => {
@@ -80,7 +80,7 @@ export function encodeTerminals(value: Json, options: ProjectionOptions): Encodi
   if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp))) reject();
   const common = {
     ...(timestamp === undefined ? {} : { timestamp }),
-    ...(fact.usage === undefined ? {} : { usage: usage(fact.usage) }),
+    ...(fact.usage === undefined ? {} : { usage: validateUsageRows(fact.usage) }),
   };
   if (fact.kind === 'run-failed') {
     record(value, ['kind', 'timestamp', 'usage', 'failure']);

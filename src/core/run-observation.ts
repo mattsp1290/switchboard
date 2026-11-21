@@ -1,10 +1,8 @@
-/** The JSON value set the AG-UI projector accepts. Defined here so the core entry stays free of `src/agui`. */
-export type Json = null | boolean | number | string | readonly Json[]
-  | { readonly [key: string]: Json };
-
-/** One `ProjectionFamily` name, repeated here so adapters do not import `src/agui`. */
-export type RunObservationFamily =
-  | 'state' | 'activity' | 'raw' | 'custom' | 'messages' | 'interrupts' | 'usage' | 'reasoning' | 'subagents';
+/** Every `ProjectionFamily` name, repeated here so adapters do not import `src/agui`. The baseline checks both lists match. */
+export const runObservationFamilies = Object.freeze([
+  'state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'usage', 'reasoning', 'subagents',
+] as const);
+export type RunObservationFamily = typeof runObservationFamilies[number];
 
 /** Native counts already renamed to the AG-UI `TokenUsage` names. A count the native value did not carry is absent. */
 export interface RunObservationUsage {
@@ -19,8 +17,10 @@ export interface RunObservationUsage {
 }
 
 /**
- * `arguments-ended`: arguments are complete and execution was not observed.
+ * `arguments-ended`: arguments are complete. Without `resultJson`, execution was not observed. With `resultJson`, the
+ * native side reported a result, which records a successful tool span.
  * `completed` and `failed`: execution was observed.
+ * `arguments`: `argumentsJson` is the next delta of the argument JSON text.
  */
 export type RunObservationToolPhase = 'started' | 'arguments' | 'arguments-ended' | 'completed' | 'failed';
 
@@ -54,6 +54,26 @@ export type RunObservation =
       readonly responseModel?: string;
       readonly usage?: RunObservationUsage;
     };
+
+/**
+ * Makes a native usage row acceptable to the AG-UI usage rules without inventing counts. When the cache counts exceed
+ * `inputTokens`, the native input excluded cache, so cache is added to it. Reasoning above `outputTokens` is dropped.
+ * `totalTokens` is kept only when it equals the final input plus output.
+ */
+export function normalizeUsage(row: RunObservationUsage): RunObservationUsage {
+  const { totalTokens, reasoningTokens, inputTokens, ...rest } = row;
+  const cache = (row.cachedInputTokens ?? 0) + (row.cacheWriteInputTokens ?? 0);
+  const input = inputTokens !== undefined && cache > inputTokens ? inputTokens + cache : inputTokens;
+  const keepReasoning = reasoningTokens !== undefined && (row.outputTokens === undefined || reasoningTokens <= row.outputTokens);
+  const keepTotal = totalTokens !== undefined && input !== undefined && row.outputTokens !== undefined
+    && totalTokens === input + row.outputTokens;
+  return {
+    ...rest,
+    ...(input === undefined ? {} : { inputTokens: input }),
+    ...(keepReasoning ? { reasoningTokens } : {}),
+    ...(keepTotal ? { totalTokens } : {}),
+  };
+}
 
 export type RunObservationListener = (observation: RunObservation) => void;
 

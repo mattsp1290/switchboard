@@ -193,18 +193,22 @@ async function runEngine(engine, model, lotelBinary) {
     batches.push(baseline.accept(observation).projection);
   };
   const scratch = await mkdtemp(join(tmpdir(), 'live-baseline-'));
+  let report;
+  let flushed = true;
   try {
     await turn(engine, model, scratch, onObservation);
   } finally {
+    // A throwing turn still closes the baseline (ending its agent span) and stops the batch processor.
+    report = baseline.close();
+    try {
+      await provider.forceFlush();
+      await provider.shutdown();
+    } catch {
+      flushed = false;
+    }
     await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
-  const report = baseline.close();
-  try {
-    await provider.forceFlush();
-    await provider.shutdown();
-  } catch {
-    throw new LiveFailure('flush-failed');
-  }
+  if (!flushed) throw new LiveFailure('flush-failed');
   const aguiCheck = checkAguiRun({ batches, observations, report });
   const outcome = observations.findLast((item) => item.kind === 'terminal')?.outcome ?? null;
   const detail = { outcome };

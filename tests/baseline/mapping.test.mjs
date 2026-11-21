@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { jsonString } = await import(new URL('core/run-observation.ts', src).href);
+const { jsonString, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -261,4 +261,65 @@ test('jsonString returns strings for JSON values and undefined otherwise without
   for (const value of [undefined, () => {}, Symbol('x'), 1n, cycle, { nested: 1n }]) assert.equal(jsonString(value), undefined);
   assert.equal(jsonString({ a: [1, 'b', null] }), '{"a":[1,"b",null]}');
   assert.equal(jsonString('x'), '"x"');
+});
+
+test('repeated execution observations for one call record one tool span and one result', t => {
+  const { feed, diagnostics, events, spans } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'add', phase: 'completed', resultJson: '1' },
+    { kind: 'tool', callId: 'c', name: 'add', phase: 'completed', resultJson: '1' },
+    { kind: 'tool', callId: 'c', name: 'add', phase: 'failed' }, success);
+  assert.equal(spans().filter(span => span.name === 'execute_tool add').length, 1);
+  assert.equal(events.filter(event => event.type === 'TOOL_CALL_RESULT').length, 1);
+  assert.deepEqual(diagnostics, [{ code: 'tool-result-repeated' }]);
+});
+
+test('a duplicate run-started is reported by close', t => {
+  const { baseline, feed } = setup(t);
+  feed(started);
+  baseline.accept(started);
+  assert.deepEqual(baseline.close().error, { code: 'invalid-order' });
+});
+
+test('a runId that differs from the projection runId is refused', () => {
+  const provider = new BasicTracerProvider();
+  const created = createRunBaseline({
+    projection: { threadId: 'thread-1', runId: 'run-1', sourceKey: 'fixture', bounds },
+    tracer: provider.getTracer('baseline-test'), parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' },
+    allowedToolNames: [], provider: 'fixture', runId: 'run-2',
+  });
+  assert.deepEqual(created, { kind: 'error', error: { code: 'invalid-input' } });
+});
+
+test('spans are not recorded before run-started', t => {
+  const { baseline, spans } = setup(t);
+  for (const observation of [{ kind: 'model-boundary', requestModel: 'm', responseModel: 'm' },
+    { kind: 'tool', callId: 'c', name: 'add', phase: 'completed', resultJson: '1' }]) {
+    assert.deepEqual(baseline.accept(observation).diagnostics, [{ code: 'not-running' }]);
+  }
+  assert.equal(spans().length, 0);
+});
+
+test('normalized native usage with cache above input and reasoning above output reaches RUN_FINISHED', t => {
+  const row = normalizeUsage({ inputTokens: 2, outputTokens: 3, cachedInputTokens: 10, cacheWriteInputTokens: 1, reasoningTokens: 9, totalTokens: 5 });
+  assert.deepEqual(row, { outputTokens: 3, cachedInputTokens: 10, cacheWriteInputTokens: 1, inputTokens: 13 });
+  const { feed, diagnostics, events } = setup(t);
+  feed(started, { kind: 'usage', rows: [row] }, success);
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(events.at(-1).usage, [row]);
+  assert.deepEqual(normalizeUsage({ inputTokens: 20, outputTokens: 3, cachedInputTokens: 5, totalTokens: 23 }),
+    { outputTokens: 3, cachedInputTokens: 5, inputTokens: 20, totalTokens: 23 });
+});
+
+test('usage is not reported supported when outcome-unknown attaches no terminal', t => {
+  const { baseline, feed } = setup(t);
+  feed(started, { kind: 'usage', rows: [{ inputTokens: 1, outputTokens: 1 }] }, { kind: 'terminal', outcome: 'outcome-unknown' });
+  assert.equal(baseline.close().families.find(row => row.family === 'usage').availability, 'unsupported');
+});
+
+test('a pending id the baseline never saw is dropped with a diagnostic', t => {
+  const { feed, diagnostics, events } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'add', phase: 'arguments-ended', argumentsJson: '{}' },
+    { kind: 'terminal', outcome: 'success', pendingTools: ['c', 'never-seen'] });
+  assert.deepEqual(diagnostics, [{ code: 'pending-tool-unknown' }]);
+  assert.equal(events.at(-1).outcome.pendingToolCallIds.length, 1);
 });

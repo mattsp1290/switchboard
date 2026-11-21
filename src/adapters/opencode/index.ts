@@ -7,7 +7,7 @@ import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
-import { emitObservation, jsonString } from '../../core/run-observation.js';
+import { emitObservation, jsonString, normalizeUsage } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
 import { sessionLimits } from '../../core/sessions.js';
@@ -210,7 +210,7 @@ function usageRow(update: Record<string, unknown>): RunObservationUsage | undefi
     ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
     ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
   };
-  return Object.keys(row).length > 0 ? row : undefined;
+  return Object.keys(row).length > 0 ? normalizeUsage(row) : undefined;
 }
 const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
 function toolObservation(update: Record<string, unknown>, seen: Map<string, { arguments: boolean }>): readonly RunObservation[] {
@@ -267,6 +267,8 @@ interface Turn {
   text: string;
   readonly onObservation: RunObservationListener | undefined;
   readonly tools: Map<string, { arguments: boolean }>;
+  /** A `usage_update` produced a usage row, so the prompt response usage is not a second row. */
+  usageObserved: boolean;
   failure?: SegmentError;
   stopReason?: string;
   usage: unknown;
@@ -553,7 +555,10 @@ async function openSession(ready: {
       }
     } else if (update.sessionUpdate === 'usage_update') {
       const row = usageRow(update);
-      if (row) emitObservation(active.onObservation, { kind: 'usage', rows: [row] });
+      if (row) {
+        active.usageObserved = true;
+        emitObservation(active.onObservation, { kind: 'usage', rows: [row] });
+      }
     }
   }
   function handleUpdate(params: unknown): void | 'yield' {
@@ -830,8 +835,7 @@ async function openSession(ready: {
       if (closePromise || phase === 'closed') return failed({ code: 'closed', message: 'the adapter is closed' }, notAttempted);
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);
-      let onObservation: RunObservationListener | undefined;
-      try { onObservation = input.onObservation; } catch { onObservation = undefined; }
+      const onObservation: RunObservationListener | undefined = input.onObservation;
       if (onObservation !== undefined && typeof onObservation !== 'function') {
         return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, notAttempted);
       }
@@ -842,15 +846,20 @@ async function openSession(ready: {
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
-        onObservation, tools: new Map(),
+        onObservation, tools: new Map(), usageObserved: false,
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
       turn = active;
       const result = await segment(active, input, prompt);
-      if (active.promptWritten) {
+      if (active.promptWritten && onObservation) {
+        const promptUsage = active.usageObserved || !record(active.usage) ? undefined : usageRow(active.usage);
+        if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
         emitObservation(onObservation, {
-          kind: 'terminal', outcome: result.kind === 'complete' ? 'success' : active.stopReason === 'cancelled' ? 'cancelled' : 'failed',
+          kind: 'terminal',
+          outcome: result.kind === 'complete' ? 'success'
+            : result.kind === 'failed' && result.write.kind === 'outcome-unknown' ? 'outcome-unknown'
+              : active.stopReason === 'cancelled' ? 'cancelled' : 'failed',
         });
       }
       return result;

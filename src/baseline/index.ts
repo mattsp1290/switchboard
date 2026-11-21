@@ -1,12 +1,13 @@
 import type { Context, Tracer } from '@opentelemetry/api';
 import type { Outcome } from '../core/contracts.js';
-import type { RunObservation, RunObservationUsage } from '../core/run-observation.js';
+import { runObservationFamilies } from '../core/run-observation.js';
+import type { RunObservation, RunObservationFamily, RunObservationUsage } from '../core/run-observation.js';
 import { createAguiProjection, describeProjection } from '../agui/index.js';
 import type {
   AguiProjection, NativeRef, NativeTokenUsage, ProjectionBounds, ProjectionDescription, ProjectionError, ProjectionEvent,
   ProjectionFact, ProjectionFamily, ProjectionResult,
 } from '../agui/index.js';
-import { usage as validateUsage } from '../agui/terminals.js';
+import { validateUsageRows } from '../agui/terminals.js';
 import { createGenAiObserver } from '../observability/index.js';
 import type { AgentHandle, ContentPolicy, ModelHandle, ObservationErrorCode, TerminalOutcome } from '../observability/index.js';
 import { identifier } from '../observability/validation.js';
@@ -37,7 +38,9 @@ export type RunBaselineDiagnosticCode =
   | 'usage-row-dropped'
   | 'after-terminal'
   | 'tool-result-repeated'
-  | 'tool-span-unrecorded';
+  | 'tool-span-unrecorded'
+  | 'not-running'
+  | 'pending-tool-unknown';
 
 export interface RunBaselineDiagnostic {
   readonly code: RunBaselineDiagnosticCode;
@@ -72,9 +75,11 @@ export interface RunBaseline {
   close(): RunBaselineReport;
 }
 
-const projectionFamilies: readonly ProjectionFamily[] = Object.freeze([
-  'state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'usage', 'reasoning', 'subagents',
-]);
+const projectionFamilies: readonly ProjectionFamily[] = runObservationFamilies;
+// The core family list must stay identical to the AG-UI `ProjectionFamily` in both directions.
+type Same<A, B> = [A] extends [B] ? [B] extends [A] ? true : false : false;
+const familiesMatch: Same<RunObservationFamily, ProjectionFamily> = true;
+void familiesMatch;
 
 const textScope = Object.freeze(['text']);
 const reasoningScope = Object.freeze(['reasoning']);
@@ -92,6 +97,8 @@ interface ToolState {
   argumentsOpen: boolean;
   argumentsSent: boolean;
   result: boolean;
+  /** At most one `execute_tool` span per call, however many execution observations arrive. */
+  spanRecorded: boolean;
 }
 type OpenEntry = { readonly kind: 'text' | 'reasoning' | 'tool'; readonly id: string };
 
@@ -114,8 +121,12 @@ function usageRow(row: RunObservationUsage): NativeTokenUsage {
 /**
  * Maps `RunObservation` values from one segment into AG-UI events and GenAI spans. The host calls `accept`; adapters
  * never do. One baseline is one segment: a continuation uses a new baseline.
+ *
+ * Model and tool spans are recorded when their observation arrives and end immediately: they mark an observed
+ * boundary and its outcome, not its latency. `options.runId` must equal `options.projection.runId`.
  */
 export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBaseline, ProjectionError> {
+  if (options.runId !== options.projection?.runId) return Object.freeze({ kind: 'error', error: Object.freeze({ code: 'invalid-input' }) });
   const observer = createGenAiObserver({
     tracer: options.tracer, contentPolicy: options.contentPolicy, allowedToolNames: options.allowedToolNames,
     ...(options.admitObservedToolNames === undefined ? {} : { admitObservedToolNames: options.admitObservedToolNames }),
@@ -137,7 +148,6 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
   const toolOrder: string[] = [];
   const opened: OpenEntry[] = [];
   const filled = new Set<ProjectionFamily>();
-  const declaredUnsupported = new Set<ProjectionFamily>();
   const usageRows = new Map<string, NativeTokenUsage>();
   const openModels: ModelHandle[] = [];
   let sawText = false;
@@ -192,7 +202,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       const sent = kind === 'text'
         ? project({ kind: 'text-content', message: target, delta: suffix })
         : project({ kind: 'reasoning-message-content', message: target, delta: suffix });
-      if (sent) state.text += suffix;
+      if (!sent) return;
+      state.text += suffix;
       if (kind === 'reasoning') filled.add('reasoning');
       else sawText = true;
     };
@@ -202,7 +213,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       let state = tools.get(callId);
       if (!state) {
         if (!project({ kind: 'tool-started', tool: ref(toolScope, callId), name })) return;
-        state = { name, argumentsOpen: true, argumentsSent: false, result: false };
+        state = { name, argumentsOpen: true, argumentsSent: false, result: false, spanRecorded: false };
         tools.set(callId, state);
         toolOrder.push(callId);
         opened.push({ kind: 'tool', id: callId });
@@ -227,7 +238,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       if (project({ kind: 'tool-result', tool: ref(toolScope, callId), resultMessage: ref(resultScope, `${callId}:result`),
         content: resultJson })) state.result = true;
     };
-    const toolSpan = (callId: string, name: string, outcome: TerminalOutcome) => {
+    const toolSpan = (callId: string, state: ToolState, outcome: TerminalOutcome) => {
+      if (state.spanRecorded) return;
+      state.spanRecorded = true;
+      const { name } = state;
       if (!identifier(name, maxIdentifierLength)) {
         note('tool-span-unrecorded');
         return;
@@ -260,7 +274,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       }
       opened.length = 0;
       const rows = [...usageRows.values()];
-      if (rows.length > 0) filled.add('usage');
+      // Usage is filled only when a terminal fact will carry the rows; `outcome-unknown` emits no terminal fact.
+      if (rows.length > 0 && outcome.outcome !== 'outcome-unknown') filled.add('usage');
       for (const family of projectionFamilies) {
         if (!filled.has(family)) project({ kind: 'not-observable', family });
       }
@@ -269,10 +284,9 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       switch (outcome.outcome) {
         case 'success': {
           const pending = outcome.pendingTools;
-          const ordered = pending === undefined ? undefined : [
-            ...toolOrder.filter(id => pending.includes(id)),
-            ...pending.filter(id => !tools.has(id)),
-          ].map(id => ref(toolScope, id));
+          if (pending?.some(id => !tools.has(id))) note('pending-tool-unknown');
+          const ordered = pending === undefined ? undefined
+            : toolOrder.filter(id => pending.includes(id)).map(id => ref(toolScope, id));
           project({ kind: 'run-finished', outcome: 'success', ...attached, ...(ordered === undefined ? {} : { pendingTools: ordered }) });
           agentOutcome = { kind: 'success' };
           break;
@@ -301,6 +315,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           if (phase !== 'idle') {
             note('duplicate-run-started');
             error = Object.freeze({ code: 'invalid-order' });
+            firstError ??= error;
             break;
           }
           if (!project({ kind: 'run-started' })) break;
@@ -316,6 +331,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           message(observation.kind, observation.messageId, observation.mode, observation.text);
           break;
         case 'tool': {
+          if (phase !== 'running') {
+            note('not-running');
+            break;
+          }
           sawTool = true;
           const { callId, name, phase: toolPhase, argumentsJson, resultJson } = observation;
           const state = ensureTool(callId, name, toolPhase === 'started' ? undefined : argumentsJson, toolPhase === 'arguments');
@@ -324,9 +343,9 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           if (!endArguments(callId, state)) break;
           if (resultJson !== undefined) toolResult(callId, state, resultJson);
           if (toolPhase === 'completed' || (toolPhase === 'arguments-ended' && resultJson !== undefined)) {
-            toolSpan(callId, state.name, { kind: 'success' });
+            toolSpan(callId, state, { kind: 'success' });
           } else if (toolPhase === 'failed') {
-            toolSpan(callId, state.name, { kind: 'error', category: 'tool-error' });
+            toolSpan(callId, state, { kind: 'error', category: 'tool-error' });
           }
           break;
         }
@@ -338,7 +357,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
             const next = new Map(accepted);
             next.set(key, candidate);
             try {
-              validateUsage([...next.values()]);
+              validateUsageRows([...next.values()]);
               accepted.set(key, candidate);
             } catch {
               note('usage-row-dropped');
@@ -349,6 +368,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           break;
         }
         case 'model-boundary': {
+          if (phase !== 'running') {
+            note('not-running');
+            break;
+          }
           const started = observer.start({ kind: 'model', provider, operation: 'chat',
             ...(observation.requestModel === undefined ? {} : { requestModel: observation.requestModel }) }, parent(), correlation);
           if (started.kind === 'error') {
@@ -377,7 +400,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
         case 'interrupt':
           break;
         case 'unsupported':
-          declaredUnsupported.add(observation.family);
+          // Every unfilled family is reported as a gap at the terminal, declared or not.
           break;
         case 'terminal':
           terminal(observation);

@@ -26,17 +26,20 @@ export function expectedAgentOutcome(observations) {
   return terminal === undefined ? undefined : AGENT_OUTCOME[terminal.outcome];
 }
 
-/** Tool spans: completed or failed, plus arguments-ended carrying a result. Model spans: model-boundary. */
+/**
+ * Tool spans: at most one per call id that reached completed or failed, or arguments-ended carrying a result.
+ * Model spans: one per model-boundary.
+ */
 export function expectedSpanCounts(observations) {
-  let tool = 0;
+  const tools = new Set();
   let model = 0;
   for (const observation of observations) {
     if (observation?.kind === 'model-boundary') model += 1;
     if (observation?.kind !== 'tool') continue;
-    if (observation.phase === 'completed' || observation.phase === 'failed') tool += 1;
-    else if (observation.phase === 'arguments-ended' && observation.resultJson !== undefined) tool += 1;
+    if (observation.phase === 'completed' || observation.phase === 'failed'
+      || (observation.phase === 'arguments-ended' && observation.resultJson !== undefined)) tools.add(observation.callId);
   }
-  return { agent: 1, tool, model };
+  return { agent: 1, tool: tools.size, model };
 }
 
 function observedFamilies(observations) {

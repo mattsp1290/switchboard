@@ -1646,3 +1646,41 @@ test('an agent request is finished before the next line', async () => {
   assert.deepEqual(seen, ['request', 'note']);
   protocol.stop();
 });
+
+test('prompt bytes followed by channel EOF report an outcome-unknown terminal observation', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'vanish', signal, hostOperationId: 'vanish-observed', recordIntent() {}, onObservation: seen.listener });
+    await untilRequest(agent, 'session/prompt');
+    agent.endOutput();
+    const result = await running;
+    assert.equal(result.write.kind, 'outcome-unknown');
+    assert.equal(seen.rows[0].kind, 'run-started');
+    assert.deepEqual(seen.rows.at(-1), { kind: 'terminal', outcome: 'outcome-unknown' });
+  });
+});
+
+test('usage rows are normalized and the prompt response usage is observed when no usage_update arrived', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'usage-norm', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(update('usage_update', { inputTokens: 2, outputTokens: 3, cachedReadTokens: 10, thoughtTokens: 9 }));
+    agent.push(textUpdate('A'));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: { inputTokens: 100, outputTokens: 1 } } });
+    assert.equal((await running).kind, 'complete');
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'),
+      [{ kind: 'usage', rows: [{ outputTokens: 3, cachedInputTokens: 10, inputTokens: 12 }] }]);
+  });
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'usage-prompt', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(textUpdate('A'));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } } });
+    assert.equal((await running).kind, 'complete');
+    assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'),
+      [{ kind: 'usage', rows: [{ outputTokens: 2, inputTokens: 5, totalTokens: 7 }] }]);
+    assert.deepEqual(seen.rows.slice(-2).map((row) => row.kind), ['usage', 'terminal']);
+  });
+});

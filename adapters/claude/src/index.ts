@@ -294,6 +294,7 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
               } else if (event.type === 'message_delta') {
                 for (const [key, value] of Object.entries(event.usage)) if (tokenCount(value) !== undefined) messageUsage[key] = value;
               } else if (event.type === 'message_stop') {
+                // The model boundary is emitted only here: a request interrupted before message_stop records no model span.
                 const usage = usageRow(messageUsage);
                 observe({ kind: 'model-boundary', ...(messageModel === undefined ? {} : { requestModel: messageModel, responseModel: messageModel }),
                   ...(usage ? { usage } : {}) });

@@ -58,7 +58,6 @@ const MAX_SESSIONS = 32;
 const failure = () => new Error('Pi operation failed.');
 const UNSUPPORTED = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
 const TERMINAL = { completed: 'success', failed: 'failed', interrupted: 'cancelled' } as const;
-const MESSAGE_ID = 'assistant';
 // Matches plain(value, 256) and must stay identical in the three text adapters.
 function callerModelId(value: unknown): boolean {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
@@ -152,6 +151,9 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       let callbackFailed = false;
       let latestText = '';
       let latestThinking = '';
+      // Observation snapshots are per native assistant message, so a second message in one prompt starts a new id.
+      let messageIndex = 0;
+      let observedText = '';
       let thinkingSeen = false;
       let usage: RunObservationUsage | undefined;
       const emit = (event: PiEvent) => {
@@ -189,19 +191,26 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
           if (text !== latestText) {
             latestText = text;
             emit({ kind: 'text', text });
-            if (admissionState.current === 'admitted') emitObservation(onObservation, { kind: 'text', messageId: MESSAGE_ID, mode: 'snapshot', text });
           }
           if (onObservation && admissionState.current === 'admitted') {
+            const messageId = `assistant:${messageIndex}`;
+            if (text !== '' && text !== observedText) {
+              observedText = text;
+              emitObservation(onObservation, { kind: 'text', messageId, mode: 'snapshot', text });
+            }
             const thinking = event.message.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('');
             if (thinking !== '' && thinking !== latestThinking) {
               thinkingSeen = true;
               latestThinking = thinking;
-              emitObservation(onObservation, { kind: 'reasoning', messageId: MESSAGE_ID, mode: 'snapshot', text: thinking });
+              emitObservation(onObservation, { kind: 'reasoning', messageId, mode: 'snapshot', text: thinking });
             }
             if (event.type === 'message_end') {
               const { input, output } = event.message.usage ?? {};
               const valid = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
               if (valid(input) && valid(output)) usage = { inputTokens: input, outputTokens: output };
+              messageIndex++;
+              observedText = '';
+              latestThinking = '';
             }
           }
         }

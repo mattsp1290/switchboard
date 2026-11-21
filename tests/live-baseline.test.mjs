@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { checkAguiRun, checkLotelSpans } from '../scripts/live-baseline-check.mjs';
+import { checkAguiRun, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = join(root, 'scripts/live-baseline.mjs');
@@ -139,4 +139,10 @@ test('lotel assertions reject each mismatch', () => {
   assert.equal(run([agent()], [started, boundary, success]), 'model-span-count');
   assert.equal(run([agent(), span('chat')], [started, success]), 'model-span-count');
   assert.equal(checkLotelSpans({ spans: {}, runId: 'run-1', observations: [] }).code, 'traces-malformed');
+});
+
+test('expected tool spans count each call once however many execution observations it has', () => {
+  const tool = (phase, extra = {}) => ({ kind: 'tool', callId: 'c', name: 'add', phase, ...extra });
+  assert.deepEqual(expectedSpanCounts([tool('arguments-ended', { resultJson: '1' }), tool('completed', { resultJson: '1' }), tool('failed'),
+    { kind: 'tool', callId: 'd', name: 'add', phase: 'arguments-ended' }, { kind: 'model-boundary' }]), { agent: 1, tool: 1, model: 1 });
 });

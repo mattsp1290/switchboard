@@ -87,8 +87,11 @@ function usageRow(usage: unknown): RunObservationUsage | undefined {
   if (reasoning !== undefined) row.reasoningTokens = reasoning;
   return Object.keys(row).length === 0 ? undefined : row;
 }
-/** A declared tool-like item as an observation, or undefined for items that stay off. `item.updated` adds nothing a tool needs. */
-function toolObservation(type: 'item.started' | 'item.updated' | 'item.completed', item: ThreadItem): RunObservation | undefined {
+/**
+ * A declared tool-like item as observations, or none for items that stay off. `item.updated` adds nothing a tool needs.
+ * `item.started` emits `started` then `arguments`, so the arguments reach AG-UI even if the item never completes.
+ */
+function toolObservations(type: 'item.started' | 'item.updated' | 'item.completed', item: ThreadItem): readonly RunObservation[] {
   let name: string;
   let args: unknown;
   switch (item.type) {
@@ -96,13 +99,18 @@ function toolObservation(type: 'item.started' | 'item.updated' | 'item.completed
     case 'command_execution': name = item.type; args = { command: item.command }; break;
     case 'file_change': name = item.type; args = { changes: item.changes }; break;
     case 'web_search': name = item.type; args = { query: item.query }; break;
-    default: return undefined;
+    default: return [];
   }
-  if (typeof item.id !== 'string' || !item.id || item.id.length > 512 || !name || type === 'item.updated') return undefined;
-  const status = 'status' in item ? item.status : undefined;
-  const phase = type === 'item.started' ? 'started' : status === 'failed' ? 'failed' : 'completed';
+  if (typeof item.id !== 'string' || !item.id || item.id.length > 512 || !name || type === 'item.updated') return [];
+  const callId = item.id;
   const argumentsJson = jsonString(args);
-  return { kind: 'tool', callId: item.id, name, phase, ...(argumentsJson === undefined ? {} : { argumentsJson }) };
+  if (type === 'item.started') {
+    return [{ kind: 'tool', callId, name, phase: 'started' },
+      ...(argumentsJson === undefined ? [] : [{ kind: 'tool', callId, name, phase: 'arguments', argumentsJson } as const])];
+  }
+  const status = 'status' in item ? item.status : undefined;
+  return [{ kind: 'tool', callId, name, phase: status === 'failed' ? 'failed' : 'completed',
+    ...(argumentsJson === undefined ? {} : { argumentsJson }) }];
 }
 // Matches plain(value, 256) and must stay identical in the three text adapters.
 function callerModelId(value: unknown): boolean {
@@ -360,8 +368,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                         emitObservation(onObservation, { kind: 'reasoning', messageId: item.id, mode: 'snapshot', text: item.text });
                       }
                     } else {
-                      const tool = toolObservation(event.type, item);
-                      if (tool) emitObservation(onObservation, tool);
+                      for (const tool of toolObservations(event.type, item)) emitObservation(onObservation, tool);
                     }
                   }
                   break;
@@ -393,7 +400,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
       }
       const end: CodexTerminal = { kind: 'ended', outcome };
       if (admitted) {
-        if (usage && outcome === 'completed') emitObservation(onObservation, { kind: 'usage', rows: [usage] });
+        if (usage) emitObservation(onObservation, { kind: 'usage', rows: [usage] });
         emitObservation(onObservation, { kind: 'terminal', outcome: TERMINAL[outcome] });
         try { onEvent(end); } catch { /* A consumer exception cannot change the native outcome. */ }
       } else admission.reject(failure());
