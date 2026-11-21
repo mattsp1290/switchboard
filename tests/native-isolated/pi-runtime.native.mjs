@@ -109,7 +109,11 @@ test('the observation listener sees admission, text snapshots, unsupported famil
     assert(texts.every((o, index) => index === 0 || o.text.startsWith(texts[index - 1].text)));
     const usage = observed.filter(o => o.kind === 'usage');
     assert(usage.length <= 1);
-    for (const row of usage.flatMap(o => o.rows)) assert.deepEqual(Object.keys(row).sort(), ['inputTokens', 'outputTokens']);
+    for (const row of usage.flatMap(o => o.rows)) {
+      assert(Object.keys(row).every(k => ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteInputTokens'].includes(k)));
+      assert(row.inputTokens !== undefined && row.outputTokens !== undefined);
+      assert((row.inputTokens) >= (row.cachedInputTokens ?? 0) + (row.cacheWriteInputTokens ?? 0));
+    }
     assert.deepEqual(observed.at(-1), { kind: 'terminal', outcome: 'success' });
     assert.equal(observed.filter(o => o.kind === 'terminal').length, 1);
     assert(!observed.some(o => o.kind === 'tool' || o.kind === 'reasoning' || o.kind === 'model-boundary'));

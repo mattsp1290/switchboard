@@ -30,6 +30,14 @@ export function createStreamObserver(observe: (observation: RunObservation) => v
     },
     /** Every stream event other than message_start and text blocks. */
     event(streamId: string, event: StreamEvent): void {
+      // Observation only: a mapping failure must never fail the turn, like a listener failure.
+      try { mapEvent(streamId, event); } catch { /* swallowed */ }
+    },
+    resultUsage(raw: unknown): RunObservationUsage | undefined {
+      return usageRow({ ...(raw as object) });
+    },
+  };
+  function mapEvent(streamId: string, event: StreamEvent): void {
       if (event.type === 'content_block_start' && event.content_block.type === 'thinking') {
         kinds.set(event.index, { kind: 'thinking', id: `${streamId}:${event.index}`, name: '' });
         if (event.content_block.thinking) observe({ kind: 'reasoning', messageId: `${streamId}:${event.index}`, mode: 'delta', text: event.content_block.thinking });
@@ -47,16 +55,13 @@ export function createStreamObserver(observe: (observation: RunObservation) => v
         if (block?.kind === 'tool') observe({ kind: 'tool', callId: block.id, name: block.name, phase: 'arguments-ended' });
         kinds.delete(event.index);
       } else if (event.type === 'message_delta') {
-        for (const [key, value] of Object.entries(event.usage)) if (tokenCount(value) !== undefined) usage[key] = value;
+        const delta: unknown = event.usage;
+        if (delta !== null && typeof delta === 'object') for (const [key, value] of Object.entries(delta)) if (tokenCount(value) !== undefined) usage[key] = value;
       } else if (event.type === 'message_stop') {
         // The model boundary is emitted only here: a request interrupted before message_stop records no model span.
         const row = usageRow(usage);
         observe({ kind: 'model-boundary', requestModel, ...(model === undefined ? {} : { responseModel: model }),
           ...(row ? { usage: row } : {}) });
       }
-    },
-    resultUsage(raw: unknown): RunObservationUsage | undefined {
-      return usageRow({ ...(raw as object) });
-    },
-  };
+  }
 }

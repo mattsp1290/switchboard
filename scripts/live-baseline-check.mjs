@@ -162,11 +162,11 @@ export function checkAguiRun({ batches, observations, report }) {
       if (deltas.map((item) => item.argumentsJson).join('') !== args) return fail('tool-arguments-missing');
     } else {
       const first = items.find((item) => typeof item.argumentsJson === 'string' && item.argumentsJson !== '');
-      if (first !== undefined && !args.includes(first.argumentsJson)) return fail('tool-arguments-missing');
+      if (first !== undefined && args !== first.argumentsJson) return fail('tool-arguments-missing');
     }
     const results = mine.flatMap((item) => item.results);
     for (const item of items) {
-      if (typeof item.resultJson === 'string' && !results.some((result) => result.includes(item.resultJson))) return fail('tool-result-missing');
+      if (typeof item.resultJson === 'string' && !results.includes(item.resultJson)) return fail('tool-result-missing');
     }
   }
   return checkReport(report, observations, events);

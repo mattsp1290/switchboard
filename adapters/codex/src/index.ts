@@ -360,7 +360,9 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                       || Buffer.byteLength(snapshot) > 4 * 1024 * 1024) throw failure();
                     onEvent({ kind: 'text', itemId: id, text: snapshot });
                     emitObservation(onObservation, { kind: 'text', messageId: id, mode: 'snapshot', text: snapshot });
-                  } else if (onObservation && admitted) for (const o of itemObservations(event.type, event.item)) emitObservation(onObservation, o);
+                  } else if (onObservation && admitted) {
+                    try { for (const o of itemObservations(event.type, event.item)) emitObservation(onObservation, o); } catch { /* observation only */ }
+                  }
                   break;
                 }
                 case 'turn.completed':

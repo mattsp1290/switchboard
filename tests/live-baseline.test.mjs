@@ -306,6 +306,19 @@ test('tool payloads are checked against the events of their own call', () => {
   assert.equal(checkAguiRun(input(tool('b', '{"y":2}', '"one"'))).code, 'tool-result-missing');
 });
 
+test('tool payloads must equal the projected ones, not merely be contained in them', () => {
+  const id = JSON.stringify([1, 'codex', 'tool', ['tool'], 'a']);
+  const input = (args, content) => ({
+    batches: [mapped({ type: 'RUN_STARTED' }), textBatch,
+      mapped({ type: 'TOOL_CALL_ARGS', toolCallId: id, delta: args }, { type: 'TOOL_CALL_RESULT', toolCallId: id, content }), finished],
+    observations: [started, text, { kind: 'tool', callId: 'a', name: 'read', phase: 'completed', argumentsJson: '{"x":1}', resultJson: '"one"' }, success],
+    report: unqualified(['text', 'tools']),
+  });
+  assert.deepEqual(checkAguiRun(input('{"x":1}', '"one"')), { ok: true });
+  assert.equal(checkAguiRun(input('{"x":1,"y":2}', '"one"')).code, 'tool-arguments-missing');
+  assert.equal(checkAguiRun(input('{"x":1}', '"one" and more')).code, 'tool-result-missing');
+});
+
 test('a tool call id array that is not the projector identity shape is not decoded', () => {
   const wrong = JSON.stringify([2, 'codex', 'tool', ['tool'], 'a']);
   const observation = { kind: 'tool', callId: 'a', name: 'read', phase: 'completed', argumentsJson: '{"x":1}', resultJson: '"one"' };

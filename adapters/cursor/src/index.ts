@@ -475,8 +475,12 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
     return 'next';
   }
   if (message.type === 'usage') {
-    const row = observedUsage(message.usage);
-    if (row !== undefined) emitObservation(onObservation, { kind: 'usage', rows: [row] });
+    if (onObservation) {
+      try {
+        const row = observedUsage(message.usage);
+        if (row !== undefined) emitObservation(onObservation, { kind: 'usage', rows: [row] });
+      } catch { /* observation only */ }
+    }
     return 'next';
   }
   if (message.type === 'tool_call') {
@@ -485,7 +489,9 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
     const status = message.status;
     if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
     endReasoning(state);
-    if (onObservation) observeTool(message, callId, name, status, state.trackTool, onObservation);
+    if (onObservation) {
+      try { observeTool(message, callId, name, status, state.trackTool, onObservation); } catch { /* observation only */ }
+    }
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';
   }

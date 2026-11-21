@@ -9,7 +9,10 @@ export type RunObservationFamily = typeof runObservationFamilies[number];
 /** The families no exported runtime can observe today. Each runtime declares them unsupported when its turn starts. */
 export const unobservedFamilies = Object.freeze(['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const);
 
-/** Native counts already renamed to the AG-UI `TokenUsage` names. A count the native value did not carry is absent. */
+/**
+ * Native counts already renamed to the AG-UI `TokenUsage` names. A count the native value did not carry is absent.
+ * `inputTokens` includes cached input (cache read plus cache write); those counts are also reported separately.
+ */
 export interface RunObservationUsage {
   readonly provider?: string;
   readonly model?: string;

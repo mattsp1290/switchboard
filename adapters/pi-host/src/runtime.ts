@@ -199,13 +199,14 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
-function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, sink: Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
+function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, makeSink: () => Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
   const model: Model<string> = {
     id: modelId, name: 'host', api: providerId, provider: providerId, baseUrl: 'http://127.0.0.1:9', reasoning: false,
     input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
   };
     const deliver = (messages: readonly Message[], signal: AbortSignal | undefined) => {
     const stream = new AssistantMessageEventStream();
+    const sink = makeSink();
     void (async () => {
       try {
         const body: PiHostRouteBody = { model: modelId, protocol: 'switchboard-host', instructions,
@@ -342,34 +343,35 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     // The current segment's listener. One segment is one baseline, so `dispatch` sets and clears it.
     let observer: RunObservationListener | undefined;
     const observe = (observation: RunObservation) => { emitObservation(observer, observation); };
-    const sink = {
+    // A request binds the listener of the segment that issued it, so a late event from an aborted segment cannot reach the next one.
+    const sinkFor = (listener: RunObservationListener | undefined) => ({
       text: (delta: string) => {
         publish({ kind: 'text-delta', nativeItemId: 'assistant', text: delta });
-        observe({ kind: 'text', messageId: 'assistant', mode: 'delta', text: delta });
+        emitObservation(listener, { kind: 'text', messageId: 'assistant', mode: 'delta', text: delta });
       },
       tool: (call: { id: string; name: string; arguments: unknown }, phase: 'start' | 'end') => {
         const target = { kind: 'tool' as const, session: reference(), nativeToolCallId: call.id };
         if (phase === 'start') {
           publish({ kind: 'tool-call-start', target, name: call.name });
           publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(call.arguments) });
-          observe({ kind: 'tool', callId: call.id, name: call.name, phase: 'started' });
+          emitObservation(listener, { kind: 'tool', callId: call.id, name: call.name, phase: 'started' });
         } else {
           publish({ kind: 'tool-call-end', target, arguments: call.arguments });
-          const argumentsJson = observer ? jsonString(call.arguments) : undefined;
-          observe({ kind: 'tool', callId: call.id, name: call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
+          const argumentsJson = listener ? jsonString(call.arguments) : undefined;
+          emitObservation(listener, { kind: 'tool', callId: call.id, name: call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
         }
       },
       // Each provider request is one model boundary, with usage only when that request reported it. A later request's
       // terminal usage row replaces an earlier one (same key), so the final request's counts stand.
       boundary: (usage: { input: number; output: number } | undefined) => {
-        observe({ kind: 'model-boundary', ...(usage === undefined ? {} : { usage: { inputTokens: usage.input, outputTokens: usage.output } }) });
+        emitObservation(listener, { kind: 'model-boundary', ...(usage === undefined ? {} : { usage: { inputTokens: usage.input, outputTokens: usage.output } }) });
       },
       usage: (usage: { input: number; output: number } | undefined) => {
         publish({ kind: 'usage', usage: hostUsage(usage?.input ?? 0, usage?.output ?? 0) });
-        if (usage !== undefined) observe({ kind: 'usage', rows: [{ inputTokens: usage.input, outputTokens: usage.output }] });
+        if (usage !== undefined) emitObservation(listener, { kind: 'usage', rows: [{ inputTokens: usage.input, outputTokens: usage.output }] });
       },
-    };
-    const provider = hostProvider(load, names, answered, sink, () => segmentNumber, admitted.instructions, admitted.tools, note);
+    });
+    const provider = hostProvider(load, names, answered, () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
     const credentials = new InMemoryCredentialStore();
     const models = await ModelRuntime.create({
       credentials, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,

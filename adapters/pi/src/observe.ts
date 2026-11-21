@@ -28,9 +28,13 @@ export function createMessageObserver(listener: RunObservationListener | undefin
         emitObservation(listener, { kind: 'reasoning', messageId, mode: 'snapshot', text: nextThinking });
       }
       if (ended) {
-        const { input, output } = message.usage ?? {};
+        const { input, output, cacheRead, cacheWrite } = message.usage ?? {};
         if (tokenCount(input) !== undefined && tokenCount(output) !== undefined) {
-          usage = usageFromCounts({ inputTokens: input, outputTokens: output });
+          // pi-ai `input` is the uncached count, so the cache counts are added back to match the other engines.
+          const read = tokenCount(cacheRead);
+          const write = tokenCount(cacheWrite);
+          usage = usageFromCounts({ inputTokens: input + (read ?? 0) + (write ?? 0), outputTokens: output,
+            cachedInputTokens: read, cacheWriteInputTokens: write });
         }
         messageIndex++;
         text = '';

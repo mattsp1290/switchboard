@@ -204,10 +204,13 @@ async function recordOpencodeVersion(executableFile) {
   } catch {
     // An unreadable version is recorded as null and skips the comparison.
   }
-  if (version !== null && opencodeSchemaDiffers(version)) {
-    process.stderr.write(`live-baseline: opencode ${version} differs from the ${OPENCODE_PERMISSION_SCHEMA_VERSION} permission schema the deny list was built from\n`);
+  if (version === null) return null;
+  // Free text from a child process: one redacted line, like every other reason in the report.
+  const safe = reasonOf(version);
+  if (opencodeSchemaDiffers(version)) {
+    process.stderr.write(`live-baseline: opencode ${safe} differs from the ${OPENCODE_PERMISSION_SCHEMA_VERSION} permission schema the deny list was built from\n`);
   }
-  return version;
+  return safe;
 }
 
 function runBuild() {
@@ -337,6 +340,15 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   let nativeSession;
   try {
     ({ nativeSession } = await turn(engine, model, scratch, onObservation, executableFile));
+  } catch (error) {
+    // Keep what the run observed before it threw, instead of an empty outcome.
+    const detail = { outcome: lastTerminal(observations)?.outcome ?? null };
+    if (diagnosticCodes.length > 0) detail.diagnostics = [...new Set(diagnosticCodes)];
+    if (error instanceof LiveFailure) {
+      error.detail = { ...detail, ...error.detail };
+      throw error;
+    }
+    throw new LiveFailure('engine-error', error instanceof Error ? `${error.name}: ${error.message}` : undefined, detail);
   } finally {
     // A throwing turn still closes the baseline (ending its agent span) and stops the batch processor.
     report = baseline.close();
@@ -349,12 +361,14 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
     await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
   if (!flushed) throw new LiveFailure('flush-failed', 'the tracer provider did not flush or shut down');
-  const aguiCheck = checkAguiRun({ batches, observations, report });
   const outcome = lastTerminal(observations)?.outcome ?? null;
   const detail = { outcome };
-  if (!aguiCheck.ok) throw new LiveFailure(aguiCheck.code, undefined, detail);
+  // Diagnostics first: a dropped row would otherwise surface as a vaguer AG-UI mismatch.
   const diagnostics = checkBaselineDiagnostics(diagnosticCodes);
   if (!diagnostics.ok) throw new LiveFailure('baseline-diagnostic', diagnostics.code, { ...detail, diagnostics: [...new Set(diagnosticCodes)] });
+  if (report?.terminated !== true) throw new LiveFailure('baseline-unterminated', undefined, detail);
+  const aguiCheck = checkAguiRun({ batches, observations, report });
+  if (!aguiCheck.ok) throw new LiveFailure(aguiCheck.code, undefined, detail);
   // A failed or unknown terminal still produces a consistent AG-UI run and agent span; only a success proves a live turn.
   if (outcome !== 'success') throw new LiveFailure('outcome-not-success', undefined, detail);
   const spans = await pollSpans(lotelBinary, runId, observations);
@@ -458,6 +472,7 @@ function spawnChannel(request, extraArgs = []) {
 }
 
 async function hostTurn({ engine, model, cwd, scratch, onObservation, executableFile }) {
+  const until = Date.now() + TURN_MS;
   const signal = AbortSignal.timeout(TURN_MS);
   const stops = [];
   const launchWith = (extraArgs) => ({ kind: 'spawn', spawn: (request) => {
@@ -467,11 +482,11 @@ async function hostTurn({ engine, model, cwd, scratch, onObservation, executable
   } });
   let adapter;
   try {
-    const opened = await hostOpeners[engine.name]({ model, cwd, scratch, executableFile, launchWith, signal });
+    const opened = await within(hostOpeners[engine.name]({ model, cwd, scratch, executableFile, launchWith, signal }), undefined, until);
     if (opened.kind !== 'ok') throw new LiveFailure('host-open-failed', `${opened.error.code}: ${opened.error.message}`);
     adapter = opened.value;
     const result = await within(adapter.run({ prompt: PROMPT, hostOperationId: `live-${randomBytes(4).toString('hex')}`,
-      recordIntent() {}, signal, onObservation }), undefined);
+      recordIntent() {}, signal, onObservation }), undefined, until);
     if (result.kind === 'failed' && signal.aborted) throw new LiveFailure('turn-timeout');
     if (result.kind === 'failed') throw new LiveFailure('segment-failed', `${result.error.code}: ${result.error.message}`);
     // The prompt asks for text only, so a pending tool call means the turn did not finish.
@@ -504,8 +519,13 @@ async function piHostStream(model) {
     if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error('model failed');
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
     if (text !== '') yield { kind: 'text', text };
-    const { input, output } = message.usage ?? {};
-    if (Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0) yield { kind: 'usage', input, output };
+    // pi-ai's `input` excludes cache reads and writes; the observation's `input` is the total, so add the valid cache counts.
+    const { input, output, cacheRead, cacheWrite } = message.usage ?? {};
+    const count = (value) => Number.isSafeInteger(value) && value >= 0;
+    if (count(input) && count(output)) {
+      const total = input + (count(cacheRead) ? cacheRead : 0) + (count(cacheWrite) ? cacheWrite : 0);
+      if (Number.isSafeInteger(total)) yield { kind: 'usage', input: total, output };
+    }
   };
 }
 
