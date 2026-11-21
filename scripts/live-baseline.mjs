@@ -48,6 +48,22 @@ for (const name of credentialNames) {
   if (set(name)) credentials[name] = process.env[name];
   delete process.env[name];
 }
+/** Text runtimes that share one `start` / `finished` / `abort` / `close` shape, keyed by engine name. */
+const textRuntimes = {
+  async claude({ cwd, sessionDirectory, model }) {
+    const { createClaudeRuntime } = await import('@mattsp1290/switchboard/claude');
+    return createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.ANTHROPIC_API_KEY, model });
+  },
+  async codex({ cwd, model }) {
+    const { createCodexRuntime } = await import('@mattsp1290/switchboard/codex');
+    return createCodexRuntime({ cwd, model });
+  },
+  async cursor({ cwd, sessionDirectory, model }) {
+    const { createCursorRuntime } = await import('@mattsp1290/switchboard/cursor');
+    return createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.CURSOR_API_KEY, model });
+  },
+};
+
 if (selected.length === 0) {
   process.stdout.write('live-baseline: no engine selected\n');
 } else {
@@ -232,22 +248,6 @@ async function within(promise, abort) {
     clearTimeout(timer);
   }
 }
-
-/** Text runtimes that share one `start` / `finished` / `abort` / `close` shape, keyed by engine name. */
-const textRuntimes = {
-  async claude({ cwd, sessionDirectory, model }) {
-    const { createClaudeRuntime } = await import('@mattsp1290/switchboard/claude');
-    return createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.ANTHROPIC_API_KEY, model });
-  },
-  async codex({ cwd, model }) {
-    const { createCodexRuntime } = await import('@mattsp1290/switchboard/codex');
-    return createCodexRuntime({ cwd, model });
-  },
-  async cursor({ cwd, sessionDirectory, model }) {
-    const { createCursorRuntime } = await import('@mattsp1290/switchboard/cursor');
-    return createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.CURSOR_API_KEY, model });
-  },
-};
 
 async function turn(engine, model, scratch, onObservation) {
   const cwd = join(scratch, 'work');
