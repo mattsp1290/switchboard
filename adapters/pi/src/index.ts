@@ -186,7 +186,9 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
             latestText = text;
             emit({ kind: 'text', text });
           }
-          if (admissionState.current === 'admitted') observer.message(event.message, event.type === 'message_end');
+          if (admissionState.current === 'admitted') {
+            try { observer.message(event.message, event.type === 'message_end'); } catch { /* observation only */ }
+          }
         }
       });
       void (async () => {

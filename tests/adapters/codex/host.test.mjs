@@ -335,7 +335,7 @@ test('a listener receives the observations of a text segment, a pending segment,
   } finally { await made.dispose(); }
 });
 
-test('a failed host answer is a failed tool observation without resultJson', async () => {
+test('a failed host answer is a failed tool observation carrying the error payload', async () => {
   const made = subject();
   const signal = AbortSignal.timeout(10000);
   try {
@@ -348,7 +348,7 @@ test('a failed host answer is a failed tool observation without resultJson', asy
       signal, hostOperationId: 'answer', recordIntent: () => {}, onObservation: (o) => seen.push(o) });
     assert.equal(done.kind, 'complete', JSON.stringify(done));
     const failedTool = seen.find((o) => o.kind === 'tool' && o.phase === 'failed');
-    assert.deepEqual(failedTool, { kind: 'tool', callId: pending.calls[0].pending.target.nativeToolCallId, name: toolName, phase: 'failed' });
+    assert.deepEqual(failedTool, { kind: 'tool', callId: pending.calls[0].pending.target.nativeToolCallId, name: toolName, phase: 'failed', resultJson: '{"text":"no"}' });
     await adapter.close();
   } finally { await made.dispose(); }
 });

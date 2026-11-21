@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage, usageFromUncachedCounts } = await import(new URL('core/run-observation.ts', src).href);
+const { answeredToolObservations, createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage, usageFromUncachedCounts } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -359,6 +359,35 @@ test('an arguments delta after the arguments closed is reported, not dropped sil
   assert.deepEqual(diagnostics.map(row => row.code), ['tool-arguments-changed']);
 });
 
+test('arguments arriving after an argument-less close are reported as late, not changed', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'started' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments-ended' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'completed', argumentsJson: '{"a":1}' }, success);
+  assert.deepEqual(events.filter(event => event.type === 'TOOL_CALL_ARGS'), []);
+  assert.deepEqual(diagnostics.map(row => row.code), ['tool-arguments-late']);
+});
+
+test('a failed answered call replays its error as the result, so a new pending call still finishes the run', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, ...answeredToolObservations('c1', 'lookup', { q: 1 }, { kind: 'error', error: { namespace: 'host', schemaVersion: 1, data: { m: 'bad' } } }),
+    ...declaredToolObservations('c2', 'lookup', { q: 2 }), { kind: 'terminal', outcome: 'success', pendingTools: ['c2'] });
+  const finished = events.at(-1);
+  assert.equal(finished.type, 'RUN_FINISHED');
+  assert.equal(finished.outcome.pendingToolCallIds.length, 1);
+  assert.equal(events.filter(event => event.type === 'TOOL_CALL_RESULT').length, 1);
+  assert.deepEqual(diagnostics, []);
+});
+
+test('a pending success that omits a result-less started tool reports pending-tool-unlisted', t => {
+  const { diagnostics, baseline } = setup(t);
+  for (const observation of [started, { kind: 'tool', callId: 'a', name: 'run', phase: 'started' },
+    { kind: 'tool', callId: 'b', name: 'run', phase: 'started' }]) baseline.accept(freeze(observation));
+  const result = baseline.accept(freeze({ kind: 'terminal', outcome: 'success', pendingTools: ['b'] }));
+  diagnostics.push(...result.diagnostics);
+  assert.ok(diagnostics.some(row => row.code === 'pending-tool-unlisted'), JSON.stringify(diagnostics));
+});
+
 test('text, reasoning, and usage before run-started are dropped as not-running', t => {
   const { events, diagnostics, feed } = setup(t);
   feed({ kind: 'text', messageId: 'm', mode: 'delta', text: 'hi' }, { kind: 'reasoning', messageId: 'r', mode: 'delta', text: 'hm' },
@@ -488,7 +517,7 @@ test('arguments that arrive after arguments-ended with none sent are reported', 
   const { diagnostics, feed } = setup(t);
   feed(started, { kind: 'tool', callId: 'c', name: 'n', phase: 'arguments-ended' },
     { kind: 'tool', callId: 'c', name: 'n', phase: 'completed', argumentsJson: '{"a":1}', resultJson: '1' });
-  assert.deepEqual(diagnostics, [{ code: 'tool-arguments-changed' }]);
+  assert.deepEqual(diagnostics, [{ code: 'tool-arguments-late' }]);
 });
 
 test('a known call id that arrives with a different name keeps the first name and is reported', t => {

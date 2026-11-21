@@ -631,9 +631,17 @@ async function openAdapter(ready: {
       return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
     }
     const state: SegmentState = { started: false };
-    const { result, failedAs } = await segmentInner(input, prompt, answers, state);
-    if (state.started) emitObservation(input.onObservation, segmentTerminal(result, failedAs));
-    return result;
+    let settled: Settled | undefined;
+    try {
+      settled = await segmentInner(input, prompt, answers, state);
+      return settled.result;
+    } finally {
+      // A throw after the run started still gives the baseline its one terminal.
+      if (state.started) {
+        emitObservation(input.onObservation, settled === undefined ? { kind: 'terminal', outcome: 'outcome-unknown' }
+          : segmentTerminal(settled.result, settled.failedAs));
+      }
+    }
   }
   async function segmentInner(input: HostSegmentRequest, prompt: string | undefined,
   answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<Settled> {

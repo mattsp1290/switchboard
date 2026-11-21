@@ -9,7 +9,7 @@ import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-a
 import {
   answeredToolObservations, createDispatchOperation, createEventStream, emitObservation, emitRunStarted,
   isOptionalObservationListener, jsonString, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
-  segmentTerminal,
+  segmentTerminal, tokenCount,
 } from '#switchboard';
 import type {
   DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration,
@@ -343,6 +343,14 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     // The current segment's listener. One segment is one baseline, so `dispatch` sets and clears it.
     let observer: RunObservationListener | undefined;
     const observe = (observation: RunObservation) => { emitObservation(observer, observation); };
+    // Native counts reach the baseline only when valid; an invalid count drops its field, never the model boundary.
+    const observedCounts = (usage: { input: number; output: number } | undefined) => {
+      if (usage === undefined) return undefined;
+      const inputTokens = tokenCount(usage.input);
+      const outputTokens = tokenCount(usage.output);
+      const row = { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+      return Object.keys(row).length === 0 ? undefined : row;
+    };
     // A request binds the listener of the segment that issued it, so a late event from an aborted segment cannot reach the next one.
     const sinkFor = (listener: RunObservationListener | undefined) => ({
       text: (delta: string) => {
@@ -364,11 +372,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       // Each provider request is one model boundary, with usage only when that request reported it. A later request's
       // terminal usage row replaces an earlier one (same key), so the final request's counts stand.
       boundary: (usage: { input: number; output: number } | undefined) => {
-        emitObservation(listener, { kind: 'model-boundary', ...(usage === undefined ? {} : { usage: { inputTokens: usage.input, outputTokens: usage.output } }) });
+        const row = observedCounts(usage);
+        emitObservation(listener, { kind: 'model-boundary', ...(row === undefined ? {} : { usage: row }) });
       },
       usage: (usage: { input: number; output: number } | undefined) => {
         publish({ kind: 'usage', usage: hostUsage(usage?.input ?? 0, usage?.output ?? 0) });
-        if (usage !== undefined) emitObservation(listener, { kind: 'usage', rows: [{ inputTokens: usage.input, outputTokens: usage.output }] });
+        const row = observedCounts(usage);
+        if (row !== undefined) emitObservation(listener, { kind: 'usage', rows: [row] });
       },
     });
     const provider = hostProvider(load, names, answered, () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);

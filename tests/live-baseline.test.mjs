@@ -364,6 +364,7 @@ test('the projection family list matches the source of truth', () => {
 test('baseline diagnostics pass only for the benign arguments rewrite', () => {
   assert.deepEqual(checkBaselineDiagnostics([]), { ok: true });
   assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-changed', 'tool-arguments-changed']), { ok: true });
+  assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-late']), { ok: false, code: 'tool-arguments-late' });
   assert.deepEqual(checkBaselineDiagnostics(['usage-row-dropped']), { ok: false, code: 'usage-row-dropped' });
   assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-changed', 'not-running']), { ok: false, code: 'not-running' });
   assert.deepEqual(checkBaselineDiagnostics(['telemetry-failure']), { ok: false, code: 'telemetry-failure' });

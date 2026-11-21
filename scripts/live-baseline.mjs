@@ -485,6 +485,7 @@ async function hostTurn({ engine, model, cwd, scratch, onObservation, executable
     const opened = await within(hostOpeners[engine.name]({ model, cwd, scratch, executableFile, launchWith, signal }), undefined, until);
     if (opened.kind !== 'ok') throw new LiveFailure('host-open-failed', `${opened.error.code}: ${opened.error.message}`);
     adapter = opened.value;
+    // No abort callback: `signal` (AbortSignal.timeout(TURN_MS)) aborts the segment on the same deadline.
     const result = await within(adapter.run({ prompt: PROMPT, hostOperationId: `live-${randomBytes(4).toString('hex')}`,
       recordIntent() {}, signal, onObservation }), undefined, until);
     if (result.kind === 'failed' && signal.aborted) throw new LiveFailure('turn-timeout');

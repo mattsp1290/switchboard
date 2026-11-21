@@ -40,12 +40,14 @@ export type RunBaselineDiagnosticCode =
   | 'after-close'
   | 'tool-result-repeated'
   | 'tool-arguments-changed'
+  | 'tool-arguments-late'
   | 'tool-name-changed'
   | 'tool-span-unrecorded'
   | 'not-running'
   | 'invalid-observation'
   | 'pending-tool-unknown'
-  | 'pending-tool-resolved';
+  | 'pending-tool-resolved'
+  | 'pending-tool-unlisted';
 
 export interface RunBaselineDiagnostic {
   readonly code: RunBaselineDiagnosticCode;
@@ -285,6 +287,9 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
         if (!project({ kind: 'tool-arguments', tool: ref(toolScope, callId), delta: argumentsJson })) return;
         state.argumentsSent = true;
         state.argumentsText = append ? (state.argumentsText ?? '') + argumentsJson : argumentsJson;
+      } else if (!state.argumentsOpen && !state.argumentsSent) {
+        // The arguments were closed empty, so these can no longer be sent.
+        note('tool-arguments-late');
       } else if (append || state.argumentsText !== argumentsJson) {
         note('tool-arguments-changed');
       }
@@ -356,6 +361,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
         if (pending?.some(id => tools.get(id)?.result)) note('pending-tool-resolved');
         const ordered = pending === undefined ? undefined
           : toolOrder.filter(id => pending.includes(id) && !tools.get(id)!.result).map(id => ref(toolScope, id));
+        // A result-less started tool the adapter did not list leaves the projector's pending set unequal to the ledger's.
+        if (ordered !== undefined && toolOrder.some(id => !tools.get(id)!.result && !pending!.includes(id))) note('pending-tool-unlisted');
         project({ kind: 'run-finished', outcome: 'success', ...attached, ...(ordered === undefined ? {} : { pendingTools: ordered }) });
         agentOutcome = { kind: 'success' };
         break;
@@ -408,10 +415,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           message(observation.kind, observation.messageId, observation.mode, observation.text);
           break;
         case 'tool': {
-          sawTool = true;
           const { callId, name, phase: toolPhase, argumentsJson, resultJson } = observation;
           const state = ensureTool(callId, name, toolPhase === 'started' ? undefined : argumentsJson, toolPhase === 'arguments');
           if (!state) break;
+          sawTool = true;
           if (toolPhase === 'started' || toolPhase === 'arguments') break;
           if (!endArguments(callId, state)) break;
           if (resultJson !== undefined) toolResult(callId, state, resultJson);

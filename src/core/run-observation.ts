@@ -173,7 +173,8 @@ export function declaredToolObservations(callId: string, name: string, args: unk
 /** Replays one answered host tool call into a continuation segment: started, its arguments, then the observed result. */
 export function answeredToolObservations(callId: string, name: string, args: unknown,
   result: Outcome<NativeExtension, NativeExtension>): readonly RunObservation[] {
-  const resultJson = result.kind === 'ok' ? jsonString(result.value.data) : undefined;
+  // A failed answer is replayed with its error payload too: natively the model received it as the call's result.
+  const resultJson = jsonString(result.kind === 'ok' ? result.value.data : result.error.data);
   return [
     ...declaredToolObservations(callId, name, args),
     { kind: 'tool', callId, name, phase: result.kind === 'ok' ? 'completed' : 'failed', ...(resultJson === undefined ? {} : { resultJson }) },

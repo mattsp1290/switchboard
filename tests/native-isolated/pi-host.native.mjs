@@ -167,6 +167,17 @@ test('a provider request that reported no usage still emits a model boundary, wi
   await host.close();
 });
 
+test('invalid token counts keep the model boundary but drop usage', async () => {
+  const host = await open({ stream: async function* stream() { yield { kind: 'text', text: 'hi' }; yield { kind: 'usage', input: 1.5, output: 2 }; } });
+  const seen = [];
+  const result = await host.adapter.run({ ...run('Say hi'), onObservation: (o) => { seen.push(o); } });
+  assert.equal(result.kind, 'complete');
+  assert.ok(seen.filter((o) => o.kind === 'model-boundary').every((o) => !('usage' in o) || o.usage.inputTokens === undefined));
+  assert.equal(seen.some((o) => o.kind === 'usage' && o.rows.some((r) => r.inputTokens === 1.5)), false);
+  assert.equal(seen.some((o) => o.kind === 'invalid-observation'), false);
+  await host.close();
+});
+
 test('a segment listener receives model boundaries, tool facts, usage and a terminal', async () => {
   const tools = [{ name: 'lookup', description: 'Looks up a value.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } } }];
   const first = await open({ tools, stream: async function* stream() {

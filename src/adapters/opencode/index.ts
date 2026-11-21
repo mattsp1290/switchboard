@@ -850,13 +850,22 @@ async function openSession(ready: {
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
       turn = active;
-      const result = await segment(active, input, prompt);
-      if (active.promptWritten && onObservation) {
-        const promptUsage = !record(active.usage) ? undefined : usageRow(active.usage);
-        if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
-        emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
+      let result: HostSegmentResult | undefined;
+      try {
+        result = await segment(active, input, prompt);
+        return result;
+      } finally {
+        if (active.promptWritten && onObservation) {
+          if (result === undefined) {
+            // The segment threw after the run started: the baseline still gets its one terminal.
+            emitObservation(onObservation, { kind: 'terminal', outcome: 'outcome-unknown' });
+          } else {
+            const promptUsage = !record(active.usage) ? undefined : usageRow(active.usage);
+            if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
+            emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
+          }
+        }
       }
-      return result;
     },
     async interrupt({ timeoutMs }) {
       const active = turn;
