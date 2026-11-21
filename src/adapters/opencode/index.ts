@@ -8,7 +8,7 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
 import {
-  createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
+  createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal,
 } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage, ToolTracker } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
@@ -195,11 +195,9 @@ function itemId(value: unknown): string {
   return identifier(value, sessionLimits.identifierLength) ? value : 'turn';
 }
 function usageRow(update: Record<string, unknown>): RunObservationUsage | undefined {
-  const inputTokens = tokenCount(update.inputTokens);
-  const outputTokens = tokenCount(update.outputTokens);
   return normalizedUsageFromCounts({
-    inputTokens,
-    outputTokens,
+    inputTokens: update.inputTokens,
+    outputTokens: update.outputTokens,
     totalTokens: update.totalTokens,
     reasoningTokens: update.thoughtTokens,
     cachedInputTokens: update.cachedReadTokens,

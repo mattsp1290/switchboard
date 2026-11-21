@@ -107,6 +107,8 @@ interface ToolState {
 type OpenEntry = { readonly kind: 'text' | 'reasoning' | 'tool'; readonly id: string };
 
 const maxIdentifierLength = 256;
+const runningOnly: ReadonlySet<RunObservation['kind']> = Object.freeze(
+  new Set<RunObservation['kind']>(['text', 'reasoning', 'tool', 'usage', 'model-boundary', 'terminal']));
 
 function usageKey(row: RunObservationUsage): string {
   return JSON.stringify([row.provider ?? null, row.model ?? null]);
@@ -327,6 +329,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       note('after-close');
     } else if (phase === 'terminated') {
       note('after-terminal');
+    } else if (runningOnly.has(observation.kind) && phase !== 'running') {
+      note('not-running');
     } else {
       switch (observation.kind) {
         case 'run-started': {
@@ -346,17 +350,9 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
         }
         case 'text':
         case 'reasoning':
-          if (phase !== 'running') {
-            note('not-running');
-            break;
-          }
           message(observation.kind, observation.messageId, observation.mode, observation.text);
           break;
         case 'tool': {
-          if (phase !== 'running') {
-            note('not-running');
-            break;
-          }
           sawTool = true;
           const { callId, name, phase: toolPhase, argumentsJson, resultJson } = observation;
           const state = ensureTool(callId, name, toolPhase === 'started' ? undefined : argumentsJson, toolPhase === 'arguments');
@@ -372,10 +368,6 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           break;
         }
         case 'usage': {
-          if (phase !== 'running') {
-            note('not-running');
-            break;
-          }
           for (const row of observation.rows) {
             const candidate = usageRow(row);
             const key = usageKey(row);
@@ -385,10 +377,6 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           break;
         }
         case 'model-boundary': {
-          if (phase !== 'running') {
-            note('not-running');
-            break;
-          }
           const started = observer.start({ kind: 'model', provider, operation: 'chat',
             ...(observation.requestModel === undefined ? {} : { requestModel: observation.requestModel }) }, parent(), correlation);
           if (started.kind === 'error') {
@@ -420,10 +408,6 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           // Every unfilled family is reported as a gap at the terminal, declared or not.
           break;
         case 'terminal':
-          if (phase !== 'running') {
-            note('not-running');
-            break;
-          }
           finishRun(observation);
           break;
       }

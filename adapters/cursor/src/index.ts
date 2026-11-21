@@ -2,7 +2,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
-import { createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome, tokenCount } from '#switchboard';
+import { createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
 import type { RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
@@ -416,10 +416,8 @@ interface PublishState {
 
 function observedUsage(value: unknown): RunObservationUsage | undefined {
   if (!isRecord(value)) return undefined;
-  const inputTokens = tokenCount(value.inputTokens);
-  const outputTokens = tokenCount(value.outputTokens);
   return normalizedUsageFromCounts({
-    inputTokens, outputTokens,
+    inputTokens: value.inputTokens, outputTokens: value.outputTokens,
     cachedInputTokens: value.cacheReadTokens,
     cacheWriteInputTokens: value.cacheWriteTokens,
     reasoningTokens: value.reasoningTokens,

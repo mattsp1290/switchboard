@@ -8,7 +8,7 @@ import { createEventStream } from '../../core/events.js';
 import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
-  HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
+  HostLaunch, HostOpenOptions, HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
   HostWriteStatus,
 } from '../../core/host-adapter.js';
 import type { InteractionContinuation } from '../../core/interaction.js';
@@ -626,8 +626,7 @@ async function openAdapter(ready: {
         && codexNativeToolReply(expected, answer) !== undefined;
     }) && ids.size === 0;
   }
-  async function segmentOf(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
-    readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
+  async function segmentOf(input: HostSegmentRequest, prompt: string | undefined,
   answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
     if (!isOptionalObservationListener(input.onObservation)) {
       return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
@@ -637,8 +636,7 @@ async function openAdapter(ready: {
     if (state.started) emitObservation(input.onObservation, segmentTerminal(result, failedAs));
     return result;
   }
-  async function segmentInner(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
-    readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
+  async function segmentInner(input: HostSegmentRequest, prompt: string | undefined,
   answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<Settled> {
     const refuse = (...args: Parameters<typeof failed>): Settled => ({ result: failed(...args) });
     if (closing) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });

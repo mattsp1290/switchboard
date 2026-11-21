@@ -12,7 +12,7 @@ import {
   segmentTerminal,
 } from '#switchboard';
 import type {
-  DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentResult, HostToolCall, HostToolDeclaration,
+  DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration,
   HostUsage, Outcome, RunObservation, RunObservationListener, SessionBinding, SessionReference,
 } from '#switchboard';
 import { piHostIdentity, piHostLimits, validatePiHostSessionState } from './contract.js';
@@ -130,7 +130,7 @@ interface Collected {
   readonly input: number;
   readonly output: number;
   /** A `usage` event arrived for this request. */
-  readonly usageReported?: boolean;
+  readonly usageReported: boolean;
   readonly failure?: 'mixed' | 'limit' | 'arguments' | 'duplicate';
 }
 
@@ -199,7 +199,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
     index += 1;
   }
   message.stopReason = collected.calls.length > 0 ? 'toolUse' : 'stop';
-  sink.usage(collected.input, collected.output, collected.usageReported === true);
+  sink.usage(collected.input, collected.output, collected.usageReported);
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
@@ -483,7 +483,8 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       pending = [];
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
-    async function dispatch(hostOperationId: string, recordIntent: Parameters<PiHostAdapter['run']>[0]['recordIntent'], hostSignal: AbortSignal, work: () => Promise<void>, onObservation?: RunObservationListener): Promise<HostSegmentResult> {
+    async function dispatch(input: HostSegmentRequest, work: () => Promise<void>): Promise<HostSegmentResult> {
+      const { hostOperationId, recordIntent, signal: hostSignal, onObservation } = input;
       if (!isOptionalObservationListener(onObservation)) {
         return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
       }
@@ -585,10 +586,10 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (typeof input.prompt !== 'string' || input.prompt.length === 0 || input.prompt.length > piHostLimits.maxText) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The prompt must be a non-empty string.' }, write: { kind: 'not-attempted' } };
         }
-        return dispatch(input.hostOperationId, input.recordIntent, input.signal, async () => {
+        return dispatch(input, async () => {
           await session.prompt(input.prompt, { expandPromptTemplates: false });
           await session.waitForIdle();
-        }, input.onObservation);
+        });
       },
       async continue(input) {
         if (pending.length === 0 || !Array.isArray(input.answers)) {
@@ -617,7 +618,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (replacements.size !== expected.size) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
         }
-        return dispatch(input.hostOperationId, input.recordIntent, input.signal, async () => {
+        return dispatch(input, async () => {
           const prior = new Map<string, { content: Message['content']; isError: boolean; details: unknown }>();
           const applyReplacement = (message: Message) => {
             if (message.role !== 'toolResult' || !replacements.has(message.toolCallId)) return;
@@ -662,7 +663,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           } finally {
             agentRun = undefined;
           }
-        }, input.onObservation);
+        });
       },
       async interrupt({ timeoutMs }) {
         const stop = stopping;
