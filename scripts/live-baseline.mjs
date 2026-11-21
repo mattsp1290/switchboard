@@ -9,6 +9,9 @@ import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { checkAguiRun, checkLotelSpans } from './live-baseline-check.mjs';
+import {
+  ambientCredentialNames, codexHostArgs, credentialNames, formatReason, resolveModel, selectEngines,
+} from './live-baseline-engines.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -19,22 +22,11 @@ const POLL_MS = 30_000;
 const bounds = { maxEntities: 1024, maxPayloadBytes: 1_048_576, maxJsonDepth: 32, maxJsonNodes: 65_536 };
 const reportPath = process.env.SWITCHBOARD_LIVE_BASELINE_REPORT || join(root, '.audit/live-baseline.json');
 
-const set = (name) => typeof process.env[name] === 'string' && process.env[name] !== '';
-const credentialNames = ['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY'];
-const engines = [
-  { name: 'claude', provider: 'claude', selected: () => set('ANTHROPIC_API_KEY'), model: 'SWITCHBOARD_LIVE_CLAUDE_MODEL' },
-  { name: 'codex', provider: 'codex', selected: () => set('SWITCHBOARD_LIVE_CODEX'), model: 'SWITCHBOARD_LIVE_CODEX_MODEL' },
-  { name: 'cursor', provider: 'cursor', selected: () => set('CURSOR_API_KEY'), model: 'CURSOR_QUALIFICATION_MODEL' },
-  { name: 'pi', provider: 'pi', selected: () => set('OPENCODE_API_KEY'), model: 'SWITCHBOARD_LIVE_PI_MODEL' },
-  { name: 'host/pi', provider: 'pi', selected: () => set('OPENCODE_API_KEY') && set('SWITCHBOARD_LIVE_HOST_PI'), model: 'SWITCHBOARD_LIVE_PI_MODEL' },
-  { name: 'host/codex', provider: 'codex', selected: () => set('SWITCHBOARD_LIVE_HOST_CODEX'), model: undefined },
-  { name: 'host/opencode', provider: 'opencode', selected: () => set('SWITCHBOARD_LIVE_OPENCODE'), model: 'SWITCHBOARD_LIVE_OPENCODE_MODEL' },
-];
-
 class LiveFailure extends Error {
-  constructor(code) {
+  constructor(code, reason) {
     super(code);
     this.code = code;
+    this.reason = reason;
   }
 }
 const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -42,17 +34,23 @@ const scrub = (text) => String(text).split(homedir()).join('~');
 
 // Gates read the environment first. Then every credential is captured and removed so no child process or adapter
 // inherits it.
-const selected = engines.filter((engine) => engine.selected());
+const selected = selectEngines(process.env);
+const dryRun = typeof process.env.SWITCHBOARD_LIVE_DRY_RUN === 'string' && process.env.SWITCHBOARD_LIVE_DRY_RUN !== '';
+const models = new Map(selected.map((engine) => [engine.name, resolveModel(engine, process.env)]));
 const credentials = {};
 for (const name of credentialNames) {
-  if (set(name)) credentials[name] = process.env[name];
+  const value = process.env[name];
+  if (typeof value === 'string' && value !== '') credentials[name] = value;
   delete process.env[name];
 }
+for (const name of ambientCredentialNames) delete process.env[name];
+const secrets = () => Object.values(credentials);
+const reasonOf = (text) => formatReason(text, secrets(), homedir());
 /** Text runtimes that share one `start` / `finished` / `abort` / `close` shape, keyed by engine name. */
 const textRuntimes = {
   async claude({ cwd, sessionDirectory, model }) {
     const { createClaudeRuntime } = await import('@mattsp1290/switchboard/claude');
-    return createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.ANTHROPIC_API_KEY, model });
+    return createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_ANTHROPIC_API_KEY, model });
   },
   async codex({ cwd, model }) {
     const { createCodexRuntime } = await import('@mattsp1290/switchboard/codex');
@@ -60,14 +58,38 @@ const textRuntimes = {
   },
   async cursor({ cwd, sessionDirectory, model }) {
     const { createCursorRuntime } = await import('@mattsp1290/switchboard/cursor');
-    return createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.CURSOR_API_KEY, model });
+    return createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_CURSOR_API_KEY, model });
   },
 };
 
+/** Which dispatch an engine uses; reading `textRuntimes` here lets the dry run prove the table is initialized. */
+function dispatchOf(engine) {
+  if (engine.runtime === 'text' && typeof textRuntimes[engine.name] !== 'function') throw new LiveFailure('runtime-missing');
+  return engine.runtime;
+}
+
 if (selected.length === 0) {
   process.stdout.write('live-baseline: no engine selected\n');
+} else if (dryRun) {
+  dryRunPlan();
 } else {
   await main();
+}
+
+/** Prints the resolved plan per engine. No lotel, build, adapter import, model call, or report. */
+function dryRunPlan() {
+  let failed = false;
+  for (const engine of selected) {
+    const credential = engine.credential === undefined ? 'not-needed' : credentials[engine.credential] ? 'present' : 'missing';
+    if (credential === 'missing') {
+      failed = true;
+      process.stdout.write(`FAIL ${engine.name} credential-required\n`);
+      continue;
+    }
+    process.stdout.write(`DRY ${engine.name} model=${models.get(engine.name)} runtime=${dispatchOf(engine)} credential=${credential}`
+      + ` confirmation=${engine.confirmation}\n`);
+  }
+  process.stdout.write('', () => process.exit(failed ? 1 : 0));
 }
 
 async function main() {
@@ -75,11 +97,12 @@ async function main() {
   const lotel = { value: undefined };
   const build = { value: undefined };
   for (const engine of selected) {
-    const result = { engine: engine.name, pass: false, outcome: null, spans: null, lotel: null };
+    const model = models.get(engine.name);
+    const result = { engine: engine.name, model, confirmation: engine.confirmation, pass: false, outcome: null, spans: null, lotel: null };
     results.push(result);
     try {
-      const model = engine.model === undefined ? undefined : process.env[engine.model];
-      if (engine.model !== undefined && (model === undefined || model === '')) throw new LiveFailure('model-required');
+      if (engine.credential !== undefined && !credentials[engine.credential]) throw new LiveFailure('credential-required');
+      dispatchOf(engine);
       lotel.value ??= await resolveLotel();
       result.lotel = lotel.value.identity;
       if (lotel.value.failure) throw new LiveFailure(lotel.value.failure);
@@ -90,8 +113,12 @@ async function main() {
     } catch (error) {
       result.code = error instanceof LiveFailure ? error.code : 'engine-error';
       if (error instanceof LiveFailure && error.detail !== undefined) Object.assign(result, error.detail);
+      const reason = error instanceof LiveFailure ? error.reason
+        : error instanceof Error ? `${error.name}: ${error.message}` : undefined;
+      if (reason !== undefined) result.reason = reasonOf(reason);
     }
-    process.stdout.write(result.pass ? `PASS ${engine.name}\n` : `FAIL ${engine.name} ${result.code}\n`);
+    process.stdout.write(result.pass ? `PASS ${engine.name}\n`
+      : `FAIL ${engine.name} ${result.code}${result.reason ? ` — ${result.reason}` : ''}\n`);
   }
   try {
     await mkdir(dirname(reportPath), { recursive: true });
@@ -224,11 +251,13 @@ async function runEngine(engine, model, lotelBinary) {
     }
     await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
-  if (!flushed) throw new LiveFailure('flush-failed');
+  if (!flushed) throw new LiveFailure('flush-failed', 'the tracer provider did not flush or shut down');
   const aguiCheck = checkAguiRun({ batches, observations, report });
   const outcome = observations.findLast((item) => item.kind === 'terminal')?.outcome ?? null;
   const detail = { outcome };
   if (!aguiCheck.ok) throw Object.assign(new LiveFailure(aguiCheck.code), { detail });
+  // A failed or unknown terminal still produces a consistent AG-UI run and agent span; only a success proves a live turn.
+  if (outcome !== 'success') throw Object.assign(new LiveFailure('outcome-not-success'), { detail });
   const spans = await pollSpans(lotelBinary, runId, observations);
   if (!spans.ok) throw Object.assign(new LiveFailure(spans.code), { detail: { ...detail, spans: spans.counts ?? null } });
   return { outcome, spans: spans.counts };
@@ -269,7 +298,7 @@ async function turn(engine, model, scratch, onObservation) {
   switch (engine.name) {
     case 'pi': {
       const { createPiRuntime } = await import('@mattsp1290/switchboard/pi');
-      const runtime = await createPiRuntime({ cwd, sessionDirectory, apiKey: credentials.OPENCODE_API_KEY, provider: 'opencode-go', model });
+      const runtime = await createPiRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_OPENCODE_API_KEY, provider: 'opencode-go', model });
       try {
         const session = await runtime.open();
         try {
@@ -294,8 +323,8 @@ function absoluteExecutable(value) {
 }
 
 /** Wraps one host-owned child as the channel both host adapters accept. The host kills it when the turn ends. */
-function spawnChannel(request) {
-  const child = spawn(request.executable, request.args.slice(1), {
+function spawnChannel(request, extraArgs = []) {
+  const child = spawn(request.executable, [...request.args.slice(1), ...extraArgs], {
     cwd: request.cwd, env: { ...request.env }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const processExit = new Promise((resolve, reject) => {
@@ -330,7 +359,12 @@ function spawnChannel(request) {
 async function hostTurn(engine, model, cwd, scratch, onObservation) {
   const signal = AbortSignal.timeout(TURN_MS);
   const stops = [];
-  const launch = { kind: 'spawn', spawn: (request) => { const spawned = spawnChannel(request); stops.push(spawned.stop); return spawned; } };
+  const extraArgs = engine.name === 'host/codex' ? codexHostArgs(model) : [];
+  const launch = { kind: 'spawn', spawn: (request) => {
+    const spawned = spawnChannel(request, extraArgs);
+    stops.push(spawned.stop);
+    return spawned;
+  } };
   const variables = { PATH: process.env.PATH ?? '', HOME: homedir() };
   let adapter;
   try {
@@ -354,11 +388,13 @@ async function hostTurn(engine, model, cwd, scratch, onObservation) {
       opened = await piHostAdapter.open({ launch: { kind: 'in-process' }, subagents: 'off', stream,
         environment: { variables: { PATH: variables.PATH, TMPDIR: temp }, nativeConfig: {} } }, signal);
     }
-    if (opened.kind !== 'ok') throw new LiveFailure('host-open-failed');
+    if (opened.kind !== 'ok') throw new LiveFailure('host-open-failed', `${opened.error.code}: ${opened.error.message}`);
     adapter = opened.value;
     const result = await within(adapter.run({ prompt: PROMPT, hostOperationId: `live-${randomBytes(4).toString('hex')}`,
       recordIntent() {}, signal, onObservation }), undefined);
-    if (result.kind === 'failed') throw new LiveFailure('segment-failed');
+    if (result.kind === 'failed') throw new LiveFailure('segment-failed', `${result.error.code}: ${result.error.message}`);
+    // The prompt asks for text only, so a pending tool call means the turn did not finish.
+    if (result.kind === 'pending') throw new LiveFailure('segment-pending', 'the segment ended with pending host tool calls');
   } finally {
     await adapter?.close().catch(() => {});
     for (const stop of stops) stop();
@@ -370,7 +406,7 @@ async function piHostStream(model) {
   const { InMemoryCredentialStore, InMemoryModelsStore } = await import('@earendil-works/pi-ai');
   const { ModelRuntime } = await import('@earendil-works/pi-coding-agent');
   const store = new InMemoryCredentialStore();
-  await store.modify('opencode-go', async () => ({ type: 'api_key', key: credentials.OPENCODE_API_KEY }));
+  await store.modify('opencode-go', async () => ({ type: 'api_key', key: credentials.SWITCHBOARD_OPENCODE_API_KEY }));
   const models = await ModelRuntime.create({
     credentials: store, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
   });

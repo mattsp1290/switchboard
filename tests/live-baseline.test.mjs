@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkAguiRun, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
+import {
+  ambientCredentialNames, codexHostArgs, credentialNames, engines, formatReason, resolveModel, selectEngines,
+} from '../scripts/live-baseline-engines.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = join(root, 'scripts/live-baseline.mjs');
@@ -15,7 +18,7 @@ const tripwire = join(root, 'tests/support/native-sdk-tripwire.mjs');
 async function spawnScript(extra) {
   const env = {};
   for (const [name, value] of Object.entries(process.env)) {
-    if (/^(ANTHROPIC_API_KEY|OPENCODE_API_KEY|CURSOR_API_KEY|CURSOR_QUALIFICATION_MODEL|SWITCHBOARD_LIVE_)/u.test(name)) continue;
+    if (/^(ANTHROPIC_API_KEY|OPENCODE_API_KEY|CURSOR_API_KEY|CURSOR_QUALIFICATION_MODEL|SWITCHBOARD_|LOTEL_SOURCE$)/u.test(name)) continue;
     env[name] = value;
   }
   const directory = await mkdtemp(join(tmpdir(), 'live-baseline-test-'));
@@ -36,21 +39,92 @@ test('no gate prints one line, exits 0, and loads no native SDK', async () => {
   assert.equal(report, undefined);
 });
 
-test('a selected engine without a model fails with model-required before any build or import', async () => {
+const canaries = { SWITCHBOARD_ANTHROPIC_API_KEY: 'canary-anthropic-0001', SWITCHBOARD_CURSOR_API_KEY: 'canary-cursor-0002',
+  SWITCHBOARD_OPENCODE_API_KEY: 'canary-opencode-0003' };
+
+test('a dry run of every engine prints the resolved plan without lotel, a build, a report, or a credential', async () => {
   const dist = join(root, 'dist');
-  const before = existsSync(dist);
-  const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_CODEX: '1' });
-  assert.equal(result.status, 1);
-  assert.match(result.stdout, /^FAIL codex model-required$/mu);
+  const before = existsSync(dist) ? statSync(dist).mtimeMs : undefined;
+  const emptyLotel = await mkdtemp(join(tmpdir(), 'live-baseline-nolotel-'));
+  const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_ALL: '1', SWITCHBOARD_LIVE_DRY_RUN: '1', ...canaries,
+    LOTEL_SOURCE: emptyLotel, PATH: process.env.PATH.split(':').filter((dir) => !existsSync(join(dir, 'lotel'))).join(':') });
+  await rm(emptyLotel, { recursive: true, force: true });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const lines = result.stdout.trim().split('\n');
+  assert.deepEqual(lines.map((line) => line.split(' ').slice(0, 2).join(' ')), engines.map((engine) => `DRY ${engine.name}`));
+  for (const engine of engines) {
+    assert(lines.some((line) => line.startsWith(`DRY ${engine.name} model=${engine.defaultModel} runtime=${engine.runtime} `)), engine.name);
+  }
+  assert.equal(report, undefined);
+  assert.equal(existsSync(dist) ? statSync(dist).mtimeMs : undefined, before);
   assert.equal(result.stderr.includes('native SDK tripwire'), false);
-  assert.equal(existsSync(dist), before);
-  assert.deepEqual(JSON.parse(report).engines.map((item) => [item.engine, item.pass, item.code]), [['codex', false, 'model-required']]);
+  for (const value of Object.values(canaries)) assert.equal(`${result.stdout}${result.stderr}`.includes(value), false);
 });
 
-test('a credential value never reaches output or the report', async () => {
-  const { result, report } = await spawnScript({ ANTHROPIC_API_KEY: 'canary-live-key' });
-  assert.match(result.stdout, /^FAIL claude model-required$/mu);
-  assert.equal(`${result.stdout}${result.stderr}${report}`.includes('canary-live-key'), false);
+test('a gated engine without its credential fails with credential-required and no report', async () => {
+  const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_CLAUDE: '1', SWITCHBOARD_LIVE_DRY_RUN: '1' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, 'FAIL claude credential-required\n');
+  assert.equal(report, undefined);
+});
+
+test('a live run without its credential fails before any build, import, or lotel call', async () => {
+  const dist = join(root, 'dist');
+  const before = existsSync(dist) ? statSync(dist).mtimeMs : undefined;
+  const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_CURSOR: '1' });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^FAIL cursor credential-required$/mu);
+  assert.equal(result.stderr.includes('native SDK tripwire'), false);
+  assert.equal(existsSync(dist) ? statSync(dist).mtimeMs : undefined, before);
+  assert.deepEqual(JSON.parse(report).engines.map((item) => [item.engine, item.model, item.pass, item.code]),
+    [['cursor', 'gpt-5.4-nano', false, 'credential-required']]);
+});
+
+test('credentials alone select nothing, and an ambient key never reaches output', async () => {
+  const { result, report } = await spawnScript({ ...canaries, ANTHROPIC_API_KEY: 'canary-ambient-0004' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'live-baseline: no engine selected\n');
+  assert.equal(report, undefined);
+  assert.equal(`${result.stdout}${result.stderr}`.includes('canary'), false);
+});
+
+test('engine selection, model resolution, and the credential lists', () => {
+  assert.deepEqual(selectEngines({}), []);
+  assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_CODEX: '1' }).map((engine) => engine.name), ['codex']);
+  assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_CODEX: '' }), []);
+  assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: '1' }).map((engine) => engine.name),
+    ['claude', 'codex', 'cursor', 'pi', 'host/pi', 'host/codex', 'host/opencode']);
+  assert.deepEqual(selectEngines({ ...canaries }), []);
+  const claude = engines.find((engine) => engine.name === 'claude');
+  assert.equal(resolveModel(claude, {}), 'claude-haiku-5-5');
+  assert.equal(resolveModel(claude, { SWITCHBOARD_LIVE_CLAUDE_MODEL: '' }), 'claude-haiku-5-5');
+  assert.equal(resolveModel(claude, { SWITCHBOARD_LIVE_CLAUDE_MODEL: 'other' }), 'other');
+  for (const engine of engines) {
+    assert.equal(typeof engine.defaultModel, 'string');
+    assert.notEqual(engine.defaultModel, '');
+    assert(['text', 'pi', 'host'].includes(engine.runtime));
+    assert(['adapter-enforced', 'native-record', 'request-only'].includes(engine.confirmation));
+    if (engine.credential !== undefined) assert(credentialNames.includes(engine.credential));
+  }
+  assert.deepEqual([...ambientCredentialNames], ['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY']);
+});
+
+test('host/codex appends the model and a low reasoning effort after the adapter arguments', () => {
+  assert.deepEqual(codexHostArgs('gpt-6-luna'), ['-c', 'model="gpt-6-luna"', '-c', 'model_reasoning_effort="low"']);
+  assert.deepEqual(codexHostArgs('a"b'), ['-c', 'model="a\\"b"', '-c', 'model_reasoning_effort="low"']);
+});
+
+test('failure reasons are one redacted line of at most 200 characters', () => {
+  const secret = 'canary-secret-0005';
+  assert.equal(formatReason(`Error: bad ${secret}`, [secret], '/home/me'), 'Error: bad <redacted>');
+  assert.equal(formatReason('Authorization: Bearer abc.def-123 rejected', [], ''), 'Authorization: Bearer <redacted> rejected');
+  assert.equal(formatReason('key sk-ant-api03-ABCDEFGHIJ leaked', [], ''), 'key <redacted> leaked');
+  assert.equal(formatReason('first line\nsecond line', [], ''), 'first line');
+  assert.equal(formatReason('read /home/me/x failed', [], '/home/me'), 'read ~/x failed');
+  const long = formatReason('x'.repeat(500), [], '');
+  assert.equal(long.length, 200);
+  assert(long.endsWith('…'));
+  assert.equal(formatReason(undefined, [], ''), '');
 });
 
 test('the live script is not wired into CI or npm test', () => {
