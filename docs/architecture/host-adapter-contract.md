@@ -110,10 +110,11 @@ What the contract takes from those decisions:
 ## Layout and export names
 
 - The Codex host adapter lives at `src/adapters/codex/index.ts`, in the root project beside the private app-server stack. It does not import `@openai/codex-sdk`. It exports `CODEX_HOST_NATIVE_VERSION`. It sets `initialize.capabilities.experimentalApi` to true so host dynamic tools can be declared at `thread/start`.
+- The OpenCode host adapter is `src/adapters/opencode/index.ts` and is exported as `./host/opencode`. It declares ACP protocol version `1` and does not declare an OpenCode release.
 - The Claude host project is `adapters/claude-host/`. It compiles apart from the root project because the root declaration check fails on the SDK (`docs/qualification/claude-selection.md`). `sessions.ts` discovers one directory. `execution.ts`, `interaction.ts`, `features.ts`, `proxy.ts`, and the `./host/claude` export remain later. The Pi host adapter is `adapters/pi-host/`.
 - The export names will be `./host/codex`, `./host/claude`, and `./host/pi`. Each package that adds an adapter adds its entry. The map gains no entry that points at a missing file.
 - Each host adapter will declare the exact native versions it was proved against. The Claude host adapter will also declare `@modelcontextprotocol/sdk`.
 
 ## Left to later packages
 
-The Codex host adapter is exported as `./host/codex`. The Pi host adapter is exported as `./host/pi`. This tree does not add `./host/claude`. It does not change `createAguiProjection`, the AG-UI mapping, or a text adapter. The Claude session adapter and its endpoint rules remain a later package. The Codex adapter does not pass a subscription credential through LiteLLM: a bearer is a host-route whose token stays in the host environment. `test:native-isolated` belongs to a different package and is not part of this tree.
+The Codex host adapter is exported as `./host/codex`. The Pi host adapter is exported as `./host/pi`. The `./host/opencode` entry does not implement host tools, resume, or live OpenCode qualification. This tree does not add `./host/claude`. It does not change `createAguiProjection`, the AG-UI mapping, or a text adapter. The Claude session adapter and its endpoint rules remain a later package. The Codex adapter does not pass a subscription credential through LiteLLM: a bearer is a host-route whose token stays in the host environment. `test:native-isolated` belongs to a different package and is not part of this tree.

@@ -69,6 +69,7 @@ The host-facing adapter contract is [host-adapter-contract.md](host-adapter-cont
 | `adapters/claude/src/` | Claude text adapter (`./claude` entry) | May import Claude SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/claude/tsconfig.json` |
 | `adapters/codex/src/` | Codex text adapter (`./codex` entry) | May import the Codex SDK peer and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/codex/tsconfig.json` |
 | `src/adapters/codex/` | Private Codex app-server stack, not exported. The Codex host adapter will add `index.ts` here | May import core and `node:` builtins. Never imported by core or the root entry |
+| `src/adapters/opencode/` | OpenCode host adapter (`./host/opencode`) | May import `src/core/` and `node:` builtins. Core and the root entry do not import it |
 | `adapters/pi/src/` | Pi native integration (`./pi` entry) | May import Pi SDK peers and `node:` builtins. Must not be imported by `src/`. Public declarations must stay SDK-free. Compiled separately by `adapters/pi/tsconfig.json` |
 | `src/agui/` | Canonical AG-UI mapping | May import core and canonical AG-UI types |
 | `src/testkit/` | Controlled qualification scenarios, the reference fake, and the host-adapter conformance suite | May import `src/index.ts` through the relative public barrel and `node:` builtins except `node:test`. No AG-UI imports. Never imported by core. |

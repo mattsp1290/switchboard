@@ -63,6 +63,7 @@ try {
     './pi': { types: './dist/pi/index.d.ts', import: './dist/pi/index.js' },
     './codex': { types: './dist/codex/index.d.ts', import: './dist/codex/index.js' },
     './host/codex': { types: './dist/adapters/codex/index.d.ts', import: './dist/adapters/codex/index.js' },
+    './host/opencode': { types: './dist/adapters/opencode/index.d.ts', import: './dist/adapters/opencode/index.js' },
     './claude': { types: './dist/claude/index.d.ts', import: './dist/claude/index.js' },
     './observability': { types: './dist/observability/index.d.ts', import: './dist/observability/index.js' },
     './host/pi': { types: './dist/host/pi/index.d.ts', import: './dist/host/pi/index.js' },
@@ -81,6 +82,8 @@ try {
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.d.ts'), 'utf8'), /@earendil-works/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/contract.d.ts'), 'utf8'), /@earendil-works/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/host/pi/index.js'), 'utf8'), /from ['"]\.\/runtime\.js['"]/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/adapters/opencode/index.d.ts'), 'utf8'), /@agentclientprotocol/);
+  assert.doesNotMatch(readFileSync(join(installed, 'dist/adapters/opencode/index.js'), 'utf8'), /@agentclientprotocol/);
   writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
@@ -102,16 +105,24 @@ import assert from 'node:assert/strict';
 import { createRequire, registerHooks } from 'node:module';
 const testkitPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/testkit/')).href)};
 const observabilityPrefix = ${JSON.stringify(pathToFileURL(join(installed, 'dist/observability/')).href)};
+let watchRoot = true;
+let rootLoadedOpenCode = false;
 registerHooks({ resolve(specifier, context, nextResolve) {
   const resolved = nextResolve(specifier, context);
+  if (watchRoot && resolved.url.includes('/dist/adapters/opencode/')) rootLoadedOpenCode = true;
   assert(!resolved.url.startsWith(testkitPrefix), 'Core cannot import the testkit.');
   assert(!resolved.url.startsWith(observabilityPrefix), 'Core cannot import observability.');
   assert(!resolved.url.includes('/@opentelemetry/'), 'Core cannot import telemetry.');
   return resolved;
 } });
 const switchboard = await import('${manifest.name}');
+assert.equal(rootLoadedOpenCode, false, 'The root import does not load the OpenCode host adapter.');
+watchRoot = false;
 const hostPi = await import('${manifest.name}/host/pi');
 assert.equal(hostPi.piHostAdapter.identity.adapter, 'pi-host');
+const hostOpenCode = await import('${manifest.name}/host/opencode');
+assert.deepEqual(hostOpenCode.opencodeHostAdapter.identity, { engine: 'opencode', adapter: 'opencode-host', version: '1', contractVersion: 1 });
+assert.equal(hostOpenCode.OPENCODE_HOST_ACP_VERSION, '1');
 assert.throws(() => createRequire(import.meta.url).resolve('@ag-ui/core'), { code: 'MODULE_NOT_FOUND' });
 assert.throws(() => createRequire(import.meta.url).resolve('@opentelemetry/api'), { code: 'MODULE_NOT_FOUND' });
 assert.equal(typeof switchboard, 'object');
@@ -190,6 +201,18 @@ for (const subpath of ${JSON.stringify([...buildFiles.flatMap((path) => [path, p
   const piTypes = run(process.execPath, [compiler, '-p', 'pi-types.json', '--listFilesOnly'], consumer);
   assert(!piTypes.includes('/@earendil-works/'), 'Pi declarations are usable without native SDK declarations.');
   run(process.execPath, [compiler, '-p', 'pi-types.json'], consumer);
+  writeFileSync(join(consumer, 'opencode-types.test.ts'), `import type { OpenCodeHostOpenOptions } from '${manifest.name}/host/opencode';
+const options: OpenCodeHostOpenOptions = {
+  model: 'provider/model-id',
+  environment: { variables: { PATH: '/usr/bin' }, nativeConfig: { cwd: '/work', executable: '/usr/bin/opencode', account: 'account' } },
+  launch: { kind: 'spawn', spawn: () => ({ channel: { listen: () => () => {}, write: () => Promise.resolve(), endInput: () => {} }, processExit: Promise.resolve() }) },
+};
+// @ts-expect-error Property 'model' is missing.
+const missingModel: OpenCodeHostOpenOptions = { environment: options.environment, launch: options.launch };
+void [options, missingModel];
+`);
+  writeFileSync(join(consumer, 'opencode-types.json'), JSON.stringify({ ...consumerConfig, files: ['opencode-types.test.ts'] }));
+  run(process.execPath, [compiler, '-p', 'opencode-types.json'], consumer);
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';
