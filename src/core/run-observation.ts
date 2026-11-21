@@ -150,9 +150,10 @@ export const runtimeOutcome = Object.freeze({ completed: 'success', failed: 'fai
 
 /**
  * A host segment result as its terminal observation. A failure whose write is `outcome-unknown` is always
- * `outcome-unknown`; any other failure is `failedAs`. A pending segment succeeds with its call ids pending.
+ * `outcome-unknown`; any other failure is `failedAs`. No result (the segment threw after the run started) is `outcome-unknown`. A pending segment succeeds with its call ids pending.
  */
-export function segmentTerminal(result: HostSegmentResult, failedAs: Exclude<RunObservationOutcome, 'success'> = 'failed'): RunObservation {
+export function segmentTerminal(result: HostSegmentResult | undefined, failedAs: Exclude<RunObservationOutcome, 'success'> = 'failed'): RunObservation {
+  if (result === undefined) return { kind: 'terminal', outcome: 'outcome-unknown' };
   switch (result.kind) {
     case 'complete': return { kind: 'terminal', outcome: 'success' };
     case 'pending': return { kind: 'terminal', outcome: 'success',

@@ -638,8 +638,7 @@ async function openAdapter(ready: {
     } finally {
       // A throw after the run started still gives the baseline its one terminal.
       if (state.started) {
-        emitObservation(input.onObservation, settled === undefined ? { kind: 'terminal', outcome: 'outcome-unknown' }
-          : segmentTerminal(settled.result, settled.failedAs));
+        emitObservation(input.onObservation, segmentTerminal(settled?.result, settled?.failedAs));
       }
     }
   }

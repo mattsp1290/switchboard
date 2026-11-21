@@ -328,6 +328,16 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
     noteObserver(started.value.finish(outcome));
   };
 
+  // The listed pending tools in started order, noting each way the adapter's list can disagree with the ledger.
+  const pendingToolRefs = (pending: readonly string[]) => {
+    if (pending.some(id => !tools.has(id))) note('pending-tool-unknown');
+    // The projector rejects a pending id whose tool already has a result.
+    if (pending.some(id => tools.get(id)?.result)) note('pending-tool-resolved');
+    // A result-less started tool the adapter did not list leaves the projector's pending set unequal to the ledger's.
+    const unresolved = toolOrder.filter(id => !tools.get(id)!.result);
+    if (unresolved.some(id => !pending.includes(id))) note('pending-tool-unlisted');
+    return unresolved.filter(id => pending.includes(id)).map(id => ref(toolScope, id));
+  };
   const finishRun = (outcome: Extract<RunObservation, { kind: 'terminal' }>) => {
     for (const entry of opened) {
       if (entry.kind === 'tool') {
@@ -355,14 +365,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
     let agentOutcome: TerminalOutcome;
     switch (outcome.outcome) {
       case 'success': {
-        const pending = outcome.pendingTools;
-        if (pending?.some(id => !tools.has(id))) note('pending-tool-unknown');
-        // The projector rejects a pending id whose tool already has a result.
-        if (pending?.some(id => tools.get(id)?.result)) note('pending-tool-resolved');
-        const ordered = pending === undefined ? undefined
-          : toolOrder.filter(id => pending.includes(id) && !tools.get(id)!.result).map(id => ref(toolScope, id));
-        // A result-less started tool the adapter did not list leaves the projector's pending set unequal to the ledger's.
-        if (ordered !== undefined && toolOrder.some(id => !tools.get(id)!.result && !pending!.includes(id))) note('pending-tool-unlisted');
+        const ordered = outcome.pendingTools && pendingToolRefs(outcome.pendingTools);
         project({ kind: 'run-finished', outcome: 'success', ...attached, ...(ordered === undefined ? {} : { pendingTools: ordered }) });
         agentOutcome = { kind: 'success' };
         break;

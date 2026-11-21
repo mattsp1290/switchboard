@@ -856,14 +856,10 @@ async function openSession(ready: {
         return result;
       } finally {
         if (active.promptWritten && onObservation) {
-          if (result === undefined) {
-            // The segment threw after the run started: the baseline still gets its one terminal.
-            emitObservation(onObservation, { kind: 'terminal', outcome: 'outcome-unknown' });
-          } else {
-            const promptUsage = !record(active.usage) ? undefined : usageRow(active.usage);
-            if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
-            emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
-          }
+          // A segment that threw after the run started (no result) still gives the baseline its one terminal.
+          const promptUsage = result === undefined || !record(active.usage) ? undefined : usageRow(active.usage);
+          if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
+          emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
         }
       }
     },

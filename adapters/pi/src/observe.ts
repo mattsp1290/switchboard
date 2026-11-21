@@ -15,28 +15,32 @@ export function createMessageObserver(listener: RunObservationListener | undefin
   return {
     message(message: AssistantMessage, ended: boolean): void {
       if (!listener) return;
-      const messageId = `assistant:${messageIndex}`;
-      const nextText = message.content.filter(part => part.type === 'text').map(part => part.text).join('');
-      if (nextText !== '' && nextText !== text) {
-        text = nextText;
-        emitObservation(listener, { kind: 'text', messageId, mode: 'snapshot', text: nextText });
-      }
-      const nextThinking = message.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('');
-      if (nextThinking !== '' && nextThinking !== thinking) {
-        thinkingSeen = true;
-        thinking = nextThinking;
-        emitObservation(listener, { kind: 'reasoning', messageId, mode: 'snapshot', text: nextThinking });
-      }
-      if (ended) {
-        const { input, output, cacheRead, cacheWrite } = message.usage ?? {};
-        if (tokenCount(input) !== undefined && tokenCount(output) !== undefined) {
-          // pi-ai `input` is the uncached count, so the cache counts are added back to match the other engines.
-          usage = usageFromUncachedCounts({ input, output, cacheRead, cacheWrite });
+      // Observation only: a failure here never fails the turn.
+      try {
+        const messageId = `assistant:${messageIndex}`;
+        const nextText = message.content.filter(part => part.type === 'text').map(part => part.text).join('');
+        if (nextText !== '' && nextText !== text) {
+          text = nextText;
+          emitObservation(listener, { kind: 'text', messageId, mode: 'snapshot', text: nextText });
         }
-        messageIndex++;
-        text = '';
-        thinking = '';
-      }
+        const nextThinking = message.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('');
+        if (nextThinking !== '' && nextThinking !== thinking) {
+          thinkingSeen = true;
+          thinking = nextThinking;
+          emitObservation(listener, { kind: 'reasoning', messageId, mode: 'snapshot', text: nextThinking });
+        }
+        if (ended) {
+          const { input, output, cacheRead, cacheWrite } = message.usage ?? {};
+          if (tokenCount(input) !== undefined && tokenCount(output) !== undefined) {
+            // pi-ai `input` is the uncached count, so the cache counts are added back to match the other engines.
+            usage = usageFromUncachedCounts({ input, output, cacheRead, cacheWrite });
+          }
+          messageIndex++;
+          text = '';
+          thinking = '';
+        }
+
+      } catch { /* observation only */ }
     },
     /** The final `unsupported` reasoning (when none was seen), `usage`, and `terminal` observations. */
     finish(outcome: RunObservationOutcome): void {

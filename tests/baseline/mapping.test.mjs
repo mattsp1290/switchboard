@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { answeredToolObservations, createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage, usageFromUncachedCounts } = await import(new URL('core/run-observation.ts', src).href);
+const { answeredToolObservations, createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage, segmentTerminal, usageFromUncachedCounts } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -548,4 +548,10 @@ test('observerBounds reach the observer and an invalid bound is invalid-input, n
     allowedToolNames: [], provider: 'fixture', observerBounds: { maxActiveSpans: 0 },
   });
   assert.deepEqual(created, { kind: 'error', error: { code: 'invalid-input' } });
+});
+
+test('a segment with no result gets the outcome-unknown terminal', () => {
+  assert.deepEqual(segmentTerminal(undefined), { kind: 'terminal', outcome: 'outcome-unknown' });
+  assert.deepEqual(segmentTerminal(undefined, 'cancelled'), { kind: 'terminal', outcome: 'outcome-unknown' });
+  assert.deepEqual(segmentTerminal({ kind: 'complete' }), success);
 });

@@ -9,7 +9,7 @@ import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-a
 import {
   answeredToolObservations, createDispatchOperation, createEventStream, emitObservation, emitRunStarted,
   isOptionalObservationListener, jsonString, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
-  segmentTerminal, tokenCount,
+  segmentTerminal, usageFromCounts,
 } from '#switchboard';
 import type {
   DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration,
@@ -344,13 +344,8 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     let observer: RunObservationListener | undefined;
     const observe = (observation: RunObservation) => { emitObservation(observer, observation); };
     // Native counts reach the baseline only when valid; an invalid count drops its field, never the model boundary.
-    const observedCounts = (usage: { input: number; output: number } | undefined) => {
-      if (usage === undefined) return undefined;
-      const inputTokens = tokenCount(usage.input);
-      const outputTokens = tokenCount(usage.output);
-      const row = { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
-      return Object.keys(row).length === 0 ? undefined : row;
-    };
+    const observedCounts = (usage: { input: number; output: number } | undefined) =>
+      usage === undefined ? undefined : usageFromCounts({ inputTokens: usage.input, outputTokens: usage.output });
     // A request binds the listener of the segment that issued it, so a late event from an aborted segment cannot reach the next one.
     const sinkFor = (listener: RunObservationListener | undefined) => ({
       text: (delta: string) => {
