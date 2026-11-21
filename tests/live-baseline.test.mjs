@@ -9,7 +9,8 @@ import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { PROJECTION_FAMILIES, checkAguiRun, checkEngineEvidence, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
 import {
-  ambientCredentialNames, codexHostArgs, credentialNames, dryRunRequested, engines, formatReason, opencodeAuthContent,
+  ambientCredentialNames, codexHostArgs, credentialNames, dryRunRequested, engines, formatReason, hostVariables, nativeRecordMissing,
+  opencodeAuthContent,
   resolveModel, selectEngines, takeCredentials,
 } from '../scripts/live-baseline-engines.mjs';
 
@@ -135,7 +136,10 @@ test('engine selection, model resolution, and the credential lists', () => {
   assert.deepEqual(selectEngines({ ...canaries }), []);
   for (const off of ['0', 'false', 'FALSE', '', 'off', 'no', 'garbage']) assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: off }), []);
   for (const on of ['1', 'true', 'TRUE', 'yes', 'on', ' On ']) assert.equal(selectEngines({ SWITCHBOARD_LIVE_ALL: on }).length, engines.length);
-  assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: 'garbage' }), false);
+  assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: 'garbage' }), true);
+  for (const on of ['y', '2']) assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: on }), true);
+  for (const off of ['off', ' No ', 'FALSE', '']) assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: off }), false);
+  assert.equal(dryRunRequested({}), false);
   assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: 'yes' }), true);
   assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_HOST_OPENCODE: '1' }).map((engine) => engine.name), ['host/opencode']);
   assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: '0' }), false);
@@ -160,6 +164,23 @@ test('host/codex appends the model, a low reasoning effort, and private sqlite a
   assert.deepEqual(codexHostArgs('gpt-6-luna', paths), ['-c', 'model="gpt-6-luna"', '-c', 'model_reasoning_effort="low"',
     '-c', 'sqlite_home="/tmp/run/codex-sqlite"', '-c', 'log_dir="/tmp/run/codex-logs"']);
   assert.equal(codexHostArgs('a"b', paths)[1], 'model="a\\"b"');
+});
+
+test('host child environments hold exactly each engine\'s keys and only host/opencode gets the credential document', () => {
+  const input = { path: '/bin', home: '/h', codexHome: '/h/.codex', opencodeConfigHome: '/c', opencodeKey: 'k-1', tmpdir: '/t' };
+  assert.deepEqual(hostVariables('host/codex', input), { PATH: '/bin', HOME: '/h', CODEX_HOME: '/h/.codex' });
+  assert.deepEqual(hostVariables('host/opencode', input),
+    { PATH: '/bin', HOME: '/h', XDG_CONFIG_HOME: '/c', OPENCODE_AUTH_CONTENT: opencodeAuthContent('k-1') });
+  assert.deepEqual(hostVariables('host/pi', input), { PATH: '/bin', TMPDIR: '/t' });
+  for (const name of ['host/codex', 'host/pi']) assert.equal(JSON.stringify(hostVariables(name, input)).includes('k-1'), false);
+  assert.throws(() => hostVariables('claude', input));
+});
+
+test('a native-record engine without a native session is a failure', () => {
+  const byName = (name) => engines.find((engine) => engine.name === name);
+  assert.equal(nativeRecordMissing(byName('host/codex'), undefined), true);
+  assert.equal(nativeRecordMissing(byName('host/codex'), 'thread-1'), false);
+  assert.equal(nativeRecordMissing(byName('claude'), undefined), false);
 });
 
 test('failure reasons are one redacted line of at most 200 characters', () => {
@@ -219,6 +240,13 @@ test('in-process assertions reject each broken batch', () => {
   assert.deepEqual(checkAguiRun({ ...failed, batches: [mapped({ type: 'RUN_STARTED' }), textBatch, mapped({ type: 'RUN_ERROR' })] }), { ok: true });
   assert.equal(code({ ...good(), report: { ...unqualified(['text']), families: unqualified().families.map((row) => ({ ...row, qualification: 'qualified' })) } }), 'family-qualified');
   assert.equal(code({ ...good(), report: unqualified() }), 'family-availability');
+});
+
+test('a text baseline row needs a text observation with non-empty text', () => {
+  const run = (observation) => checkAguiRun({ ...good(), observations: [started, observation, success], report: unqualified(['text']) });
+  assert.deepEqual(run(text), { ok: true });
+  assert.equal(run({ ...text, text: '' }).code, 'family-availability');
+  assert.equal(run({ ...text, text: undefined }).code, 'family-availability');
 });
 
 test('tool payloads must appear in tool events', () => {

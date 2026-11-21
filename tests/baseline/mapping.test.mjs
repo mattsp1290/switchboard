@@ -337,6 +337,38 @@ test('the tool tracker holds back a {} placeholder until the first other argumen
   assert.deepEqual(track('c', 'run', '{"a":2}'), []);
 });
 
+test('the tool tracker close() emits started only for a never-seen call and stops later opening arguments', () => {
+  const track = createToolTracker();
+  assert.deepEqual(track.close('c', 'run'), [{ kind: 'tool', callId: 'c', name: 'run', phase: 'started' }]);
+  assert.deepEqual(track.close('c', 'run'), []);
+  assert.deepEqual(track('c', 'run', '{"a":1}'), []);
+  track('d', 'run', undefined);
+  assert.deepEqual(track.close('d', 'run'), []);
+  assert.deepEqual(track('d', 'run', '{"a":1}'), []);
+});
+
+test('appended arguments are accumulated: a later full value that differs is reported, a matching one is not', t => {
+  const same = setup(t);
+  same.feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: '{"a"' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: ':1}' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments-ended', argumentsJson: '{"a":1}' }, success);
+  assert.deepEqual(same.diagnostics.map(row => row.code), []);
+  const differs = setup(t);
+  differs.feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: '{"a"' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: ':1}' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'completed', argumentsJson: '{"a":2}' }, success);
+  assert.deepEqual(differs.diagnostics.map(row => row.code), ['tool-arguments-changed']);
+});
+
+test('an arguments delta after the arguments closed is reported, not dropped silently', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: '{"a":1}' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments-ended' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: 'late' }, success);
+  assert.deepEqual(events.filter(event => event.type === 'TOOL_CALL_ARGS').map(event => event.delta), ['{"a":1}']);
+  assert.deepEqual(diagnostics.map(row => row.code), ['tool-arguments-changed']);
+});
+
 test('text, reasoning, and usage before run-started are dropped as not-running', t => {
   const { events, diagnostics, feed } = setup(t);
   feed({ kind: 'text', messageId: 'm', mode: 'delta', text: 'hi' }, { kind: 'reasoning', messageId: 'r', mode: 'delta', text: 'hm' },

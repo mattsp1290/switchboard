@@ -71,7 +71,7 @@ function checkReport(report, observations, events) {
     if (row.qualification !== 'unqualified') return fail('family-qualified');
     if (row.availability !== (supported.has(family) ? 'supported' : 'unsupported')) return fail('family-availability');
   }
-  const sawText = observations.some((item) => item?.kind === 'text');
+  const sawText = observations.some((item) => item?.kind === 'text' && typeof item.text === 'string' && item.text !== '');
   const sawTool = observations.some((item) => item?.kind === 'tool');
   const expected = { text: sawText, tools: sawTool, steps: false };
   for (const [family, seen] of Object.entries(expected)) {

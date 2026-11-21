@@ -228,8 +228,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       if (state.argumentsOpen && (append || !state.argumentsSent)) {
         if (!project({ kind: 'tool-arguments', tool: ref(toolScope, callId), delta: argumentsJson })) return;
         state.argumentsSent = true;
-        if (!append) state.argumentsText = argumentsJson;
-      } else if (!append && state.argumentsText !== undefined && state.argumentsText !== argumentsJson) {
+        state.argumentsText = append ? (state.argumentsText ?? '') + argumentsJson : argumentsJson;
+      } else if (append || (state.argumentsText !== undefined && state.argumentsText !== argumentsJson)) {
         note('tool-arguments-changed');
       }
     }

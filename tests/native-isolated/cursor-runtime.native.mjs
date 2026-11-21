@@ -181,7 +181,7 @@ serial('Cursor runtime sandboxes, accumulates text, and hides tool payloads', as
       { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: 'Hello world' },
     ]);
     assert.deepEqual(observed.filter(o => o.kind === 'reasoning'),
-      [{ kind: 'reasoning', messageId: 'reasoning', mode: 'delta', text: 'do-not-leak' }]);
+      [{ kind: 'reasoning', messageId: 'reasoning:0', mode: 'delta', text: 'do-not-leak' }]);
     const observedTools = observed.filter(o => o.kind === 'tool');
     assert.deepEqual(observedTools, [
       { kind: 'tool', callId: 'call-1', name: 'edit', phase: 'started' },

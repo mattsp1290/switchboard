@@ -11,7 +11,7 @@ import {
   createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, segmentTerminal, tokenCount,
   usageFromCounts,
 } from '../../core/run-observation.js';
-import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
+import type { RunObservation, RunObservationListener, RunObservationUsage, ToolTracker } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
 import { sessionLimits } from '../../core/sessions.js';
 import { openOpenCodeProtocol } from './protocol.js';
@@ -218,8 +218,7 @@ function toolObservation(update: Record<string, unknown>, track: ToolTracker): r
   const status = update.status;
   if (status === undefined || status === 'pending' || status === 'in_progress') return track(callId, name, argumentsJson);
   if (status !== 'completed' && status !== 'failed') return [];
-  track(callId, name, ''); // a closed call is never reopened, so later opening updates for it emit nothing
-  return [{
+  return [...track.close(callId, name), {
     kind: 'tool', callId, name, phase: status === 'completed' ? 'arguments-ended' : 'failed',
     ...(argumentsJson === undefined ? {} : { argumentsJson }), ...(resultJson === undefined ? {} : { resultJson }),
   }];
@@ -235,7 +234,6 @@ function rpcError(outcome: OpenCodeRpcOutcome): HostAdapterError {
   if (outcome.kind === 'error') return { code: 'native-failure', message: 'OpenCode rejected the session.' };
   return { code: 'native-failure', message: 'OpenCode did not acknowledge the session.' };
 }
-type ToolTracker = ReturnType<typeof createToolTracker>;
 type ExitWatch = 'observed' | 'rejected' | 'timeout';
 
 interface PermissionAnswer {

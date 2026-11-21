@@ -364,7 +364,7 @@ async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
   onObservation: RunObservationListener | undefined,
 ): Promise<CursorOutcome> {
-  const state: PublishState = { text: '', sent: '', ...(onObservation ? { trackTool: createToolTracker() } : {}) };
+  const state: PublishState = { text: '', sent: '', reasoningStep: 0, reasoningOpen: false, ...(onObservation ? { trackTool: createToolTracker() } : {}) };
   let step: Step = 'next';
   let callback = false;
   let streamFailed = false;
@@ -407,6 +407,9 @@ function turnOutcome(input: {
 interface PublishState {
   text: string;
   sent: string;
+  /** Reasoning step number; bumps when assistant text or a tool call follows reasoning. Kept only when a listener is present. */
+  reasoningStep: number;
+  reasoningOpen: boolean;
   /** Emits each call's `started` and arguments once. Present only when a listener is present. */
   readonly trackTool?: ReturnType<typeof createToolTracker>;
 }
@@ -439,6 +442,12 @@ function observeTool(message: Record<string, unknown>, callId: string, name: str
   });
 }
 
+function endReasoning(state: PublishState): void {
+  if (!state.reasoningOpen) return;
+  state.reasoningOpen = false;
+  state.reasoningStep += 1;
+}
+
 /**
  * Append each assistant text block. `@cursor/sdk@1.4.2` delivers one chunk per assistant message.
  * The listener sees the same accumulated text as a snapshot. Thinking messages are chunks, so they are observed as deltas.
@@ -453,6 +462,7 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
       if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';
       state.text += block.text;
     }
+    if (onObservation && content.some((block) => isRecord(block) && block.type === 'text')) endReasoning(state);
     if (state.text !== state.sent) {
       state.sent = state.text;
       emitObservation(onObservation, { kind: 'text', messageId: 'assistant', mode: 'snapshot', text: state.text });
@@ -462,7 +472,8 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
   }
   if (message.type === 'thinking') {
     if (typeof message.text === 'string' && message.text.length > 0) {
-      emitObservation(onObservation, { kind: 'reasoning', messageId: 'reasoning', mode: 'delta', text: message.text });
+      if (onObservation) state.reasoningOpen = true;
+      emitObservation(onObservation, { kind: 'reasoning', messageId: `reasoning:${state.reasoningStep}`, mode: 'delta', text: message.text });
     }
     return 'next';
   }
@@ -476,6 +487,7 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
     const name = message.name;
     const status = message.status;
     if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
+    if (onObservation) endReasoning(state);
     if (onObservation && state.trackTool) observeTool(message, callId, name, status, state.trackTool, onObservation);
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';

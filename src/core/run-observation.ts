@@ -50,7 +50,7 @@ export type RunObservation =
   /**
    * Rows are native counts and are never summed. A later row with the same (provider, model) key replaces an earlier
    * one, so the terminal usage is the most recent row per key. Scope differs by runtime: Claude and Codex text report
-   * the turn total; OpenCode reports the latest usage_update or the prompt-response usage; Cursor, Pi and Pi-host
+   * the turn total (Cursor included: its usage message is per-turn); OpenCode reports the latest usage_update or the prompt-response usage; Pi and Pi-host
    * report the most recent request only (per-request rows share one key); `./host/codex` reports the thread-cumulative
    * `total`, which includes earlier segments and survives resume.
    */
@@ -141,13 +141,20 @@ export function answeredToolObservations(callId: string, name: string, args: unk
   ];
 }
 
+/** Opens calls (see `createToolTracker`) and closes ones that never opened. */
+export interface ToolTracker {
+  (callId: string, name: string, argumentsJson: string | undefined): readonly RunObservation[];
+  /** `started` when the call was never seen (and marks it seen), else `[]`. A closed call is not reopened by later opening updates. */
+  close(callId: string, name: string): readonly RunObservation[];
+}
+
 /**
  * Opening phases for adapters that see a tool call several times: `started` once per call, then `arguments` once
  * when JSON-safe arguments first appear. A `{}` placeholder is not arguments: it is held back for the first other value. The caller emits the closing phase itself.
  */
-export function createToolTracker(): (callId: string, name: string, argumentsJson: string | undefined) => readonly RunObservation[] {
+export function createToolTracker(): ToolTracker {
   const calls = new Map<string, { argumentsSent: boolean }>();
-  return (callId, name, argumentsJson) => {
+  const open = (callId: string, name: string, argumentsJson: string | undefined): readonly RunObservation[] => {
     const observations: RunObservation[] = [];
     let call = calls.get(callId);
     if (call === undefined) {
@@ -161,6 +168,12 @@ export function createToolTracker(): (callId: string, name: string, argumentsJso
     }
     return observations;
   };
+  const close = (callId: string, name: string): readonly RunObservation[] => {
+    const started = open(callId, name, undefined);
+    calls.get(callId)!.argumentsSent = true; // a closed call never gets opening arguments later
+    return started;
+  };
+  return Object.assign(open, { close });
 }
 
 /**

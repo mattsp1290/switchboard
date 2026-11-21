@@ -127,6 +127,8 @@ interface Collected {
   readonly calls: readonly { readonly id: string; readonly name: string; readonly arguments: Record<string, never> }[];
   readonly input: number;
   readonly output: number;
+  /** A `usage` event arrived for this request. */
+  readonly usageReported?: boolean;
   readonly failure?: 'mixed' | 'limit' | 'arguments' | 'duplicate';
 }
 
@@ -134,29 +136,32 @@ function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<s
   let text = '';
   let input = 0;
   let output = 0;
+  let usageReported = false;
   const calls: Collected['calls'][number][] = [];
   const ids = new Set<string>();
   for (const event of events) {
     if (event.kind === 'text') text += event.text;
-    else if (event.kind === 'usage') { input = event.input; output = event.output; }
+    else if (event.kind === 'usage') { input = event.input; output = event.output; usageReported = true; }
     else {
       const argumentsValue = jsonObject(event.arguments);
       if (argumentsValue === undefined || !identifier(event.id, 1024) || !identifier(event.name, 256)) {
-        return { text, calls: [], input, output, failure: 'arguments' };
+        return { text, calls: [], input, output, usageReported, failure: 'arguments' };
       }
-      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], input, output, failure: 'duplicate' };
+      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], input, output, usageReported, failure: 'duplicate' };
       ids.add(event.id);
       calls.push({ id: event.id, name: event.name, arguments: argumentsValue });
     }
   }
-  if (calls.length > piHostLimits.maxPendingPerMessage) return { text, calls: [], input, output, failure: 'limit' };
-  if (calls.some((call) => !names.has(call.name))) return { text, calls: [], input, output, failure: 'mixed' };
-  return { text, calls, input, output };
+  if (calls.length > piHostLimits.maxPendingPerMessage) return { text, calls: [], input, output, usageReported, failure: 'limit' };
+  if (calls.some((call) => !names.has(call.name))) return { text, calls: [], input, output, usageReported, failure: 'mixed' };
+  return { text, calls, input, output, usageReported };
 }
 
 function emitAssistant(stream: AssistantMessageEventStream, collected: Collected, sink: {
   text: (delta: string) => void;
   tool: (call: Collected['calls'][number], phase: 'start' | 'end') => void;
+  /** One call per provider request; `usage` is absent when the request reported none. */
+  boundary: (usage: { input: number; output: number } | undefined) => void;
   usage: (input: number, output: number) => void;
 }): void {
   const message: AssistantMessage = {
@@ -164,6 +169,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
     usage: usageCounters(collected.input, collected.output), stopReason: 'stop', timestamp: Date.now(),
   };
   stream.push({ type: 'start', partial: message });
+  sink.boundary(collected.usageReported ? { input: collected.input, output: collected.output } : undefined);
   let index = 0;
   if (collected.text.length > 0) {
     message.content = [{ type: 'text', text: '' }];
@@ -354,10 +360,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           observe({ kind: 'tool', callId: call.id, name: call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
         }
       },
-      // Each provider request is one model boundary. A later request's row replaces an earlier one (same key), so the final request's counts stand.
+      // Each provider request is one model boundary, with usage only when that request reported it. A later request's
+      // terminal usage row replaces an earlier one (same key), so the final request's counts stand.
+      boundary: (usage: { input: number; output: number } | undefined) => {
+        observe({ kind: 'model-boundary', ...(usage === undefined ? {} : { usage: { inputTokens: usage.input, outputTokens: usage.output } }) });
+      },
       usage: (input: number, output: number) => {
         publish({ kind: 'usage', usage: hostUsage(input, output) });
-        observe({ kind: 'model-boundary', usage: { inputTokens: input, outputTokens: output } });
         observe({ kind: 'usage', rows: [{ inputTokens: input, outputTokens: output }] });
       },
     };

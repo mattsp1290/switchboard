@@ -454,8 +454,10 @@ test('a listener sees a tool call first, named by kind, while the segment still 
         assert.deepEqual(tools.map((row) => row.phase), ['started', 'arguments']);
         assert.equal(tools[1].argumentsJson, '{"command":"ls"}');
       } else if (status === 'completed') {
-        assert.deepEqual(tools.map((row) => [row.phase, row.argumentsJson, row.resultJson]), [['arguments-ended', '{"command":"ls"}', '{"out":"ok"}']]);
-      } else assert.deepEqual(tools.map((row) => row.phase), ['failed']);
+        // a call first seen already closed still emits `started` before its closing phase
+        assert.deepEqual(tools.map((row) => [row.phase, row.argumentsJson, row.resultJson]),
+          [['started', undefined, undefined], ['arguments-ended', '{"command":"ls"}', '{"out":"ok"}']]);
+      } else assert.deepEqual(tools.map((row) => row.phase), ['started', 'failed']);
       assert.deepEqual(seen.rows.at(-1), { kind: 'terminal', outcome: 'failed' });
     });
   }

@@ -157,6 +157,15 @@ test('a mixed tool batch fails before a host tool runs', async () => {
   await host.close();
 });
 
+test('a provider request that reported no usage still emits a model boundary, without usage', async () => {
+  const host = await open({ stream: async function* stream() { yield { kind: 'text', text: 'hi' }; } });
+  const seen = [];
+  const result = await host.adapter.run({ ...run('Say hi'), onObservation: (o) => { seen.push(o); } });
+  assert.equal(result.kind, 'complete');
+  assert.deepEqual(seen.filter((o) => o.kind === 'model-boundary'), [{ kind: 'model-boundary' }]);
+  await host.close();
+});
+
 test('a segment listener receives model boundaries, tool facts, usage and a terminal', async () => {
   const tools = [{ name: 'lookup', description: 'Looks up a value.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } } }];
   const first = await open({ tools, stream: async function* stream() {

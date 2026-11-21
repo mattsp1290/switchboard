@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { checkAguiRun, checkEngineEvidence, checkLotelSpans, lastTerminal } from './live-baseline-check.mjs';
 import {
-  codexHostArgs, dryRunRequested, formatReason, opencodeAuthContent, resolveModel, selectEngines, takeCredentials,
+  codexHostArgs, dryRunRequested, formatReason, hostVariables, nativeRecordMissing, resolveModel, selectEngines, takeCredentials,
 } from './live-baseline-engines.mjs';
 
 const exec = promisify(execFile);
@@ -32,6 +32,8 @@ class LiveFailure extends Error {
 }
 const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 const ignore = () => {};
+/** Waits for `promise` (its rejection ignored) for at most `ms`, so a hung cleanup never hangs the run. */
+const bounded = (promise, ms = 15_000) => Promise.race([Promise.resolve(promise).catch(ignore), delay(ms)]);
 const scrub = (text) => String(text).split(homedir()).join('~');
 
 // Gates read the environment first. Then every credential is captured and removed so no child process or adapter
@@ -60,34 +62,39 @@ const textRuntimes = {
 
 /** Host engines' adapter open, keyed by engine name. `hostTurn` owns launch, run, result classification, and cleanup. */
 const hostOpeners = {
-  async 'host/opencode'({ model, cwd, scratch, executableFile, launchWith, variables, signal }) {
+  async 'host/opencode'({ model, cwd, scratch, executableFile, launchWith, signal }) {
     const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
     // The child environment is exactly `variables`. OpenCode reads its provider credential from OPENCODE_AUTH_CONTENT.
     // A private XDG_CONFIG_HOME keeps the operator's OpenCode config (plugins, MCP servers, providers) out of the run,
     // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
     // OpenCode reject the session.
     const configHome = join(scratch, 'opencode-config');
-    await mkdir(configHome, { recursive: true });
-    const opencodeVariables = { ...variables, XDG_CONFIG_HOME: configHome,
-      OPENCODE_AUTH_CONTENT: opencodeAuthContent(credentials.SWITCHBOARD_OPENCODE_API_KEY) };
-    return opencodeHostAdapter.open({ model, launch: launchWith([]), environment: { variables: opencodeVariables,
+    // The private config also denies edit, bash, and webfetch, so a model tool call cannot act on the host.
+    await mkdir(join(configHome, 'opencode'), { recursive: true });
+    await writeFile(join(configHome, 'opencode', 'opencode.json'), JSON.stringify({ $schema: 'https://opencode.ai/config.json',
+      permission: { edit: 'deny', bash: 'deny', webfetch: 'deny' } }));
+    const variables = hostVariables('host/opencode', { path: process.env.PATH ?? '', home: homedir(), opencodeConfigHome: configHome,
+      opencodeKey: credentials.SWITCHBOARD_OPENCODE_API_KEY });
+    return opencodeHostAdapter.open({ model, launch: launchWith([]), environment: { variables,
       nativeConfig: { cwd, executable: executableFile, account: 'live' } } }, signal);
   },
-  async 'host/codex'({ model, cwd, scratch, executableFile, launchWith, variables, signal }) {
+  async 'host/codex'({ model, cwd, scratch, executableFile, launchWith, signal }) {
     const { codexHostAdapter } = await import('@mattsp1290/switchboard/host/codex');
     const codexPrivate = { sqliteHome: join(scratch, 'codex-sqlite'), logDir: join(scratch, 'codex-logs') };
     for (const directory of Object.values(codexPrivate)) await mkdir(directory, { recursive: true });
+    const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+    const variables = hostVariables('host/codex', { path: process.env.PATH ?? '', home: homedir(), codexHome });
     return codexHostAdapter.open({ launch: launchWith(codexHostArgs(model, codexPrivate)), environment: { variables,
-      nativeConfig: { home: process.env.CODEX_HOME || join(homedir(), '.codex'), cwd, sandbox: 'read-only',
+      nativeConfig: { home: codexHome, cwd, sandbox: 'read-only',
         executable: executableFile } } }, signal);
   },
-  async 'host/pi'({ model, scratch, variables, signal }) {
+  async 'host/pi'({ model, scratch, signal }) {
     const { piHostAdapter } = await import('@mattsp1290/switchboard/host/pi');
     const stream = await piHostStream(model);
     const temp = join(scratch, 'tmp');
     await mkdir(temp, { recursive: true });
     return piHostAdapter.open({ launch: { kind: 'in-process' }, subagents: 'off', stream,
-      environment: { variables: { PATH: variables.PATH, TMPDIR: temp }, nativeConfig: {} } }, signal);
+      environment: { variables: hostVariables('host/pi', { path: process.env.PATH ?? '', tmpdir: temp }), nativeConfig: {} } }, signal);
   },
 };
 
@@ -161,7 +168,8 @@ async function main() {
       if (build !== 'ok') throw new LiveFailure('build-failed');
       const { nativeSession, ...evidence } = await runEngine(engine, model, lotel.binary, executableFile);
       Object.assign(result, evidence);
-      if (engine.confirmation === 'native-record' && nativeSession !== undefined) result.nativeSession = scrub(nativeSession);
+      if (nativeRecordMissing(engine, nativeSession)) throw new LiveFailure('native-record-missing');
+      if (engine.confirmation === 'native-record') result.nativeSession = scrub(nativeSession);
       result.pass = true;
     } catch (error) {
       result.code = error instanceof LiveFailure ? error.code : 'engine-error';
@@ -252,7 +260,7 @@ async function pollSpans(binary, runId, observations) {
     const base = ['query', 'traces', '--service', SERVICE, '--limit', '1000'];
     let spans = await lotelJson(binary, [...base, '--attr', `switchboard.run_id=${runId}`]);
     const filtered = (list) => (Array.isArray(list) ? list.filter((span) => span?.attributes?.['switchboard.run_id'] === runId) : []);
-    if (filtered(spans).length === 0) spans = await lotelJson(binary, base);
+    if (spans === undefined) spans = await lotelJson(binary, base);
     const own = filtered(spans);
     if (own.length > 0) {
       last = checkLotelSpans({ spans: own, runId, observations });
@@ -273,7 +281,7 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   const { createRunBaseline } = await import('@mattsp1290/switchboard/baseline');
   const provider = new NodeTracerProvider({
     resource: resourceFromAttributes({ 'service.name': SERVICE }),
-    spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: 'http://127.0.0.1:4318/v1/traces', timeoutMillis: 5000 }))],
+    spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || 'http://127.0.0.1:4318/v1/traces', timeoutMillis: 5000 }))],
   });
   const runId = `live-${randomBytes(8).toString('hex')}`;
   const created = createRunBaseline({
@@ -325,10 +333,10 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   return { outcome, spans: spans.counts, ...(nativeSession === undefined ? {} : { nativeSession }) };
 }
 
-async function within(promise, abort) {
+async function within(promise, abort, until = Date.now() + TURN_MS) {
   let timer;
   const limit = new Promise((_, reject) => {
-    timer = setTimeout(() => { reject(new LiveFailure('turn-timeout')); }, TURN_MS);
+    timer = setTimeout(() => { reject(new LiveFailure('turn-timeout')); }, Math.max(0, until - Date.now()));
   });
   try {
     return await Promise.race([promise, limit]);
@@ -350,12 +358,13 @@ async function turn(engine, model, scratch, onObservation, executableFile) {
 
 async function textTurn({ engine, model, cwd, sessionDirectory, onObservation }) {
   const runtime = await textRuntimes[engine.name]({ cwd, sessionDirectory, model });
+  const until = Date.now() + TURN_MS;
   try {
-    const started = await within(runtime.start({ text: PROMPT, onEvent: ignore, onObservation }), undefined);
-    await within(started.finished, () => started.abort());
+    const started = await within(runtime.start({ text: PROMPT, onEvent: ignore, onObservation }), undefined, until);
+    await within(started.finished, () => started.abort(), until);
     return { nativeSession: started.threadId }; // main keeps it only for confirmation === 'native-record'
   } finally {
-    await runtime.close();
+    await bounded(runtime.close());
   }
 }
 
@@ -365,13 +374,14 @@ async function piTurn({ model, cwd, sessionDirectory, onObservation }) {
   try {
     const session = await runtime.open();
     try {
-      const prompt = await within(session.prompt(PROMPT, ignore, onObservation), () => session.abort());
-      await within(prompt.finished, () => session.abort());
+      const until = Date.now() + TURN_MS;
+      const prompt = await within(session.prompt(PROMPT, ignore, onObservation), () => session.abort(), until);
+      await within(prompt.finished, () => session.abort(), until);
     } finally {
-      await session.close();
+      await bounded(session.close());
     }
   } finally {
-    await runtime.close();
+    await bounded(runtime.close());
   }
   return {};
 }
@@ -407,7 +417,12 @@ function spawnChannel(request, extraArgs = []) {
     }),
     endInput: () => { child.stdin.end(); },
   };
-  return { channel, processExit, stop: () => { if (child.exitCode === null) child.kill('SIGTERM'); } };
+  return { channel, processExit, stop: () => {
+    if (child.exitCode !== null) return;
+    child.kill('SIGTERM');
+    // A child that ignores SIGTERM is killed after 2 s; the timer never keeps the script alive.
+    setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 2000).unref();
+  } };
 }
 
 async function hostTurn({ engine, model, cwd, scratch, onObservation, executableFile }) {
@@ -418,10 +433,9 @@ async function hostTurn({ engine, model, cwd, scratch, onObservation, executable
     stops.push(spawned.stop);
     return spawned;
   } });
-  const variables = { PATH: process.env.PATH ?? '', HOME: homedir() };
   let adapter;
   try {
-    const opened = await hostOpeners[engine.name]({ model, cwd, scratch, executableFile, launchWith, variables, signal });
+    const opened = await hostOpeners[engine.name]({ model, cwd, scratch, executableFile, launchWith, signal });
     if (opened.kind !== 'ok') throw new LiveFailure('host-open-failed', `${opened.error.code}: ${opened.error.message}`);
     adapter = opened.value;
     const result = await within(adapter.run({ prompt: PROMPT, hostOperationId: `live-${randomBytes(4).toString('hex')}`,
@@ -432,7 +446,7 @@ async function hostTurn({ engine, model, cwd, scratch, onObservation, executable
     if (result.kind === 'pending') throw new LiveFailure('segment-pending', 'the segment ended with pending host tool calls');
     return { nativeSession: result.session?.opaque }; // main keeps it only for confirmation === 'native-record'
   } finally {
-    await adapter?.close().catch(() => {});
+    await bounded(adapter?.close());
     for (const stop of stops) stop();
   }
 }
@@ -451,6 +465,7 @@ async function piHostStream(model) {
   // OpenCode Go rejects a request without x-opencode-session; pi-ai sends that header only for options.sessionId.
   const sessionId = `live-baseline-${randomBytes(6).toString('hex')}`;
   return async function* stream(request) {
+    if (request.turns.some((item) => item.role !== 'user')) throw new Error('live stream supports a single user turn only');
     const messages = request.turns.filter((item) => item.role === 'user')
       .map((item) => ({ role: 'user', content: item.text, timestamp: Date.now() }));
     const message = await models.completeSimple(native, { systemPrompt: request.instructions, messages }, { signal: request.signal, sessionId });

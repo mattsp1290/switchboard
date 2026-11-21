@@ -59,9 +59,9 @@ export function selectEngines(env) {
   return enabled(env, 'SWITCHBOARD_LIVE_ALL') ? [...engines] : engines.filter((engine) => enabled(env, engine.gate));
 }
 
-/** Whether a dry run or live run treats SWITCHBOARD_LIVE_DRY_RUN as set. */
+/** A dry run fails safe: any non-empty SWITCHBOARD_LIVE_DRY_RUN requests one except an explicit off value (`0`, `false`, `no`, `off`). */
 export function dryRunRequested(env) {
-  return enabled(env, 'SWITCHBOARD_LIVE_DRY_RUN');
+  return present(env, 'SWITCHBOARD_LIVE_DRY_RUN') && !['0', 'false', 'no', 'off'].includes(env.SWITCHBOARD_LIVE_DRY_RUN.trim().toLowerCase());
 }
 
 /**
@@ -81,6 +81,24 @@ export function takeCredentials(env) {
 /** OpenCode's provider credential document for one OpenCode Go key, passed to the child as OPENCODE_AUTH_CONTENT. */
 export function opencodeAuthContent(key) {
   return JSON.stringify({ 'opencode-go': { type: 'api', key } });
+}
+
+/**
+ * The exact child environment for one host engine. Each engine gets only its own keys; the OpenCode credential document
+ * appears only for `host/opencode`, and `host/codex` gets the same `codexHome` it passes as `nativeConfig.home`.
+ */
+export function hostVariables(engineName, { path, home, codexHome, opencodeConfigHome, opencodeKey, tmpdir }) {
+  switch (engineName) {
+    case 'host/codex': return { PATH: path, HOME: home, CODEX_HOME: codexHome };
+    case 'host/opencode': return { PATH: path, HOME: home, XDG_CONFIG_HOME: opencodeConfigHome, OPENCODE_AUTH_CONTENT: opencodeAuthContent(opencodeKey) };
+    case 'host/pi': return { PATH: path, TMPDIR: tmpdir };
+    default: throw new Error(`no host variables for ${engineName}`);
+  }
+}
+
+/** Whether a `native-record` engine's turn returned the native session it must record. Other engines need none. */
+export function nativeRecordMissing(engine, nativeSession) {
+  return engine.confirmation === 'native-record' && nativeSession === undefined;
 }
 
 /** The engine's model override, or its cheap default. */
