@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { checkAguiRun, checkEngineEvidence, checkLotelSpans } from './live-baseline-check.mjs';
+import { checkAguiRun, checkEngineEvidence, checkLotelSpans, lastTerminal } from './live-baseline-check.mjs';
 import {
   codexHostArgs, dryRunRequested, formatReason, opencodeAuthContent, resolveModel, selectEngines, takeCredentials,
 } from './live-baseline-engines.mjs';
@@ -23,13 +23,15 @@ const bounds = { maxEntities: 1024, maxPayloadBytes: 1_048_576, maxJsonDepth: 32
 const reportPath = process.env.SWITCHBOARD_LIVE_BASELINE_REPORT || join(root, '.audit/live-baseline.json');
 
 class LiveFailure extends Error {
-  constructor(code, reason) {
+  constructor(code, reason, detail) {
     super(code);
     this.code = code;
     this.reason = reason;
+    this.detail = detail;
   }
 }
 const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+const ignore = () => {};
 const scrub = (text) => String(text).split(homedir()).join('~');
 
 // Gates read the environment first. Then every credential is captured and removed so no child process or adapter
@@ -56,27 +58,69 @@ const textRuntimes = {
   },
 };
 
-/** Which dispatch an engine uses; reading `textRuntimes` here lets the dry run prove the table is initialized. */
+/** Host engines' adapter open, keyed by engine name. `hostTurn` owns launch, run, result classification, and cleanup. */
+const hostOpeners = {
+  async 'host/opencode'({ model, cwd, scratch, executableFile, launchWith, variables, signal }) {
+    const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
+    // The child environment is exactly `variables`. OpenCode reads its provider credential from OPENCODE_AUTH_CONTENT.
+    // A private XDG_CONFIG_HOME keeps the operator's OpenCode config (plugins, MCP servers, providers) out of the run,
+    // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
+    // OpenCode reject the session.
+    const configHome = join(scratch, 'opencode-config');
+    await mkdir(configHome, { recursive: true });
+    const opencodeVariables = { ...variables, XDG_CONFIG_HOME: configHome,
+      OPENCODE_AUTH_CONTENT: opencodeAuthContent(credentials.SWITCHBOARD_OPENCODE_API_KEY) };
+    return opencodeHostAdapter.open({ model, launch: launchWith([]), environment: { variables: opencodeVariables,
+      nativeConfig: { cwd, executable: executableFile, account: 'live' } } }, signal);
+  },
+  async 'host/codex'({ model, cwd, scratch, executableFile, launchWith, variables, signal }) {
+    const { codexHostAdapter } = await import('@mattsp1290/switchboard/host/codex');
+    const codexPrivate = { sqliteHome: join(scratch, 'codex-sqlite'), logDir: join(scratch, 'codex-logs') };
+    for (const directory of Object.values(codexPrivate)) await mkdir(directory, { recursive: true });
+    return codexHostAdapter.open({ launch: launchWith(codexHostArgs(model, codexPrivate)), environment: { variables,
+      nativeConfig: { home: process.env.CODEX_HOME || join(homedir(), '.codex'), cwd, sandbox: 'read-only',
+        executable: executableFile } } }, signal);
+  },
+  async 'host/pi'({ model, scratch, variables, signal }) {
+    const { piHostAdapter } = await import('@mattsp1290/switchboard/host/pi');
+    const stream = await piHostStream(model);
+    const temp = join(scratch, 'tmp');
+    await mkdir(temp, { recursive: true });
+    return piHostAdapter.open({ launch: { kind: 'in-process' }, subagents: 'off', stream,
+      environment: { variables: { PATH: variables.PATH, TMPDIR: temp }, nativeConfig: {} } }, signal);
+  },
+};
+
+// Function declarations are hoisted, so these dispatch tables can sit before the functions they name.
+const turns = { text: textTurn, pi: piTurn, host: hostTurn };
+const registries = { text: textRuntimes, host: hostOpeners };
+
+/** The engine's runtime when this script can run it. */
 function dispatchOf(engine) {
-  if (engine.runtime === 'text' && typeof textRuntimes[engine.name] !== 'function') throw new LiveFailure('runtime-missing');
+  const registry = registries[engine.runtime];
+  if (turns[engine.runtime] === undefined || (registry !== undefined && typeof registry[engine.name] !== 'function')) {
+    throw new LiveFailure('runtime-missing');
+  }
   return engine.runtime;
 }
 
-if (selected.length === 0) {
-  process.stdout.write('live-baseline: no engine selected\n');
-} else if (dryRun) {
-  dryRunPlan();
-} else {
-  await main();
+/** The checks a run makes before lotel, build, or any adapter import. Throws LiveFailure; returns the host executable (null for none). */
+function preflight(engine) {
+  if (engine.credential !== undefined && !credentials[engine.credential]) throw new LiveFailure('credential-required');
+  const executableFile = hostExecutable(engine);
+  if (executableFile === undefined) throw new LiveFailure('executable-required');
+  dispatchOf(engine);
+  return executableFile;
 }
 
-/** The only executable resolver: an absolute, executable host binary from its variable or PATH, or undefined. Text engines need none (null). */
-function hostExecutable(engine) {
-  const usable = (path) => (typeof path === 'string' && isAbsolute(path) && executable(path) ? path : undefined);
-  if (engine.name === 'host/codex') return usable(process.env.CODEX_BIN);
-  if (engine.name !== 'host/opencode') return null;
-  if (process.env.OPENCODE_BIN !== undefined) return usable(process.env.OPENCODE_BIN);
-  return (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, 'opencode')).find(executable);
+/** The only executable resolver: an absolute, executable host binary from its variable or PATH, or undefined. Engines without `executable` need none (null). */
+function hostExecutable({ executable: spec }) {
+  if (spec === undefined) return null;
+  const value = process.env[spec.variable];
+  if (value !== undefined || spec.command === undefined) {
+    return typeof value === 'string' && isAbsolute(value) && executable(value) ? value : undefined;
+  }
+  return onPath(spec.command);
 }
 
 /** Prints the resolved plan per engine. No lotel, build, adapter import, model call, or report. */
@@ -87,23 +131,14 @@ function dryRunPlan() {
     process.stdout.write(`FAIL ${engine.name} ${code}\n`);
   };
   for (const engine of selected) {
-    const credential = engine.credential === undefined ? 'not-needed' : credentials[engine.credential] ? 'present' : 'missing';
-    if (credential === 'missing') {
-      fail(engine, 'credential-required');
-      continue;
-    }
-    if (hostExecutable(engine) === undefined) {
-      fail(engine, 'executable-required');
-      continue;
-    }
-    let runtime;
     try {
-      runtime = dispatchOf(engine);
+      preflight(engine);
     } catch (error) {
       fail(engine, error instanceof LiveFailure ? error.code : 'engine-error');
       continue;
     }
-    process.stdout.write(`DRY ${engine.name} model=${models.get(engine.name)} runtime=${runtime} credential=${credential}`
+    const credential = engine.credential === undefined ? 'not-needed' : 'present';
+    process.stdout.write(`DRY ${engine.name} model=${models.get(engine.name)} runtime=${engine.runtime} credential=${credential}`
       + ` confirmation=${engine.confirmation}\n`);
   }
   process.stdout.write('', () => process.exit(failed ? 1 : 0));
@@ -111,23 +146,20 @@ function dryRunPlan() {
 
 async function main() {
   const results = [];
-  const lotel = { value: undefined };
-  const build = { value: undefined };
+  let lotel;
+  let build;
   for (const engine of selected) {
     const model = models.get(engine.name);
     const result = { engine: engine.name, model, confirmation: engine.confirmation, pass: false, outcome: null, spans: null, lotel: null };
     results.push(result);
     try {
-      if (engine.credential !== undefined && !credentials[engine.credential]) throw new LiveFailure('credential-required');
-      const executableFile = hostExecutable(engine);
-      if (executableFile === undefined) throw new LiveFailure('executable-required');
-      dispatchOf(engine);
-      lotel.value ??= await resolveLotel();
-      result.lotel = lotel.value.identity;
-      if (lotel.value.failure) throw new LiveFailure(lotel.value.failure);
-      build.value ??= runBuild();
-      if (build.value !== 'ok') throw new LiveFailure('build-failed');
-      const { nativeSession, ...evidence } = await runEngine(engine, model, lotel.value.binary, executableFile);
+      const executableFile = preflight(engine);
+      lotel ??= await resolveLotel();
+      result.lotel = lotel.identity;
+      if (lotel.failure) throw new LiveFailure(lotel.failure);
+      build ??= runBuild();
+      if (build !== 'ok') throw new LiveFailure('build-failed');
+      const { nativeSession, ...evidence } = await runEngine(engine, model, lotel.binary, executableFile);
       Object.assign(result, evidence);
       if (engine.confirmation === 'native-record' && nativeSession !== undefined) result.nativeSession = scrub(nativeSession);
       result.pass = true;
@@ -165,6 +197,11 @@ function executable(path) {
   }
 }
 
+/** The first executable `command` on PATH, or undefined. */
+function onPath(command) {
+  return (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, command)).find(executable);
+}
+
 async function capture(file, args, options = {}) {
   try {
     const { stdout } = await exec(file, args, { encoding: 'utf8', timeout: 15_000, windowsHide: true, ...options });
@@ -176,9 +213,9 @@ async function capture(file, args, options = {}) {
 
 async function resolveLotel() {
   const source = process.env.LOTEL_SOURCE || join(homedir(), 'git/lotel');
-  const onPath = (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, 'lotel')).find(executable);
+  const fromPath = onPath('lotel');
   const built = [join(source, 'lotel'), join(source, 'bin/lotel')].find(executable);
-  const binary = onPath ?? built;
+  const binary = fromPath ?? built;
   if (binary === undefined) return { failure: 'lotel-unavailable', identity: { binary: 'unavailable' } };
   const identity = {};
   const info = await capture('go', ['version', '-m', binary]);
@@ -275,15 +312,16 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   }
   if (!flushed) throw new LiveFailure('flush-failed', 'the tracer provider did not flush or shut down');
   const aguiCheck = checkAguiRun({ batches, observations, report });
-  const outcome = observations.findLast((item) => item.kind === 'terminal')?.outcome ?? null;
+  const outcome = lastTerminal(observations)?.outcome ?? null;
   const detail = { outcome };
-  if (!aguiCheck.ok) throw Object.assign(new LiveFailure(aguiCheck.code), { detail });
+  if (!aguiCheck.ok) throw new LiveFailure(aguiCheck.code, undefined, detail);
   // A failed or unknown terminal still produces a consistent AG-UI run and agent span; only a success proves a live turn.
-  if (outcome !== 'success') throw Object.assign(new LiveFailure('outcome-not-success'), { detail });
+  if (outcome !== 'success') throw new LiveFailure('outcome-not-success', undefined, detail);
   const spans = await pollSpans(lotelBinary, runId, observations);
-  if (!spans.ok) throw Object.assign(new LiveFailure(spans.code), { detail: { ...detail, spans: spans.counts ?? null } });
+  const spanDetail = { ...detail, spans: spans.counts ?? null };
+  if (!spans.ok) throw new LiveFailure(spans.code, undefined, spanDetail);
   const evidence = checkEngineEvidence(engine, spans.counts);
-  if (!evidence.ok) throw Object.assign(new LiveFailure(evidence.code), { detail: { outcome, spans: spans.counts } });
+  if (!evidence.ok) throw new LiveFailure(evidence.code, undefined, spanDetail);
   return { outcome, spans: spans.counts, ...(nativeSession === undefined ? {} : { nativeSession }) };
 }
 
@@ -307,38 +345,35 @@ async function turn(engine, model, scratch, onObservation, executableFile) {
   const sessionDirectory = join(scratch, 'session');
   await mkdir(cwd, { recursive: true });
   await mkdir(sessionDirectory, { recursive: true });
-  const ignore = () => {};
-  const text = textRuntimes[engine.name];
-  if (text) {
-    const runtime = await text({ cwd, sessionDirectory, model });
+  return turns[engine.runtime]({ engine, model, scratch, cwd, sessionDirectory, onObservation, executableFile });
+}
+
+async function textTurn({ engine, model, cwd, sessionDirectory, onObservation }) {
+  const runtime = await textRuntimes[engine.name]({ cwd, sessionDirectory, model });
+  try {
+    const started = await within(runtime.start({ text: PROMPT, onEvent: ignore, onObservation }), undefined);
+    await within(started.finished, () => started.abort());
+    return { nativeSession: started.threadId }; // main keeps it only for confirmation === 'native-record'
+  } finally {
+    await runtime.close();
+  }
+}
+
+async function piTurn({ model, cwd, sessionDirectory, onObservation }) {
+  const { createPiRuntime } = await import('@mattsp1290/switchboard/pi');
+  const runtime = await createPiRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_OPENCODE_API_KEY, provider: 'opencode-go', model });
+  try {
+    const session = await runtime.open();
     try {
-      const started = await within(runtime.start({ text: PROMPT, onEvent: ignore, onObservation }), undefined);
-      await within(started.finished, () => started.abort());
-      return { nativeSession: engine.name === 'codex' ? started.threadId : undefined };
+      const prompt = await within(session.prompt(PROMPT, ignore, onObservation), () => session.abort());
+      await within(prompt.finished, () => session.abort());
     } finally {
-      await runtime.close();
+      await session.close();
     }
+  } finally {
+    await runtime.close();
   }
-  switch (engine.name) {
-    case 'pi': {
-      const { createPiRuntime } = await import('@mattsp1290/switchboard/pi');
-      const runtime = await createPiRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_OPENCODE_API_KEY, provider: 'opencode-go', model });
-      try {
-        const session = await runtime.open();
-        try {
-          const prompt = await within(session.prompt(PROMPT, ignore, onObservation), () => session.abort());
-          await within(prompt.finished, () => session.abort());
-        } finally {
-          await session.close();
-        }
-      } finally {
-        await runtime.close();
-      }
-      return {};
-    }
-    default:
-      return hostTurn(engine, model, cwd, scratch, onObservation, executableFile);
-  }
+  return {};
 }
 
 /** Wraps one host-owned child as the channel both host adapters accept. The host kills it when the turn ends. */
@@ -375,46 +410,18 @@ function spawnChannel(request, extraArgs = []) {
   return { channel, processExit, stop: () => { if (child.exitCode === null) child.kill('SIGTERM'); } };
 }
 
-async function hostTurn(engine, model, cwd, scratch, onObservation, executableFile) {
+async function hostTurn({ engine, model, cwd, scratch, onObservation, executableFile }) {
   const signal = AbortSignal.timeout(TURN_MS);
   const stops = [];
-  const codexPrivate = { sqliteHome: join(scratch, 'codex-sqlite'), logDir: join(scratch, 'codex-logs') };
-  if (engine.name === 'host/codex') for (const directory of Object.values(codexPrivate)) await mkdir(directory, { recursive: true });
-  const extraArgs = engine.name === 'host/codex' ? codexHostArgs(model, codexPrivate) : [];
-  const launch = { kind: 'spawn', spawn: (request) => {
+  const launchWith = (extraArgs) => ({ kind: 'spawn', spawn: (request) => {
     const spawned = spawnChannel(request, extraArgs);
     stops.push(spawned.stop);
     return spawned;
-  } };
+  } });
   const variables = { PATH: process.env.PATH ?? '', HOME: homedir() };
   let adapter;
   try {
-    let opened;
-    if (engine.name === 'host/opencode') {
-      const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
-      // The child environment is exactly `variables`. OpenCode reads its provider credential from OPENCODE_AUTH_CONTENT.
-      // A private XDG_CONFIG_HOME keeps the operator's OpenCode config (plugins, MCP servers, providers) out of the run,
-      // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
-      // OpenCode reject the session.
-      const configHome = join(scratch, 'opencode-config');
-      await mkdir(configHome, { recursive: true });
-      const opencodeVariables = { ...variables, XDG_CONFIG_HOME: configHome,
-        OPENCODE_AUTH_CONTENT: opencodeAuthContent(credentials.SWITCHBOARD_OPENCODE_API_KEY) };
-      opened = await opencodeHostAdapter.open({ model, launch, environment: { variables: opencodeVariables,
-        nativeConfig: { cwd, executable: executableFile, account: 'live' } } }, signal);
-    } else if (engine.name === 'host/codex') {
-      const { codexHostAdapter } = await import('@mattsp1290/switchboard/host/codex');
-      opened = await codexHostAdapter.open({ launch, environment: { variables, nativeConfig: {
-        home: process.env.CODEX_HOME || join(homedir(), '.codex'), cwd, sandbox: 'read-only',
-        executable: executableFile } } }, signal);
-    } else {
-      const { piHostAdapter } = await import('@mattsp1290/switchboard/host/pi');
-      const stream = await piHostStream(model);
-      const temp = join(scratch, 'tmp');
-      await mkdir(temp, { recursive: true });
-      opened = await piHostAdapter.open({ launch: { kind: 'in-process' }, subagents: 'off', stream,
-        environment: { variables: { PATH: variables.PATH, TMPDIR: temp }, nativeConfig: {} } }, signal);
-    }
+    const opened = await hostOpeners[engine.name]({ model, cwd, scratch, executableFile, launchWith, variables, signal });
     if (opened.kind !== 'ok') throw new LiveFailure('host-open-failed', `${opened.error.code}: ${opened.error.message}`);
     adapter = opened.value;
     const result = await within(adapter.run({ prompt: PROMPT, hostOperationId: `live-${randomBytes(4).toString('hex')}`,
@@ -423,7 +430,7 @@ async function hostTurn(engine, model, cwd, scratch, onObservation, executableFi
     if (result.kind === 'failed') throw new LiveFailure('segment-failed', `${result.error.code}: ${result.error.message}`);
     // The prompt asks for text only, so a pending tool call means the turn did not finish.
     if (result.kind === 'pending') throw new LiveFailure('segment-pending', 'the segment ended with pending host tool calls');
-    return { nativeSession: engine.name === 'host/codex' ? result.session?.opaque : undefined };
+    return { nativeSession: result.session?.opaque }; // main keeps it only for confirmation === 'native-record'
   } finally {
     await adapter?.close().catch(() => {});
     for (const stop of stops) stop();
@@ -453,4 +460,13 @@ async function piHostStream(model) {
     const { input, output } = message.usage ?? {};
     if (Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0) yield { kind: 'usage', input, output };
   };
+}
+
+// Entry point last, so every top-level binding above is initialized before main or the dry run reads it.
+if (selected.length === 0) {
+  process.stdout.write('live-baseline: no engine selected\n');
+} else if (dryRun) {
+  dryRunPlan();
+} else {
+  await main();
 }

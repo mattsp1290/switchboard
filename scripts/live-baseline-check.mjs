@@ -15,9 +15,11 @@ const fail = (code) => ({ ok: false, code });
 
 /** `expect.modelSpans` is `some` or `none`; `counts` is the lotel span count object. */
 export function checkEngineEvidence(engine, counts) {
-  if (engine.expect?.modelSpans === 'some' && counts.model === 0) return fail('model-span-missing');
-  if (engine.expect?.modelSpans === 'none' && counts.model !== 0) return fail('model-span-unexpected');
-  return { ok: true };
+  switch (engine.expect?.modelSpans) {
+    case 'some': return counts.model === 0 ? fail('model-span-missing') : { ok: true };
+    case 'none': return counts.model !== 0 ? fail('model-span-unexpected') : { ok: true };
+    default: return fail('expectation-missing');
+  }
 }
 
 export function lastTerminal(observations) {
@@ -81,6 +83,17 @@ function checkReport(report, observations, events) {
   return { ok: true };
 }
 
+/** The native call id inside an AG-UI tool call id `[1, sourceKey, 'tool', scope, id]` (src/agui/internal.ts `identity`), else the id itself. */
+function nativeToolCallId(toolCallId) {
+  try {
+    const parsed = JSON.parse(toolCallId);
+    if (Array.isArray(parsed) && parsed.length === 5 && parsed[0] === 1 && parsed[2] === 'tool' && typeof parsed[4] === 'string') return parsed[4];
+  } catch {
+    // Not an encoded id.
+  }
+  return toolCallId;
+}
+
 /**
  * `batches` are the `accept(...).projection` values in order. `observations` are the `RunObservation` values fed.
  * `report` is `close()`'s result.
@@ -125,15 +138,7 @@ export function checkAguiRun({ batches, observations, report }) {
     if (event.type === 'TOOL_CALL_ARGS') call(event.toolCallId).args += String(event.delta);
     if (event.type === 'TOOL_CALL_RESULT') call(event.toolCallId).results.push(typeof event.content === 'string' ? event.content : JSON.stringify(event.content));
   }
-  const nativeId = (toolCallId) => {
-    try {
-      const parsed = JSON.parse(toolCallId);
-      return Array.isArray(parsed) ? parsed[4] : toolCallId;
-    } catch {
-      return toolCallId;
-    }
-  };
-  const own = (callId) => [...calls].filter(([id]) => nativeId(id) === callId).map(([, value]) => value);
+  const own = (callId) => [...calls].filter(([id]) => nativeToolCallId(id) === callId).map(([, value]) => value);
   const byCall = new Map();
   for (const observation of observations) {
     if (observation?.kind !== 'tool') continue;

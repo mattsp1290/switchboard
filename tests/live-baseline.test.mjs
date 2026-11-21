@@ -284,6 +284,17 @@ test('tool payloads are checked against the events of their own call', () => {
   assert.equal(checkAguiRun(input(tool('b', '{"y":2}', '"one"'))).code, 'tool-result-missing');
 });
 
+test('a tool call id array that is not the projector identity shape is not decoded', () => {
+  const wrong = JSON.stringify([2, 'codex', 'tool', ['tool'], 'a']);
+  const observation = { kind: 'tool', callId: 'a', name: 'read', phase: 'completed', argumentsJson: '{"x":1}', resultJson: '"one"' };
+  const input = {
+    batches: [mapped({ type: 'RUN_STARTED' }), textBatch,
+      mapped({ type: 'TOOL_CALL_ARGS', toolCallId: wrong, delta: '{"x":1}' }, { type: 'TOOL_CALL_RESULT', toolCallId: wrong, content: '"one"' }), finished],
+    observations: [started, text, observation, success], report: unqualified(['text', 'tools']),
+  };
+  assert.equal(checkAguiRun(input).code, 'tool-arguments-missing');
+});
+
 test('reasoning and usage families follow what the baseline projected', () => {
   const batches = (terminal) => [mapped({ type: 'RUN_STARTED' }), textBatch, mapped(terminal)];
   const run = (extra, terminal, supported) => ({ batches: batches(terminal), observations: [started, text, ...extra, success], report: unqualified(supported) });
@@ -305,6 +316,9 @@ test('engine evidence enforces the expected model span presence', () => {
   assert.deepEqual(checkEngineEvidence(byName('claude'), { agent: 1, tool: 0, model: 1 }), { ok: true });
   assert.deepEqual(checkEngineEvidence(byName('codex'), { agent: 1, tool: 0, model: 1 }), { ok: false, code: 'model-span-unexpected' });
   assert.deepEqual(checkEngineEvidence(byName('codex'), { agent: 1, tool: 0, model: 0 }), { ok: true });
+  const unspecified = { ...byName('claude'), expect: { modelSpans: 'sometimes' } };
+  assert.deepEqual(checkEngineEvidence(unspecified, { agent: 1, tool: 0, model: 1 }), { ok: false, code: 'expectation-missing' });
+  assert.deepEqual(checkEngineEvidence({ ...unspecified, expect: undefined }, { agent: 1, tool: 0, model: 1 }), { ok: false, code: 'expectation-missing' });
   assert.deepEqual(engines.filter((engine) => engine.expect.modelSpans === 'some').map((engine) => engine.name), ['claude', 'host/pi']);
 });
 

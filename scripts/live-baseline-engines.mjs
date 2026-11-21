@@ -6,7 +6,8 @@
  * environment never selects an engine. Each default is the lowest listed paid input+output price for its provider,
  * excluding free tiers, using a canonical (non-alias) id. `runtime` names the dispatch path in the live script.
  * `confirmation` says how a live run proves the model that actually ran. `expect.modelSpans` is the evidence a passing run
- * must show: `some` model spans (claude, host/pi) or `none` (every other engine).
+ * must show: `some` model spans (claude, host/pi) or `none` (every other engine). `executable` names the variable that
+ * holds an absolute host binary and, optionally, a command to find on PATH when the variable is unset.
  */
 export const engines = Object.freeze([
   { name: 'claude', provider: 'claude', gate: 'SWITCHBOARD_LIVE_CLAUDE', credential: 'SWITCHBOARD_ANTHROPIC_API_KEY',
@@ -35,12 +36,12 @@ export const engines = Object.freeze([
     expect: { modelSpans: 'some' } },
   { name: 'host/codex', provider: 'codex', gate: 'SWITCHBOARD_LIVE_HOST_CODEX', credential: undefined,
     modelVariable: 'SWITCHBOARD_LIVE_HOST_CODEX_MODEL', defaultModel: 'gpt-6-luna', runtime: 'host',
-    confirmation: 'native-record',
+    confirmation: 'native-record', executable: { variable: 'CODEX_BIN' },
     expect: { modelSpans: 'none' } },
   // OpenCode's stored login may be stale, so the run hands it the OpenCode Go key through OPENCODE_AUTH_CONTENT.
   { name: 'host/opencode', provider: 'opencode', gate: 'SWITCHBOARD_LIVE_HOST_OPENCODE', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_HOST_OPENCODE_MODEL', defaultModel: 'opencode-go/mimo-v2.6-flash', runtime: 'host',
-    confirmation: 'adapter-enforced',
+    confirmation: 'adapter-enforced', executable: { variable: 'OPENCODE_BIN', command: 'opencode' },
     expect: { modelSpans: 'none' } },
 ].map((engine) => Object.freeze(engine)));
 
