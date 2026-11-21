@@ -1,6 +1,6 @@
 import type { Context, Tracer } from '@opentelemetry/api';
 import type { Outcome } from '../core/contracts.js';
-import { runObservationFamilies } from '../core/run-observation.js';
+import { runObservationFamilies, tokenCount } from '../core/run-observation.js';
 import type { RunObservation, RunObservationFamily, RunObservationUsage } from '../core/run-observation.js';
 import { createAguiProjection, describeProjection } from '../agui/index.js';
 import type {
@@ -28,6 +28,8 @@ export interface RunBaselineOptions {
   /** The agent span's `gen_ai.provider.name`, and the model span's provider. */
   readonly provider: string;
   readonly agentName?: string;
+  /** Passed to the GenAI observer. `maxIdentifierLength` also bounds the baseline's own identifier checks (default 256). */
+  readonly observerBounds?: { readonly maxActiveSpans?: number; readonly maxIdentifierLength?: number };
 }
 
 export type RunBaselineDiagnosticCode =
@@ -38,10 +40,12 @@ export type RunBaselineDiagnosticCode =
   | 'after-close'
   | 'tool-result-repeated'
   | 'tool-arguments-changed'
+  | 'tool-name-changed'
   | 'tool-span-unrecorded'
   | 'not-running'
   | 'invalid-observation'
-  | 'pending-tool-unknown';
+  | 'pending-tool-unknown'
+  | 'pending-tool-resolved';
 
 export interface RunBaselineDiagnostic {
   readonly code: RunBaselineDiagnosticCode;
@@ -107,12 +111,52 @@ interface ToolState {
 }
 type OpenEntry = { readonly kind: 'text' | 'reasoning' | 'tool'; readonly id: string };
 
-const maxIdentifierLength = 256;
 const runningOnly: ReadonlySet<RunObservation['kind']> = Object.freeze(
   new Set<RunObservation['kind']>(['text', 'reasoning', 'tool', 'usage', 'model-boundary', 'terminal']));
 
 const knownKinds: ReadonlySet<string> = Object.freeze(new Set<RunObservation['kind']>([
   'run-started', 'text', 'reasoning', 'tool', 'usage', 'interrupt', 'terminal', 'unsupported', 'model-boundary']));
+
+const toolPhases: ReadonlySet<unknown> = new Set(['started', 'arguments', 'arguments-ended', 'completed', 'failed']);
+const terminalOutcomes: ReadonlySet<unknown> = new Set(['success', 'failed', 'cancelled', 'outcome-unknown']);
+const usageCountKeys: readonly string[] = ['inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens',
+  'cachedInputTokens', 'cacheWriteInputTokens'];
+const usageRowKeys: ReadonlySet<string> = new Set(['provider', 'model', ...usageCountKeys]);
+
+const isString = (value: unknown): value is string => typeof value === 'string';
+const optional = (value: unknown, valid: (value: unknown) => boolean): boolean => value === undefined || valid(value);
+
+function usageRowValid(row: unknown): boolean {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) return false;
+  const fields = row as Record<string, unknown>;
+  if (!Object.keys(fields).every(key => usageRowKeys.has(key))) return false;
+  return optional(fields.provider, isString) && optional(fields.model, isString)
+    && usageCountKeys.every(key => optional(fields[key], value => tokenCount(value) !== undefined));
+}
+
+/** Whether `observation` (whose `kind` is already known) has the field types its `RunObservation` member requires. */
+export function observationValid(observation: unknown): boolean {
+  if (typeof observation !== 'object' || observation === null || Array.isArray(observation)) return false;
+  const o = observation as Record<string, unknown>;
+  switch (o.kind) {
+    case 'run-started': return true;
+    case 'text':
+    case 'reasoning':
+      return isString(o.messageId) && (o.mode === 'snapshot' || o.mode === 'delta') && isString(o.text);
+    case 'tool':
+      return isString(o.callId) && isString(o.name) && toolPhases.has(o.phase)
+        && optional(o.argumentsJson, isString) && optional(o.resultJson, isString);
+    case 'usage': return Array.isArray(o.rows) && o.rows.every(usageRowValid);
+    case 'interrupt': return isString(o.id) && isString(o.reason) && optional(o.message, isString);
+    case 'terminal':
+      return terminalOutcomes.has(o.outcome)
+        && optional(o.pendingTools, value => Array.isArray(value) && value.every(isString));
+    case 'unsupported': return runObservationFamilies.includes(o.family as RunObservationFamily);
+    case 'model-boundary':
+      return optional(o.requestModel, isString) && optional(o.responseModel, isString) && optional(o.usage, usageRowValid);
+    default: return false;
+  }
+}
 
 function usageKey(row: RunObservationUsage): string {
   return JSON.stringify([row.provider ?? null, row.model ?? null]);
@@ -142,6 +186,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
     observer = createGenAiObserver({
       tracer: options.tracer, contentPolicy: options.contentPolicy, allowedToolNames: options.allowedToolNames,
       ...(options.admitObservedToolNames === undefined ? {} : { admitObservedToolNames: options.admitObservedToolNames }),
+      ...(options.observerBounds === undefined ? {} : { bounds: options.observerBounds }),
     });
   } catch {
     return Object.freeze({ kind: 'error', error: Object.freeze({ code: 'invalid-input' }) });
@@ -153,6 +198,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
   }
   const projector: AguiProjection = created.value;
   const { provider, agentName, parentContext } = options;
+  const maxIdentifierLength = options.observerBounds?.maxIdentifierLength ?? 256;
   const correlation = Object.freeze({ runId: options.projection.runId });
 
   let phase: 'idle' | 'running' | 'terminated' = 'idle';
@@ -237,13 +283,15 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       tools.set(callId, state);
       toolOrder.push(callId);
       opened.push({ kind: 'tool', id: callId });
+    } else if (state.name !== name) {
+      note('tool-name-changed');
     }
     if (argumentsJson !== undefined && argumentsJson !== '') {
       if (state.argumentsOpen && (append || !state.argumentsSent)) {
         if (!project({ kind: 'tool-arguments', tool: ref(toolScope, callId), delta: argumentsJson })) return;
         state.argumentsSent = true;
         state.argumentsText = append ? (state.argumentsText ?? '') + argumentsJson : argumentsJson;
-      } else if (append || (state.argumentsText !== undefined && state.argumentsText !== argumentsJson)) {
+      } else if (append || state.argumentsText !== argumentsJson) {
         note('tool-arguments-changed');
       }
     }
@@ -310,8 +358,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       case 'success': {
         const pending = outcome.pendingTools;
         if (pending?.some(id => !tools.has(id))) note('pending-tool-unknown');
+        // The projector rejects a pending id whose tool already has a result.
+        if (pending?.some(id => tools.get(id)?.result)) note('pending-tool-resolved');
         const ordered = pending === undefined ? undefined
-          : toolOrder.filter(id => pending.includes(id)).map(id => ref(toolScope, id));
+          : toolOrder.filter(id => pending.includes(id) && !tools.get(id)!.result).map(id => ref(toolScope, id));
         project({ kind: 'run-finished', outcome: 'success', ...attached, ...(ordered === undefined ? {} : { pendingTools: ordered }) });
         agentOutcome = { kind: 'success' };
         break;
@@ -336,6 +386,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
     batch = { events: [], diagnostics: [] };
     if (typeof observation !== 'object' || observation === null || Array.isArray(observation)
       || typeof observation.kind !== 'string' || !knownKinds.has(observation.kind)) {
+      note('invalid-observation');
+    } else if (!observationValid(observation)) {
       note('invalid-observation');
     } else if (closed) {
       note('after-close');

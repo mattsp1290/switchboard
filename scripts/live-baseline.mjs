@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { checkAguiRun, checkBaselineDiagnostics, checkEngineEvidence, checkLotelSpans, lastTerminal } from './live-baseline-check.mjs';
 import {
-  codexHostArgs, dryRunRequested, formatReason, hostVariables, nativeRecordMissing, resolveModel, selectEngines, takeCredentials,
+  OPENCODE_PERMISSION_SCHEMA_VERSION, codexHostArgs, dryRunRequested, formatReason, hostVariables, nativeRecordMissing, opencodeSchemaDiffers,
+  resolveModel, selectEngines, takeCredentials,
 } from './live-baseline-engines.mjs';
 
 const OPENCODE_DENIED_TOOLS = ['read', 'edit', 'glob', 'grep', 'list', 'bash', 'task', 'external_directory', 'todowrite', 'question',
@@ -169,6 +170,7 @@ async function main() {
       if (lotel.failure) throw new LiveFailure(lotel.failure);
       build ??= runBuild();
       if (build !== 'ok') throw new LiveFailure('build-failed');
+      if (engine.name === 'host/opencode') result.nativeVersion = await recordOpencodeVersion(executableFile);
       const { nativeSession, ...evidence } = await runEngine(engine, model, lotel.binary, executableFile);
       Object.assign(result, evidence);
       if (nativeRecordMissing(engine, nativeSession)) throw new LiveFailure('native-record-missing');
@@ -192,6 +194,20 @@ async function main() {
   }
   const failed = results.some((result) => !result.pass);
   process.stdout.write('', () => process.exit(failed ? 1 : 0));
+}
+
+/** The installed OpenCode version (the resolved executable's `--version`), warning once on stderr when the deny list's schema may differ. */
+async function recordOpencodeVersion(executableFile) {
+  let version = null;
+  try {
+    version = (await exec(executableFile, ['--version'], { timeout: 15_000, env: { PATH: process.env.PATH ?? '', HOME: homedir() } })).stdout.trim() || null;
+  } catch {
+    // An unreadable version is recorded as null and skips the comparison.
+  }
+  if (version !== null && opencodeSchemaDiffers(version)) {
+    process.stderr.write(`live-baseline: opencode ${version} differs from the ${OPENCODE_PERMISSION_SCHEMA_VERSION} permission schema the deny list was built from\n`);
+  }
+  return version;
 }
 
 function runBuild() {
@@ -303,7 +319,14 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   const diagnosticCodes = [];
   const onObservation = (observation) => {
     observations.push(observation);
-    const accepted = baseline.accept(observation);
+    let accepted;
+    try {
+      accepted = baseline.accept(observation);
+    } catch {
+      // A throwing accept must not unwind into the adapter; the pure check fails the run with this code.
+      diagnosticCodes.push('accept-threw');
+      return;
+    }
     batches.push(accepted.projection);
     for (const diagnostic of accepted.diagnostics ?? []) diagnosticCodes.push(diagnostic.code);
     if (accepted.observer?.code !== undefined) diagnosticCodes.push(accepted.observer.code);
@@ -350,7 +373,7 @@ async function within(promise, abort, until = Date.now() + TURN_MS) {
   try {
     return await Promise.race([promise, limit]);
   } catch (error) {
-    await abort?.().catch(() => {});
+    await bounded(abort?.());
     throw error;
   } finally {
     clearTimeout(timer);

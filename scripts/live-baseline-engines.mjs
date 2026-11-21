@@ -130,3 +130,12 @@ export function formatReason(text, secrets, home) {
   line = line.split(/\r?\n/u)[0].trim();
   return line.length > REASON_LIMIT ? `${line.slice(0, REASON_LIMIT - 1)}…` : line;
 }
+
+/** The OpenCode release whose permission schema `OPENCODE_DENIED_TOOLS` in scripts/live-baseline.mjs was built from. */
+export const OPENCODE_PERMISSION_SCHEMA_VERSION = '1.18.29';
+
+/** Whether an `opencode --version` output names a version other than the pinned schema version; unparseable output counts as different. */
+export function opencodeSchemaDiffers(output) {
+  const match = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/u.exec(String(output ?? ''));
+  return match === null || match[0] !== OPENCODE_PERMISSION_SCHEMA_VERSION;
+}

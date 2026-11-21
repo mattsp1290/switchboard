@@ -444,3 +444,64 @@ test('a malformed observation is reported as invalid-observation and changes no 
   feed(started, success);
   assert.deepEqual(types(events), ['RUN_STARTED', 'RUN_FINISHED']);
 });
+
+test('an observation with a wrong-typed field is invalid-observation, emits nothing, and a valid run still works', t => {
+  const { baseline, events, feed } = setup(t);
+  feed(started);
+  const bad = [
+    { kind: 'usage' }, { kind: 'usage', rows: [null] }, { kind: 'usage', rows: [{ inputTokens: -1 }] },
+    { kind: 'usage', rows: [{ inputTokens: 1, bogus: 1 }] }, { kind: 'usage', rows: [{ provider: 5 }] },
+    { kind: 'text', messageId: 'm', mode: 'snapshot', text: 5 }, { kind: 'text', messageId: 'm', mode: 'other', text: 'a' },
+    { kind: 'reasoning', messageId: 5, mode: 'delta', text: 'a' },
+    { kind: 'terminal', outcome: 'succes' }, { kind: 'terminal', outcome: 'success', pendingTools: [1] },
+    { kind: 'tool', callId: 'c', name: 'n', phase: 'complete' }, { kind: 'tool', callId: 'c', name: 5, phase: 'started' },
+    { kind: 'tool', callId: 'c', name: 'n', phase: 'started', argumentsJson: {} },
+    { kind: 'interrupt', id: 'i' }, { kind: 'unsupported', family: 'nope' },
+    { kind: 'model-boundary', requestModel: 5 }, { kind: 'model-boundary', usage: { inputTokens: 1.5 } },
+  ];
+  for (const observation of bad) {
+    const result = baseline.accept(observation);
+    assert.equal(result.projection.kind, 'mapped', JSON.stringify(observation));
+    assert.deepEqual(result.projection.events, [], JSON.stringify(observation));
+    assert.deepEqual(result.diagnostics, [{ code: 'invalid-observation' }], JSON.stringify(observation));
+  }
+  feed({ kind: 'text', messageId: 'm', mode: 'delta', text: 'ok' }, success);
+  assert.equal(events.at(-1).type, 'RUN_FINISHED');
+});
+
+test('arguments that arrive after arguments-ended with none sent are reported', t => {
+  const { diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'n', phase: 'arguments-ended' },
+    { kind: 'tool', callId: 'c', name: 'n', phase: 'completed', argumentsJson: '{"a":1}', resultJson: '1' });
+  assert.deepEqual(diagnostics, [{ code: 'tool-arguments-changed' }]);
+});
+
+test('a known call id that arrives with a different name keeps the first name and is reported', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'first', phase: 'started' },
+    { kind: 'tool', callId: 'c', name: 'second', phase: 'arguments-ended' });
+  assert.deepEqual(diagnostics, [{ code: 'tool-name-changed' }]);
+  assert.deepEqual(events.filter(event => event.type === 'TOOL_CALL_START').map(event => event.toolCallName), ['first']);
+});
+
+test('a pending id whose tool already has a result is dropped from the terminal with a diagnostic', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'done', name: 'n', phase: 'completed', resultJson: '1' },
+    { kind: 'tool', callId: 'open', name: 'n', phase: 'arguments-ended' },
+    { kind: 'terminal', outcome: 'success', pendingTools: ['done', 'open'] });
+  assert.deepEqual(diagnostics, [{ code: 'pending-tool-resolved' }]);
+  assert.equal(events.at(-1).type, 'RUN_FINISHED');
+});
+
+test('observerBounds reach the observer and an invalid bound is invalid-input, not a throw', t => {
+  const { feed, spans } = setup(t, { observerBounds: { maxIdentifierLength: 8 } });
+  feed(started, { kind: 'tool', callId: 'c', name: 'toolname9', phase: 'completed', resultJson: '1' },
+    { kind: 'tool', callId: 'd', name: 'ok', phase: 'completed', resultJson: '1' }, success);
+  assert.equal(spans().filter(span => span.name.startsWith('execute_tool')).length, 1);
+  const created = createRunBaseline({
+    projection: { threadId: 'thread-1', runId: 'run-1', sourceKey: 'fixture', bounds },
+    tracer: new BasicTracerProvider().getTracer('baseline-test'), parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' },
+    allowedToolNames: [], provider: 'fixture', observerBounds: { maxActiveSpans: 0 },
+  });
+  assert.deepEqual(created, { kind: 'error', error: { code: 'invalid-input' } });
+});

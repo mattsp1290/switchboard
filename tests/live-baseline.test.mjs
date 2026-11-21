@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { PROJECTION_FAMILIES, checkAguiRun, checkBaselineDiagnostics, checkEngineEvidence, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
 import {
   ambientCredentialNames, codexHostArgs, credentialNames, dryRunRequested, engines, formatReason, hostVariables, nativeRecordMissing,
-  opencodeAuthContent,
+  OPENCODE_PERMISSION_SCHEMA_VERSION, opencodeAuthContent, opencodeSchemaDiffers,
   resolveModel, selectEngines, takeCredentials,
 } from '../scripts/live-baseline-engines.mjs';
 
@@ -354,4 +354,16 @@ test('baseline diagnostics pass only for the benign arguments rewrite', () => {
   assert.deepEqual(checkBaselineDiagnostics(['usage-row-dropped']), { ok: false, code: 'usage-row-dropped' });
   assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-changed', 'not-running']), { ok: false, code: 'not-running' });
   assert.deepEqual(checkBaselineDiagnostics(['telemetry-failure']), { ok: false, code: 'telemetry-failure' });
+});
+
+test('checkBaselineDiagnostics fails a run whose accept threw', () => {
+  assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-changed', 'accept-threw']), { ok: false, code: 'accept-threw' });
+});
+
+test('opencodeSchemaDiffers compares the version to the pinned permission schema', () => {
+  assert.equal(opencodeSchemaDiffers(OPENCODE_PERMISSION_SCHEMA_VERSION), false);
+  assert.equal(opencodeSchemaDiffers('opencode 1.18.29\n'), false);
+  assert.equal(opencodeSchemaDiffers('1.19.0'), true);
+  assert.equal(opencodeSchemaDiffers('1.18.290'), true);
+  assert.equal(opencodeSchemaDiffers(''), true);
 });
