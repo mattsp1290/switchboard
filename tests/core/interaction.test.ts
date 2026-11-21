@@ -1,9 +1,9 @@
-import { parseInteractionContinuation } from '@mattsp1290/switchboard';
+import { parseInteractionContinuation } from '@operatorworks/switchboard';
 import type {
   ApprovalTarget, DelegatedOutcome, DelegationTarget, HostApprovalIntent, HostApprovalPolicy,
   InteractionContinuation, InteractionError, InteractionTarget, NativeDelivery, NativeExtension,
   Outcome, PendingApproval, PendingInteraction, ToolEffect, ToolOutcome, ToolTarget,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import { sessionReference } from './sessions.test.js';
 
 export const native: NativeExtension = { namespace: 'fixture/native', schemaVersion: 1, data: undefined };

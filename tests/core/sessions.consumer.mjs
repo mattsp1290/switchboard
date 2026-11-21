@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   parseCheckpointReference, parseSessionReference, sessionLimits, validateSessionDiscoveryBounds,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 
 const binding = {
   engine: 'acme/native', nativeVersion: '1.2', account: 'account-a',

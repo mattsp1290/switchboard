@@ -4,7 +4,7 @@ import {
   assessFrontendRestore, compareRestoreDecisions, decideFrontendRestore, frontendRestoreCapabilities,
   frontendRestoreDefaultRevision, frontendRestoreDelivery, frontendRestoreFact, frontendRestoreLimits,
   parsePendingFrontendBatch, validateRestoreDecision,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 
 const binding = { engine: 'codex', nativeVersion: '0.169.0', account: 'account', authorizedScope: 'scope', nativeFormat: 'app-server' };
 const session = { kind: 'session', formatVersion: 1, binding, opaque: 'thread-a' };

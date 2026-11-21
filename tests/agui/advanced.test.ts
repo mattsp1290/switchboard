@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAguiProjection, describeProjection } from '@mattsp1290/switchboard/agui';
-import type { AguiProjection, NativeJsonPatch, NativeRef, ProjectionBounds, ProjectionEvent, ProjectionFact } from '@mattsp1290/switchboard/agui';
+import { createAguiProjection, describeProjection } from '@operatorworks/switchboard/agui';
+import type { AguiProjection, NativeJsonPatch, NativeRef, ProjectionBounds, ProjectionEvent, ProjectionFact } from '@operatorworks/switchboard/agui';
 import { collectEvents } from './collector.js';
 
 const bounds: ProjectionBounds = { maxEntities: 24, maxPayloadBytes: 8192, maxJsonDepth: 20, maxJsonNodes: 512 };

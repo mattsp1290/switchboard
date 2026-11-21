@@ -1,5 +1,5 @@
 import type { Message, ToolCall } from '@ag-ui/core';
-import type { Json, NativeContent, NativeMessage } from '@mattsp1290/switchboard/agui';
+import type { Json, NativeContent, NativeMessage } from '@operatorworks/switchboard/agui';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;

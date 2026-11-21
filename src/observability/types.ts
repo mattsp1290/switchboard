@@ -103,4 +103,4 @@ export interface ObserverOptions {
   readonly admitObservedToolNames?: boolean;
   readonly includeConversationId?: boolean;
 }
-export const instrumentationScope = Object.freeze({ name: '@mattsp1290/switchboard', version: '0.0.0' });
+export const instrumentationScope = Object.freeze({ name: '@operatorworks/switchboard', version: '0.0.0' });

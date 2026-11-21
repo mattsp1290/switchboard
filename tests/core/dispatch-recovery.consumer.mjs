@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDispatchOperation } from '@mattsp1290/switchboard';
+import { createDispatchOperation } from '@operatorworks/switchboard';
 
 const canary = 'recovery-private-canary-6802';
 const binding = () => ({ engine: 'fixture', nativeVersion: '1', account: `${canary}-account`,

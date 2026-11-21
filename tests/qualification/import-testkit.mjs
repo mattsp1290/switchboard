@@ -10,7 +10,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   }
   return resolved;
 } });
-const { contracts, createFakeFixture } = await import('@mattsp1290/switchboard/testkit');
+const { contracts, createFakeFixture } = await import('@operatorworks/switchboard/testkit');
 assert.deepEqual(Object.keys(contracts), qualificationGroups);
 assert(Object.isFrozen(contracts), 'The public scenario registry is immutable.');
 await createFakeFixture().dispose();

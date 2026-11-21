@@ -21,7 +21,7 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import {
 	createGenAiObserver,
 	instrumentationScope,
-} from '@mattsp1290/switchboard/observability';
+} from '@operatorworks/switchboard/observability';
 
 const exporter = new OTLPTraceExporter({
 	url: 'http://127.0.0.1:4318/v1/traces',

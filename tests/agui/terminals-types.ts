@@ -1,5 +1,5 @@
 import type { Interrupt, TokenUsage } from '@ag-ui/core';
-import type { NativeInterrupt, NativeTokenUsage, TerminalFact } from '@mattsp1290/switchboard/agui';
+import type { NativeInterrupt, NativeTokenUsage, TerminalFact } from '@operatorworks/switchboard/agui';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;

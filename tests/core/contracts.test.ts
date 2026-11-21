@@ -6,7 +6,7 @@ import type {
   Capability,
   NativeExtension,
   Outcome,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 
 export interface Options {
   readonly endpoint: URL;

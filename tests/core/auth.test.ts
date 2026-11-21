@@ -1,4 +1,4 @@
-import { createAuthContext } from '@mattsp1290/switchboard';
+import { createAuthContext } from '@operatorworks/switchboard';
 import type {
   AuthBoundary,
   AuthConfiguration,
@@ -10,7 +10,7 @@ import type {
   ProxyCredential,
   ResolvedAuthentication,
   ScopedAuth,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 
 interface NativeMaterial {
   readonly mechanism: 'native-sign-in';

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ROOT_CONTEXT } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { createRunBaseline } from '@mattsp1290/switchboard/baseline';
-import { jsonString } from '@mattsp1290/switchboard';
+import { createRunBaseline } from '@operatorworks/switchboard/baseline';
+import { jsonString } from '@operatorworks/switchboard';
 
 test('installed baseline maps one observed turn into AG-UI events and payload-free spans', async () => {
   const exporter = new InMemorySpanExporter();

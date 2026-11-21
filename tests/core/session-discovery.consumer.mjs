@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseSessionReference, serializeDiagnostic } from '@mattsp1290/switchboard';
+import { parseSessionReference, serializeDiagnostic } from '@operatorworks/switchboard';
 
-/** @typedef {import('@mattsp1290/switchboard').SessionDiscoveryPage} SessionDiscoveryPage */
-/** @typedef {import('@mattsp1290/switchboard').SessionDiscoveryDiagnostic} SessionDiscoveryDiagnostic */
+/** @typedef {import('@operatorworks/switchboard').SessionDiscoveryPage} SessionDiscoveryPage */
+/** @typedef {import('@operatorworks/switchboard').SessionDiscoveryDiagnostic} SessionDiscoveryDiagnostic */
 /** @typedef {{ readonly root: string }} Scope */
 /** @typedef {{ readonly kind: 'complete' } | { readonly kind: 'cancelled' } |
  * { readonly kind: 'truncated', readonly reason: 'results' | 'examined' | 'duration' } |
@@ -13,7 +13,7 @@ const binding = {
   engine: 'acme/native', nativeVersion: '1.2', account: 'account-a',
   authorizedScope: 'workspace-a', nativeFormat: 'acme/session-v3',
 };
-/** @type {import('@mattsp1290/switchboard').SessionReference} */
+/** @type {import('@operatorworks/switchboard').SessionReference} */
 const session = { kind: 'session', formatVersion: 1, binding, opaque: 'native-session-a' };
 /** @type {readonly SessionDiscoveryDiagnostic[]} */
 const failures = [
@@ -24,8 +24,8 @@ const failures = [
 /**
  * @param {End | (() => Promise<End>)} end
  * @param {{ afterObservations?: () => void, afterSettlement?: () => Promise<void>,
- * candidates?: readonly (import('@mattsp1290/switchboard').SessionReference | SessionDiscoveryDiagnostic)[] }} options
- * @returns {import('@mattsp1290/switchboard').SessionDiscovery<Scope>}
+ * candidates?: readonly (import('@operatorworks/switchboard').SessionReference | SessionDiscoveryDiagnostic)[] }} options
+ * @returns {import('@operatorworks/switchboard').SessionDiscovery<Scope>}
  */
 function controlledDiscovery(end, {
   afterObservations = () => {}, afterSettlement = async () => {}, candidates = [session, ...failures],
@@ -33,7 +33,7 @@ function controlledDiscovery(end, {
   return {
     async discover({ signal }) {
       const observations = {
-        /** @type {import('@mattsp1290/switchboard').SessionReference[]} */
+        /** @type {import('@operatorworks/switchboard').SessionReference[]} */
         sessions: [], examined: 0, skipped: { corrupt: 0, inaccessible: 0 },
         /** @type {SessionDiscoveryDiagnostic[]} */
         diagnostics: [],
@@ -77,7 +77,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-/** @param {AbortSignal} signal @returns {import('@mattsp1290/switchboard').SessionAccess<Scope>} */
+/** @param {AbortSignal} signal @returns {import('@operatorworks/switchboard').SessionAccess<Scope>} */
 function access(signal) {
   return {
     binding, scope: { root: '/controlled-fixture' },

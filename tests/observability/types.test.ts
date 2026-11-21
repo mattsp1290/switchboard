@@ -1,5 +1,5 @@
 import { ROOT_CONTEXT, trace } from '@opentelemetry/api';
-import { createGenAiObserver, type ContentObservation, type GenAiOperation, type TerminalOutcome } from '@mattsp1290/switchboard/observability';
+import { createGenAiObserver, type ContentObservation, type GenAiOperation, type TerminalOutcome } from '@operatorworks/switchboard/observability';
 
 export const observer = createGenAiObserver({ tracer: trace.getTracer('consumer'), contentPolicy: { kind: 'none' }, allowedToolNames: ['add'] });
 export const model = observer.start({ kind: 'model', provider: 'openai', operation: 'chat' }, ROOT_CONTEXT);

@@ -3,7 +3,7 @@ import type {
   HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostInterruptResult, HostLaunch, HostOpenOptions,
   HostRouteCredential, HostSegmentResult, HostToolCall, HostWriteStatus, InteractionContinuation, PendingInteraction,
   ResolvedAuthentication, SessionReference,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import { sessionReference } from './sessions.test.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;

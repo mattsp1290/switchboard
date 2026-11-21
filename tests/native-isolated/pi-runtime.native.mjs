@@ -6,11 +6,11 @@ import { basename, join } from 'node:path';
 import test from 'node:test';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
-import { createPiRuntime } from '@mattsp1290/switchboard/pi';
+import { createPiRuntime } from '@operatorworks/switchboard/pi';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
 // The terminal mapping is internal to the packed entry, so it is loaded by file URL past the exports map.
-const { terminalOutcome } = await import(new URL('terminal.js', import.meta.resolve('@mattsp1290/switchboard/pi')).href);
+const { terminalOutcome } = await import(new URL('terminal.js', import.meta.resolve('@operatorworks/switchboard/pi')).href);
 
 const key = 'fixture-key-never-log';
 const frame = (content, finish_reason = null, model = 'glm-5.3') => `data: ${JSON.stringify({

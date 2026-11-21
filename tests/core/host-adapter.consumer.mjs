@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createFakeHostSubject, hostAdapterContracts } from '@mattsp1290/switchboard/testkit';
+import { createFakeHostSubject, hostAdapterContracts } from '@operatorworks/switchboard/testkit';
 
 const variants = {
   default: {},

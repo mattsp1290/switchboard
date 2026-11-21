@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { appendFileSync } from 'node:fs';
-import type { ProjectionEvent } from '@mattsp1290/switchboard/agui';
+import type { ProjectionEvent } from '@operatorworks/switchboard/agui';
 
 export function collectEvents(
   name: string,

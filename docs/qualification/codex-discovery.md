@@ -11,7 +11,7 @@ Together with the retained diagnostics contract, that evidence resolves the exac
 The executable proof is [discovery.mjs](../../spikes/codex-native/discovery.mjs), invoked unconditionally by [qualify.mjs](../../spikes/codex-native/qualify.mjs).
 The [native qualification instructions](codex-native-api.md) reproduce it on Linux arm64 or x64.
 The [selection evidence](codex-selection.md#evidence-and-pins) identifies the retained parent arm64 report and its hash.
-The [Linux x64 native CI job](https://github.com/mattsp1290/switchboard/actions/runs/43554616649/job/132324530599) passed the same entry point at source `7be6e58ca155905af27b6d31f415fa84570aafe1`, including path inspection.
+The [Linux x64 native CI job](https://github.com/operatorworks/switchboard/actions/runs/43554616649/job/132324530599) passed the same entry point at source `7be6e58ca155905af27b6d31f415fa84570aafe1`, including path inspection.
 Both executions verify the pinned archive, strict generated bindings, native behavior probe, and five discovery variants. Neither qualifies native macOS execution or a live provider.
 
 The proof creates eight native threads through `thread/start` and completed turns against a synthetic loopback Responses server. The threads cover two matching records, another cwd, another provider, archived history, a separate unauthorized root, and two synthetic account identities. Native archive operations produce the archived fixture. The probe exports native history and SQLite bytes after process shutdown. It does not parse, synthesize, or import private history formats. The malformed case deliberately replaces one native-created file with invalid JSON.

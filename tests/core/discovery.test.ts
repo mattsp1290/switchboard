@@ -1,5 +1,5 @@
-import { discoverFiles, fileDiscoveryLimits } from '@mattsp1290/switchboard';
-import type { FileDecode, FileDiscoveryBounds, FileDiscoveryError, FileDiscoveryPage, FileDiscoveryScope, Outcome } from '@mattsp1290/switchboard';
+import { discoverFiles, fileDiscoveryLimits } from '@operatorworks/switchboard';
+import type { FileDecode, FileDiscoveryBounds, FileDiscoveryError, FileDiscoveryPage, FileDiscoveryScope, Outcome } from '@operatorworks/switchboard';
 import { sessionBinding } from './sessions.test.js';
 export const fileScope: FileDiscoveryScope = { binding: sessionBinding, root: '/explicit-fixture-root', namespace: 'host-stable' };
 export const fileBounds: FileDiscoveryBounds = { maxResults: 2, maxExamined: 10, maxDurationMs: 100, maxDepth: 2, maxFileBytes: 1024, maxTotalBytes: 4096 };

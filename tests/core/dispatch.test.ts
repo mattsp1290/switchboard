@@ -1,8 +1,8 @@
-import { createDispatchOperation, createEventStream } from '@mattsp1290/switchboard';
+import { createDispatchOperation, createEventStream } from '@operatorworks/switchboard';
 import type {
   DispatchEvidence, DispatchHandle, DispatchIdentity, DispatchLifecycle, DispatchObservation,
   DispatchSnapshot, DispatchTarget, FreshDispatchOptions, NativeDispatchObservation, NativeOperationReference,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import { sessionBinding, sessionReference } from './sessions.test.js';
 
 export const dispatchTarget: DispatchTarget = { kind: 'new-session', binding: sessionBinding };

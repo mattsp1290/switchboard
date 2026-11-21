@@ -20,16 +20,16 @@ Numeric routing IDs must be safe integers other than negative zero, while numeri
 
 The [native pins](../../spikes/codex-native/pins.json) identify the official Linux arm64 and x64 archives by SHA512 and the Node image by OCI digest. The [native qualification](codex-native-api.md) records actual app-server execution against a synthetic loopback Responses service, independently of the SDK. The [discovery qualification](codex-discovery.md) records read-only-source discovery and inspection. Neither establishes a real provider or LiteLLM support claim. These standalone app-server fixtures use synthetic immutable roots. Global native SDK import confinement remains unqualified.
 
-[PR13](https://github.com/mattsp1290/switchboard/pull/13), merged as `d3a25d5`, supplies native lifecycle, auth, and generated-binding evidence. [PR22](https://github.com/mattsp1290/switchboard/pull/22), merged as `1e1d8e1`, supplies indexed/unindexed discovery through a private index. The retained local execution reports are `/tmp/switchboard-codex-native-parent-proof.json`, `/Users/lunus/git/switchboard/.audit/codex-discovery-owner-proof.json`, and `/tmp/switchboard-consumer-d4e36e8d-native/native-x64-mounted.log`. The latter x64 execution uses QEMU. These reports are execution evidence, not a fresh remote CI assertion.
+[PR13](https://github.com/operatorworks/switchboard/pull/13), merged as `d3a25d5`, supplies native lifecycle, auth, and generated-binding evidence. [PR22](https://github.com/operatorworks/switchboard/pull/22), merged as `1e1d8e1`, supplies indexed/unindexed discovery through a private index. The retained local execution reports are `/tmp/switchboard-codex-native-parent-proof.json`, `/Users/lunus/git/switchboard/.audit/codex-discovery-owner-proof.json`, and `/tmp/switchboard-consumer-d4e36e8d-native/native-x64-mounted.log`. The latter x64 execution uses QEMU. These reports are execution evidence, not a fresh remote CI assertion.
 
 The earlier arm64 known-target inspection run is retained at `/Users/lunus/git/switchboard/.audit/codex-selection-read-proof-final.json`.
 It includes bounded raw malformed-list replies, known-target read replies, native notifications, preservation assertions, and zero discovery inference.
-[PR28](https://github.com/mattsp1290/switchboard/pull/28), merged as `da2a0ced218bcf72b34b7c8405ac72383f6c97c2`, adds inventory-driven public path inspection without known IDs.
+[PR28](https://github.com/operatorworks/switchboard/pull/28), merged as `da2a0ced218bcf72b34b7c8405ac72383f6c97c2`, adds inventory-driven public path inspection without known IDs.
 Its retained parent arm64 report is `/Users/lunus/git/switchboard/.audit/codex-path-summary-fixed-parent.json`, SHA-256 `0f4f84e203d419060ae10de69a4732956aca18e5d7b74f7484e083a1aad1f881`.
 That report records nine admitted file observations per path mode. Indexed and unindexed each return eight summaries for seven native IDs.
 Malformed returns seven summaries for six IDs and two `-32603` failures, including the harmless auxiliary file. These are failed-file observations, not a corruption taxonomy.
 Inventory entry and byte totals are specific to each execution. The parent report's indexed totals are 28 entries and 3,757,396 accounted bytes.
-[PR30](https://github.com/mattsp1290/switchboard/pull/30), merged as `8976667a39467c1233ebcde557a583f3fbfa158e`, adds the retained diagnostics contract and its installed consumer proof.
+[PR30](https://github.com/operatorworks/switchboard/pull/30), merged as `8976667a39467c1233ebcde557a583f3fbfa158e`, adds the retained diagnostics contract and its installed consumer proof.
 
 | Component | Exact inspected revision | License and evidence |
 | --- | --- | --- |
@@ -102,7 +102,7 @@ It unconditionally runs inventory-driven path inspection in indexed, unindexed, 
 It emits bounded raw replies and notifications and checks source preservation and zero discovery inference through shutdown.
 The pinned environment uses Codex `0.169.0`, Node `24.22.3`, TypeScript `7.0.2`, Node declarations `24.19.2`, and image `node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54`.
 No historical SDK runner or module import is needed. The retained parent report above proves Linux arm64 execution.
-The [Linux x64 native CI job](https://github.com/mattsp1290/switchboard/actions/runs/43554616649/job/132324530599) passed at source `7be6e58ca155905af27b6d31f415fa84570aafe1`.
+The [Linux x64 native CI job](https://github.com/operatorworks/switchboard/actions/runs/43554616649/job/132324530599) passed at source `7be6e58ca155905af27b6d31f415fa84570aafe1`.
 Its logs identify the x64 archive, `linux/amd64` container, strict generated-binding check, and path inspection results.
 This CI execution is separate from the earlier local QEMU report. Neither Linux environment qualifies native macOS behavior.
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDispatchOperation, createEventStream } from '@mattsp1290/switchboard';
+import { createDispatchOperation, createEventStream } from '@operatorworks/switchboard';
 
 const canary = 'dispatch-private-canary-7f931';
 const binding = () => ({ engine: 'fixture', nativeVersion: '1', account: `${canary}-account`,

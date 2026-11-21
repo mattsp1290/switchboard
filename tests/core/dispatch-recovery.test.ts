@@ -1,7 +1,7 @@
-import { createDispatchOperation } from '@mattsp1290/switchboard';
+import { createDispatchOperation } from '@operatorworks/switchboard';
 import type {
   ReconcileNative, ReconcileResult, ReconciliationHandle, RecoveryDispatchOptions, SharedDispatchOptions,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import { dispatchEvidence, dispatchHandle, dispatchIdentity } from './dispatch.test.js';
 
 export const lookup: ReconcileNative<{ readonly state: string }> = (previous, _signal) => ({

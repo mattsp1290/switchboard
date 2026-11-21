@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { createCodexRuntime } from '@mattsp1290/switchboard/codex';
+import { createCodexRuntime } from '@operatorworks/switchboard/codex';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
 const executable = fileURLToPath(new URL('../adapters/codex/sdk-cli.mjs', import.meta.url));
@@ -201,7 +201,7 @@ test('an early native exit during a large stdin write cannot crash the host', as
   const { account, dir } = await fixture(t);
   await account({ exitBeforeInput: true });
   const program = `
-    import { createCodexRuntime } from '@mattsp1290/switchboard/codex';
+    import { createCodexRuntime } from '@operatorworks/switchboard/codex';
     const runtime = createCodexRuntime(${JSON.stringify({ cwd: dir, model: 'gpt-6.1-sol', codexHome: dir, codexPathOverride: executable })});
     try {
       await runtime.start({ text: 'x'.repeat(1024 * 1024), onEvent() {} });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import { createEventStream } from '@mattsp1290/switchboard';
+import { createEventStream } from '@operatorworks/switchboard';
 
 function deferred() {
   let resolve;

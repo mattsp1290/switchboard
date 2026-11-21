@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { createFakeFixture } from '@mattsp1290/switchboard/testkit';
+import { createFakeFixture } from '@operatorworks/switchboard/testkit';
 import { createCrewActivity, openAgentView } from './qualification/host-consumers.mjs';
 
 function ok(outcome) {

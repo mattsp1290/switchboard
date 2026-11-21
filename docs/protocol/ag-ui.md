@@ -1,6 +1,6 @@
 # AG-UI protocol qualification
 
-Switchboard selects protocol `1.0`, TypeScript `@ag-ui/core@1.0.4`, and Python `ag-ui-protocol==1.0.0` at the explicit `@mattsp1290/switchboard/agui` entry.
+Switchboard selects protocol `1.0`, TypeScript `@ag-ui/core@1.0.4`, and Python `ag-ui-protocol==1.0.0` at the explicit `@operatorworks/switchboard/agui` entry.
 The frozen `aguiProtocol` descriptor exposes these pins and the implemented lifecycle stage.
 `createAguiProjection` implements the per-run fact projection design through synchronous `accept(fact)` and idempotent `close()`.
 It maps observed run start, success, clean cancellation, and fixed public native or transport failures, including failures before start and after finish.

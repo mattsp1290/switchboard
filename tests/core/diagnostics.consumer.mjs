@@ -4,7 +4,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createSafeError, normalizeError, serializeDiagnostic, summarizeDiagnostic, createEventStream } from '@mattsp1290/switchboard';
+import { createSafeError, normalizeError, serializeDiagnostic, summarizeDiagnostic, createEventStream } from '@operatorworks/switchboard';
 
 const messages = {
   unsupported: 'The operation is unsupported.',
@@ -178,7 +178,7 @@ test('an installed event stream delivers owned projections for listener serializ
 test('records from a separate installed package instance have no local provenance', async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'switchboard-diagnostics-instance-'));
   try {
-    const name = '@mattsp1290/switchboard';
+    const name = '@operatorworks/switchboard';
     const installed = dirname(dirname(fileURLToPath(import.meta.resolve(name))));
     const destination = join(temporary, 'node_modules', ...name.split('/'));
     mkdirSync(dirname(destination), { recursive: true });
