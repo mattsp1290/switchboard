@@ -81,6 +81,7 @@
     "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude && npm run check:pi-host && npm run check:claude-host && npm run check:cursor",
     "test": "node --import ./tests/support/native-sdk-tripwire.mjs --test \"tests/**/*.test.mjs\"",
     "test:native-isolated": "node scripts/isolated-native-tests.mjs",
+    "test:live-baseline": "node scripts/live-baseline.mjs",
     "test:codex-guarded": "node scripts/codex-guarded-tests.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:compiler": "node spikes/native-compiler/support/run.mjs \"$npm_execpath\"",
