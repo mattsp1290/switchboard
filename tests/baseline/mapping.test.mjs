@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
+const { createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage, usageFromUncachedCounts } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -383,6 +383,21 @@ test('declaredToolObservations declares a call with JSON-safe arguments only', (
   ]);
   assert.deepEqual(declaredToolObservations('c1', 'tool', undefined).map(o => o.phase), ['started', 'arguments-ended']);
   assert.equal('argumentsJson' in declaredToolObservations('c1', 'tool', undefined)[1], false);
+});
+
+test('usageFromUncachedCounts adds the valid cache counts to input and validates every count', () => {
+  assert.deepEqual(usageFromUncachedCounts({ input: 10, output: 4, cacheRead: 3, cacheWrite: 2 }),
+    { inputTokens: 15, outputTokens: 4, cachedInputTokens: 3, cacheWriteInputTokens: 2 });
+  assert.deepEqual(usageFromUncachedCounts({ input: 10, output: 4, cacheRead: 0 }),
+    { inputTokens: 10, outputTokens: 4, cachedInputTokens: 0 });
+  assert.deepEqual(usageFromUncachedCounts({ input: 10, output: 4, cacheRead: -1, cacheWrite: 1.5 }), { inputTokens: 10, outputTokens: 4 });
+  assert.deepEqual(usageFromUncachedCounts({ input: 'x', output: 4, cacheRead: 3 }),
+    { inputTokens: 3, outputTokens: 4, cachedInputTokens: 3 });
+  assert.deepEqual(usageFromUncachedCounts({ output: 4 }), { outputTokens: 4 });
+  assert.deepEqual(usageFromUncachedCounts({ input: 1, output: 2, reasoning: 3, total: 6 }),
+    { inputTokens: 1, outputTokens: 2, totalTokens: 6, reasoningTokens: 3 });
+  assert.equal(usageFromUncachedCounts({ input: -1, output: 'x', total: NaN }), undefined);
+  assert.equal(usageFromUncachedCounts({}), undefined);
 });
 
 test('normalizedUsageFromCounts maps counts then normalizes, or is undefined without counts', () => {

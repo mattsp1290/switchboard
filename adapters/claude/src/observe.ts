@@ -1,19 +1,16 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { tokenCount, usageFromCounts } from '#switchboard';
+import { tokenCount, usageFromUncachedCounts } from '#switchboard';
 import type { RunObservation, RunObservationUsage } from '#switchboard';
 
 type StreamEvent = Extract<SDKMessage, { type: 'stream_event' }>['event'];
 
 /** `inputTokens` includes the cache fields that are present. `totalTokens` is left to the consumer. */
 function usageRow(raw: Readonly<Record<string, unknown>>): RunObservationUsage | undefined {
-  const input = tokenCount(raw.input_tokens);
-  const read = tokenCount(raw.cache_read_input_tokens);
-  const write = tokenCount(raw.cache_creation_input_tokens);
-  return usageFromCounts({
-    inputTokens: input !== undefined || read !== undefined || write !== undefined ? (input ?? 0) + (read ?? 0) + (write ?? 0) : undefined,
-    outputTokens: raw.output_tokens,
-    cachedInputTokens: raw.cache_read_input_tokens,
-    cacheWriteInputTokens: raw.cache_creation_input_tokens,
+  return usageFromUncachedCounts({
+    input: raw.input_tokens,
+    output: raw.output_tokens,
+    cacheRead: raw.cache_read_input_tokens,
+    cacheWrite: raw.cache_creation_input_tokens,
   });
 }
 

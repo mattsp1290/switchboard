@@ -117,6 +117,28 @@ export function usageFromCounts(raw: { readonly [K in UsageCountKey]?: unknown }
   return Object.keys(row).length === 0 ? undefined : row;
 }
 
+/**
+ * A usage row from native counts whose `input` excludes the cache buckets: `inputTokens` is the input plus every valid cache
+ * count (absent only when none of the three is valid). Each count is validated with `tokenCount`; `output`, `reasoning`, and
+ * `total` pass through as given.
+ */
+export function usageFromUncachedCounts(raw: {
+  readonly input?: unknown; readonly output?: unknown; readonly cacheRead?: unknown; readonly cacheWrite?: unknown;
+  readonly reasoning?: unknown; readonly total?: unknown;
+}): RunObservationUsage | undefined {
+  const input = tokenCount(raw.input);
+  const read = tokenCount(raw.cacheRead);
+  const write = tokenCount(raw.cacheWrite);
+  return usageFromCounts({
+    inputTokens: input !== undefined || read !== undefined || write !== undefined ? (input ?? 0) + (read ?? 0) + (write ?? 0) : undefined,
+    outputTokens: raw.output,
+    totalTokens: raw.total,
+    reasoningTokens: raw.reasoning,
+    cachedInputTokens: read,
+    cacheWriteInputTokens: write,
+  });
+}
+
 /** `usageFromCounts` then `normalizeUsage`: the shared tail of every adapter's native-usage mapping. */
 export function normalizedUsageFromCounts(raw: Parameters<typeof usageFromCounts>[0]): RunObservationUsage | undefined {
   const row = usageFromCounts(raw);

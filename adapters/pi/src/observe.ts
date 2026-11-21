@@ -1,5 +1,5 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai';
-import { emitObservation, tokenCount, usageFromCounts } from '#switchboard';
+import { emitObservation, tokenCount, usageFromUncachedCounts } from '#switchboard';
 import type { RunObservationListener, RunObservationOutcome, RunObservationUsage } from '#switchboard';
 
 /**
@@ -31,10 +31,7 @@ export function createMessageObserver(listener: RunObservationListener | undefin
         const { input, output, cacheRead, cacheWrite } = message.usage ?? {};
         if (tokenCount(input) !== undefined && tokenCount(output) !== undefined) {
           // pi-ai `input` is the uncached count, so the cache counts are added back to match the other engines.
-          const read = tokenCount(cacheRead);
-          const write = tokenCount(cacheWrite);
-          usage = usageFromCounts({ inputTokens: input + (read ?? 0) + (write ?? 0), outputTokens: output,
-            cachedInputTokens: read, cacheWriteInputTokens: write });
+          usage = usageFromUncachedCounts({ input, output, cacheRead, cacheWrite });
         }
         messageIndex++;
         text = '';

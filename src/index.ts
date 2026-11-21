@@ -112,7 +112,7 @@ export type {
 } from './core/readiness.js';
 export {
   answeredToolObservations, createToolTracker, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizeUsage, normalizedUsageFromCounts,
-  runObservationFamilies, runtimeOutcome, segmentTerminal, tokenCount, unobservedFamilies, usageFromCounts,
+  runObservationFamilies, runtimeOutcome, segmentTerminal, tokenCount, unobservedFamilies, usageFromCounts, usageFromUncachedCounts,
 } from './core/run-observation.js';
 export type {
   RunObservation, RunObservationFamily, RunObservationListener, RunObservationOutcome, RunObservationToolPhase,

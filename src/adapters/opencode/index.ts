@@ -9,7 +9,7 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
 } from '../../core/host-adapter.js';
 import {
   emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
-  usageFromCounts,
+  usageFromUncachedCounts,
 } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
@@ -204,15 +204,13 @@ function usageRow(update: Record<string, unknown>): RunObservationUsage | undefi
   const total = tokenCount(update.totalTokens);
   // OpenCode counts input without cache and output without reasoning, and totals all five buckets.
   if (input !== undefined && output !== undefined && total !== undefined && total === input + output + thought + read + write) {
-    const inputTokens = input + read + write;
-    const outputTokens = output + thought;
-    return usageFromCounts({
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-      ...(thought > 0 ? { reasoningTokens: thought } : {}),
-      ...(read > 0 ? { cachedInputTokens: read } : {}),
-      ...(write > 0 ? { cacheWriteInputTokens: write } : {}),
+    return usageFromUncachedCounts({
+      input,
+      output: output + thought,
+      total: input + output + thought + read + write,
+      reasoning: thought > 0 ? thought : undefined,
+      cacheRead: read > 0 ? read : undefined,
+      cacheWrite: write > 0 ? write : undefined,
     });
   }
   return normalizedUsageFromCounts({
