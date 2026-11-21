@@ -108,7 +108,9 @@ export function installPackages(project, artifacts, tools, npm) {
 
 const nativeNames = ['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk', '@mariozechner/pi-coding-agent',
   '@mariozechner/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-ai',
-  '@earendil-works/pi-agent-core', '@openai/codex-sdk', '@openai/codex', '@modelcontextprotocol/sdk'];
+  '@earendil-works/pi-agent-core', '@openai/codex-sdk', '@openai/codex', '@modelcontextprotocol/sdk',
+  '@cursor/sdk', '@cursor/sdk-darwin-arm64', '@cursor/sdk-darwin-x64', '@cursor/sdk-linux-arm64',
+  '@cursor/sdk-linux-x64', '@cursor/sdk-win32-x64'];
 
 export function assertCoreIsolation(project, closure = [], closurePolicy) {
   const require = createRequire(join(project, 'package.json'));

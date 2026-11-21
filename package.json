@@ -40,6 +40,10 @@
       "types": "./dist/claude/index.d.ts",
       "import": "./dist/claude/index.js"
     },
+    "./cursor": {
+      "types": "./dist/cursor/index.d.ts",
+      "import": "./dist/cursor/index.js"
+    },
     "./observability": {
       "types": "./dist/observability/index.d.ts",
       "import": "./dist/observability/index.js"
@@ -68,9 +72,9 @@
   "packageManager": "npm@11.19.1",
   "scripts": {
     "clean": "node --input-type=module -e 'import { rmSync } from \"node:fs\"; rmSync(\"dist\", { recursive: true, force: true });'",
-    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex && npm run build:claude && npm run build:pi-host && npm run build:claude-host",
+    "build": "npm run clean && tsc -p tsconfig.json && npm run build:pi && npm run build:codex && npm run build:claude && npm run build:pi-host && npm run build:claude-host && npm run build:cursor",
     "lint": "oxlint --deny-warnings .",
-    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude && npm run check:pi-host && npm run check:claude-host",
+    "check": "tsc -p tsconfig.json --noEmit && npm run check:pi && npm run check:codex && npm run check:claude && npm run check:pi-host && npm run check:claude-host && npm run check:cursor",
     "test": "node --import ./tests/support/native-sdk-tripwire.mjs --test \"tests/**/*.test.mjs\"",
     "test:native-isolated": "node scripts/isolated-native-tests.mjs",
     "test:codex-guarded": "node scripts/codex-guarded-tests.mjs",
@@ -87,6 +91,8 @@
     "check:pi-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/pi-host/tsconfig.json --noEmit",
     "build:claude-host": "tsc -p adapters/claude-host/tsconfig.json",
     "check:claude-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/claude-host/tsconfig.json --noEmit",
+    "build:cursor": "tsc -p adapters/cursor/tsconfig.json",
+    "check:cursor": "tsc -p adapters/cursor/tsconfig.json --noEmit",
     "verify:observability:lotel": "node scripts/verify-observability-lotel.mjs",
     "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
   },
@@ -94,6 +100,7 @@
     "@ag-ui/core": "https://raw.githubusercontent.com/mattsp1290/agentui/661216eab627be33067951ffad7a1691127a80fe/vendor/ag-ui/ed2c1d5b63299d3f08676a1418cc2640bbe55fd1/ag-ui-core-1.0.4.tgz",
     "@anthropic-ai/claude-agent-sdk": "0.3.323",
     "@anthropic-ai/sdk": "1.8.0",
+    "@cursor/sdk": "1.4.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.2",
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -115,6 +122,7 @@
     "@earendil-works/pi-coding-agent": "1.5.2",
     "@openai/codex-sdk": "0.169.0",
     "@anthropic-ai/claude-agent-sdk": "0.3.323",
+    "@cursor/sdk": "1.4.2",
     "@opentelemetry/api": "1.9.0"
   },
   "peerDependenciesMeta": {
@@ -131,6 +139,9 @@
       "optional": true
     },
     "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "@cursor/sdk": {
       "optional": true
     },
     "@opentelemetry/api": {

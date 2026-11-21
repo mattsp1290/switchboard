@@ -26,7 +26,7 @@ export type ReadinessActionCode = 'install_required' | 'version_required' | 'sig
 export type ReadinessUnknownCode = 'retry_check' | 'check_cancelled' | 'runtime_closed' | 'check_unavailable';
 export type ReadinessRemediationCode = ReadinessActionCode | ReadinessUnknownCode;
 interface ReportBase {
-  readonly provider: 'codex' | 'claude' | 'pi';
+  readonly provider: 'codex' | 'claude' | 'pi' | 'cursor';
   /** ISO 8601 host time when the probes finished. */
   readonly observedAt: string;
   /** Facts with positive evidence, passing or failing, in `ReadinessFact` order. */

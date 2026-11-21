@@ -1,0 +1,15 @@
+{
+  "sdk": "1.4.2",
+  "sandbox": true,
+  "settingSources": [
+    "project"
+  ],
+  "modelSupplied": true,
+  "firstTurn": "completed",
+  "followUp": "completed",
+  "toolCompleted": true,
+  "fileCreated": true,
+  "fileUpdated": true,
+  "resumedSameAgent": true,
+  "attempts": 1
+}

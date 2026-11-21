@@ -183,9 +183,32 @@ Claude `start()` rejection can occur after the native process received the promp
 
 Stop is available on admitted turns. Before admission, `start()` has no per-request cancellation handle and its 30-second deadline bounds the wait. `close()` cancels all pending work owned by that runtime. Session IDs must use canonical lowercase UUIDs.
 
+### Cursor local agent
+
+`@mattsp1290/switchboard/cursor` runs a local Cursor coding agent through the optional peer `@cursor/sdk@1.4.2`. Install that exact peer. Forcing a different SDK version is outside this contract. A missing peer fails the import with `ERR_MODULE_NOT_FOUND`.
+
+The caller supplies the model id. The id in the example is a placeholder, not a default, and the runtime passes that string through as `model.id`. A missing or illegal id throws `Cursor operation failed.` before the SDK is called. Create the runtime with an absolute working directory, an absolute session directory, the API key, and that model id.
+
+```js
+import { createCursorRuntime } from '@mattsp1290/switchboard/cursor';
+
+const cursor = createCursorRuntime({
+	cwd: '/work',
+	sessionDirectory: '/work/sessions',
+	apiKey: process.env.CURSOR_API_KEY,
+	model: 'composer-2.5',
+});
+```
+
+The sandbox is always on. The runtime loads project settings from the working directory and does not retry a run. The sandbox confines shell execution. It does not confine `webSearch`, `webFetch`, or MCP. A per-user `~/.cursor/sandbox.json` or a project `.cursor/sandbox.json` can change the shell policy the SDK applies after sandboxing is enabled, and this adapter does not read or override those files.
+
+Call `start({ text, agentId?, onEvent })`. `start` resolves when the SDK accepts the send, and the turn's `agentId` is the SDK agent id. `finished` resolves to `completed`, `failed`, or `interrupted`. The callback receives accumulated assistant text snapshots (`{ kind: 'text', text }`), tool envelopes (`{ kind: 'tool', callId, name, status }` where `status` is `running`, `completed`, or `error`), and one `{ kind: 'ended', outcome }`. Tool arguments and results are not callback fields. `@cursor/sdk@1.4.2` sometimes sends a call id as two tokens separated by one newline; the event reports those tokens joined by `:`. Each runtime allows 32 simultaneous turns.
+
+`start` rejection before send returns is `Cursor operation failed.` and emits no `ended`. After send returns, `start` stays resolved even when the turn later fails, so hosts should treat that failure as uncertain and avoid automatic retries. `close()` disposes the agents this runtime opened. It does not delete the session directory or files the agent wrote.
+
 ### Provider readiness reports
 
-`checkReady()` is unchanged. It runs the same probes and throws the same messages as before. When a host needs the reason, call `readinessReport({ signal? })` on a Codex, Claude or Pi runtime. Codex also accepts `timeoutMs`, a per-probe deadline from 1 through 10000 milliseconds that defaults to 10000. The report resolves for every provider condition, including a missing CLI, a timeout, cancellation and a closed runtime. It rejects only for invalid options. Root types `ReadinessReport` and `ReadinessSource` let a host hold all three runtimes in one collection. Each adapter also exports a narrower type: `CodexReadinessReport`, `ClaudeReadinessReport` and `PiReadinessReport`.
+`checkReady()` is unchanged. It runs the same probes and throws the same messages as before. When a host needs the reason, call `readinessReport({ signal? })` on a Codex, Claude, Pi, or Cursor runtime. Codex also accepts `timeoutMs`, a per-probe deadline from 1 through 10000 milliseconds that defaults to 10000. The report resolves for every provider condition, including a missing CLI, a timeout, cancellation and a closed runtime. It rejects only for invalid options. Root types `ReadinessReport` and `ReadinessSource` let a host hold these runtimes in one collection. Each adapter also exports a narrower type: `CodexReadinessReport`, `ClaudeReadinessReport`, `PiReadinessReport`, and `CursorReadinessReport`. Cursor cannot report `ready`.
 
 A report records four facts separately: `installation`, `version`, `authentication` and `workspace`. A passing or positively failing state is listed in `checked`. These states are not evidence of absence:
 
@@ -213,6 +236,7 @@ What each adapter observes:
 - Codex runs `codex --version` and then, only for exactly 0.169.0, `codex login status`. The same bounds as `checkReady()` apply to each call: at most two children, run one after the other, 16 KiB of output each, and SIGTERM at the deadline or on cancellation followed by SIGKILL one second later. A version probe that times out leaves installation `available`. A login probe that times out or errors leaves authentication `unknown`, never `sign_in_required`. The executable is resolved from `PATH` when the runtime is created, so a later `PATH` change is not seen. A deleted override is seen. Workspace is `unsupported`.
 - Claude checks the readable working directory, creates and checks the private session directory as `checkReady()` does, and checks an explicit `claudePathOverride` for execute permission. Without an override, installation is `unsupported`. It never observes the CLI version or whether the API key works, so it never reports `ready`. Claude and Pi read `signal` only before their local filesystem checks, which have no deadline.
 - Pi re-checks only the directories that `createPiRuntime` validated. The SDK runs in-process, and its version and credentials are not probed, so installation, version and authentication are `unsupported`.
+- Cursor checks that the working directory is readable and creates the session directory with mode `0o700`. It reads `signal` before those checks and again after each one. An abort during either check is `check_cancelled` and skips the session directory when it arrives first. Installation, version, and authentication are `unsupported`. It never observes the API key, so it cannot report `ready`.
 
 A report is a point-in-time observation at `observedAt`. It is not cached, it does not guarantee that the next turn starts, and it is not native qualification. It never installs, updates, signs in, calls a model or refreshes a catalog. Tests use fixture CLIs only. The Codex `Not logged in` line was taken from the strings of the qualified 0.169.0 binary and has not been exercised natively. Any other output is reported as `unknown`, never as `signed_in`.
 
@@ -227,5 +251,5 @@ async function providerRows(sources: Record<string, ReadinessSource>, signal: Ab
 		return { name, status: report.remediation.message, code: report.remediation.code, at: report.observedAt };
 	}));
 }
-// const rows = await providerRows({ codex, claude, pi }, AbortSignal.timeout(25_000));
+// const rows = await providerRows({ codex, claude, pi, cursor }, AbortSignal.timeout(25_000));
 ```

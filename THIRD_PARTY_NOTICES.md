@@ -33,3 +33,8 @@ The immutable source URL and SHA-256 digest are recorded in
 before acquiring a container. The upstream MIT license, including its copyright notice,
 is preserved in `scripts/support/lotel-LICENSE`. The collector fixture and its license
 are development-only and do not ship in the package tarball.
+
+# Cursor SDK
+
+`@cursor/sdk@1.4.2` is an optional peer, © Anysphere Inc., all rights reserved, used under Cursor's terms.
+It is not shipped in the Switchboard tarball. The peer is not MIT-licensed, and this repository does not copy its terms file.

@@ -8,11 +8,11 @@ It replaces the ptrace observer chain on the adapters' path.
 ## What runs where
 
 `npm test` preloads `tests/support/native-sdk-tripwire.mjs` into every test process.
-Loading any module from `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`, `@openai/codex-sdk`, `@openai/codex`, `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core` or `@modelcontextprotocol/sdk` fails that load and sets a failing exit code, so a caught error still fails the file.
+Loading any module from `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`, `@openai/codex-sdk`, `@openai/codex`, `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@modelcontextprotocol/sdk`, `@cursor/sdk`, or the `@cursor/sdk-<os>-<cpu>` platform packages fails that load and sets a failing exit code, so a caught error still fails the file.
 `tests/native-sdk-tripwire.test.mjs` checks that the tripwire is present and that it trips.
 
 The SDK-importing suites live in `tests/native-isolated/` with the suffix `.native.mjs`, which the `npm test` glob does not match.
-They import the packed package by name (`@mattsp1290/switchboard/claude`, `/codex` and `/pi`), not the adapter sources.
+They import the packed package by name (`@mattsp1290/switchboard/claude`, `/codex`, `/pi`, and `/cursor`), not the adapter sources.
 `tests/package.test.mjs` still runs the packed-package consumer check.
 While the tripwire is loaded, that check skips the Pi and Codex consumers that execute native SDKs.
 `npm run verify:package` runs those consumers, and CI runs it as its own step.
@@ -26,7 +26,7 @@ While the tripwire is loaded, that check skips the Pi and Codex consumers that e
 - A writable `/tmp` tmpfs with `noexec`. `/dev/shm` is a read-only tmpfs. Nothing else is writable.
 - Three read-only mounts. `/stage` holds the packed tarball installed as `node_modules/@mattsp1290/switchboard`, the installed closure of the SDK packages (`dependencies`, plus `optionalDependencies` and `peerDependencies` where installed), the suites, the three controls and the three fixtures they launch. A macOS install omits the Linux platform packages. The gate downloads each omitted optional package the pinned Debian image can load (linux, the container CPU, and glibc when the package selects a libc), checks the lockfile's sha512 integrity, and stages it. `/home/switchboard-decoy` holds decoy files. `/opt/strace` holds strace.
 - The traced command's environment is only `PATH`, `TMPDIR=/tmp` and `HOME=/home/switchboard-decoy`. The shell unsets `PWD` before exec, and the entry's `execve` must show exactly those three variables. No SDK home variable is set, so each SDK's default lookup lands on a decoy. The staged `/etc/passwd` keeps the image accounts and sets nobody's home to the decoy directory.
-- Decoys sit at `.claude.json`, `.claude/.credentials.json`, `.codex/auth.json`, `.pi/agent/auth.json`, `.aws/credentials`, `.config/gcloud/application_default_credentials.json` and `.netrc`. Each holds a fixed marker line and no credential.
+- Decoys sit at `.claude.json`, `.claude/.credentials.json`, `.codex/auth.json`, `.pi/agent/auth.json`, `.cursor/sdk/auth.json`, `.aws/credentials`, `.config/gcloud/application_default_credentials.json` and `.netrc`. Each holds a fixed marker line and no credential.
 - strace 6.1-0.1 from Debian bookworm, checked by package and executable SHA-256 for arm64 and amd64, runs `strace -f -q -y -s 4096 -e trace=%file,%network,%process,io_uring_setup` around Node. The trace leaves on a descriptor separate from the program's output. The arm64 binary links only to libc. The amd64 binary also needs libunwind8 1.6.2-3, which bookworm-slim does not contain. `libunwind-x86_64.so.8` and `libunwind.so.8` need `liblzma.so.5`, which that image supplies along with libc. That package is pinned by its SHA-256, extracted beside strace, and checked at the three libraries strace loads. `LD_LIBRARY_PATH` points strace at them, and `strace -E LD_LIBRARY_PATH` removes that variable before the traced command starts.
 
 `scripts/support/isolated-native/verdict.mjs` reads the trace line by line. A run fails, whatever its exit status, on any of these records:
