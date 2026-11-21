@@ -359,7 +359,9 @@ function spawnChannel(request, extraArgs = []) {
 async function hostTurn(engine, model, cwd, scratch, onObservation) {
   const signal = AbortSignal.timeout(TURN_MS);
   const stops = [];
-  const extraArgs = engine.name === 'host/codex' ? codexHostArgs(model) : [];
+  const codexPrivate = { sqliteHome: join(scratch, 'codex-sqlite'), logDir: join(scratch, 'codex-logs') };
+  if (engine.name === 'host/codex') for (const directory of Object.values(codexPrivate)) await mkdir(directory, { recursive: true });
+  const extraArgs = engine.name === 'host/codex' ? codexHostArgs(model, codexPrivate) : [];
   const launch = { kind: 'spawn', spawn: (request) => {
     const spawned = spawnChannel(request, extraArgs);
     stops.push(spawned.stop);
@@ -373,7 +375,10 @@ async function hostTurn(engine, model, cwd, scratch, onObservation) {
       const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
       const executableFile = process.env.OPENCODE_BIN
         ?? (await capture('which', ['opencode']));
-      opened = await opencodeHostAdapter.open({ model, launch, environment: { variables,
+      // The child environment is exactly `variables`; OpenCode reads its provider credentials from this variable.
+      const opencodeVariables = { ...variables, OPENCODE_AUTH_CONTENT: JSON.stringify({
+        'opencode-go': { type: 'api', key: credentials.SWITCHBOARD_OPENCODE_API_KEY } }) };
+      opened = await opencodeHostAdapter.open({ model, launch, environment: { variables: opencodeVariables,
         nativeConfig: { cwd, executable: absoluteExecutable(executableFile), account: 'live' } } }, signal);
     } else if (engine.name === 'host/codex') {
       const { codexHostAdapter } = await import('@mattsp1290/switchboard/host/codex');
@@ -412,10 +417,12 @@ async function piHostStream(model) {
   });
   const native = models.getModel('opencode-go', model);
   if (native === undefined) throw new LiveFailure('model-unknown');
+  // OpenCode Go rejects a request without x-opencode-session; pi-ai sends that header only for options.sessionId.
+  const sessionId = `live-baseline-${randomBytes(6).toString('hex')}`;
   return async function* stream(request) {
     const messages = request.turns.filter((item) => item.role === 'user')
       .map((item) => ({ role: 'user', content: item.text, timestamp: Date.now() }));
-    const message = await models.completeSimple(native, { systemPrompt: request.instructions, messages }, { signal: request.signal });
+    const message = await models.completeSimple(native, { systemPrompt: request.instructions, messages }, { signal: request.signal, sessionId });
     if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error('model failed');
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
     if (text !== '') yield { kind: 'text', text };

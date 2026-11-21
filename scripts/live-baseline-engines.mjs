@@ -14,21 +14,24 @@ export const engines = Object.freeze([
   { name: 'codex', provider: 'codex', gate: 'SWITCHBOARD_LIVE_CODEX', credential: undefined,
     modelVariable: 'SWITCHBOARD_LIVE_CODEX_MODEL', defaultModel: 'gpt-6-luna', runtime: 'text',
     confirmation: 'native-record' },
-  // Cursor.models.list (2026-11-21) carried no tier descriptions; Nano is the only name marked as the smallest tier.
+  // Cursor.models.list lists no prices. Third-party models (gpt-5.4-nano, gemini-3-flash) failed live with "not
+  // included in your weekly usage" on 2026-11-21, so the default is Cursor's own composer-2, which passed.
   { name: 'cursor', provider: 'cursor', gate: 'SWITCHBOARD_LIVE_CURSOR', credential: 'SWITCHBOARD_CURSOR_API_KEY',
-    modelVariable: 'SWITCHBOARD_LIVE_CURSOR_MODEL', defaultModel: 'gpt-5.4-nano', runtime: 'text',
+    modelVariable: 'SWITCHBOARD_LIVE_CURSOR_MODEL', defaultModel: 'composer-2', runtime: 'text',
     confirmation: 'request-only' },
+  // mimo-v2.5 is still in the bundled Pi catalog but OpenCode Go returns 410 ModelDeprecated (2026-11-21).
   { name: 'pi', provider: 'pi', gate: 'SWITCHBOARD_LIVE_PI', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
-    modelVariable: 'SWITCHBOARD_LIVE_PI_MODEL', defaultModel: 'mimo-v2.5', runtime: 'pi',
+    modelVariable: 'SWITCHBOARD_LIVE_PI_MODEL', defaultModel: 'mimo-v2.6-flash', runtime: 'pi',
     confirmation: 'request-only' },
   { name: 'host/pi', provider: 'pi', gate: 'SWITCHBOARD_LIVE_HOST_PI', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
-    modelVariable: 'SWITCHBOARD_LIVE_HOST_PI_MODEL', defaultModel: 'mimo-v2.5', runtime: 'host',
+    modelVariable: 'SWITCHBOARD_LIVE_HOST_PI_MODEL', defaultModel: 'mimo-v2.6-flash', runtime: 'host',
     confirmation: 'adapter-enforced' },
   { name: 'host/codex', provider: 'codex', gate: 'SWITCHBOARD_LIVE_HOST_CODEX', credential: undefined,
     modelVariable: 'SWITCHBOARD_LIVE_HOST_CODEX_MODEL', defaultModel: 'gpt-6-luna', runtime: 'host',
     confirmation: 'native-record' },
-  { name: 'host/opencode', provider: 'opencode', gate: 'SWITCHBOARD_LIVE_OPENCODE', credential: undefined,
-    modelVariable: 'SWITCHBOARD_LIVE_OPENCODE_MODEL', defaultModel: 'opencode-go/mimo-v2.5', runtime: 'host',
+  // OpenCode's stored login may be stale, so the run hands it the OpenCode Go key through OPENCODE_AUTH_CONTENT.
+  { name: 'host/opencode', provider: 'opencode', gate: 'SWITCHBOARD_LIVE_OPENCODE', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
+    modelVariable: 'SWITCHBOARD_LIVE_OPENCODE_MODEL', defaultModel: 'opencode-go/mimo-v2.6-flash', runtime: 'host',
     confirmation: 'adapter-enforced' },
 ].map((engine) => Object.freeze(engine)));
 
@@ -52,9 +55,12 @@ export function resolveModel(engine, env) {
 /**
  * Extra app-server argv for `host/codex`, appended after the adapter's own arguments by the host-owned spawn. The
  * direct route sends no model or effort, so these override the operator's config.toml defaults for this run only.
+ * The adapter admits a requester only when the host gives the process a private `sqlite_home` and `log_dir` outside
+ * the Codex home (src/adapters/codex/sessions.ts), so the run's history never touches the operator's.
  */
-export function codexHostArgs(model) {
-  return ['-c', `model=${JSON.stringify(model)}`, '-c', 'model_reasoning_effort="low"'];
+export function codexHostArgs(model, { sqliteHome, logDir }) {
+  return ['-c', `model=${JSON.stringify(model)}`, '-c', 'model_reasoning_effort="low"',
+    '-c', `sqlite_home=${JSON.stringify(sqliteHome)}`, '-c', `log_dir=${JSON.stringify(logDir)}`];
 }
 
 const REASON_LIMIT = 200;

@@ -77,7 +77,7 @@ test('a live run without its credential fails before any build, import, or lotel
   assert.equal(result.stderr.includes('native SDK tripwire'), false);
   assert.equal(existsSync(dist) ? statSync(dist).mtimeMs : undefined, before);
   assert.deepEqual(JSON.parse(report).engines.map((item) => [item.engine, item.model, item.pass, item.code]),
-    [['cursor', 'gpt-5.4-nano', false, 'credential-required']]);
+    [['cursor', 'composer-2', false, 'credential-required']]);
 });
 
 test('credentials alone select nothing, and an ambient key never reaches output', async () => {
@@ -109,9 +109,11 @@ test('engine selection, model resolution, and the credential lists', () => {
   assert.deepEqual([...ambientCredentialNames], ['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY']);
 });
 
-test('host/codex appends the model and a low reasoning effort after the adapter arguments', () => {
-  assert.deepEqual(codexHostArgs('gpt-6-luna'), ['-c', 'model="gpt-6-luna"', '-c', 'model_reasoning_effort="low"']);
-  assert.deepEqual(codexHostArgs('a"b'), ['-c', 'model="a\\"b"', '-c', 'model_reasoning_effort="low"']);
+test('host/codex appends the model, a low reasoning effort, and private sqlite and log directories', () => {
+  const paths = { sqliteHome: '/tmp/run/codex-sqlite', logDir: '/tmp/run/codex-logs' };
+  assert.deepEqual(codexHostArgs('gpt-6-luna', paths), ['-c', 'model="gpt-6-luna"', '-c', 'model_reasoning_effort="low"',
+    '-c', 'sqlite_home="/tmp/run/codex-sqlite"', '-c', 'log_dir="/tmp/run/codex-logs"']);
+  assert.equal(codexHostArgs('a"b', paths)[1], 'model="a\\"b"');
 });
 
 test('failure reasons are one redacted line of at most 200 characters', () => {
