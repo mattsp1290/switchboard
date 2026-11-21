@@ -48,6 +48,10 @@
       "types": "./dist/observability/index.d.ts",
       "import": "./dist/observability/index.js"
     },
+    "./baseline": {
+      "types": "./dist/baseline/index.d.ts",
+      "import": "./dist/baseline/index.js"
+    },
     "./host/pi": {
       "types": "./dist/host/pi/index.d.ts",
       "import": "./dist/host/pi/index.js"
@@ -82,17 +86,17 @@
     "verify:compiler": "node spikes/native-compiler/support/run.mjs \"$npm_execpath\"",
     "verify:agui": "node scripts/verify-agui-matrix.mjs",
     "build:pi": "tsc -p adapters/pi/tsconfig.json",
-    "check:pi": "tsc -p adapters/pi/tsconfig.json --noEmit",
+    "check:pi": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/pi/tsconfig.json --noEmit",
     "build:codex": "tsc -p adapters/codex/tsconfig.json",
-    "check:codex": "tsc -p adapters/codex/tsconfig.json --noEmit",
+    "check:codex": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/codex/tsconfig.json --noEmit",
     "build:claude": "tsc -p adapters/claude/tsconfig.json",
-    "check:claude": "tsc -p adapters/claude/tsconfig.json --noEmit",
+    "check:claude": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/claude/tsconfig.json --noEmit",
     "build:pi-host": "tsc -p adapters/pi-host/tsconfig.json",
     "check:pi-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/pi-host/tsconfig.json --noEmit",
     "build:claude-host": "tsc -p adapters/claude-host/tsconfig.json",
     "check:claude-host": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/claude-host/tsconfig.json --noEmit",
     "build:cursor": "tsc -p adapters/cursor/tsconfig.json",
-    "check:cursor": "tsc -p adapters/cursor/tsconfig.json --noEmit",
+    "check:cursor": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/cursor/tsconfig.json --noEmit",
     "verify:observability:lotel": "node scripts/verify-observability-lotel.mjs",
     "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
   },

@@ -44,16 +44,18 @@ export interface Configuration {
   readonly maxIdentifierLength: number;
   readonly maxContentBytes: number;
   readonly allowedTools: ReadonlySet<string>;
+  readonly admitObservedToolNames: boolean;
   readonly includeConversationId: boolean;
 }
 
 export function configuration(options: ObserverOptions): Configuration {
-  const input = record(options, ['tracer', 'contentPolicy', 'bounds', 'allowedToolNames', 'includeConversationId']);
+  const input = record(options, ['tracer', 'contentPolicy', 'bounds', 'allowedToolNames', 'admitObservedToolNames', 'includeConversationId']);
   const policy = input && record(input.contentPolicy, ['kind', 'sanitize']);
   if (!input || !policy || (policy.kind !== 'none' && policy.kind !== 'sanitized') ||
       (policy.kind === 'none' && 'sanitize' in policy) ||
       (policy.kind === 'sanitized' && typeof policy.sanitize !== 'function') ||
-      (input.includeConversationId !== undefined && typeof input.includeConversationId !== 'boolean')) {
+      (input.includeConversationId !== undefined && typeof input.includeConversationId !== 'boolean') ||
+      (input.admitObservedToolNames !== undefined && typeof input.admitObservedToolNames !== 'boolean')) {
     throw new TypeError('Invalid observability configuration');
   }
   const bounds = input.bounds === undefined ? {} : record(input.bounds, ['maxActiveSpans', 'maxIdentifierLength', 'maxContentBytes']);
@@ -79,7 +81,8 @@ export function configuration(options: ObserverOptions): Configuration {
     ? { kind: 'sanitized', sanitize: content => sanitizer(content) } : { kind: 'none' };
   return {
     tracer, contentPolicy, maxActiveSpans, maxIdentifierLength, maxContentBytes,
-    allowedTools: new Set(tools), includeConversationId: input.includeConversationId === true,
+    allowedTools: new Set(tools), admitObservedToolNames: input.admitObservedToolNames === true,
+    includeConversationId: input.includeConversationId === true,
   };
 }
 
@@ -110,7 +113,7 @@ export function startObservation(operation: unknown, correlation: unknown, confi
   };
   const exact = (keys: readonly string[]): boolean => Object.keys(input).every(key => keys.includes(key));
   if (input.kind === 'tool') {
-    if (!exact(['kind', 'name', 'callId']) || !identifier(input.name, config.maxIdentifierLength) || !config.allowedTools.has(input.name) || !optional('callId', 'gen_ai.tool.call.id')) return;
+    if (!exact(['kind', 'name', 'callId']) || !identifier(input.name, config.maxIdentifierLength) || (!config.admitObservedToolNames && !config.allowedTools.has(input.name)) || !optional('callId', 'gen_ai.tool.call.id')) return;
     attributes['gen_ai.operation.name'] = 'execute_tool';
     attributes['gen_ai.tool.name'] = input.name;
     return { kind: 'tool', name: `execute_tool ${input.name}`, attributes, content: undefined };

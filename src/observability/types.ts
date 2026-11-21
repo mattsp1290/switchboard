@@ -99,6 +99,8 @@ export interface ObserverOptions {
     readonly maxContentBytes?: number;
   };
   readonly allowedToolNames: readonly string[];
+  /** `true` records a tool name that passes the identifier check even when `allowedToolNames` omits it. */
+  readonly admitObservedToolNames?: boolean;
   readonly includeConversationId?: boolean;
 }
 export const instrumentationScope = Object.freeze({ name: '@mattsp1290/switchboard', version: '0.0.0' });

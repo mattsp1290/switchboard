@@ -110,3 +110,8 @@ export type {
   ReadinessRemediationCode, ReadinessReport, ReadinessSource, ReadinessUnknownCode, UnobservedState,
   VersionObservation, WorkspaceObservation,
 } from './core/readiness.js';
+export { emitObservation, jsonString } from './core/run-observation.js';
+export type {
+  RunObservation, RunObservationFamily, RunObservationListener, RunObservationOutcome, RunObservationToolPhase,
+  RunObservationUsage,
+} from './core/run-observation.js';

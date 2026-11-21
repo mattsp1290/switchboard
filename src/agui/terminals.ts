@@ -27,7 +27,7 @@ export type TerminalFact = { readonly timestamp?: number; readonly usage?: reado
 const counts = [
   'inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens', 'cachedInputTokens', 'cacheWriteInputTokens',
 ] as const satisfies readonly (keyof TokenUsage)[];
-function usage(value: unknown): TokenUsage[] {
+export function usage(value: unknown): TokenUsage[] {
   if (!Array.isArray(value)) reject();
   const identified = new Set<string>();
   return value.map((item: unknown) => {

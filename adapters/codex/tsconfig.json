@@ -4,7 +4,10 @@
     "rootDir": "src",
     "outDir": "../../dist/codex",
     "lib": ["ES2024"],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "#switchboard": ["../../dist/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }
