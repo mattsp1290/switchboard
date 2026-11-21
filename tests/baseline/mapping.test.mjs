@@ -337,16 +337,6 @@ test('the tool tracker holds back a {} placeholder until the first other argumen
   assert.deepEqual(track('c', 'run', '{"a":2}'), []);
 });
 
-test('the tool tracker close() emits started only for a never-seen call and stops later opening arguments', () => {
-  const track = createToolTracker();
-  assert.deepEqual(track.close('c', 'run'), [{ kind: 'tool', callId: 'c', name: 'run', phase: 'started' }]);
-  assert.deepEqual(track.close('c', 'run'), []);
-  assert.deepEqual(track('c', 'run', '{"a":1}'), []);
-  track('d', 'run', undefined);
-  assert.deepEqual(track.close('d', 'run'), []);
-  assert.deepEqual(track('d', 'run', '{"a":1}'), []);
-});
-
 test('appended arguments are accumulated: a later full value that differs is reported, a matching one is not', t => {
   const same = setup(t);
   same.feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: '{"a"' },

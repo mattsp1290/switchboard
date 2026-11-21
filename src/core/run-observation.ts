@@ -154,12 +154,8 @@ export function answeredToolObservations(callId: string, name: string, args: unk
   ];
 }
 
-/** Opens calls (see `createToolTracker`) and closes ones that never opened. */
-export interface ToolTracker {
-  (callId: string, name: string, argumentsJson: string | undefined): readonly RunObservation[];
-  /** `started` when the call was never seen (and marks it seen), else `[]`. A closed call is not reopened by later opening updates. */
-  close(callId: string, name: string): readonly RunObservation[];
-}
+/** Opens calls (see `createToolTracker`). */
+export type ToolTracker = (callId: string, name: string, argumentsJson: string | undefined) => readonly RunObservation[];
 
 /**
  * Opening phases for adapters that see a tool call several times: `started` once per call, then `arguments` once
@@ -167,7 +163,7 @@ export interface ToolTracker {
  */
 export function createToolTracker(): ToolTracker {
   const calls = new Map<string, { argumentsSent: boolean }>();
-  const open = (callId: string, name: string, argumentsJson: string | undefined): readonly RunObservation[] => {
+  const open: ToolTracker = (callId, name, argumentsJson) => {
     const observations: RunObservation[] = [];
     let call = calls.get(callId);
     if (call === undefined) {
@@ -181,12 +177,7 @@ export function createToolTracker(): ToolTracker {
     }
     return observations;
   };
-  const close = (callId: string, name: string): readonly RunObservation[] => {
-    const started = open(callId, name, undefined);
-    calls.get(callId)!.argumentsSent = true; // a closed call never gets opening arguments later
-    return started;
-  };
-  return Object.assign(open, { close });
+  return open;
 }
 
 /**

@@ -383,7 +383,8 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           for (const row of observation.rows) {
             const candidate = usageRow(row);
             const key = usageKey(row);
-            if (usageRowsValid([...new Map(usageRows).set(key, candidate).values()])) usageRows.set(key, candidate);
+            // The map key already enforces the one-row-per-(provider, model) rule, so the candidate alone is validated.
+            if (usageRowsValid([candidate])) usageRows.set(key, candidate);
             else note('usage-row-dropped');
           }
           break;

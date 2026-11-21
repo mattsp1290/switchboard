@@ -414,21 +414,22 @@ function observed(onObservation) {
   return { rows, listener(observation) { rows.push(observation); onObservation?.(observation); } };
 }
 
-test('a placeholder {} rawInput emits no arguments; the first real input does', async () => {
-  await withSession(async ({ adapter, agent, signal }) => {
-    const seen = observed();
-    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'tool-placeholder', recordIntent() {}, onObservation: seen.listener });
-    const prompt = await untilRequest(agent, 'session/prompt');
-    agent.push(update('tool_call', { toolCallId: 'call-1', kind: 'execute', status: 'pending', rawInput: {} }));
-    agent.push(update('tool_call_update', { toolCallId: 'call-1', kind: 'execute', status: 'in_progress', rawInput: { command: 'ls' } }));
-    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
-    const result = await running;
-    assert.equal(result.kind, 'failed', JSON.stringify(result));
-    const tools = seen.rows.filter((row) => row.kind === 'tool');
-    assert.equal(tools.some((row) => row.argumentsJson === '{}'), false, JSON.stringify(tools));
-    assert.equal(tools[0].phase, 'started');
-    for (const row of tools.slice(1)) if (row.phase === 'arguments') assert.equal(row.argumentsJson, '{"command":"ls"}');
-  });
+test('a placeholder {} rawInput emits only started; a real first input also emits arguments', async () => {
+  for (const [rawInput, phases] of [[{}, ['started']], [{ command: 'ls' }, ['started', 'arguments']]]) {
+    await withSession(async ({ adapter, agent, signal }) => {
+      const seen = observed();
+      const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'tool-placeholder', recordIntent() {}, onObservation: seen.listener });
+      const prompt = await untilRequest(agent, 'session/prompt');
+      agent.push(update('tool_call', { toolCallId: 'call-1', kind: 'execute', status: 'pending', rawInput }));
+      agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+      const result = await running;
+      assert.equal(result.kind, 'failed', JSON.stringify(result));
+      const tools = seen.rows.filter((row) => row.kind === 'tool');
+      assert.deepEqual(tools.map((row) => row.phase), phases, JSON.stringify(tools));
+      assert.equal(tools.some((row) => row.argumentsJson === '{}'), false, JSON.stringify(tools));
+      if (phases.length > 1) assert.equal(tools[1].argumentsJson, '{"command":"ls"}');
+    });
+  }
 });
 
 test('a listener sees a tool call first, named by kind, while the segment still fails and cancels', async () => {

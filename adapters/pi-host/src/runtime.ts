@@ -127,36 +127,32 @@ function messagesFrom(turns: readonly PiHostTurn[]): Message[] {
 interface Collected {
   readonly text: string;
   readonly calls: readonly { readonly id: string; readonly name: string; readonly arguments: Record<string, never> }[];
-  readonly input: number;
-  readonly output: number;
-  /** A `usage` event arrived for this request. */
-  readonly usageReported: boolean;
+  /** Absent when no `usage` event arrived for this request. */
+  readonly usage?: { readonly input: number; readonly output: number } | undefined;
   readonly failure?: 'mixed' | 'limit' | 'arguments' | 'duplicate';
 }
 
 function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<string>, answered: ReadonlySet<string>): Collected {
   let text = '';
-  let input = 0;
-  let output = 0;
-  let usageReported = false;
+  let usage: Collected['usage'];
   const calls: Collected['calls'][number][] = [];
   const ids = new Set<string>();
   for (const event of events) {
     if (event.kind === 'text') text += event.text;
-    else if (event.kind === 'usage') { input = event.input; output = event.output; usageReported = true; }
+    else if (event.kind === 'usage') usage = { input: event.input, output: event.output };
     else {
       const argumentsValue = jsonObject(event.arguments);
       if (argumentsValue === undefined || !identifier(event.id, 1024) || !identifier(event.name, 256)) {
-        return { text, calls: [], input, output, usageReported, failure: 'arguments' };
+        return { text, calls: [], usage, failure: 'arguments' };
       }
-      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], input, output, usageReported, failure: 'duplicate' };
+      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], usage, failure: 'duplicate' };
       ids.add(event.id);
       calls.push({ id: event.id, name: event.name, arguments: argumentsValue });
     }
   }
-  if (calls.length > piHostLimits.maxPendingPerMessage) return { text, calls: [], input, output, usageReported, failure: 'limit' };
-  if (calls.some((call) => !names.has(call.name))) return { text, calls: [], input, output, usageReported, failure: 'mixed' };
-  return { text, calls, input, output, usageReported };
+  if (calls.length > piHostLimits.maxPendingPerMessage) return { text, calls: [], usage, failure: 'limit' };
+  if (calls.some((call) => !names.has(call.name))) return { text, calls: [], usage, failure: 'mixed' };
+  return { text, calls, usage };
 }
 
 function emitAssistant(stream: AssistantMessageEventStream, collected: Collected, sink: {
@@ -164,15 +160,15 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   tool: (call: Collected['calls'][number], phase: 'start' | 'end') => void;
   /** One call per provider request; `usage` is absent when the request reported none. */
   boundary: (usage: { input: number; output: number } | undefined) => void;
-  /** `reported` is whether the provider request reported usage; the public usage publish ignores it. */
-  usage: (input: number, output: number, reported: boolean) => void;
+  /** The public usage publish counts an unreported request as zero; the observation row exists only when reported. */
+  usage: (usage: { input: number; output: number } | undefined) => void;
 }): void {
   const message: AssistantMessage = {
     role: 'assistant', content: [], api: providerId, provider: providerId, model: modelId,
-    usage: usageCounters(collected.input, collected.output), stopReason: 'stop', timestamp: Date.now(),
+    usage: usageCounters(collected.usage?.input ?? 0, collected.usage?.output ?? 0), stopReason: 'stop', timestamp: Date.now(),
   };
   stream.push({ type: 'start', partial: message });
-  sink.boundary(collected.usageReported ? { input: collected.input, output: collected.output } : undefined);
+  sink.boundary(collected.usage);
   let index = 0;
   if (collected.text.length > 0) {
     message.content = [{ type: 'text', text: '' }];
@@ -199,7 +195,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
     index += 1;
   }
   message.stopReason = collected.calls.length > 0 ? 'toolUse' : 'stop';
-  sink.usage(collected.input, collected.output, collected.usageReported);
+  sink.usage(collected.usage);
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
@@ -368,9 +364,9 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       boundary: (usage: { input: number; output: number } | undefined) => {
         observe({ kind: 'model-boundary', ...(usage === undefined ? {} : { usage: { inputTokens: usage.input, outputTokens: usage.output } }) });
       },
-      usage: (input: number, output: number, reported: boolean) => {
-        publish({ kind: 'usage', usage: hostUsage(input, output) });
-        if (reported) observe({ kind: 'usage', rows: [{ inputTokens: input, outputTokens: output }] });
+      usage: (usage: { input: number; output: number } | undefined) => {
+        publish({ kind: 'usage', usage: hostUsage(usage?.input ?? 0, usage?.output ?? 0) });
+        if (usage !== undefined) observe({ kind: 'usage', rows: [{ inputTokens: usage.input, outputTokens: usage.output }] });
       },
     };
     const provider = hostProvider(load, names, answered, sink, () => segmentNumber, admitted.instructions, admitted.tools, note);

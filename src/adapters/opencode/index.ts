@@ -8,10 +8,10 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
 import {
-  createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
+  emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
   usageFromCounts,
 } from '../../core/run-observation.js';
-import type { RunObservation, RunObservationListener, RunObservationUsage, ToolTracker } from '../../core/run-observation.js';
+import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
 import { sessionLimits } from '../../core/sessions.js';
 import { openOpenCodeProtocol } from './protocol.js';
@@ -224,18 +224,21 @@ function usageRow(update: Record<string, unknown>): RunObservationUsage | undefi
     cacheWriteInputTokens: update.cachedWriteTokens,
   });
 }
-/** `kinds` remembers the first valid `kind` per call id, so later updates that omit it keep the same tool name. */
-function toolObservation(update: Record<string, unknown>, track: ToolTracker): readonly RunObservation[] {
+/** The one observed tool update of a turn (the segment fails on it): `started`, then its arguments or its closing phase. */
+function toolObservation(update: Record<string, unknown>): readonly RunObservation[] {
   const callId = update.toolCallId;
   if (!identifier(callId, sessionLimits.identifierLength)) return [];
-  // Only the first disallowed tool update is observed (the segment fails on it), so its own kind names the call.
   const name = identifier(update.kind, 64) ? update.kind : 'other';
   const argumentsJson = jsonString(update.rawInput);
   const resultJson = jsonString(update.rawOutput);
+  const started: RunObservation = { kind: 'tool', callId, name, phase: 'started' };
   const status = update.status;
-  if (status === undefined || status === 'pending' || status === 'in_progress') return track(callId, name, argumentsJson);
+  if (status === undefined || status === 'pending' || status === 'in_progress') {
+    return argumentsJson === undefined || argumentsJson === '{}' ? [started]
+      : [started, { kind: 'tool', callId, name, phase: 'arguments', argumentsJson }];
+  }
   if (status !== 'completed' && status !== 'failed') return [];
-  return [...track.close(callId, name), {
+  return [started, {
     kind: 'tool', callId, name, phase: status === 'completed' ? 'arguments-ended' : 'failed',
     ...(argumentsJson === undefined ? {} : { argumentsJson }), ...(resultJson === undefined ? {} : { resultJson }),
   }];
@@ -266,7 +269,6 @@ interface Turn {
   nativeTerminal: boolean;
   text: string;
   readonly onObservation: RunObservationListener | undefined;
-  readonly trackTool: ToolTracker;
   failure?: SegmentError;
   stopReason?: string;
   usage: unknown;
@@ -576,7 +578,7 @@ async function openSession(ready: {
     if (decision.kind === 'tool') {
       const watcher = observingTurn();
       if (watcher) {
-        for (const observation of toolObservation(decision.update, watcher.trackTool)) emitObservation(watcher.onObservation, observation);
+        for (const observation of toolObservation(decision.update)) emitObservation(watcher.onObservation, observation);
       }
       noteDisallowed();
       return;
@@ -845,7 +847,7 @@ async function openSession(ready: {
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
-        onObservation, trackTool: createToolTracker(),
+        onObservation,
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
