@@ -7,7 +7,9 @@ import type { AssistantMessage, Message, Model, Provider, Usage } from '@earendi
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import {
-  createDispatchOperation, createEventStream, answeredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, parseCheckpointReference, segmentTerminal, parseInteractionContinuation, parseSessionReference,
+  answeredToolObservations, createDispatchOperation, createEventStream, emitObservation, emitRunStarted,
+  isOptionalObservationListener, jsonString, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
+  segmentTerminal,
 } from '#switchboard';
 import type {
   DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentResult, HostToolCall, HostToolDeclaration,
@@ -162,7 +164,8 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   tool: (call: Collected['calls'][number], phase: 'start' | 'end') => void;
   /** One call per provider request; `usage` is absent when the request reported none. */
   boundary: (usage: { input: number; output: number } | undefined) => void;
-  usage: (input: number, output: number) => void;
+  /** `reported` is whether the provider request reported usage; the public usage publish ignores it. */
+  usage: (input: number, output: number, reported: boolean) => void;
 }): void {
   const message: AssistantMessage = {
     role: 'assistant', content: [], api: providerId, provider: providerId, model: modelId,
@@ -196,7 +199,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
     index += 1;
   }
   message.stopReason = collected.calls.length > 0 ? 'toolUse' : 'stop';
-  sink.usage(collected.input, collected.output);
+  sink.usage(collected.input, collected.output, collected.usageReported === true);
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
@@ -365,9 +368,9 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       boundary: (usage: { input: number; output: number } | undefined) => {
         observe({ kind: 'model-boundary', ...(usage === undefined ? {} : { usage: { inputTokens: usage.input, outputTokens: usage.output } }) });
       },
-      usage: (input: number, output: number) => {
+      usage: (input: number, output: number, reported: boolean) => {
         publish({ kind: 'usage', usage: hostUsage(input, output) });
-        observe({ kind: 'usage', rows: [{ inputTokens: input, outputTokens: output }] });
+        if (reported) observe({ kind: 'usage', rows: [{ inputTokens: input, outputTokens: output }] });
       },
     };
     const provider = hostProvider(load, names, answered, sink, () => segmentNumber, admitted.instructions, admitted.tools, note);
@@ -481,7 +484,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
     async function dispatch(hostOperationId: string, recordIntent: Parameters<PiHostAdapter['run']>[0]['recordIntent'], hostSignal: AbortSignal, work: () => Promise<void>, onObservation?: RunObservationListener): Promise<HostSegmentResult> {
-      if (!isObservationListener(onObservation)) {
+      if (!isOptionalObservationListener(onObservation)) {
         return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
       }
       if (closed) return { kind: 'failed', error: { code: 'closed', message: 'The Pi host adapter is closed.' }, write: { kind: 'not-attempted' } };

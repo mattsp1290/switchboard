@@ -50,7 +50,7 @@ export type RunObservation =
   /**
    * Rows are native counts and are never summed. A later row with the same (provider, model) key replaces an earlier
    * one, so the terminal usage is the most recent row per key. Scope differs by runtime: Claude and Codex text report
-   * the turn total (Cursor included: its usage message is per-turn); OpenCode reports the latest usage_update or the prompt-response usage; Pi and Pi-host
+   * the turn total (Cursor included: its usage message is per-turn); OpenCode reports the prompt-response usage when present, else the latest usage_update; Pi and Pi-host
    * report the most recent request only (per-request rows share one key); `./host/codex` reports the thread-cumulative
    * `total`, which includes earlier segments and survives resume.
    */
@@ -89,8 +89,8 @@ export function normalizeUsage(row: RunObservationUsage): RunObservationUsage {
 
 export type RunObservationListener = (observation: RunObservation) => void;
 
-/** `true` for an absent listener or a function, so `!isObservationListener(value)` is the request check. */
-export function isObservationListener(value: unknown): value is RunObservationListener | undefined {
+/** `true` for an absent listener or a function, so `!isOptionalObservationListener(value)` is the request check. */
+export function isOptionalObservationListener(value: unknown): value is RunObservationListener | undefined {
   return value === undefined || typeof value === 'function';
 }
 
@@ -204,7 +204,7 @@ export function jsonString(value: unknown): string | undefined {
 }
 
 function freezeDeep<T>(value: T): T {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+  if (value !== null && typeof value === 'object') {
     for (const key of Object.keys(value)) freezeDeep((value as Record<string, unknown>)[key]);
     Object.freeze(value);
   }
@@ -212,13 +212,13 @@ function freezeDeep<T>(value: T): T {
 }
 
 /**
- * Freezes `observation` and passes it to `listener`, swallowing any throw. Absent listeners are not called. A listener
+ * Passes a deeply frozen copy of `observation` (the caller's object is never frozen) to `listener`, swallowing any throw. Absent listeners are not called. A listener
  * failure never changes admission, a public callback, or a terminal outcome.
  */
 export function emitObservation(listener: RunObservationListener | undefined, observation: RunObservation): void {
   if (listener === undefined) return;
   try {
-    listener(freezeDeep(observation));
+    listener(freezeDeep(structuredClone(observation)));
   } catch {
     // A listener exception does not change native work.
   }

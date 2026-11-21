@@ -2,7 +2,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
-import { createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome, tokenCount } from '#switchboard';
+import { createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome, tokenCount } from '#switchboard';
 import type { RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
@@ -244,7 +244,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
     const { text, agentId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
-      || typeof onEvent !== 'function' || !isObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
+      || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
     let trackedId = requested;
@@ -418,13 +418,12 @@ function observedUsage(value: unknown): RunObservationUsage | undefined {
   if (!isRecord(value)) return undefined;
   const inputTokens = tokenCount(value.inputTokens);
   const outputTokens = tokenCount(value.outputTokens);
-  const totalTokens = tokenCount(value.totalTokens);
   return normalizedUsageFromCounts({
     inputTokens, outputTokens,
     cachedInputTokens: value.cacheReadTokens,
     cacheWriteInputTokens: value.cacheWriteTokens,
     reasoningTokens: value.reasoningTokens,
-    ...(totalTokens !== undefined && inputTokens !== undefined && outputTokens !== undefined && totalTokens === inputTokens + outputTokens ? { totalTokens } : {}),
+    totalTokens: value.totalTokens,
   });
 }
 
@@ -437,6 +436,7 @@ function observeTool(message: Record<string, unknown>, callId: string, name: str
     : typeof message.error === 'string' ? jsonString(message.error) : undefined;
   emitObservation(onObservation, {
     kind: 'tool', callId, name, phase: status === 'completed' ? 'completed' : 'failed',
+    ...(argumentsJson === undefined ? {} : { argumentsJson }),
     ...(resultJson === undefined ? {} : { resultJson }),
   });
 }

@@ -5,7 +5,7 @@ import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
 import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
-import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
+import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
@@ -112,11 +112,12 @@ function failed(error: HostAdapterError, write: HostWriteStatus): HostSegmentRes
 function usageRow(total: CodexTokenUsage): RunObservationUsage {
   return { inputTokens: total.inputTokens, outputTokens: total.outputTokens, cachedInputTokens: total.cachedInputTokens,
     cacheWriteInputTokens: total.cacheWriteInputTokens, reasoningTokens: total.reasoningOutputTokens,
-    ...(total.totalTokens === total.inputTokens + total.outputTokens ? { totalTokens: total.totalTokens } : {}) };
+    totalTokens: total.totalTokens };
 }
 /**
  * Pinned 0.169.0 `ServerNotification` reasoning methods, checked against `codex app-server generate-ts`:
- * `item/reasoning/textDelta` and `item/reasoning/summaryTextDelta` carry `{ itemId, delta }`. `execution.ts` leaves them
+ * `item/reasoning/textDelta` carries `{ itemId, delta }` and `item/reasoning/summaryTextDelta` adds a numeric
+ * `summaryIndex`, which keeps each summary part in its own message. `execution.ts` leaves them
  * as opaque `native` events, so `watch` projects only these two methods as `reasoning` deltas.
  */
 const reasoningMethods = ['item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'] as const;
@@ -465,7 +466,9 @@ async function openAdapter(ready: {
       } else if (event.kind === 'native') {
         if (segment.observer && reasoningMethods.some((method) => method === event.method) && record(event.params)
           && typeof event.params.itemId === 'string' && typeof event.params.delta === 'string') {
-          const part = event.method === 'item/reasoning/textDelta' ? 'text' : 'summary';
+          const index = event.params.summaryIndex;
+          const part = event.method === 'item/reasoning/textDelta' ? 'text'
+            : typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? `summary:${index}` : 'summary';
           observe({ kind: 'reasoning', messageId: `${event.params.itemId}:${part}`, mode: 'delta', text: event.params.delta });
         }
       } else if (event.kind === 'usage') {
@@ -626,7 +629,7 @@ async function openAdapter(ready: {
   async function segmentOf(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
     readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
   answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
-    if (!isObservationListener(input.onObservation)) {
+    if (!isOptionalObservationListener(input.onObservation)) {
       return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
     }
     const state: SegmentState = { started: false };

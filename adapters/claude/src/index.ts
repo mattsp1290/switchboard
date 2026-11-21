@@ -3,7 +3,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { emitObservation, emitRunStarted, isObservationListener, runtimeOutcome } from '#switchboard';
+import { emitObservation, emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
 import { createStreamObserver } from './observe.js';
 
@@ -145,7 +145,7 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
   function start(request: ClaudeRequest): Promise<ClaudeTurn> {
     const { text, threadId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
-      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || !isObservationListener(onObservation)
+      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation)
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved) writers.add(reserved);

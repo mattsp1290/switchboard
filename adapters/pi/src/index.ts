@@ -6,7 +6,7 @@ import {
   createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
-import { emitObservation, emitRunStarted, isObservationListener, runtimeOutcome, tokenCount, usageFromCounts } from '#switchboard';
+import { emitObservation, emitRunStarted, isOptionalObservationListener, runtimeOutcome, tokenCount, usageFromCounts } from '#switchboard';
 import type { RunObservationListener, RunObservationUsage } from '#switchboard';
 import { terminalOutcome } from './terminal.js';
 
@@ -140,7 +140,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
       if (closing) throw new Error('Pi session is closed.');
       if (running) throw new Error('Pi session is busy.');
       if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function'
-        || !isObservationListener(onObservation)) throw failure();
+        || !isOptionalObservationListener(onObservation)) throw failure();
       const admission = Promise.withResolvers<PiPrompt>();
       const completion = Promise.withResolvers<PiTerminal>();
       let started = false;

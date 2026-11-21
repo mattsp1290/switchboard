@@ -163,6 +163,7 @@ test('a provider request that reported no usage still emits a model boundary, wi
   const result = await host.adapter.run({ ...run('Say hi'), onObservation: (o) => { seen.push(o); } });
   assert.equal(result.kind, 'complete');
   assert.deepEqual(seen.filter((o) => o.kind === 'model-boundary'), [{ kind: 'model-boundary' }]);
+  assert.equal(seen.some((o) => o.kind === 'usage'), false);
   await host.close();
 });
 

@@ -5,7 +5,7 @@ import { delimiter, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import { withSdkProcess } from './process.js';
-import { emitObservation, emitRunStarted, isObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
+import { emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
 import type { ThreadItem, ThreadOptions } from '@openai/codex-sdk';
 
@@ -299,7 +299,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
     const { threadId: requested, text, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
       || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
-      || !isObservationListener(onObservation)
+      || !isOptionalObservationListener(onObservation)
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved !== undefined) writers.add(reserved);

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { PROJECTION_FAMILIES, checkAguiRun, checkEngineEvidence, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
+import { PROJECTION_FAMILIES, checkAguiRun, checkBaselineDiagnostics, checkEngineEvidence, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
 import {
   ambientCredentialNames, codexHostArgs, credentialNames, dryRunRequested, engines, formatReason, hostVariables, nativeRecordMissing,
   opencodeAuthContent,
@@ -346,4 +346,12 @@ test('engine evidence enforces the expected model span presence', () => {
 
 test('the projection family list matches the source of truth', () => {
   assert.deepEqual([...PROJECTION_FAMILIES], [...runObservationFamilies]);
+});
+
+test('baseline diagnostics pass only for the benign arguments rewrite', () => {
+  assert.deepEqual(checkBaselineDiagnostics([]), { ok: true });
+  assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-changed', 'tool-arguments-changed']), { ok: true });
+  assert.deepEqual(checkBaselineDiagnostics(['usage-row-dropped']), { ok: false, code: 'usage-row-dropped' });
+  assert.deepEqual(checkBaselineDiagnostics(['tool-arguments-changed', 'not-running']), { ok: false, code: 'not-running' });
+  assert.deepEqual(checkBaselineDiagnostics(['telemetry-failure']), { ok: false, code: 'telemetry-failure' });
 });

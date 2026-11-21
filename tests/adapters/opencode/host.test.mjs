@@ -463,6 +463,21 @@ test('a listener sees a tool call first, named by kind, while the segment still 
   }
 });
 
+test('a later tool update without a kind reuses the first valid kind for that call', async () => {
+  await withSession(async ({ adapter, agent, signal }) => {
+    const seen = observed();
+    const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'tool-kind-reuse', recordIntent() {}, onObservation: seen.listener });
+    const prompt = await untilRequest(agent, 'session/prompt');
+    agent.push(update('tool_call', { toolCallId: 'call-1', kind: 'execute', status: 'pending', rawInput: {} }));
+    agent.push(update('tool_call_update', { toolCallId: 'call-1', status: 'in_progress', rawInput: { command: 'ls' } }));
+    agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } });
+    await running;
+    const tools = seen.rows.filter((row) => row.kind === 'tool');
+    assert.deepEqual(tools.map((row) => row.phase), ['started', 'arguments']);
+    assert.equal(tools.every((row) => row.name === 'execute'), true, JSON.stringify(tools));
+  });
+});
+
 test('a tool call without a kind is named other', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const seen = observed();
@@ -1679,7 +1694,7 @@ test('prompt bytes followed by channel EOF report an outcome-unknown terminal ob
   });
 });
 
-test('usage rows are normalized and the prompt response usage is observed when no usage_update arrived', async () => {
+test('usage rows are normalized and the prompt response usage row is the terminal row, even after a usage_update', async () => {
   await withSession(async ({ adapter, agent, signal }) => {
     const seen = observed();
     const running = adapter.run({ prompt: 'go', signal, hostOperationId: 'usage-norm', recordIntent() {}, onObservation: seen.listener });
@@ -1689,7 +1704,8 @@ test('usage rows are normalized and the prompt response usage is observed when n
     agent.push({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn', usage: { inputTokens: 100, outputTokens: 1 } } });
     assert.equal((await running).kind, 'complete');
     assert.deepEqual(seen.rows.filter((row) => row.kind === 'usage'),
-      [{ kind: 'usage', rows: [{ outputTokens: 3, cachedInputTokens: 10, inputTokens: 12 }] }]);
+      [{ kind: 'usage', rows: [{ outputTokens: 3, cachedInputTokens: 10, inputTokens: 12 }] },
+        { kind: 'usage', rows: [{ outputTokens: 1, inputTokens: 100 }] }]);
   });
   await withSession(async ({ adapter, agent, signal }) => {
     const seen = observed();

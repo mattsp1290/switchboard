@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { createToolTracker, declaredToolObservations, jsonString, normalizedUsageFromCounts, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
+const { createToolTracker, declaredToolObservations, emitObservation, jsonString, normalizedUsageFromCounts, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -399,4 +399,37 @@ test('normalizedUsageFromCounts maps counts then normalizes, or is undefined wit
   assert.equal(normalizedUsageFromCounts({ inputTokens: -1, outputTokens: 'x' }), undefined);
   assert.deepEqual(normalizedUsageFromCounts({ inputTokens: 3, outputTokens: 2 }),
     normalizeUsage({ inputTokens: 3, outputTokens: 2 }));
+});
+
+test('a terminal before run-started is dropped as not-running and does not terminate the segment', t => {
+  const { baseline } = setup(t);
+  const result = baseline.accept(success);
+  assert.deepEqual(result.diagnostics, [{ code: 'not-running' }]);
+  assert.equal(result.projection.kind, 'mapped');
+  assert.deepEqual(result.projection.events, []);
+  assert.equal(baseline.close().terminated, false);
+});
+
+test('an observation after close is dropped as after-close without touching the projector', t => {
+  const { baseline } = setup(t);
+  baseline.accept(started);
+  const report = baseline.close();
+  const late = baseline.accept({ kind: 'text', messageId: 'm', mode: 'delta', text: 'late' });
+  assert.deepEqual(late.diagnostics, [{ code: 'after-close' }]);
+  assert.deepEqual(late.projection.events, []);
+  assert.equal(baseline.close(), report);
+});
+
+test('emitObservation delivers a deeply frozen copy and never freezes the caller object', () => {
+  const original = { kind: 'usage', rows: [{ inputTokens: 1 }] };
+  let delivered;
+  emitObservation(observation => { delivered = observation; }, original);
+  assert.equal(Object.isFrozen(original), false);
+  assert.equal(Object.isFrozen(original.rows), false);
+  assert.equal(Object.isFrozen(original.rows[0]), false);
+  assert.deepEqual(delivered, original);
+  assert.notEqual(delivered, original);
+  assert.equal(Object.isFrozen(delivered), true);
+  assert.equal(Object.isFrozen(delivered.rows), true);
+  assert.equal(Object.isFrozen(delivered.rows[0]), true);
 });

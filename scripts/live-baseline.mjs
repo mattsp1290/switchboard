@@ -8,11 +8,13 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { checkAguiRun, checkEngineEvidence, checkLotelSpans, lastTerminal } from './live-baseline-check.mjs';
+import { checkAguiRun, checkBaselineDiagnostics, checkEngineEvidence, checkLotelSpans, lastTerminal } from './live-baseline-check.mjs';
 import {
   codexHostArgs, dryRunRequested, formatReason, hostVariables, nativeRecordMissing, resolveModel, selectEngines, takeCredentials,
 } from './live-baseline-engines.mjs';
 
+const OPENCODE_DENIED_TOOLS = ['read', 'edit', 'glob', 'grep', 'list', 'bash', 'task', 'external_directory', 'todowrite', 'question',
+  'webfetch', 'websearch', 'lsp', 'skill'];
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const PROMPT = 'Reply with the single word pong.';
@@ -69,10 +71,11 @@ const hostOpeners = {
     // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
     // OpenCode reject the session.
     const configHome = join(scratch, 'opencode-config');
-    // The private config also denies edit, bash, and webfetch, so a model tool call cannot act on the host.
+    // The private config denies every tool permission key the installed OpenCode (1.18.29) config schema declares, except
+    // doom_loop (a loop guard, not a tool), so a model tool call cannot read, write, search, or reach out from the host.
     await mkdir(join(configHome, 'opencode'), { recursive: true });
     await writeFile(join(configHome, 'opencode', 'opencode.json'), JSON.stringify({ $schema: 'https://opencode.ai/config.json',
-      permission: { edit: 'deny', bash: 'deny', webfetch: 'deny' } }));
+      permission: Object.fromEntries(OPENCODE_DENIED_TOOLS.map((tool) => [tool, 'deny'])) }));
     const variables = hostVariables('host/opencode', { path: process.env.PATH ?? '', home: homedir(), opencodeConfigHome: configHome,
       opencodeKey: credentials.SWITCHBOARD_OPENCODE_API_KEY });
     return opencodeHostAdapter.open({ model, launch: launchWith([]), environment: { variables,
@@ -297,9 +300,13 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   const baseline = created.value;
   const batches = [];
   const observations = [];
+  const diagnosticCodes = [];
   const onObservation = (observation) => {
     observations.push(observation);
-    batches.push(baseline.accept(observation).projection);
+    const accepted = baseline.accept(observation);
+    batches.push(accepted.projection);
+    for (const diagnostic of accepted.diagnostics ?? []) diagnosticCodes.push(diagnostic.code);
+    if (accepted.observer?.code !== undefined) diagnosticCodes.push(accepted.observer.code);
   };
   const scratch = await mkdtemp(join(tmpdir(), 'live-baseline-'));
   let report;
@@ -323,6 +330,8 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   const outcome = lastTerminal(observations)?.outcome ?? null;
   const detail = { outcome };
   if (!aguiCheck.ok) throw new LiveFailure(aguiCheck.code, undefined, detail);
+  const diagnostics = checkBaselineDiagnostics(diagnosticCodes);
+  if (!diagnostics.ok) throw new LiveFailure('baseline-diagnostic', diagnostics.code, { ...detail, diagnostics: [...new Set(diagnosticCodes)] });
   // A failed or unknown terminal still produces a consistent AG-UI run and agent span; only a success proves a live turn.
   if (outcome !== 'success') throw new LiveFailure('outcome-not-success', undefined, detail);
   const spans = await pollSpans(lotelBinary, runId, observations);

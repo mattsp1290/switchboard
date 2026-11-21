@@ -22,6 +22,15 @@ export function checkEngineEvidence(engine, counts) {
   }
 }
 
+/** Codes the baseline may report on a passing run: the one benign rewrite. Any other code means data was dropped. */
+const BENIGN_DIAGNOSTICS = new Set(['tool-arguments-changed']);
+
+/** `codes` are every `accept(...).diagnostics[].code` and `observer.code` of a run; returns the first non-benign code. */
+export function checkBaselineDiagnostics(codes) {
+  const bad = codes.find((code) => !BENIGN_DIAGNOSTICS.has(code));
+  return bad === undefined ? { ok: true } : fail(bad);
+}
+
 export function lastTerminal(observations) {
   for (let index = observations.length - 1; index >= 0; index -= 1) {
     if (observations[index]?.kind === 'terminal') return observations[index];

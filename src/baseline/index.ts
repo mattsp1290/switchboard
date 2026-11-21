@@ -35,6 +35,7 @@ export type RunBaselineDiagnosticCode =
   | 'snapshot-not-extension'
   | 'usage-row-dropped'
   | 'after-terminal'
+  | 'after-close'
   | 'tool-result-repeated'
   | 'tool-arguments-changed'
   | 'tool-span-unrecorded'
@@ -126,7 +127,8 @@ function usageRow(row: RunObservationUsage): NativeTokenUsage {
  * never do. One baseline is one segment: a continuation uses a new baseline.
  *
  * Model and tool spans are recorded when their observation arrives and end immediately: they mark an observed
- * boundary and its outcome, not its latency. `projection.runId` is also the correlation on every span.
+ * boundary and its outcome, not its latency. A model span with neither a response model nor token counts stays open
+ * and ends `outcome-unknown` at the terminal. `projection.runId` is also the correlation on every span.
  */
 export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBaseline, ProjectionError> {
   const observer = createGenAiObserver({
@@ -143,6 +145,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
   const correlation = Object.freeze({ runId: options.projection.runId });
 
   let phase: 'idle' | 'running' | 'terminated' = 'idle';
+  let closed = false;
   let agent: AgentHandle | undefined;
   let firstError: ProjectionError | undefined;
   const messages = new Map<string, MessageState>();
@@ -320,7 +323,9 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
 
   function accept(observation: RunObservation): RunBaselineAccept {
     batch = { events: [], diagnostics: [] };
-    if (phase === 'terminated') {
+    if (closed) {
+      note('after-close');
+    } else if (phase === 'terminated') {
       note('after-terminal');
     } else {
       switch (observation.kind) {
@@ -415,6 +420,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           // Every unfilled family is reported as a gap at the terminal, declared or not.
           break;
         case 'terminal':
+          if (phase !== 'running') {
+            note('not-running');
+            break;
+          }
           finishRun(observation);
           break;
       }
@@ -433,6 +442,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
   let report: RunBaselineReport | undefined;
   function close(): RunBaselineReport {
     if (report) return report;
+    closed = true;
     observer.close();
     projector.close();
     const families = projectionFamilies.map(family => {

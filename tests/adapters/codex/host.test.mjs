@@ -107,6 +107,7 @@ function fakeServer(home, tool) {
         queueMicrotask(() => {
           // Pinned 0.169.0 ServerNotification names `item/reasoning/textDelta` { itemId, delta }; `ThreadItem` has no separate reasoning-text item to classify.
           send({ method: 'item/reasoning/textDelta', params: { threadId, turnId, itemId: 'think-1', delta: 'hmm', contentIndex: 0 } });
+          send({ method: 'item/reasoning/summaryTextDelta', params: { threadId, turnId, itemId: 'think-1', delta: 'sum', summaryIndex: 1 } });
           send({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId: 'item-1', delta: 'hello' } });
           finishTurn(threadId, turnId);
         });
@@ -303,6 +304,8 @@ test('a listener receives the observations of a text segment, a pending segment,
     assert.deepEqual(text.filter((o) => o.kind === 'unsupported').map((o) => o.family), unsupported);
     assert.deepEqual(text.find((o) => o.kind === 'text'), { kind: 'text', messageId: 'item-1', mode: 'delta', text: 'hello' });
     assert.deepEqual(text.find((o) => o.kind === 'reasoning'), { kind: 'reasoning', messageId: 'think-1:text', mode: 'delta', text: 'hmm' });
+    assert.deepEqual(text.find((o) => o.kind === 'reasoning' && o.messageId.includes('summary')),
+      { kind: 'reasoning', messageId: 'think-1:summary:1', mode: 'delta', text: 'sum' });
     assert.deepEqual(text.find((o) => o.kind === 'usage'), { kind: 'usage', rows: [{ inputTokens: 2, outputTokens: 1, cachedInputTokens: 0,
       cacheWriteInputTokens: 0, reasoningTokens: 0, totalTokens: 3 }] });
     assert.equal(text.some((o) => o.kind === 'model-boundary'), false);

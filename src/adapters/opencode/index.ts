@@ -8,7 +8,7 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
 import {
-  createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
+  createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, segmentTerminal, tokenCount,
 } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage, ToolTracker } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
@@ -197,20 +197,21 @@ function itemId(value: unknown): string {
 function usageRow(update: Record<string, unknown>): RunObservationUsage | undefined {
   const inputTokens = tokenCount(update.inputTokens);
   const outputTokens = tokenCount(update.outputTokens);
-  const totalTokens = tokenCount(update.totalTokens);
   return normalizedUsageFromCounts({
     inputTokens,
     outputTokens,
-    totalTokens: totalTokens !== undefined && totalTokens === (inputTokens ?? NaN) + (outputTokens ?? NaN) ? totalTokens : undefined,
+    totalTokens: update.totalTokens,
     reasoningTokens: update.thoughtTokens,
     cachedInputTokens: update.cachedReadTokens,
     cacheWriteInputTokens: update.cachedWriteTokens,
   });
 }
-function toolObservation(update: Record<string, unknown>, track: ToolTracker): readonly RunObservation[] {
+/** `kinds` remembers the first valid `kind` per call id, so later updates that omit it keep the same tool name. */
+function toolObservation(update: Record<string, unknown>, track: ToolTracker, kinds: Map<string, string>): readonly RunObservation[] {
   const callId = update.toolCallId;
   if (!identifier(callId, sessionLimits.identifierLength)) return [];
-  const name = identifier(update.kind, 64) ? update.kind : 'other';
+  if (!kinds.has(callId) && identifier(update.kind, 64)) kinds.set(callId, update.kind);
+  const name = kinds.get(callId) ?? 'other';
   const argumentsJson = jsonString(update.rawInput);
   const resultJson = jsonString(update.rawOutput);
   const status = update.status;
@@ -248,8 +249,8 @@ interface Turn {
   text: string;
   readonly onObservation: RunObservationListener | undefined;
   readonly trackTool: ToolTracker;
-  /** A `usage_update` produced a usage row, so the prompt response usage is not a second row. */
-  usageObserved: boolean;
+  /** The first valid `kind` seen per tool call id this turn. */
+  readonly toolKinds: Map<string, string>;
   failure?: SegmentError;
   stopReason?: string;
   usage: unknown;
@@ -542,10 +543,7 @@ async function openSession(ready: {
       }
     } else if (update.sessionUpdate === 'usage_update') {
       const row = usageRow(update);
-      if (row) {
-        active.usageObserved = true;
-        emitObservation(active.onObservation, { kind: 'usage', rows: [row] });
-      }
+      if (row) emitObservation(active.onObservation, { kind: 'usage', rows: [row] });
     }
   }
   function handleUpdate(params: unknown): void | 'yield' {
@@ -564,7 +562,7 @@ async function openSession(ready: {
     if (decision.kind === 'tool') {
       const watcher = observingTurn();
       if (watcher) {
-        for (const observation of toolObservation(decision.update, watcher.trackTool)) emitObservation(watcher.onObservation, observation);
+        for (const observation of toolObservation(decision.update, watcher.trackTool, watcher.toolKinds)) emitObservation(watcher.onObservation, observation);
       }
       noteDisallowed();
       return;
@@ -823,7 +821,7 @@ async function openSession(ready: {
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);
       const onObservation: RunObservationListener | undefined = input.onObservation;
-      if (!isObservationListener(onObservation)) {
+      if (!isOptionalObservationListener(onObservation)) {
         return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, notAttempted);
       }
       const prompt = promptText(input.prompt);
@@ -833,14 +831,14 @@ async function openSession(ready: {
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
-        onObservation, trackTool: createToolTracker(), usageObserved: false,
+        onObservation, trackTool: createToolTracker(), toolKinds: new Map(),
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
       turn = active;
       const result = await segment(active, input, prompt);
       if (active.promptWritten && onObservation) {
-        const promptUsage = active.usageObserved || !record(active.usage) ? undefined : usageRow(active.usage);
+        const promptUsage = !record(active.usage) ? undefined : usageRow(active.usage);
         if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
         emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
       }
