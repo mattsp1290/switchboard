@@ -25,13 +25,14 @@ export const engines = Object.freeze([
     confirmation: 'request-only' },
   { name: 'host/pi', provider: 'pi', gate: 'SWITCHBOARD_LIVE_HOST_PI', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_HOST_PI_MODEL', defaultModel: 'mimo-v2.6-flash', runtime: 'host',
-    confirmation: 'adapter-enforced' },
+    // The pi-host adapter sends every request under its fixed `host` model id, so it cannot confirm the real model.
+    confirmation: 'request-only' },
   { name: 'host/codex', provider: 'codex', gate: 'SWITCHBOARD_LIVE_HOST_CODEX', credential: undefined,
     modelVariable: 'SWITCHBOARD_LIVE_HOST_CODEX_MODEL', defaultModel: 'gpt-6-luna', runtime: 'host',
     confirmation: 'native-record' },
   // OpenCode's stored login may be stale, so the run hands it the OpenCode Go key through OPENCODE_AUTH_CONTENT.
-  { name: 'host/opencode', provider: 'opencode', gate: 'SWITCHBOARD_LIVE_OPENCODE', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
-    modelVariable: 'SWITCHBOARD_LIVE_OPENCODE_MODEL', defaultModel: 'opencode-go/mimo-v2.6-flash', runtime: 'host',
+  { name: 'host/opencode', provider: 'opencode', gate: 'SWITCHBOARD_LIVE_HOST_OPENCODE', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
+    modelVariable: 'SWITCHBOARD_LIVE_HOST_OPENCODE_MODEL', defaultModel: 'opencode-go/mimo-v2.6-flash', runtime: 'host',
     confirmation: 'adapter-enforced' },
 ].map((engine) => Object.freeze(engine)));
 
@@ -41,10 +42,36 @@ export const credentialNames = Object.freeze(['SWITCHBOARD_ANTHROPIC_API_KEY', '
 export const ambientCredentialNames = Object.freeze(['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY']);
 
 const present = (env, name) => typeof env[name] === 'string' && env[name] !== '';
+/** A gate is on for any value except empty, `0`, or `false`, so `SWITCHBOARD_LIVE_ALL=0` never starts paid turns. */
+const enabled = (env, name) => present(env, name) && env[name] !== '0' && env[name].toLowerCase() !== 'false';
 
 /** Gated engines in table order, or every engine when SWITCHBOARD_LIVE_ALL is set. */
 export function selectEngines(env) {
-  return present(env, 'SWITCHBOARD_LIVE_ALL') ? [...engines] : engines.filter((engine) => present(env, engine.gate));
+  return enabled(env, 'SWITCHBOARD_LIVE_ALL') ? [...engines] : engines.filter((engine) => enabled(env, engine.gate));
+}
+
+/** Whether a dry run or live run treats SWITCHBOARD_LIVE_DRY_RUN as set. */
+export function dryRunRequested(env) {
+  return enabled(env, 'SWITCHBOARD_LIVE_DRY_RUN');
+}
+
+/**
+ * Captures each `credentialNames` value and deletes it from `env`, then deletes every ambient provider key without
+ * capturing it. Returns the captured values by name. `env` is mutated so no later child or adapter inherits a key.
+ */
+export function takeCredentials(env) {
+  const captured = {};
+  for (const name of credentialNames) {
+    if (present(env, name)) captured[name] = env[name];
+    delete env[name];
+  }
+  for (const name of ambientCredentialNames) delete env[name];
+  return captured;
+}
+
+/** OpenCode's provider credential document for one OpenCode Go key, passed to the child as OPENCODE_AUTH_CONTENT. */
+export function opencodeAuthContent(key) {
+  return JSON.stringify({ 'opencode-go': { type: 'api', key } });
 }
 
 /** The engine's model override, or its cheap default. */
@@ -71,7 +98,7 @@ const REASON_LIMIT = 200;
 export function formatReason(text, secrets, home) {
   let line = String(text ?? '');
   for (const secret of secrets) if (typeof secret === 'string' && secret.length >= 8) line = line.split(secret).join('<redacted>');
-  line = line.replace(/Bearer\s+[^\s"',]+/giu, 'Bearer <redacted>').replace(/\b(?:sk|key|crsr)[-_][A-Za-z0-9_-]{8,}/gu, '<redacted>');
+  line = line.replace(/Bearer\s+[^\s"',]+/giu, 'Bearer <redacted>').replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|crsr_[A-Za-z0-9_-]{16,})/gu, '<redacted>');
   if (home) line = line.split(home).join('~');
   line = line.split(/\r?\n/u)[0].trim();
   return line.length > REASON_LIMIT ? `${line.slice(0, REASON_LIMIT - 1)}…` : line;

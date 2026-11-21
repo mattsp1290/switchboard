@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { checkAguiRun, checkLotelSpans } from './live-baseline-check.mjs';
 import {
-  ambientCredentialNames, codexHostArgs, credentialNames, formatReason, resolveModel, selectEngines,
+  codexHostArgs, dryRunRequested, formatReason, opencodeAuthContent, resolveModel, selectEngines, takeCredentials,
 } from './live-baseline-engines.mjs';
 
 const exec = promisify(execFile);
@@ -35,15 +35,9 @@ const scrub = (text) => String(text).split(homedir()).join('~');
 // Gates read the environment first. Then every credential is captured and removed so no child process or adapter
 // inherits it.
 const selected = selectEngines(process.env);
-const dryRun = typeof process.env.SWITCHBOARD_LIVE_DRY_RUN === 'string' && process.env.SWITCHBOARD_LIVE_DRY_RUN !== '';
+const dryRun = dryRunRequested(process.env);
 const models = new Map(selected.map((engine) => [engine.name, resolveModel(engine, process.env)]));
-const credentials = {};
-for (const name of credentialNames) {
-  const value = process.env[name];
-  if (typeof value === 'string' && value !== '') credentials[name] = value;
-  delete process.env[name];
-}
-for (const name of ambientCredentialNames) delete process.env[name];
+const credentials = takeCredentials(process.env);
 const secrets = () => Object.values(credentials);
 const reasonOf = (text) => formatReason(text, secrets(), homedir());
 /** Text runtimes that share one `start` / `finished` / `abort` / `close` shape, keyed by engine name. */
@@ -76,17 +70,39 @@ if (selected.length === 0) {
   await main();
 }
 
+/** The absolute host executable an engine needs, from its variable or PATH, or undefined. Text engines need none. */
+function hostExecutable(engine) {
+  if (engine.name === 'host/codex') return isAbsolute(process.env.CODEX_BIN ?? '') ? process.env.CODEX_BIN : undefined;
+  if (engine.name !== 'host/opencode') return null;
+  if (process.env.OPENCODE_BIN !== undefined) return isAbsolute(process.env.OPENCODE_BIN) ? process.env.OPENCODE_BIN : undefined;
+  return (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, 'opencode')).find(executable);
+}
+
 /** Prints the resolved plan per engine. No lotel, build, adapter import, model call, or report. */
 function dryRunPlan() {
   let failed = false;
+  const fail = (engine, code) => {
+    failed = true;
+    process.stdout.write(`FAIL ${engine.name} ${code}\n`);
+  };
   for (const engine of selected) {
     const credential = engine.credential === undefined ? 'not-needed' : credentials[engine.credential] ? 'present' : 'missing';
     if (credential === 'missing') {
-      failed = true;
-      process.stdout.write(`FAIL ${engine.name} credential-required\n`);
+      fail(engine, 'credential-required');
       continue;
     }
-    process.stdout.write(`DRY ${engine.name} model=${models.get(engine.name)} runtime=${dispatchOf(engine)} credential=${credential}`
+    if (hostExecutable(engine) === undefined) {
+      fail(engine, 'executable-required');
+      continue;
+    }
+    let runtime;
+    try {
+      runtime = dispatchOf(engine);
+    } catch (error) {
+      fail(engine, error instanceof LiveFailure ? error.code : 'engine-error');
+      continue;
+    }
+    process.stdout.write(`DRY ${engine.name} model=${models.get(engine.name)} runtime=${runtime} credential=${credential}`
       + ` confirmation=${engine.confirmation}\n`);
   }
   process.stdout.write('', () => process.exit(failed ? 1 : 0));
@@ -288,7 +304,7 @@ async function turn(engine, model, scratch, onObservation) {
   if (text) {
     const runtime = await text({ cwd, sessionDirectory, model });
     try {
-      const started = await runtime.start({ text: PROMPT, onEvent: ignore, onObservation });
+      const started = await within(runtime.start({ text: PROMPT, onEvent: ignore, onObservation }), undefined);
       await within(started.finished, () => started.abort());
     } finally {
       await runtime.close();
@@ -302,7 +318,7 @@ async function turn(engine, model, scratch, onObservation) {
       try {
         const session = await runtime.open();
         try {
-          const prompt = await session.prompt(PROMPT, ignore, onObservation);
+          const prompt = await within(session.prompt(PROMPT, ignore, onObservation), () => session.abort());
           await within(prompt.finished, () => session.abort());
         } finally {
           await session.close();
@@ -375,9 +391,14 @@ async function hostTurn(engine, model, cwd, scratch, onObservation) {
       const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
       const executableFile = process.env.OPENCODE_BIN
         ?? (await capture('which', ['opencode']));
-      // The child environment is exactly `variables`; OpenCode reads its provider credentials from this variable.
-      const opencodeVariables = { ...variables, OPENCODE_AUTH_CONTENT: JSON.stringify({
-        'opencode-go': { type: 'api', key: credentials.SWITCHBOARD_OPENCODE_API_KEY } }) };
+      // The child environment is exactly `variables`. OpenCode reads its provider credential from OPENCODE_AUTH_CONTENT.
+      // A private XDG_CONFIG_HOME keeps the operator's OpenCode config (plugins, MCP servers, providers) out of the run,
+      // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
+      // OpenCode reject the session.
+      const configHome = join(scratch, 'opencode-config');
+      await mkdir(configHome, { recursive: true });
+      const opencodeVariables = { ...variables, XDG_CONFIG_HOME: configHome,
+        OPENCODE_AUTH_CONTENT: opencodeAuthContent(credentials.SWITCHBOARD_OPENCODE_API_KEY) };
       opened = await opencodeHostAdapter.open({ model, launch, environment: { variables: opencodeVariables,
         nativeConfig: { cwd, executable: absoluteExecutable(executableFile), account: 'live' } } }, signal);
     } else if (engine.name === 'host/codex') {

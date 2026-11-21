@@ -8,7 +8,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkAguiRun, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
 import {
-  ambientCredentialNames, codexHostArgs, credentialNames, engines, formatReason, resolveModel, selectEngines,
+  ambientCredentialNames, codexHostArgs, credentialNames, dryRunRequested, engines, formatReason, opencodeAuthContent,
+  resolveModel, selectEngines, takeCredentials,
 } from '../scripts/live-baseline-engines.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -18,7 +19,7 @@ const tripwire = join(root, 'tests/support/native-sdk-tripwire.mjs');
 async function spawnScript(extra) {
   const env = {};
   for (const [name, value] of Object.entries(process.env)) {
-    if (/^(ANTHROPIC_API_KEY|OPENCODE_API_KEY|CURSOR_API_KEY|CURSOR_QUALIFICATION_MODEL|SWITCHBOARD_|LOTEL_SOURCE$)/u.test(name)) continue;
+    if (/^(ANTHROPIC_API_KEY|OPENCODE_API_KEY|CURSOR_API_KEY|CURSOR_QUALIFICATION_MODEL|SWITCHBOARD_|LOTEL_SOURCE$|CODEX_BIN$|OPENCODE_BIN$)/u.test(name)) continue;
     env[name] = value;
   }
   const directory = await mkdtemp(join(tmpdir(), 'live-baseline-test-'));
@@ -47,7 +48,7 @@ test('a dry run of every engine prints the resolved plan without lotel, a build,
   const before = existsSync(dist) ? statSync(dist).mtimeMs : undefined;
   const emptyLotel = await mkdtemp(join(tmpdir(), 'live-baseline-nolotel-'));
   const { result, report } = await spawnScript({ SWITCHBOARD_LIVE_ALL: '1', SWITCHBOARD_LIVE_DRY_RUN: '1', ...canaries,
-    LOTEL_SOURCE: emptyLotel, PATH: process.env.PATH.split(':').filter((dir) => !existsSync(join(dir, 'lotel'))).join(':') });
+    CODEX_BIN: process.execPath, OPENCODE_BIN: process.execPath, LOTEL_SOURCE: emptyLotel, PATH: process.env.PATH.split(':').filter((dir) => !existsSync(join(dir, 'lotel'))).join(':') });
   await rm(emptyLotel, { recursive: true, force: true });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const lines = result.stdout.trim().split('\n');
@@ -59,6 +60,16 @@ test('a dry run of every engine prints the resolved plan without lotel, a build,
   assert.equal(existsSync(dist) ? statSync(dist).mtimeMs : undefined, before);
   assert.equal(result.stderr.includes('native SDK tripwire'), false);
   for (const value of Object.values(canaries)) assert.equal(`${result.stdout}${result.stderr}`.includes(value), false);
+});
+
+test('a dry run reports a model override, a missing host executable, and treats a 0 gate as off', async () => {
+  const override = await spawnScript({ SWITCHBOARD_LIVE_CODEX: '1', SWITCHBOARD_LIVE_DRY_RUN: '1', SWITCHBOARD_LIVE_CODEX_MODEL: 'gpt-other' });
+  assert.match(override.result.stdout, /^DRY codex model=gpt-other runtime=text /mu);
+  const missing = await spawnScript({ SWITCHBOARD_LIVE_HOST_CODEX: '1', SWITCHBOARD_LIVE_DRY_RUN: '1', CODEX_BIN: 'codex' });
+  assert.equal(missing.result.status, 1);
+  assert.equal(missing.result.stdout, 'FAIL host/codex executable-required\n');
+  const off = await spawnScript({ SWITCHBOARD_LIVE_ALL: '0', SWITCHBOARD_LIVE_DRY_RUN: '1' });
+  assert.equal(off.result.stdout, 'live-baseline: no engine selected\n');
 });
 
 test('a gated engine without its credential fails with credential-required and no report', async () => {
@@ -80,6 +91,19 @@ test('a live run without its credential fails before any build, import, or lotel
     [['cursor', 'composer-2', false, 'credential-required']]);
 });
 
+test('takeCredentials captures the SWITCHBOARD keys and deletes them and every ambient key from the environment', () => {
+  const env = { ...canaries, ANTHROPIC_API_KEY: 'ambient-1', CURSOR_API_KEY: 'ambient-2', OPENCODE_API_KEY: 'ambient-3',
+    SWITCHBOARD_CURSOR_API_KEY: '', PATH: '/bin' };
+  const captured = takeCredentials(env);
+  assert.deepEqual(captured, { SWITCHBOARD_ANTHROPIC_API_KEY: canaries.SWITCHBOARD_ANTHROPIC_API_KEY,
+    SWITCHBOARD_OPENCODE_API_KEY: canaries.SWITCHBOARD_OPENCODE_API_KEY });
+  assert.deepEqual(env, { PATH: '/bin' });
+});
+
+test('the OpenCode credential document names the OpenCode Go provider and the key', () => {
+  assert.deepEqual(JSON.parse(opencodeAuthContent('k-1')), { 'opencode-go': { type: 'api', key: 'k-1' } });
+});
+
 test('credentials alone select nothing, and an ambient key never reaches output', async () => {
   const { result, report } = await spawnScript({ ...canaries, ANTHROPIC_API_KEY: 'canary-ambient-0004' });
   assert.equal(result.status, 0);
@@ -95,6 +119,10 @@ test('engine selection, model resolution, and the credential lists', () => {
   assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: '1' }).map((engine) => engine.name),
     ['claude', 'codex', 'cursor', 'pi', 'host/pi', 'host/codex', 'host/opencode']);
   assert.deepEqual(selectEngines({ ...canaries }), []);
+  for (const off of ['0', 'false', 'FALSE', '']) assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: off }), []);
+  assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_HOST_OPENCODE: '1' }).map((engine) => engine.name), ['host/opencode']);
+  assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: '0' }), false);
+  assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: '1' }), true);
   const claude = engines.find((engine) => engine.name === 'claude');
   assert.equal(resolveModel(claude, {}), 'claude-haiku-5-5');
   assert.equal(resolveModel(claude, { SWITCHBOARD_LIVE_CLAUDE_MODEL: '' }), 'claude-haiku-5-5');
@@ -121,6 +149,7 @@ test('failure reasons are one redacted line of at most 200 characters', () => {
   assert.equal(formatReason(`Error: bad ${secret}`, [secret], '/home/me'), 'Error: bad <redacted>');
   assert.equal(formatReason('Authorization: Bearer abc.def-123 rejected', [], ''), 'Authorization: Bearer <redacted> rejected');
   assert.equal(formatReason('key sk-ant-api03-ABCDEFGHIJ leaked', [], ''), 'key <redacted> leaked');
+  assert.equal(formatReason('key_not_found_in_store', [], ''), 'key_not_found_in_store');
   assert.equal(formatReason('first line\nsecond line', [], ''), 'first line');
   assert.equal(formatReason('read /home/me/x failed', [], '/home/me'), 'read ~/x failed');
   const long = formatReason('x'.repeat(500), [], '');
