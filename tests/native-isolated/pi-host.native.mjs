@@ -169,7 +169,7 @@ test('a segment listener receives model boundaries, tool facts, usage and a term
   assert.equal(paused.kind, 'pending');
   assert.equal(seen[0].kind, 'run-started');
   assert.deepEqual(seen.filter((o) => o.kind === 'unsupported').map((o) => o.family),
-    ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'reasoning', 'subagents']);
+    ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents', 'reasoning']);
   assert.deepEqual(seen.find((o) => o.kind === 'text'), { kind: 'text', messageId: 'assistant', mode: 'delta', text: 'checking' });
   assert.deepEqual(seen.filter((o) => o.kind === 'tool'), [
     { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'started' },

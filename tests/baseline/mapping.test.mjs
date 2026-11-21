@@ -32,7 +32,7 @@ function setup(t, extra = {}) {
   const created = createRunBaseline({
     projection: { threadId: 'thread-1', runId: 'run-1', sourceKey: 'fixture', bounds },
     tracer: provider.getTracer('baseline-test'), parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' },
-    allowedToolNames: [], admitObservedToolNames: true, provider: 'fixture', runId: 'run-1', ...extra,
+    allowedToolNames: [], admitObservedToolNames: true, provider: 'fixture', ...extra,
   });
   assert.equal(created.kind, 'ok', JSON.stringify(created));
   const baseline = created.value;
@@ -278,16 +278,6 @@ test('a duplicate run-started is reported by close', t => {
   feed(started);
   baseline.accept(started);
   assert.deepEqual(baseline.close().error, { code: 'invalid-order' });
-});
-
-test('a runId that differs from the projection runId is refused', () => {
-  const provider = new BasicTracerProvider();
-  const created = createRunBaseline({
-    projection: { threadId: 'thread-1', runId: 'run-1', sourceKey: 'fixture', bounds },
-    tracer: provider.getTracer('baseline-test'), parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' },
-    allowedToolNames: [], provider: 'fixture', runId: 'run-2',
-  });
-  assert.deepEqual(created, { kind: 'error', error: { code: 'invalid-input' } });
 });
 
 test('spans are not recorded before run-started', t => {

@@ -59,6 +59,16 @@ export function validateUsageRows(value: unknown): TokenUsage[] {
   });
 }
 
+/** `validateUsageRows` as a predicate, for callers that filter rows instead of failing a fact. */
+export function usageRowsValid(value: unknown): boolean {
+  try {
+    validateUsageRows(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function interrupt(value: unknown, sourceKey: string): Interrupt {
   const fields = record(value, ['interrupt', 'reason', 'message', 'tool', 'owner', 'responseSchema', 'expiresAt', 'metadata']);
   const strings = Object.fromEntries(['message', 'expiresAt']

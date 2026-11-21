@@ -5,7 +5,7 @@ import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
 import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
-import { emitObservation, jsonString } from '../../core/run-observation.js';
+import { answeredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
@@ -114,7 +114,6 @@ function usageRow(total: CodexTokenUsage): RunObservationUsage {
     cacheWriteInputTokens: total.cacheWriteInputTokens, reasoningTokens: total.reasoningOutputTokens,
     ...(total.totalTokens === total.inputTokens + total.outputTokens ? { totalTokens: total.totalTokens } : {}) };
 }
-const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
 /**
  * Pinned 0.169.0 `ServerNotification` reasoning methods, checked against `codex app-server generate-ts`:
  * `item/reasoning/textDelta` and `item/reasoning/summaryTextDelta` carry `{ itemId, delta }`. `execution.ts` leaves them
@@ -407,7 +406,9 @@ async function openAdapter(ready: {
   let session: CodexSession | undefined;
   let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
   /** Per-segment observation state: whether `run-started` went out, and the native terminal a failed result hides. */
-  type SegmentState = { started: boolean; hint?: 'failed' | 'cancelled' | 'outcome-unknown' };
+  type SegmentState = { started: boolean };
+  /** A segment result plus the native terminal a failed result hides. */
+  type Settled = { readonly result: HostSegmentResult; readonly failedAs?: 'failed' | 'cancelled' | 'outcome-unknown' };
   let turnCompletion: Promise<CodexTurnCompletion> | undefined;
   let turnResult: CodexTurnCompletion | undefined;
   let capacityRefused = false;
@@ -502,64 +503,63 @@ async function openAdapter(ready: {
   function pendingSegment(active: CodexSession, current: NonNullable<typeof segment>, pending: readonly CodexHostCall[]): HostSegmentResult {
     return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), usage: current.usage };
   }
-  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence, state: SegmentState): Promise<HostSegmentResult> {
+  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<Settled> {
     const current = segment;
     const active = session;
-    if (!current || !active) return failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' });
+    if (!current || !active) return { result: failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' }) };
     const choice = await collectSettleChoice({ signal: hostSignal, bridge, turnDone: turnCompletion,
       turnFinished: () => turnResult !== undefined, capacityRefused: () => capacityRefused });
     const pending = bridge.hostCalls();
     switch (choice) {
       case 'limit':
-        return failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-          { kind: 'accepted', evidence: accepted });
+        return { result: failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
+          { kind: 'accepted', evidence: accepted }) };
       case 'pending':
-        return pendingSegment(active, current, pending);
+        return { result: pendingSegment(active, current, pending) };
       case 'completion':
-        return turnResult ? completionResult(active, current, turnResult, accepted, pending, state)
-          : failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return turnResult ? completionResult(active, current, turnResult, accepted, pending)
+          : { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       case 'aborted':
-        state.hint = 'outcome-unknown';
-        return failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted });
+        return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted }),
+          failedAs: 'outcome-unknown' };
       case 'wait':
-        state.hint = 'outcome-unknown';
-        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }),
+          failedAs: 'outcome-unknown' };
       default: {
         const leftover: never = choice;
         void leftover;
-        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       }
     }
   }
   function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion,
-    accepted: DispatchEvidence, pending: readonly CodexHostCall[], state: SegmentState): HostSegmentResult {
+    accepted: DispatchEvidence, pending: readonly CodexHostCall[]): Settled {
     const acceptedWrite = { kind: 'accepted' as const, evidence: accepted };
     switch (completion.kind) {
       case 'terminal':
         switch (completion.terminal.status) {
           case 'completed':
-            return pending.length > 0 ? pendingSegment(active, current, pending)
-              : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage };
+            return { result: pending.length > 0 ? pendingSegment(active, current, pending)
+              : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage } };
           case 'failed':
-            state.hint = 'failed';
-            return failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite);
+            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite), failedAs: 'failed' };
           case 'interrupted':
-            state.hint = 'cancelled';
-            return failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite);
+            return { result: failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite),
+              failedAs: 'cancelled' };
           default: {
             const status: never = completion.terminal.status;
-            return failed({ code: 'native-failure', message: `the native turn status is ${String(status)}` }, acceptedWrite);
+            return { result: failed({ code: 'native-failure', message: `the native turn status is ${String(status)}` }, acceptedWrite) };
           }
         }
       case 'rejected':
-        return failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite);
+        return { result: failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite) };
       case 'unconcluded':
       case 'not-sent':
       case 'not-dispatched':
-        return failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       default: {
         const leftover: never = completion;
-        return failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' });
+        return { result: failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' }) };
       }
     }
   }
@@ -596,13 +596,7 @@ async function openAdapter(ready: {
           const callId = answer.outcome.target.nativeToolCallId;
           const call = known.find((candidate) => candidate.pending.target.nativeToolCallId === callId);
           if (call) {
-            const argumentsJson = jsonString(call.arguments ?? null);
-            const result = answer.outcome.result;
-            const resultJson = result.kind === 'ok' ? jsonString(result.value.data) : undefined;
-            observe({ kind: 'tool', callId, name: call.name, phase: 'started' });
-            observe({ kind: 'tool', callId, name: call.name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) });
-            observe({ kind: 'tool', callId, name: call.name, phase: result.kind === 'ok' ? 'completed' : 'failed',
-              ...(resultJson === undefined ? {} : { resultJson }) });
+            for (const o of answeredToolObservations(callId, call.name, call.arguments ?? null, answer.outcome.result)) observe(o);
           }
         }
       }
@@ -635,28 +629,23 @@ async function openAdapter(ready: {
   async function segmentOf(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
     readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
   answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
-    if (input.onObservation !== undefined && typeof input.onObservation !== 'function') {
+    if (!isObservationListener(input.onObservation)) {
       return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
     }
     const state: SegmentState = { started: false };
-    const result = await segmentInner(input, prompt, answers, state);
-    if (state.started) {
-      const outcome = result.kind === 'failed'
-        ? (result.write.kind === 'outcome-unknown' ? 'outcome-unknown' : state.hint ?? 'failed') as 'failed' | 'cancelled' | 'outcome-unknown'
-        : 'success' as const;
-      const pendingTools = result.kind === 'pending' ? Object.freeze(result.calls.map((call) => call.pending.target.nativeToolCallId)) : undefined;
-      emitObservation(input.onObservation, { kind: 'terminal', outcome, ...(pendingTools ? { pendingTools } : {}) });
-    }
+    const { result, failedAs } = await segmentInner(input, prompt, answers, state);
+    if (state.started) emitObservation(input.onObservation, segmentTerminal(result, failedAs));
     return result;
   }
   async function segmentInner(input: { readonly hostOperationId: string; readonly recordIntent: HostRunInput['recordIntent'];
     readonly signal: AbortSignal; readonly onObservation?: RunObservationListener }, prompt: string | undefined,
-  answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<HostSegmentResult> {
-    if (closing) return failed({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
-    if (segment) return failed({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
-    if (answers && !answersMatch(answers)) return failed({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
+  answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<Settled> {
+    const refuse = (...args: Parameters<typeof failed>): Settled => ({ result: failed(...args) });
+    if (closing) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
+    if (segment) return refuse({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
+    if (answers && !answersMatch(answers)) return refuse({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
     if (prompt !== undefined && (bridge.hostCalls().length > 0 || (turnCompletion !== undefined && turnResult === undefined))) {
-      return failed({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
+      return refuse({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
     }
     capacityRefused = false;
     segment = { phase: 'intent', text: '', usage: emptyUsage(), observer: input.onObservation };
@@ -664,15 +653,14 @@ async function openAdapter(ready: {
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };
     try {
       const denied = await credentialOk(input.signal);
-      if (denied) return failed(denied, { kind: 'not-attempted' });
+      if (denied) return refuse(denied, { kind: 'not-attempted' });
       const handle = createDispatchOperation({ mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
         identity: { hostOperationId: input.hostOperationId, target },
         dispatchNative: async (recorded) => {
           if (segment) {
             segment.phase = 'native';
             state.started = true;
-            observe({ kind: 'run-started' });
-            for (const family of unsupportedFamilies) observe({ kind: 'unsupported', family });
+            emitRunStarted(segment.observer);
           }
           const observation = await dispatchTurn(prompt, answers, input.signal);
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
@@ -680,12 +668,12 @@ async function openAdapter(ready: {
         } });
       const snapshot = await handle.run();
       if (snapshot.observation.kind === 'not-dispatched') {
-        return failed({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
+        return refuse({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
       }
       if (snapshot.observation.kind !== 'accepted' && snapshot.observation.kind !== 'conclusive') {
-        return failed({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
+        return refuse({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
       }
-      return await settle(input.signal, snapshot.observation.evidence, state);
+      return await settle(input.signal, snapshot.observation.evidence);
     } finally { segment = undefined; }
   }
   const adapter: HostAdapter<'codex'> = { identity, capabilities: Object.freeze({

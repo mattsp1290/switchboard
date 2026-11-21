@@ -2,7 +2,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
-import { emitObservation, jsonString, normalizeUsage } from '#switchboard';
+import { createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, runtimeOutcome, tokenCount, usageFromCounts } from '#switchboard';
 import type { RunObservationListener, RunObservationUsage } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
@@ -77,7 +77,6 @@ function limitAdmission<T>(promise: Promise<T>, onLate: (value: T) => void): { p
 const writers = new Set<string>();
 const unobserved = new Set(['timed_out', 'cancelled', 'unknown', 'not_checked', 'unsupported']);
 const refused = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EEXIST', 'EROFS', 'ELOOP']);
-const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
 const TEXT_LIMIT = 1024 * 1024;
 const SNAPSHOT_LIMIT = 4 * 1024 * 1024;
 const remedies = {
@@ -245,7 +244,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
     const { text, agentId: requested, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
-      || typeof onEvent !== 'function' || (onObservation !== undefined && typeof onObservation !== 'function') || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
+      || typeof onEvent !== 'function' || !isObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
     let trackedId = requested;
@@ -301,8 +300,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
-        emitObservation(onObservation, { kind: 'run-started' });
-        for (const family of unsupportedFamilies) emitObservation(onObservation, { kind: 'unsupported', family });
+        emitRunStarted(onObservation);
         const turn: CursorTurn = {
           agentId: agent.agentId,
           finished: done.promise,
@@ -312,7 +310,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         if (closed) await cancelActive();
         const outcome = await consume(run, onEvent, faults, onObservation);
         release();
-        emitObservation(onObservation, { kind: 'terminal', outcome: outcome === 'completed' ? 'success' : outcome === 'interrupted' ? 'cancelled' : 'failed' });
+        emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[outcome] });
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch {
@@ -366,7 +364,7 @@ async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
   onObservation: RunObservationListener | undefined,
 ): Promise<CursorOutcome> {
-  const state: PublishState = { text: '', sent: '', calls: new Map() };
+  const state: PublishState = { text: '', sent: '', ...(onObservation ? { trackTool: createToolTracker() } : {}) };
   let step: Step = 'next';
   let callback = false;
   let streamFailed = false;
@@ -409,49 +407,29 @@ function turnOutcome(input: {
 interface PublishState {
   text: string;
   sent: string;
-  /** Per callId: whether `started` and the arguments were already observed. Only filled when a listener is present. */
-  readonly calls: Map<string, { argumentsSent: boolean }>;
-}
-
-function finiteCount(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  /** Emits each call's `started` and arguments once. Present only when a listener is present. */
+  readonly trackTool?: ReturnType<typeof createToolTracker>;
 }
 
 function observedUsage(value: unknown): RunObservationUsage | undefined {
   if (!isRecord(value)) return undefined;
-  const inputTokens = finiteCount(value.inputTokens);
-  const outputTokens = finiteCount(value.outputTokens);
-  const totalTokens = finiteCount(value.totalTokens);
-  const row: { -readonly [K in keyof RunObservationUsage]: RunObservationUsage[K] } = {};
-  if (inputTokens !== undefined) row.inputTokens = inputTokens;
-  if (outputTokens !== undefined) row.outputTokens = outputTokens;
-  const cachedInputTokens = finiteCount(value.cacheReadTokens);
-  if (cachedInputTokens !== undefined) row.cachedInputTokens = cachedInputTokens;
-  const cacheWriteInputTokens = finiteCount(value.cacheWriteTokens);
-  if (cacheWriteInputTokens !== undefined) row.cacheWriteInputTokens = cacheWriteInputTokens;
-  const reasoningTokens = finiteCount(value.reasoningTokens);
-  if (reasoningTokens !== undefined) row.reasoningTokens = reasoningTokens;
-  if (totalTokens !== undefined && inputTokens !== undefined && outputTokens !== undefined && totalTokens === inputTokens + outputTokens) {
-    row.totalTokens = totalTokens;
-  }
-  return Object.keys(row).length === 0 ? undefined : normalizeUsage(row);
+  const inputTokens = tokenCount(value.inputTokens);
+  const outputTokens = tokenCount(value.outputTokens);
+  const totalTokens = tokenCount(value.totalTokens);
+  const row = usageFromCounts({
+    inputTokens, outputTokens,
+    cachedInputTokens: value.cacheReadTokens,
+    cacheWriteInputTokens: value.cacheWriteTokens,
+    reasoningTokens: value.reasoningTokens,
+    ...(totalTokens !== undefined && inputTokens !== undefined && outputTokens !== undefined && totalTokens === inputTokens + outputTokens ? { totalTokens } : {}),
+  });
+  return row === undefined ? undefined : normalizeUsage(row);
 }
 
 function observeTool(message: Record<string, unknown>, callId: string, name: string, status: CursorToolStatus,
-  state: PublishState, onObservation: RunObservationListener): void {
-  let call = state.calls.get(callId);
-  if (call === undefined) {
-    call = { argumentsSent: false };
-    state.calls.set(callId, call);
-    emitObservation(onObservation, { kind: 'tool', callId, name, phase: 'started' });
-  }
-  if (message.args !== undefined && !call.argumentsSent) {
-    const argumentsJson = jsonString(message.args);
-    if (argumentsJson !== undefined) {
-      call.argumentsSent = true;
-      emitObservation(onObservation, { kind: 'tool', callId, name, phase: 'arguments', argumentsJson });
-    }
-  }
+  track: NonNullable<PublishState['trackTool']>, onObservation: RunObservationListener): void {
+  const argumentsJson = message.args === undefined ? undefined : jsonString(message.args);
+  for (const observation of track(callId, name, argumentsJson)) emitObservation(onObservation, observation);
   if (status === 'running') return;
   const resultJson = message.result !== undefined ? jsonString(message.result)
     : typeof message.error === 'string' ? jsonString(message.error) : undefined;
@@ -498,7 +476,7 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
     const name = message.name;
     const status = message.status;
     if (callId === undefined || !toolName(name) || !toolStatus(status)) return 'bad-tool';
-    if (onObservation) observeTool(message, callId, name, status, state, onObservation);
+    if (onObservation && state.trackTool) observeTool(message, callId, name, status, state.trackTool, onObservation);
     onEvent({ kind: 'tool', callId, name, status });
     return 'next';
   }

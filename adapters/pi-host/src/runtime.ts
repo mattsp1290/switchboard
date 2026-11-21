@@ -7,7 +7,7 @@ import type { AssistantMessage, Message, Model, Provider, Usage } from '@earendi
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import {
-  createDispatchOperation, createEventStream, emitObservation, jsonString, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
+  createDispatchOperation, createEventStream, answeredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, parseCheckpointReference, segmentTerminal, parseInteractionContinuation, parseSessionReference,
 } from '#switchboard';
 import type {
   DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentResult, HostToolCall, HostToolDeclaration,
@@ -20,7 +20,6 @@ import type { PiHostRouteBody, PiHostTransport } from './route.js';
 
 const providerId = 'switchboard-host';
 const modelId = 'host';
-const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'reasoning', 'subagents'] as const;
 
 class OpenRefusal extends Error {
   constructor(readonly failure: HostAdapterError) { super(failure.message); }
@@ -473,7 +472,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
     async function dispatch(hostOperationId: string, recordIntent: Parameters<PiHostAdapter['run']>[0]['recordIntent'], hostSignal: AbortSignal, work: () => Promise<void>, onObservation?: RunObservationListener): Promise<HostSegmentResult> {
-      if (onObservation !== undefined && typeof onObservation !== 'function') {
+      if (!isObservationListener(onObservation)) {
         return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
       }
       if (closed) return { kind: 'failed', error: { code: 'closed', message: 'The Pi host adapter is closed.' }, write: { kind: 'not-attempted' } };
@@ -485,26 +484,18 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       const evidence: DispatchEvidence = { identity, source: 'native-acknowledgement',
         nativeOperation: { namespace: 'pi-host', id: hostOperationId },
         observation: { namespace: 'pi-host', schemaVersion: 1, data: { accepted: true } } };
-      // The terminal goes out with the final result, after native work and state export are done. A segment that never reached native dispatch has no baseline.
-      const terminal = (result: HostSegmentResult): HostSegmentResult => {
-        if (started) {
-          observe({ kind: 'terminal',
-            outcome: result.kind === 'failed' ? (result.write.kind === 'outcome-unknown' ? 'outcome-unknown' : 'failed') : 'success',
-            ...(result.kind === 'pending' ? { pendingTools: Object.freeze(result.calls.map((call) => call.pending.target.nativeToolCallId)) } : {}) });
-        }
-        return result;
-      };
       let settle = () => {};
       stopped = new Promise<void>((resolve) => { settle = resolve; });
       stopping = () => { session.agent.abort(); };
       hostSignal.addEventListener('abort', stopping, { once: true });
+      // The terminal goes out with the final result, after native work and state export are done. A segment that never reached native dispatch has no baseline.
+      const attempt = async (): Promise<HostSegmentResult> => {
       try {
         const handle = createDispatchOperation<WorkResult>({
           mode: 'fresh', signal: hostSignal, identity, recordIntent,
           dispatchNative: async () => {
             started = true;
-            observe({ kind: 'run-started' });
-            for (const family of unsupportedFamilies) observe({ kind: 'unsupported', family });
+            emitRunStarted(observer, ['reasoning']);
             await work();
             const assistant = session.messages.findLast((message) => message.role === 'assistant');
             const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
@@ -531,18 +522,25 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           const value = observation.result;
           if (value.kind === 'model-failed') {
             const write = { kind: 'accepted' as const, evidence: observation.evidence };
-            return terminal(value.error.code === 'pending-limit'
+            // The branches look identical but TypeScript needs `pending-limit` narrowed to pair it with an accepted write.
+            return value.error.code === 'pending-limit'
               ? { kind: 'failed', error: value.error, write }
-              : { kind: 'failed', error: value.error, write });
+              : { kind: 'failed', error: value.error, write };
           }
-          return terminal({ ...value, session: sessionReference });
+          return { ...value, session: sessionReference };
         }
-        return terminal({ kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation });
+        return { kind: 'failed', error: { code: 'native-failure', message: 'The segment did not finish.' }, write: observation };
       } catch (error) {
         if (error instanceof OpenRefusal && error.failure.code !== 'pending-limit') {
-          return terminal({ kind: 'failed', error: error.failure, write: { kind: 'not-attempted' } });
+          return { kind: 'failed', error: error.failure, write: { kind: 'not-attempted' } };
         }
-        return terminal({ kind: 'failed', error: { code: 'invalid-input', message: 'The segment was refused before dispatch.' }, write: { kind: 'not-attempted' } });
+        return { kind: 'failed', error: { code: 'invalid-input', message: 'The segment was refused before dispatch.' }, write: { kind: 'not-attempted' } };
+      }
+      };
+      try {
+        const result = await attempt();
+        if (started) observe(segmentTerminal(result));
+        return result;
       } finally {
         observer = undefined;
         hostSignal.removeEventListener('abort', stopping);
@@ -586,8 +584,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         }
         const expected = new Map(pending.map((call) => [call.pending.target.nativeToolCallId, call]));
         const replacements = new Map<string, { text: string; isError: boolean }>();
-        const observedAnswers: { readonly callId: string; readonly name: string; readonly argumentsJson: string | undefined;
-          readonly resultJson: string | undefined; readonly isError: boolean }[] = [];
+        const observedAnswers: RunObservation[] = [];
         for (const answer of input.answers) {
           const id = answerId(answer);
           const call = id === undefined ? undefined : expected.get(id);
@@ -602,8 +599,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           const data = result.kind === 'ok' ? result.value.data : result.error.data;
           replacements.set(id, { text: JSON.stringify(data) ?? 'null', isError: result.kind === 'error' });
           if (input.onObservation) {
-            observedAnswers.push({ callId: id, name: call.name, argumentsJson: jsonString(call.arguments),
-              resultJson: result.kind === 'ok' ? jsonString(data) : undefined, isError: result.kind === 'error' });
+            observedAnswers.push(...answeredToolObservations(id, call.name, call.arguments, result));
           }
         }
         if (replacements.size !== expected.size) {
@@ -640,12 +636,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
             if (entry.type === 'message' && entry.message.role === 'toolResult') applyReplacement(entry.message);
           }
           undoContinuation = restore;
-          for (const entry of observedAnswers) {
-            const { callId, name } = entry;
-            observe({ kind: 'tool', callId, name, phase: 'started' });
-            observe({ kind: 'tool', callId, name, phase: 'arguments-ended', ...(entry.argumentsJson === undefined ? {} : { argumentsJson: entry.argumentsJson }) });
-            observe({ kind: 'tool', callId, name, phase: entry.isError ? 'failed' : 'completed', ...(entry.resultJson === undefined ? {} : { resultJson: entry.resultJson }) });
-          }
+          for (const o of observedAnswers) observe(o);
           continuedIds = [...replacements.keys()];
           for (const call of expected.values()) deliveries.push({ target: call.pending.target });
           try {

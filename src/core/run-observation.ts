@@ -1,8 +1,13 @@
+import type { NativeExtension, Outcome } from './contracts.js';
+import type { HostSegmentResult } from './host-adapter.js';
+
 /** Every `ProjectionFamily` name, repeated here so adapters do not import `src/agui`. The baseline checks both lists match. */
 export const runObservationFamilies = Object.freeze([
   'state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'usage', 'reasoning', 'subagents',
 ] as const);
 export type RunObservationFamily = typeof runObservationFamilies[number];
+/** The families no exported runtime can observe today. Each runtime declares them unsupported when its turn starts. */
+export const unobservedFamilies = Object.freeze(['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const);
 
 /** Native counts already renamed to the AG-UI `TokenUsage` names. A count the native value did not carry is absent. */
 export interface RunObservationUsage {
@@ -77,6 +82,80 @@ export function normalizeUsage(row: RunObservationUsage): RunObservationUsage {
 
 export type RunObservationListener = (observation: RunObservation) => void;
 
+/** `true` for an absent listener or a function, so `!isObservationListener(value)` is the request check. */
+export function isObservationListener(value: unknown): value is RunObservationListener | undefined {
+  return value === undefined || typeof value === 'function';
+}
+
+/** A non-negative safe integer token count, or `undefined`. */
+export function tokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+type UsageCountKey = Exclude<keyof RunObservationUsage, 'provider' | 'model'>;
+const usageCountKeys: readonly UsageCountKey[] = [
+  'inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens', 'cachedInputTokens', 'cacheWriteInputTokens',
+];
+/** Keeps each count that passes `tokenCount`; `undefined` when none does. Native names are mapped by the caller. */
+export function usageFromCounts(raw: { readonly [K in UsageCountKey]?: unknown }): RunObservationUsage | undefined {
+  const row: { [K in UsageCountKey]?: number } = {};
+  for (const key of usageCountKeys) {
+    const count = tokenCount(raw[key]);
+    if (count !== undefined) row[key] = count;
+  }
+  return Object.keys(row).length === 0 ? undefined : row;
+}
+
+/** The text runtimes' public outcome as a terminal observation outcome. */
+export const runtimeOutcome = Object.freeze({ completed: 'success', failed: 'failed', interrupted: 'cancelled' } as const);
+
+/**
+ * A host segment result as its terminal observation. A failure whose write is `outcome-unknown` is always
+ * `outcome-unknown`; any other failure is `failedAs`. A pending segment succeeds with its call ids pending.
+ */
+export function segmentTerminal(result: HostSegmentResult, failedAs: Exclude<RunObservationOutcome, 'success'> = 'failed'): RunObservation {
+  switch (result.kind) {
+    case 'complete': return { kind: 'terminal', outcome: 'success' };
+    case 'pending': return { kind: 'terminal', outcome: 'success',
+      pendingTools: result.calls.map((call) => call.pending.target.nativeToolCallId) };
+    case 'failed': return { kind: 'terminal', outcome: result.write.kind === 'outcome-unknown' ? 'outcome-unknown' : failedAs };
+  }
+}
+
+/** Replays one answered host tool call into a continuation segment: started, its arguments, then the observed result. */
+export function answeredToolObservations(callId: string, name: string, args: unknown,
+  result: Outcome<NativeExtension, NativeExtension>): readonly RunObservation[] {
+  const argumentsJson = jsonString(args);
+  const resultJson = result.kind === 'ok' ? jsonString(result.value.data) : undefined;
+  return [
+    { kind: 'tool', callId, name, phase: 'started' },
+    { kind: 'tool', callId, name, phase: 'arguments-ended', ...(argumentsJson === undefined ? {} : { argumentsJson }) },
+    { kind: 'tool', callId, name, phase: result.kind === 'ok' ? 'completed' : 'failed', ...(resultJson === undefined ? {} : { resultJson }) },
+  ];
+}
+
+/**
+ * Opening phases for adapters that see a tool call several times: `started` once per call, then `arguments` once
+ * when JSON-safe arguments first appear. The caller emits the closing phase itself.
+ */
+export function createToolTracker(): (callId: string, name: string, argumentsJson: string | undefined) => readonly RunObservation[] {
+  const calls = new Map<string, { argumentsSent: boolean }>();
+  return (callId, name, argumentsJson) => {
+    const observations: RunObservation[] = [];
+    let call = calls.get(callId);
+    if (call === undefined) {
+      call = { argumentsSent: false };
+      calls.set(callId, call);
+      observations.push({ kind: 'tool', callId, name, phase: 'started' });
+    }
+    if (argumentsJson !== undefined && !call.argumentsSent) {
+      call.argumentsSent = true;
+      observations.push({ kind: 'tool', callId, name, phase: 'arguments', argumentsJson });
+    }
+    return observations;
+  };
+}
+
 /**
  * `JSON.stringify` of a JSON value, or `undefined` for `undefined`, functions, symbols, bigint, cycles and any other
  * value that does not serialize. Never throws.
@@ -110,4 +189,11 @@ export function emitObservation(listener: RunObservationListener | undefined, ob
   } catch {
     // A listener exception does not change native work.
   }
+}
+
+/** Emits `run-started`, then `unsupported` for every unobserved family plus `extra`. A no-op without a listener. */
+export function emitRunStarted(listener: RunObservationListener | undefined, extra: readonly RunObservationFamily[] = []): void {
+  if (listener === undefined) return;
+  emitObservation(listener, { kind: 'run-started' });
+  for (const family of [...unobservedFamilies, ...extra]) emitObservation(listener, { kind: 'unsupported', family });
 }

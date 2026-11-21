@@ -7,7 +7,10 @@ import { createEventStream } from '../../core/events.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostWriteStatus,
 } from '../../core/host-adapter.js';
-import { emitObservation, jsonString, normalizeUsage } from '../../core/run-observation.js';
+import {
+  createToolTracker, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, segmentTerminal, tokenCount,
+  usageFromCounts,
+} from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { SessionReference } from '../../core/sessions.js';
 import { sessionLimits } from '../../core/sessions.js';
@@ -192,49 +195,30 @@ function chunkText(update: Record<string, unknown>): string | undefined {
 function itemId(value: unknown): string {
   return identifier(value, sessionLimits.identifierLength) ? value : 'turn';
 }
-function count(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
 function usageRow(update: Record<string, unknown>): RunObservationUsage | undefined {
-  const inputTokens = count(update.inputTokens);
-  const outputTokens = count(update.outputTokens);
-  const totalTokens = count(update.totalTokens);
-  const reasoningTokens = count(update.thoughtTokens);
-  const cachedInputTokens = count(update.cachedReadTokens);
-  const cacheWriteInputTokens = count(update.cachedWriteTokens);
-  const row = {
-    ...(inputTokens === undefined ? {} : { inputTokens }),
-    ...(outputTokens === undefined ? {} : { outputTokens }),
-    ...(totalTokens !== undefined && totalTokens === (inputTokens ?? NaN) + (outputTokens ?? NaN) ? { totalTokens } : {}),
-    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
-    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
-    ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
-  };
-  return Object.keys(row).length > 0 ? normalizeUsage(row) : undefined;
+  const inputTokens = tokenCount(update.inputTokens);
+  const outputTokens = tokenCount(update.outputTokens);
+  const totalTokens = tokenCount(update.totalTokens);
+  const row = usageFromCounts({
+    inputTokens,
+    outputTokens,
+    totalTokens: totalTokens !== undefined && totalTokens === (inputTokens ?? NaN) + (outputTokens ?? NaN) ? totalTokens : undefined,
+    reasoningTokens: update.thoughtTokens,
+    cachedInputTokens: update.cachedReadTokens,
+    cacheWriteInputTokens: update.cachedWriteTokens,
+  });
+  return row && normalizeUsage(row);
 }
-const unsupportedFamilies = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
-function toolObservation(update: Record<string, unknown>, seen: Map<string, { arguments: boolean }>): readonly RunObservation[] {
+function toolObservation(update: Record<string, unknown>, track: ToolTracker): readonly RunObservation[] {
   const callId = update.toolCallId;
   if (!identifier(callId, sessionLimits.identifierLength)) return [];
   const name = identifier(update.kind, 64) ? update.kind : 'other';
   const argumentsJson = jsonString(update.rawInput);
   const resultJson = jsonString(update.rawOutput);
   const status = update.status;
-  if (status === undefined || status === 'pending' || status === 'in_progress') {
-    const state = seen.get(callId);
-    const rows: RunObservation[] = [];
-    if (!state) {
-      seen.set(callId, { arguments: false });
-      rows.push({ kind: 'tool', callId, name, phase: 'started' });
-    }
-    if (argumentsJson !== undefined && !seen.get(callId)?.arguments) {
-      seen.set(callId, { arguments: true });
-      rows.push({ kind: 'tool', callId, name, phase: 'arguments', argumentsJson });
-    }
-    return rows;
-  }
+  if (status === undefined || status === 'pending' || status === 'in_progress') return track(callId, name, argumentsJson);
   if (status !== 'completed' && status !== 'failed') return [];
-  seen.set(callId, { arguments: true });
+  track(callId, name, ''); // a closed call is never reopened, so later opening updates for it emit nothing
   return [{
     kind: 'tool', callId, name, phase: status === 'completed' ? 'arguments-ended' : 'failed',
     ...(argumentsJson === undefined ? {} : { argumentsJson }), ...(resultJson === undefined ? {} : { resultJson }),
@@ -251,6 +235,7 @@ function rpcError(outcome: OpenCodeRpcOutcome): HostAdapterError {
   if (outcome.kind === 'error') return { code: 'native-failure', message: 'OpenCode rejected the session.' };
   return { code: 'native-failure', message: 'OpenCode did not acknowledge the session.' };
 }
+type ToolTracker = ReturnType<typeof createToolTracker>;
 type ExitWatch = 'observed' | 'rejected' | 'timeout';
 
 interface PermissionAnswer {
@@ -266,7 +251,7 @@ interface Turn {
   nativeTerminal: boolean;
   text: string;
   readonly onObservation: RunObservationListener | undefined;
-  readonly tools: Map<string, { arguments: boolean }>;
+  readonly trackTool: ToolTracker;
   /** A `usage_update` produced a usage row, so the prompt response usage is not a second row. */
   usageObserved: boolean;
   failure?: SegmentError;
@@ -280,6 +265,7 @@ type UpdateDecision =
   | 'ignore'
   | 'traffic'
   | 'reject'
+  | { readonly kind: 'tool'; readonly update: Record<string, unknown> }
   | { readonly kind: 'text'; readonly text: string; readonly nativeItemId: string };
 
 function readUpdate(params: unknown, context: {
@@ -318,6 +304,7 @@ function readUpdate(params: unknown, context: {
     if (!live.promptWritten || live.failure) return 'ignore';
     return { kind: 'text', text, nativeItemId: itemId(update.messageId) };
   }
+  if ((name === 'tool_call' || name === 'tool_call_update') && context.sessionId !== undefined) return { kind: 'tool', update };
   return 'reject';
 }
 
@@ -571,10 +558,9 @@ async function openSession(ready: {
       if (watcher && update && !watcher.failure) observeQuiet(watcher, update);
       return;
     }
-    if (decision === 'reject') {
-      if (watcher && update && sessionId !== undefined && record(params) && params.sessionId === sessionId && !childMeta(params._meta)
-        && !childMeta(update._meta) && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
-        for (const observation of toolObservation(update, watcher.tools)) emitObservation(watcher.onObservation, observation);
+    if (decision === 'reject' || decision.kind === 'tool') {
+      if (watcher && decision !== 'reject') {
+        for (const observation of toolObservation(decision.update, watcher.trackTool)) emitObservation(watcher.onObservation, observation);
       }
       noteDisallowed();
       return;
@@ -587,7 +573,7 @@ async function openSession(ready: {
       return;
     }
     active.text += decision.text;
-    if (active.onObservation) emitObservation(active.onObservation, { kind: 'text', messageId: decision.nativeItemId, mode: 'delta', text: decision.text });
+    emitObservation(active.onObservation, { kind: 'text', messageId: decision.nativeItemId, mode: 'delta', text: decision.text });
     const published = stream.publish(Object.freeze({ kind: 'text-delta', nativeItemId: decision.nativeItemId, text: decision.text }));
     if (published.kind === 'closed' || published.disconnected > 0) {
       failActive(active, { code: 'native-failure', message: incompleteTurn });
@@ -776,10 +762,7 @@ async function openSession(ready: {
                   beforeWrite() {
                     active.promptWritten = true;
                     promptArmed = true;
-                    if (active.onObservation) {
-                      emitObservation(active.onObservation, { kind: 'run-started' });
-                      for (const family of unsupportedFamilies) emitObservation(active.onObservation, { kind: 'unsupported', family });
-                    }
+                    emitRunStarted(active.onObservation);
                   },
                   onOutcome(next) { applyOutcome(active, next); },
                 });
@@ -836,7 +819,7 @@ async function openSession(ready: {
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);
       const onObservation: RunObservationListener | undefined = input.onObservation;
-      if (onObservation !== undefined && typeof onObservation !== 'function') {
+      if (!isObservationListener(onObservation)) {
         return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, notAttempted);
       }
       const prompt = promptText(input.prompt);
@@ -846,7 +829,7 @@ async function openSession(ready: {
       let resolveTurn: () => void = () => {};
       const active: Turn = {
         phase: 'intent', promptWritten: false, sawTraffic: false, cancelSent: false, settled: false, nativeTerminal: false, text: '', usage: null,
-        onObservation, tools: new Map(), usageObserved: false,
+        onObservation, trackTool: createToolTracker(), usageObserved: false,
         resolve: () => resolveTurn(),
         done: new Promise((resolve) => { resolveTurn = resolve; }),
       };
@@ -855,12 +838,7 @@ async function openSession(ready: {
       if (active.promptWritten && onObservation) {
         const promptUsage = active.usageObserved || !record(active.usage) ? undefined : usageRow(active.usage);
         if (promptUsage) emitObservation(onObservation, { kind: 'usage', rows: [promptUsage] });
-        emitObservation(onObservation, {
-          kind: 'terminal',
-          outcome: result.kind === 'complete' ? 'success'
-            : result.kind === 'failed' && result.write.kind === 'outcome-unknown' ? 'outcome-unknown'
-              : active.stopReason === 'cancelled' ? 'cancelled' : 'failed',
-        });
+        emitObservation(onObservation, segmentTerminal(result, active.stopReason === 'cancelled' ? 'cancelled' : 'failed'));
       }
       return result;
     },

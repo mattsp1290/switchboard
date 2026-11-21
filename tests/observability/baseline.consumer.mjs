@@ -12,7 +12,7 @@ test('installed baseline maps one observed turn into AG-UI events and payload-fr
     projection: { threadId: 'thread', runId: 'run', sourceKey: 'installed',
       bounds: { maxEntities: 64, maxPayloadBytes: 65536, maxJsonDepth: 16, maxJsonNodes: 1024 } },
     tracer: provider.getTracer('installed-baseline'), parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' },
-    allowedToolNames: [], admitObservedToolNames: true, provider: 'fixture', runId: 'run',
+    allowedToolNames: [], admitObservedToolNames: true, provider: 'fixture',
   });
   assert.equal(created.kind, 'ok');
   const baseline = created.value;

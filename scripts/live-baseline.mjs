@@ -179,7 +179,7 @@ async function runEngine(engine, model, lotelBinary) {
     projection: { threadId: `thread-${runId}`, runId, sourceKey: engine.provider, bounds },
     tracer: provider.getTracer(instrumentationScope.name, instrumentationScope.version),
     parentContext: ROOT_CONTEXT, contentPolicy: { kind: 'none' }, allowedToolNames: [], admitObservedToolNames: true,
-    provider: engine.provider, runId,
+    provider: engine.provider,
   });
   if (created.kind !== 'ok') {
     await provider.shutdown();
@@ -233,46 +233,40 @@ async function within(promise, abort) {
   }
 }
 
+/** Text runtimes that share one `start` / `finished` / `abort` / `close` shape, keyed by engine name. */
+const textRuntimes = {
+  async claude({ cwd, sessionDirectory, model }) {
+    const { createClaudeRuntime } = await import('@mattsp1290/switchboard/claude');
+    return createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.ANTHROPIC_API_KEY, model });
+  },
+  async codex({ cwd, model }) {
+    const { createCodexRuntime } = await import('@mattsp1290/switchboard/codex');
+    return createCodexRuntime({ cwd, model });
+  },
+  async cursor({ cwd, sessionDirectory, model }) {
+    const { createCursorRuntime } = await import('@mattsp1290/switchboard/cursor');
+    return createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.CURSOR_API_KEY, model });
+  },
+};
+
 async function turn(engine, model, scratch, onObservation) {
   const cwd = join(scratch, 'work');
   const sessionDirectory = join(scratch, 'session');
   await mkdir(cwd, { recursive: true });
   await mkdir(sessionDirectory, { recursive: true });
   const ignore = () => {};
+  const text = textRuntimes[engine.name];
+  if (text) {
+    const runtime = await text({ cwd, sessionDirectory, model });
+    try {
+      const started = await runtime.start({ text: PROMPT, onEvent: ignore, onObservation });
+      await within(started.finished, () => started.abort());
+    } finally {
+      await runtime.close();
+    }
+    return;
+  }
   switch (engine.name) {
-    case 'claude': {
-      const { createClaudeRuntime } = await import('@mattsp1290/switchboard/claude');
-      const runtime = createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.ANTHROPIC_API_KEY, model });
-      try {
-        const started = await runtime.start({ text: PROMPT, onEvent: ignore, onObservation });
-        await within(started.finished, () => started.abort());
-      } finally {
-        await runtime.close();
-      }
-      return;
-    }
-    case 'codex': {
-      const { createCodexRuntime } = await import('@mattsp1290/switchboard/codex');
-      const runtime = createCodexRuntime({ cwd, model });
-      try {
-        const started = await runtime.start({ text: PROMPT, onEvent: ignore, onObservation });
-        await within(started.finished, () => started.abort());
-      } finally {
-        await runtime.close();
-      }
-      return;
-    }
-    case 'cursor': {
-      const { createCursorRuntime } = await import('@mattsp1290/switchboard/cursor');
-      const runtime = createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.CURSOR_API_KEY, model });
-      try {
-        const started = await runtime.start({ text: PROMPT, onEvent: ignore, onObservation });
-        await within(started.finished, () => started.abort());
-      } finally {
-        await runtime.close();
-      }
-      return;
-    }
     case 'pi': {
       const { createPiRuntime } = await import('@mattsp1290/switchboard/pi');
       const runtime = await createPiRuntime({ cwd, sessionDirectory, apiKey: credentials.OPENCODE_API_KEY, provider: 'opencode-go', model });

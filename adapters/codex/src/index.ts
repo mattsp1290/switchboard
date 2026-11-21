@@ -5,7 +5,7 @@ import { delimiter, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import { withSdkProcess } from './process.js';
-import { emitObservation, jsonString } from '#switchboard';
+import { emitObservation, emitRunStarted, isObservationListener, jsonString, runtimeOutcome, usageFromCounts } from '#switchboard';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
 import type { ThreadItem, ThreadOptions } from '@openai/codex-sdk';
 
@@ -69,23 +69,15 @@ const run = promisify(execFile);
 const writers = new Set<string>();
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const failure = () => new Error('Codex operation failed.');
-const UNSUPPORTED = ['state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'subagents'] as const;
-const TERMINAL = { completed: 'success', failed: 'failed', interrupted: 'cancelled' } as const;
-const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 function usageRow(usage: unknown): RunObservationUsage | undefined {
   if (usage === null || typeof usage !== 'object') return undefined;
-  const input = count(Reflect.get(usage, 'input_tokens'));
-  const output = count(Reflect.get(usage, 'output_tokens'));
-  const cached = count(Reflect.get(usage, 'cached_input_tokens'));
-  const cacheWrite = count(Reflect.get(usage, 'cache_write_input_tokens'));
-  const reasoning = count(Reflect.get(usage, 'reasoning_output_tokens'));
-  const row: { -readonly [K in keyof RunObservationUsage]: RunObservationUsage[K] } = {};
-  if (input !== undefined) row.inputTokens = input;
-  if (output !== undefined) row.outputTokens = output;
-  if (cached !== undefined) row.cachedInputTokens = cached;
-  if (cacheWrite !== undefined) row.cacheWriteInputTokens = cacheWrite;
-  if (reasoning !== undefined) row.reasoningTokens = reasoning;
-  return Object.keys(row).length === 0 ? undefined : row;
+  return usageFromCounts({
+    inputTokens: Reflect.get(usage, 'input_tokens'),
+    outputTokens: Reflect.get(usage, 'output_tokens'),
+    cachedInputTokens: Reflect.get(usage, 'cached_input_tokens'),
+    cacheWriteInputTokens: Reflect.get(usage, 'cache_write_input_tokens'),
+    reasoningTokens: Reflect.get(usage, 'reasoning_output_tokens'),
+  });
 }
 /**
  * A declared tool-like item as observations, or none for items that stay off. `item.updated` adds nothing a tool needs.
@@ -299,7 +291,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
     const { threadId: requested, text, onEvent, onObservation } = request;
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
       || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function'
-      || (onObservation !== undefined && typeof onObservation !== 'function')
+      || !isObservationListener(onObservation)
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved !== undefined) writers.add(reserved);
@@ -347,8 +339,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
                 case 'turn.started':
                   if (observedId === undefined || admitted) throw failure();
                   admitted = true;
-                  emitObservation(onObservation, { kind: 'run-started' });
-                  for (const family of UNSUPPORTED) emitObservation(onObservation, { kind: 'unsupported', family });
+                  emitRunStarted(onObservation);
                   admission.resolve({ threadId: observedId, finished, async abort() { controller.abort(); await finished; } });
                   break;
                 case 'item.started':
@@ -401,7 +392,7 @@ export function createCodexRuntime(input: CodexRuntimeOptions): CodexRuntime {
       const end: CodexTerminal = { kind: 'ended', outcome };
       if (admitted) {
         if (usage) emitObservation(onObservation, { kind: 'usage', rows: [usage] });
-        emitObservation(onObservation, { kind: 'terminal', outcome: TERMINAL[outcome] });
+        emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[outcome] });
         try { onEvent(end); } catch { /* A consumer exception cannot change the native outcome. */ }
       } else admission.reject(failure());
       return end;

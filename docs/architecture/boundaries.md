@@ -84,7 +84,7 @@ Production pruning must remove the development alias while retaining the qualifi
 The package gate checks the standalone alias; AgentUI's consumer qualification checks coexistence and pruning against its pinned production artifact.
 Relative public-barrel imports keep this identity within the aliased artifact.
 
-Adapters may value-import `jsonString` and `emitObservation` and type-import `RunObservation` and `RunObservationListener` from `#switchboard` (separate adapter projects) or from a relative `src/core/run-observation.js` path (`src/adapters/`). They never import `src/agui`, `src/observability`, `src/baseline`, `@ag-ui/core`, or `@opentelemetry/api`.
+Adapters may import any value or type export of `src/core/run-observation.ts` (such as `emitRunStarted`, `jsonString`, `segmentTerminal`, and `RunObservationListener`) from `#switchboard` (separate adapter projects) or from a relative `src/core/run-observation.js` path (`src/adapters/`). They never import `src/agui`, `src/observability`, `src/baseline`, `@ag-ui/core`, or `@opentelemetry/api`.
 
 Native adapters need their own explicit entry points when implemented.
 AG-UI imports only the SDK main entry. Optional Zod and SDK schemas are not integration runtime dependencies.
