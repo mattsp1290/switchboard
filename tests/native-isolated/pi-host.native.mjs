@@ -175,7 +175,7 @@ test('a segment listener receives model boundaries, tool facts, usage and a term
     { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'started' },
     { kind: 'tool', callId: 'call-1', name: 'lookup', phase: 'arguments-ended', argumentsJson: '{"q":"tide"}' }]);
   assert.deepEqual(seen.filter((o) => o.kind === 'model-boundary'), [
-    { kind: 'model-boundary', requestModel: 'host', usage: { inputTokens: 4, outputTokens: 2 } }]);
+    { kind: 'model-boundary', usage: { inputTokens: 4, outputTokens: 2 } }]);
   assert.deepEqual(seen.find((o) => o.kind === 'usage'), { kind: 'usage', rows: [{ inputTokens: 4, outputTokens: 2 }] });
   assert.deepEqual(seen.at(-1), { kind: 'terminal', outcome: 'success', pendingTools: ['call-1'] });
   assert.equal(seen.filter((o) => o.kind === 'terminal').length, 1);

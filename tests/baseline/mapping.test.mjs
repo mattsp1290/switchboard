@@ -17,7 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
     shortCircuit: true };
 } });
 const { createRunBaseline } = await import(new URL('baseline/index.ts', src).href);
-const { jsonString, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
+const { createToolTracker, jsonString, normalizeUsage } = await import(new URL('core/run-observation.ts', src).href);
 hook.deregister();
 
 const bounds = { maxEntities: 256, maxPayloadBytes: 65536, maxJsonDepth: 32, maxJsonNodes: 4096 };
@@ -312,4 +312,44 @@ test('a pending id the baseline never saw is dropped with a diagnostic', t => {
     { kind: 'terminal', outcome: 'success', pendingTools: ['c', 'never-seen'] });
   assert.deepEqual(diagnostics, [{ code: 'pending-tool-unknown' }]);
   assert.equal(events.at(-1).outcome.pendingToolCallIds.length, 1);
+});
+
+test('a started tool with no arguments takes the arguments carried by arguments-ended', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'started' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'arguments-ended', argumentsJson: '{"command":"ls"}' }, success);
+  assert.deepEqual(events.filter(event => event.type === 'TOOL_CALL_ARGS').map(event => event.delta), ['{"command":"ls"}']);
+  assert.deepEqual(diagnostics, []);
+});
+
+test('non-append arguments that differ from those already sent are reported and not sent again', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed(started, { kind: 'tool', callId: 'c', name: 'run', phase: 'completed', argumentsJson: '{"a":1}' },
+    { kind: 'tool', callId: 'c', name: 'run', phase: 'completed', argumentsJson: '{"a":2}' }, success);
+  assert.deepEqual(events.filter(event => event.type === 'TOOL_CALL_ARGS').map(event => event.delta), ['{"a":1}']);
+  assert.deepEqual(diagnostics.map(row => row.code), ['tool-arguments-changed']);
+});
+
+test('the tool tracker holds back a {} placeholder until the first other arguments', () => {
+  const track = createToolTracker();
+  assert.deepEqual(track('c', 'run', '{}'), [{ kind: 'tool', callId: 'c', name: 'run', phase: 'started' }]);
+  assert.deepEqual(track('c', 'run', '{"a":1}'), [{ kind: 'tool', callId: 'c', name: 'run', phase: 'arguments', argumentsJson: '{"a":1}' }]);
+  assert.deepEqual(track('c', 'run', '{"a":2}'), []);
+});
+
+test('text, reasoning, and usage before run-started are dropped as not-running', t => {
+  const { events, diagnostics, feed } = setup(t);
+  feed({ kind: 'text', messageId: 'm', mode: 'delta', text: 'hi' }, { kind: 'reasoning', messageId: 'r', mode: 'delta', text: 'hm' },
+    { kind: 'usage', rows: [{ inputTokens: 1, outputTokens: 1 }] });
+  assert.deepEqual(diagnostics.map(row => row.code), ['not-running', 'not-running', 'not-running']);
+  assert.deepEqual(events, []);
+});
+
+test('the report says whether a terminal was processed', t => {
+  const done = setup(t);
+  done.feed(started, success);
+  assert.equal(done.baseline.close().terminated, true);
+  const open = setup(t);
+  open.feed(started);
+  assert.equal(open.baseline.close().terminated, false);
 });

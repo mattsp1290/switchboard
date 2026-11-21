@@ -5,7 +5,7 @@ import type { AuthConfiguration, AuthScope } from '../../core/auth.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
 import type { DispatchEvidence, DispatchIdentity } from '../../core/dispatch.js';
 import { createEventStream } from '../../core/events.js';
-import { answeredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, segmentTerminal } from '../../core/run-observation.js';
+import { answeredToolObservations, emitObservation, emitRunStarted, isObservationListener, jsonString, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
   HostLaunch, HostOpenOptions, HostRunInput, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
@@ -475,7 +475,7 @@ async function openAdapter(ready: {
         segment.usage = Object.freeze({ scope: 'cumulative', native: Object.freeze({ namespace: 'codex-app-server/token-usage',
           schemaVersion: 1, data: { total: event.total, last: event.last, modelContextWindow: event.modelContextWindow } }) });
         publish({ kind: 'usage', usage: segment.usage });
-        observe({ kind: 'usage', rows: [usageRow(event.total)] });
+        observe({ kind: 'usage', rows: [normalizeUsage(usageRow(event.total))] });
       }
     });
   }

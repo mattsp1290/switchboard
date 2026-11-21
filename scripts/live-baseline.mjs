@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { checkAguiRun, checkLotelSpans } from './live-baseline-check.mjs';
+import { checkAguiRun, checkEngineEvidence, checkLotelSpans } from './live-baseline-check.mjs';
 import {
   codexHostArgs, dryRunRequested, formatReason, opencodeAuthContent, resolveModel, selectEngines, takeCredentials,
 } from './live-baseline-engines.mjs';
@@ -70,11 +70,12 @@ if (selected.length === 0) {
   await main();
 }
 
-/** The absolute host executable an engine needs, from its variable or PATH, or undefined. Text engines need none. */
+/** The only executable resolver: an absolute, executable host binary from its variable or PATH, or undefined. Text engines need none (null). */
 function hostExecutable(engine) {
-  if (engine.name === 'host/codex') return isAbsolute(process.env.CODEX_BIN ?? '') ? process.env.CODEX_BIN : undefined;
+  const usable = (path) => (typeof path === 'string' && isAbsolute(path) && executable(path) ? path : undefined);
+  if (engine.name === 'host/codex') return usable(process.env.CODEX_BIN);
   if (engine.name !== 'host/opencode') return null;
-  if (process.env.OPENCODE_BIN !== undefined) return isAbsolute(process.env.OPENCODE_BIN) ? process.env.OPENCODE_BIN : undefined;
+  if (process.env.OPENCODE_BIN !== undefined) return usable(process.env.OPENCODE_BIN);
   return (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, 'opencode')).find(executable);
 }
 
@@ -118,13 +119,17 @@ async function main() {
     results.push(result);
     try {
       if (engine.credential !== undefined && !credentials[engine.credential]) throw new LiveFailure('credential-required');
+      const executableFile = hostExecutable(engine);
+      if (executableFile === undefined) throw new LiveFailure('executable-required');
       dispatchOf(engine);
       lotel.value ??= await resolveLotel();
       result.lotel = lotel.value.identity;
       if (lotel.value.failure) throw new LiveFailure(lotel.value.failure);
       build.value ??= runBuild();
       if (build.value !== 'ok') throw new LiveFailure('build-failed');
-      Object.assign(result, await runEngine(engine, model, lotel.value.binary));
+      const { nativeSession, ...evidence } = await runEngine(engine, model, lotel.value.binary, executableFile);
+      Object.assign(result, evidence);
+      if (engine.confirmation === 'native-record' && nativeSession !== undefined) result.nativeSession = scrub(nativeSession);
       result.pass = true;
     } catch (error) {
       result.code = error instanceof LiveFailure ? error.code : 'engine-error';
@@ -221,7 +226,7 @@ async function pollSpans(binary, runId, observations) {
   }
 }
 
-async function runEngine(engine, model, lotelBinary) {
+async function runEngine(engine, model, lotelBinary, executableFile) {
   const { NodeTracerProvider } = await import('@opentelemetry/sdk-trace-node');
   const { BatchSpanProcessor } = await import('@opentelemetry/sdk-trace-base');
   const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-proto');
@@ -254,8 +259,9 @@ async function runEngine(engine, model, lotelBinary) {
   const scratch = await mkdtemp(join(tmpdir(), 'live-baseline-'));
   let report;
   let flushed = true;
+  let nativeSession;
   try {
-    await turn(engine, model, scratch, onObservation);
+    ({ nativeSession } = await turn(engine, model, scratch, onObservation, executableFile));
   } finally {
     // A throwing turn still closes the baseline (ending its agent span) and stops the batch processor.
     report = baseline.close();
@@ -276,7 +282,9 @@ async function runEngine(engine, model, lotelBinary) {
   if (outcome !== 'success') throw Object.assign(new LiveFailure('outcome-not-success'), { detail });
   const spans = await pollSpans(lotelBinary, runId, observations);
   if (!spans.ok) throw Object.assign(new LiveFailure(spans.code), { detail: { ...detail, spans: spans.counts ?? null } });
-  return { outcome, spans: spans.counts };
+  const evidence = checkEngineEvidence(engine, spans.counts);
+  if (!evidence.ok) throw Object.assign(new LiveFailure(evidence.code), { detail: { outcome, spans: spans.counts } });
+  return { outcome, spans: spans.counts, ...(nativeSession === undefined ? {} : { nativeSession }) };
 }
 
 async function within(promise, abort) {
@@ -294,7 +302,7 @@ async function within(promise, abort) {
   }
 }
 
-async function turn(engine, model, scratch, onObservation) {
+async function turn(engine, model, scratch, onObservation, executableFile) {
   const cwd = join(scratch, 'work');
   const sessionDirectory = join(scratch, 'session');
   await mkdir(cwd, { recursive: true });
@@ -306,10 +314,10 @@ async function turn(engine, model, scratch, onObservation) {
     try {
       const started = await within(runtime.start({ text: PROMPT, onEvent: ignore, onObservation }), undefined);
       await within(started.finished, () => started.abort());
+      return { nativeSession: engine.name === 'codex' ? started.threadId : undefined };
     } finally {
       await runtime.close();
     }
-    return;
   }
   switch (engine.name) {
     case 'pi': {
@@ -326,16 +334,11 @@ async function turn(engine, model, scratch, onObservation) {
       } finally {
         await runtime.close();
       }
-      return;
+      return {};
     }
     default:
-      await hostTurn(engine, model, cwd, scratch, onObservation);
+      return hostTurn(engine, model, cwd, scratch, onObservation, executableFile);
   }
-}
-
-function absoluteExecutable(value) {
-  if (typeof value !== 'string' || !isAbsolute(value)) throw new LiveFailure('executable-required');
-  return value;
 }
 
 /** Wraps one host-owned child as the channel both host adapters accept. The host kills it when the turn ends. */
@@ -372,7 +375,7 @@ function spawnChannel(request, extraArgs = []) {
   return { channel, processExit, stop: () => { if (child.exitCode === null) child.kill('SIGTERM'); } };
 }
 
-async function hostTurn(engine, model, cwd, scratch, onObservation) {
+async function hostTurn(engine, model, cwd, scratch, onObservation, executableFile) {
   const signal = AbortSignal.timeout(TURN_MS);
   const stops = [];
   const codexPrivate = { sqliteHome: join(scratch, 'codex-sqlite'), logDir: join(scratch, 'codex-logs') };
@@ -389,8 +392,6 @@ async function hostTurn(engine, model, cwd, scratch, onObservation) {
     let opened;
     if (engine.name === 'host/opencode') {
       const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
-      const executableFile = process.env.OPENCODE_BIN
-        ?? (await capture('which', ['opencode']));
       // The child environment is exactly `variables`. OpenCode reads its provider credential from OPENCODE_AUTH_CONTENT.
       // A private XDG_CONFIG_HOME keeps the operator's OpenCode config (plugins, MCP servers, providers) out of the run,
       // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
@@ -400,12 +401,12 @@ async function hostTurn(engine, model, cwd, scratch, onObservation) {
       const opencodeVariables = { ...variables, XDG_CONFIG_HOME: configHome,
         OPENCODE_AUTH_CONTENT: opencodeAuthContent(credentials.SWITCHBOARD_OPENCODE_API_KEY) };
       opened = await opencodeHostAdapter.open({ model, launch, environment: { variables: opencodeVariables,
-        nativeConfig: { cwd, executable: absoluteExecutable(executableFile), account: 'live' } } }, signal);
+        nativeConfig: { cwd, executable: executableFile, account: 'live' } } }, signal);
     } else if (engine.name === 'host/codex') {
       const { codexHostAdapter } = await import('@mattsp1290/switchboard/host/codex');
       opened = await codexHostAdapter.open({ launch, environment: { variables, nativeConfig: {
         home: process.env.CODEX_HOME || join(homedir(), '.codex'), cwd, sandbox: 'read-only',
-        executable: absoluteExecutable(process.env.CODEX_BIN) } } }, signal);
+        executable: executableFile } } }, signal);
     } else {
       const { piHostAdapter } = await import('@mattsp1290/switchboard/host/pi');
       const stream = await piHostStream(model);
@@ -418,9 +419,11 @@ async function hostTurn(engine, model, cwd, scratch, onObservation) {
     adapter = opened.value;
     const result = await within(adapter.run({ prompt: PROMPT, hostOperationId: `live-${randomBytes(4).toString('hex')}`,
       recordIntent() {}, signal, onObservation }), undefined);
+    if (result.kind === 'failed' && signal.aborted) throw new LiveFailure('turn-timeout');
     if (result.kind === 'failed') throw new LiveFailure('segment-failed', `${result.error.code}: ${result.error.message}`);
     // The prompt asks for text only, so a pending tool call means the turn did not finish.
     if (result.kind === 'pending') throw new LiveFailure('segment-pending', 'the segment ended with pending host tool calls');
+    return { nativeSession: engine.name === 'host/codex' ? result.session?.opaque : undefined };
   } finally {
     await adapter?.close().catch(() => {});
     for (const stop of stops) stop();
@@ -447,6 +450,7 @@ async function piHostStream(model) {
     if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error('model failed');
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
     if (text !== '') yield { kind: 'text', text };
-    yield { kind: 'usage', input: message.usage?.input ?? 0, output: message.usage?.output ?? 0 };
+    const { input, output } = message.usage ?? {};
+    if (Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0) yield { kind: 'usage', input, output };
   };
 }

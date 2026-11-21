@@ -8,10 +8,17 @@ const CONTENT_KEYS = Object.freeze([
   'gen_ai.input.messages', 'gen_ai.output.messages', 'gen_ai.system_instructions',
   'gen_ai.tool.definitions', 'gen_ai.tool.call.arguments', 'gen_ai.tool.call.result',
 ]);
-const PROJECTION_FAMILIES = Object.freeze([
+export const PROJECTION_FAMILIES = Object.freeze([
   'state', 'activity', 'raw', 'custom', 'messages', 'interrupts', 'usage', 'reasoning', 'subagents',
 ]);
 const fail = (code) => ({ ok: false, code });
+
+/** `expect.modelSpans` is `some` or `none`; `counts` is the lotel span count object. */
+export function checkEngineEvidence(engine, counts) {
+  if (engine.expect?.modelSpans === 'some' && counts.model === 0) return fail('model-span-missing');
+  if (engine.expect?.modelSpans === 'none' && counts.model !== 0) return fail('model-span-unexpected');
+  return { ok: true };
+}
 
 export function lastTerminal(observations) {
   for (let index = observations.length - 1; index >= 0; index -= 1) {
@@ -42,18 +49,20 @@ export function expectedSpanCounts(observations) {
   return { agent: 1, tool: tools.size, model };
 }
 
-function observedFamilies(observations) {
+/** Mirrors the baseline: reasoning needs non-empty text, and usage counts only when the terminal event carries rows. */
+function observedFamilies(observations, events) {
   const supported = new Set();
-  if (observations.some((item) => item?.kind === 'reasoning')) supported.add('reasoning');
-  if (observations.some((item) => item?.kind === 'usage' && Array.isArray(item.rows) && item.rows.length > 0)) supported.add('usage');
+  if (observations.some((item) => item?.kind === 'reasoning' && typeof item.text === 'string' && item.text !== '')) supported.add('reasoning');
+  const terminal = events.findLast((event) => event?.type === 'RUN_FINISHED' || event?.type === 'RUN_ERROR');
+  if (Array.isArray(terminal?.usage) && terminal.usage.length > 0) supported.add('usage');
   return supported;
 }
 
-function checkReport(report, observations) {
+function checkReport(report, observations, events) {
   if (report === undefined || report === null || !Array.isArray(report.families) || !Array.isArray(report.baseline)) {
     return fail('report-missing');
   }
-  const supported = observedFamilies(observations);
+  const supported = observedFamilies(observations, events);
   for (const family of PROJECTION_FAMILIES) {
     const row = report.families.find((item) => item?.family === family);
     if (row === undefined) return fail('family-missing');
@@ -107,19 +116,46 @@ export function checkAguiRun({ batches, observations, report }) {
     default:
       return fail('terminal-malformed');
   }
-  const args = events.filter((event) => event.type === 'TOOL_CALL_ARGS').map((event) => String(event.delta)).join('');
-  const results = events.filter((event) => event.type === 'TOOL_CALL_RESULT')
-    .map((event) => (typeof event.content === 'string' ? event.content : JSON.stringify(event.content)));
+  const calls = new Map();
+  const call = (id) => {
+    if (!calls.has(id)) calls.set(id, { args: '', results: [] });
+    return calls.get(id);
+  };
+  for (const event of events) {
+    if (event.type === 'TOOL_CALL_ARGS') call(event.toolCallId).args += String(event.delta);
+    if (event.type === 'TOOL_CALL_RESULT') call(event.toolCallId).results.push(typeof event.content === 'string' ? event.content : JSON.stringify(event.content));
+  }
+  const nativeId = (toolCallId) => {
+    try {
+      const parsed = JSON.parse(toolCallId);
+      return Array.isArray(parsed) ? parsed[4] : toolCallId;
+    } catch {
+      return toolCallId;
+    }
+  };
+  const own = (callId) => [...calls].filter(([id]) => nativeId(id) === callId).map(([, value]) => value);
+  const byCall = new Map();
   for (const observation of observations) {
     if (observation?.kind !== 'tool') continue;
-    if (typeof observation.argumentsJson === 'string' && observation.argumentsJson !== '' && !args.includes(observation.argumentsJson)) {
-      return fail('tool-arguments-missing');
+    if (!byCall.has(observation.callId)) byCall.set(observation.callId, []);
+    byCall.get(observation.callId).push(observation);
+  }
+  for (const [callId, items] of byCall) {
+    const mine = own(callId);
+    const args = mine.map((item) => item.args).join('');
+    const deltas = items.filter((item) => item.phase === 'arguments' && typeof item.argumentsJson === 'string' && item.argumentsJson !== '');
+    if (deltas.length > 0) {
+      if (deltas.map((item) => item.argumentsJson).join('') !== args) return fail('tool-arguments-missing');
+    } else {
+      const first = items.find((item) => typeof item.argumentsJson === 'string' && item.argumentsJson !== '');
+      if (first !== undefined && !args.includes(first.argumentsJson)) return fail('tool-arguments-missing');
     }
-    if (typeof observation.resultJson === 'string' && !results.some((result) => result.includes(observation.resultJson))) {
-      return fail('tool-result-missing');
+    const results = mine.flatMap((item) => item.results);
+    for (const item of items) {
+      if (typeof item.resultJson === 'string' && !results.some((result) => result.includes(item.resultJson))) return fail('tool-result-missing');
     }
   }
-  return checkReport(report, observations);
+  return checkReport(report, observations, events);
 }
 
 const attributesOf = (span) => (span !== null && typeof span === 'object' && span.attributes !== null

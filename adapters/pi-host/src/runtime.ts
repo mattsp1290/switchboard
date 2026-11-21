@@ -357,7 +357,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       // Each provider request is one model boundary. A later request's row replaces an earlier one (same key), so the final request's counts stand.
       usage: (input: number, output: number) => {
         publish({ kind: 'usage', usage: hostUsage(input, output) });
-        observe({ kind: 'model-boundary', requestModel: modelId, usage: { inputTokens: input, outputTokens: output } });
+        observe({ kind: 'model-boundary', usage: { inputTokens: input, outputTokens: output } });
         observe({ kind: 'usage', rows: [{ inputTokens: input, outputTokens: output }] });
       },
     };

@@ -2,38 +2,46 @@
 // tripwire and the live script can resolve its plan before loading any adapter.
 
 /**
- * One row per engine. A turn runs only when its `gate` (or SWITCHBOARD_LIVE_ALL) is non-empty; a credential in the
+ * One row per engine. A turn runs only when its `gate` (or SWITCHBOARD_LIVE_ALL) is on (see `enabled`); a credential in the
  * environment never selects an engine. Each default is the lowest listed paid input+output price for its provider,
  * excluding free tiers, using a canonical (non-alias) id. `runtime` names the dispatch path in the live script.
- * `confirmation` says how a live run proves the model that actually ran.
+ * `confirmation` says how a live run proves the model that actually ran. `expect.modelSpans` is the evidence a passing run
+ * must show: `some` model spans (claude, host/pi) or `none` (every other engine).
  */
 export const engines = Object.freeze([
   { name: 'claude', provider: 'claude', gate: 'SWITCHBOARD_LIVE_CLAUDE', credential: 'SWITCHBOARD_ANTHROPIC_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_CLAUDE_MODEL', defaultModel: 'claude-haiku-5-5', runtime: 'text',
-    confirmation: 'adapter-enforced' },
+    confirmation: 'adapter-enforced',
+    expect: { modelSpans: 'some' } },
   { name: 'codex', provider: 'codex', gate: 'SWITCHBOARD_LIVE_CODEX', credential: undefined,
     modelVariable: 'SWITCHBOARD_LIVE_CODEX_MODEL', defaultModel: 'gpt-6-luna', runtime: 'text',
-    confirmation: 'native-record' },
+    confirmation: 'native-record',
+    expect: { modelSpans: 'none' } },
   // Cursor.models.list lists no prices. Third-party models (gpt-5.4-nano, gemini-3-flash) failed live with "not
   // included in your weekly usage" on 2026-11-21, so the default is Cursor's own composer-2, which passed.
   { name: 'cursor', provider: 'cursor', gate: 'SWITCHBOARD_LIVE_CURSOR', credential: 'SWITCHBOARD_CURSOR_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_CURSOR_MODEL', defaultModel: 'composer-2', runtime: 'text',
-    confirmation: 'request-only' },
+    confirmation: 'request-only',
+    expect: { modelSpans: 'none' } },
   // mimo-v2.5 is still in the bundled Pi catalog but OpenCode Go returns 410 ModelDeprecated (2026-11-21).
   { name: 'pi', provider: 'pi', gate: 'SWITCHBOARD_LIVE_PI', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_PI_MODEL', defaultModel: 'mimo-v2.6-flash', runtime: 'pi',
-    confirmation: 'request-only' },
+    confirmation: 'request-only',
+    expect: { modelSpans: 'none' } },
   { name: 'host/pi', provider: 'pi', gate: 'SWITCHBOARD_LIVE_HOST_PI', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_HOST_PI_MODEL', defaultModel: 'mimo-v2.6-flash', runtime: 'host',
     // The pi-host adapter sends every request under its fixed `host` model id, so it cannot confirm the real model.
-    confirmation: 'request-only' },
+    confirmation: 'request-only',
+    expect: { modelSpans: 'some' } },
   { name: 'host/codex', provider: 'codex', gate: 'SWITCHBOARD_LIVE_HOST_CODEX', credential: undefined,
     modelVariable: 'SWITCHBOARD_LIVE_HOST_CODEX_MODEL', defaultModel: 'gpt-6-luna', runtime: 'host',
-    confirmation: 'native-record' },
+    confirmation: 'native-record',
+    expect: { modelSpans: 'none' } },
   // OpenCode's stored login may be stale, so the run hands it the OpenCode Go key through OPENCODE_AUTH_CONTENT.
   { name: 'host/opencode', provider: 'opencode', gate: 'SWITCHBOARD_LIVE_HOST_OPENCODE', credential: 'SWITCHBOARD_OPENCODE_API_KEY',
     modelVariable: 'SWITCHBOARD_LIVE_HOST_OPENCODE_MODEL', defaultModel: 'opencode-go/mimo-v2.6-flash', runtime: 'host',
-    confirmation: 'adapter-enforced' },
+    confirmation: 'adapter-enforced',
+    expect: { modelSpans: 'none' } },
 ].map((engine) => Object.freeze(engine)));
 
 /** Captured into the script, then deleted from the environment before any adapter loads. */
@@ -42,8 +50,8 @@ export const credentialNames = Object.freeze(['SWITCHBOARD_ANTHROPIC_API_KEY', '
 export const ambientCredentialNames = Object.freeze(['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY']);
 
 const present = (env, name) => typeof env[name] === 'string' && env[name] !== '';
-/** A gate is on for any value except empty, `0`, or `false`, so `SWITCHBOARD_LIVE_ALL=0` never starts paid turns. */
-const enabled = (env, name) => present(env, name) && env[name] !== '0' && env[name].toLowerCase() !== 'false';
+/** A gate is on only for `1`, `true`, `yes`, or `on` (trimmed, any case), so no other value starts paid turns. */
+const enabled = (env, name) => present(env, name) && ['1', 'true', 'yes', 'on'].includes(env[name].trim().toLowerCase());
 
 /** Gated engines in table order, or every engine when SWITCHBOARD_LIVE_ALL is set. */
 export function selectEngines(env) {

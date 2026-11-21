@@ -5,14 +5,28 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { checkAguiRun, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
+import { PROJECTION_FAMILIES, checkAguiRun, checkEngineEvidence, checkLotelSpans, expectedSpanCounts } from '../scripts/live-baseline-check.mjs';
 import {
   ambientCredentialNames, codexHostArgs, credentialNames, dryRunRequested, engines, formatReason, opencodeAuthContent,
   resolveModel, selectEngines, takeCredentials,
 } from '../scripts/live-baseline-engines.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+const src = new URL('../src/', import.meta.url).href;
+const hook = registerHooks({ resolve(specifier, context, next) {
+  if (context.parentURL?.startsWith(src) && specifier.startsWith('.') && specifier.endsWith('.js')) {
+    return { url: new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL).href, shortCircuit: true };
+  }
+  return next(specifier, context);
+}, load(url, context, next) {
+  if (!url.startsWith(src) || !url.endsWith('.ts')) return next(url, context);
+  return { format: 'module', source: stripTypeScriptTypes(readFileSync(new URL(url), 'utf8'), { mode: 'transform', sourceUrl: url }),
+    shortCircuit: true };
+} });
+const { runObservationFamilies } = await import(new URL('core/run-observation.ts', src).href);
+hook.deregister();
 const script = join(root, 'scripts/live-baseline.mjs');
 const tripwire = join(root, 'tests/support/native-sdk-tripwire.mjs');
 
@@ -119,7 +133,10 @@ test('engine selection, model resolution, and the credential lists', () => {
   assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: '1' }).map((engine) => engine.name),
     ['claude', 'codex', 'cursor', 'pi', 'host/pi', 'host/codex', 'host/opencode']);
   assert.deepEqual(selectEngines({ ...canaries }), []);
-  for (const off of ['0', 'false', 'FALSE', '']) assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: off }), []);
+  for (const off of ['0', 'false', 'FALSE', '', 'off', 'no', 'garbage']) assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_ALL: off }), []);
+  for (const on of ['1', 'true', 'TRUE', 'yes', 'on', ' On ']) assert.equal(selectEngines({ SWITCHBOARD_LIVE_ALL: on }).length, engines.length);
+  assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: 'garbage' }), false);
+  assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: 'yes' }), true);
   assert.deepEqual(selectEngines({ SWITCHBOARD_LIVE_HOST_OPENCODE: '1' }).map((engine) => engine.name), ['host/opencode']);
   assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: '0' }), false);
   assert.equal(dryRunRequested({ SWITCHBOARD_LIVE_DRY_RUN: '1' }), true);
@@ -132,6 +149,7 @@ test('engine selection, model resolution, and the credential lists', () => {
     assert.notEqual(engine.defaultModel, '');
     assert(['text', 'pi', 'host'].includes(engine.runtime));
     assert(['adapter-enforced', 'native-record', 'request-only'].includes(engine.confirmation));
+    assert(['some', 'none'].includes(engine.expect?.modelSpans), engine.name);
     if (engine.credential !== undefined) assert(credentialNames.includes(engine.credential));
   }
   assert.deepEqual([...ambientCredentialNames], ['ANTHROPIC_API_KEY', 'CURSOR_API_KEY', 'OPENCODE_API_KEY']);
@@ -207,7 +225,7 @@ test('tool payloads must appear in tool events', () => {
   const tool = { kind: 'tool', callId: 'c', name: 'read', phase: 'completed', argumentsJson: '{"a":1}', resultJson: '"ok"' };
   const input = {
     batches: [mapped({ type: 'RUN_STARTED' }), textBatch,
-      mapped({ type: 'TOOL_CALL_ARGS', delta: '{"a":1}' }, { type: 'TOOL_CALL_RESULT', content: '"ok"' }), finished],
+      mapped({ type: 'TOOL_CALL_ARGS', toolCallId: 'c', delta: '{"a":1}' }, { type: 'TOOL_CALL_RESULT', toolCallId: 'c', content: '"ok"' }), finished],
     observations: [started, text, tool, success], report: unqualified(['text', 'tools']),
   };
   assert.deepEqual(checkAguiRun(input), { ok: true });
@@ -250,4 +268,46 @@ test('expected tool spans count each call once however many execution observatio
   const tool = (phase, extra = {}) => ({ kind: 'tool', callId: 'c', name: 'add', phase, ...extra });
   assert.deepEqual(expectedSpanCounts([tool('arguments-ended', { resultJson: '1' }), tool('completed', { resultJson: '1' }), tool('failed'),
     { kind: 'tool', callId: 'd', name: 'add', phase: 'arguments-ended' }, { kind: 'model-boundary' }]), { agent: 1, tool: 1, model: 1 });
+});
+
+test('tool payloads are checked against the events of their own call', () => {
+  const id = (callId) => JSON.stringify([1, 'codex', 'tool', ['tool'], callId]);
+  const tool = (callId, argumentsJson, resultJson) => ({ kind: 'tool', callId, name: 'read', phase: 'completed', argumentsJson, resultJson });
+  const input = (second) => ({
+    batches: [mapped({ type: 'RUN_STARTED' }), textBatch,
+      mapped({ type: 'TOOL_CALL_ARGS', toolCallId: id('a'), delta: '{"x":1}' }, { type: 'TOOL_CALL_RESULT', toolCallId: id('a'), content: '"one"' },
+        { type: 'TOOL_CALL_ARGS', toolCallId: id('b'), delta: '{"y":2}' }, { type: 'TOOL_CALL_RESULT', toolCallId: id('b'), content: '"two"' }), finished],
+    observations: [started, text, tool('a', '{"x":1}', '"one"'), second, success], report: unqualified(['text', 'tools']),
+  });
+  assert.deepEqual(checkAguiRun(input(tool('b', '{"y":2}', '"two"'))), { ok: true });
+  assert.equal(checkAguiRun(input(tool('b', '{"x":1}', '"two"'))).code, 'tool-arguments-missing');
+  assert.equal(checkAguiRun(input(tool('b', '{"y":2}', '"one"'))).code, 'tool-result-missing');
+});
+
+test('reasoning and usage families follow what the baseline projected', () => {
+  const batches = (terminal) => [mapped({ type: 'RUN_STARTED' }), textBatch, mapped(terminal)];
+  const run = (extra, terminal, supported) => ({ batches: batches(terminal), observations: [started, text, ...extra, success], report: unqualified(supported) });
+  const done = { type: 'RUN_FINISHED', outcome: { type: 'success' } };
+  const emptyReasoning = { kind: 'reasoning', messageId: 'r', mode: 'snapshot', text: '' };
+  assert.deepEqual(checkAguiRun(run([emptyReasoning], done, ['text'])), { ok: true });
+  assert.equal(checkAguiRun(run([{ ...emptyReasoning, text: 'hm' }], done, ['text'])).code, 'family-availability');
+  const mismatched = { kind: 'usage', rows: [{ inputTokens: 1, outputTokens: 1, totalTokens: 5 }] };
+  const cached = { kind: 'usage', rows: [{ inputTokens: 1, outputTokens: 1, cachedInputTokens: 4 }] };
+  assert.deepEqual(checkAguiRun(run([mismatched], done, ['text'])), { ok: true });
+  assert.deepEqual(checkAguiRun(run([cached], done, ['text'])), { ok: true });
+  assert.deepEqual(checkAguiRun(run([cached], { ...done, usage: [{ inputTokens: 5, outputTokens: 1 }] }, ['text', 'usage'])), { ok: true });
+  assert.equal(checkAguiRun(run([cached], { ...done, usage: [{ inputTokens: 5 }] }, ['text'])).code, 'family-availability');
+});
+
+test('engine evidence enforces the expected model span presence', () => {
+  const byName = (name) => engines.find((engine) => engine.name === name);
+  assert.deepEqual(checkEngineEvidence(byName('claude'), { agent: 1, tool: 0, model: 0 }), { ok: false, code: 'model-span-missing' });
+  assert.deepEqual(checkEngineEvidence(byName('claude'), { agent: 1, tool: 0, model: 1 }), { ok: true });
+  assert.deepEqual(checkEngineEvidence(byName('codex'), { agent: 1, tool: 0, model: 1 }), { ok: false, code: 'model-span-unexpected' });
+  assert.deepEqual(checkEngineEvidence(byName('codex'), { agent: 1, tool: 0, model: 0 }), { ok: true });
+  assert.deepEqual(engines.filter((engine) => engine.expect.modelSpans === 'some').map((engine) => engine.name), ['claude', 'host/pi']);
+});
+
+test('the projection family list matches the source of truth', () => {
+  assert.deepEqual([...PROJECTION_FAMILIES], [...runObservationFamilies]);
 });

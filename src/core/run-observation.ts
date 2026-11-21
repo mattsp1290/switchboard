@@ -47,6 +47,13 @@ export type RunObservation =
       readonly argumentsJson?: string;
       readonly resultJson?: string;
     }
+  /**
+   * Rows are native counts and are never summed. A later row with the same (provider, model) key replaces an earlier
+   * one, so the terminal usage is the most recent row per key. Scope differs by runtime: Claude and Codex text report
+   * the turn total; OpenCode reports the latest usage_update or the prompt-response usage; Cursor, Pi and Pi-host
+   * report the most recent request only (per-request rows share one key); `./host/codex` reports the thread-cumulative
+   * `total`, which includes earlier segments and survives resume.
+   */
   | { readonly kind: 'usage'; readonly rows: readonly RunObservationUsage[] }
   /** A permission request the adapter has already refused. It is never an AG-UI interrupt outcome. */
   | { readonly kind: 'interrupt'; readonly id: string; readonly reason: string; readonly message?: string }
@@ -136,7 +143,7 @@ export function answeredToolObservations(callId: string, name: string, args: unk
 
 /**
  * Opening phases for adapters that see a tool call several times: `started` once per call, then `arguments` once
- * when JSON-safe arguments first appear. The caller emits the closing phase itself.
+ * when JSON-safe arguments first appear. A `{}` placeholder is not arguments: it is held back for the first other value. The caller emits the closing phase itself.
  */
 export function createToolTracker(): (callId: string, name: string, argumentsJson: string | undefined) => readonly RunObservation[] {
   const calls = new Map<string, { argumentsSent: boolean }>();
@@ -148,7 +155,7 @@ export function createToolTracker(): (callId: string, name: string, argumentsJso
       calls.set(callId, call);
       observations.push({ kind: 'tool', callId, name, phase: 'started' });
     }
-    if (argumentsJson !== undefined && !call.argumentsSent) {
+    if (argumentsJson !== undefined && argumentsJson !== '{}' && !call.argumentsSent) {
       call.argumentsSent = true;
       observations.push({ kind: 'tool', callId, name, phase: 'arguments', argumentsJson });
     }

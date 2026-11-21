@@ -36,6 +36,7 @@ export type RunBaselineDiagnosticCode =
   | 'usage-row-dropped'
   | 'after-terminal'
   | 'tool-result-repeated'
+  | 'tool-arguments-changed'
   | 'tool-span-unrecorded'
   | 'not-running'
   | 'pending-tool-unknown';
@@ -65,6 +66,8 @@ export interface RunBaselineReport {
   readonly baseline: readonly BaselineDescription[];
   /** The first projector error any `accept` returned, if one did. */
   readonly error?: ProjectionError;
+  /** Whether a terminal observation was processed. `false` when the segment closed without one. */
+  readonly terminated: boolean;
 }
 
 export interface RunBaseline {
@@ -94,6 +97,8 @@ interface ToolState {
   readonly name: string;
   argumentsOpen: boolean;
   argumentsSent: boolean;
+  /** The text a non-append phase sent, to detect a later phase that carries different arguments. */
+  argumentsText?: string;
   result: boolean;
   /** At most one `execute_tool` span per call, however many execution observations arrive. */
   spanRecorded: boolean;
@@ -219,9 +224,14 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       toolOrder.push(callId);
       opened.push({ kind: 'tool', id: callId });
     }
-    if (argumentsJson !== undefined && argumentsJson !== '' && state.argumentsOpen && (append || !state.argumentsSent)) {
-      if (!project({ kind: 'tool-arguments', tool: ref(toolScope, callId), delta: argumentsJson })) return;
-      state.argumentsSent = true;
+    if (argumentsJson !== undefined && argumentsJson !== '') {
+      if (state.argumentsOpen && (append || !state.argumentsSent)) {
+        if (!project({ kind: 'tool-arguments', tool: ref(toolScope, callId), delta: argumentsJson })) return;
+        state.argumentsSent = true;
+        if (!append) state.argumentsText = argumentsJson;
+      } else if (!append && state.argumentsText !== undefined && state.argumentsText !== argumentsJson) {
+        note('tool-arguments-changed');
+      }
     }
     return state;
   };
@@ -331,6 +341,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
         }
         case 'text':
         case 'reasoning':
+          if (phase !== 'running') {
+            note('not-running');
+            break;
+          }
           message(observation.kind, observation.messageId, observation.mode, observation.text);
           break;
         case 'tool': {
@@ -353,6 +367,10 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
           break;
         }
         case 'usage': {
+          if (phase !== 'running') {
+            note('not-running');
+            break;
+          }
           for (const row of observation.rows) {
             const candidate = usageRow(row);
             const key = usageKey(row);
@@ -433,6 +451,7 @@ export function createRunBaseline(options: RunBaselineOptions): Outcome<RunBasel
       families: Object.freeze(families),
       baseline: Object.freeze(baseline),
       ...(firstError === undefined ? {} : { error: firstError }),
+      terminated: phase === 'terminated',
     });
     return report;
   }
