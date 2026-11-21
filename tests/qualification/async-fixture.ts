@@ -1,7 +1,7 @@
-import { createFakeFixture } from '@mattsp1290/switchboard/testkit';
+import { createFakeFixture } from '@operatorworks/switchboard/testkit';
 import type {
   QualificationFactory, QualificationFixture,
-} from '@mattsp1290/switchboard/testkit';
+} from '@operatorworks/switchboard/testkit';
 
 export const createFixture: QualificationFactory = async () => {
   const fixture: QualificationFixture = createFakeFixture();

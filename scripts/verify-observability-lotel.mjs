@@ -54,7 +54,7 @@ function verifyCalls(scenario, calls, traces, privacy) {
     const raw = rawBySpan.get(expected.spanId);
     assert(call && raw, `${scenario.id} missing original span identity`);
     assert.equal(call.trace_id, expected.traceId, 'original trace ID');
-    assert.equal(raw.scope_name, '@mattsp1290/switchboard', 'versioned library instrumentation scope');
+    assert.equal(raw.scope_name, '@operatorworks/switchboard', 'versioned library instrumentation scope');
     assert.equal(raw.scope_version, '0.0.0', 'versioned library instrumentation scope');
     assert.equal(call.parent_span_id || undefined, expected.parentSpanId, 'original parent span ID');
     assert(call.duration_ms > 0 && raw.duration_ns > 0, 'positive observed duration');

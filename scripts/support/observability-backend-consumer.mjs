@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
-import { createGenAiObserver, instrumentationScope } from '@mattsp1290/switchboard/observability';
+import { createGenAiObserver, instrumentationScope } from '@operatorworks/switchboard/observability';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { AlwaysOnSampler, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';

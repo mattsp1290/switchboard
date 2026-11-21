@@ -3,7 +3,7 @@
 Run `npm run verify:package` to execute these tests against the installed tarball.
 The verifier copies the consumer tests, typed fixture helpers, and import probe into a clean installation.
 `alias.mjs` runs in a separate alias installation.
-The reusable scenarios and reference fake ship in `@mattsp1290/switchboard/testkit`.
+The reusable scenarios and reference fake ship in `@operatorworks/switchboard/testkit`.
 Import `contracts` and `createFakeFixture` from that entry. Importing it does not register tests.
 Each named contract runs its group when called with a fixture factory and an `AbortSignal`.
 To qualify another controlled driver, supply an immediate or asynchronous `QualificationFactory`.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAuthContext } from '@mattsp1290/switchboard';
+import { createAuthContext } from '@operatorworks/switchboard';
 
 const scope = (suffix = 'a') => ({
   engine: `native-${suffix}`, account: `account-${suffix}`,

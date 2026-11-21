@@ -1,5 +1,5 @@
 import type { SubagentStartedEvent } from '@ag-ui/core';
-import type { NativeRef, SubagentFact, SubagentFailure } from '@mattsp1290/switchboard/agui';
+import type { NativeRef, SubagentFact, SubagentFailure } from '@operatorworks/switchboard/agui';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;

@@ -48,7 +48,7 @@ export function verifyTestkit({ consumer, tarball, compiler, compilerOptions }) 
   console.log('Verified installed testkit factory declarations, isolation, and import without test registration.');
 
   const aliasConsumer = join(dirname(consumer), 'alias-consumer');
-  const alias = '@mattsp1290/switchboard-qualification';
+  const alias = '@operatorworks/switchboard-qualification';
   mkdirSync(aliasConsumer);
   writeFileSync(join(aliasConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   process.stdout.write(runNpm([

@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { CursorAgentError, JsonlLocalAgentStore } from '@cursor/sdk';
-import { createCursorRuntime } from '@mattsp1290/switchboard/cursor';
+import { createCursorRuntime } from '@operatorworks/switchboard/cursor';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
 // The SDK seam is internal to the packed entry, so it is loaded by file URL past the exports map.
-const { sdk } = await import(new URL('sdk.js', import.meta.resolve('@mattsp1290/switchboard/cursor')).href);
+const { sdk } = await import(new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor')).href);
 assert.equal(sdk.Store, JsonlLocalAgentStore);
 const original = { create: sdk.create, resume: sdk.resume, Store: sdk.Store };
 

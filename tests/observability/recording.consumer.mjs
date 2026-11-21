@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createTraceState, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import { BasicTracerProvider, InMemorySpanExporter, SamplingDecision, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { createGenAiObserver, instrumentationScope } from '@mattsp1290/switchboard/observability';
+import { createGenAiObserver, instrumentationScope } from '@operatorworks/switchboard/observability';
 
 const agent = { kind: 'agent', provider: 'openai', name: 'fixture' };
 const model = { kind: 'model', provider: 'openai', operation: 'chat', requestModel: 'requested' };

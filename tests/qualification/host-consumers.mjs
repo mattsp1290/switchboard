@@ -1,10 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { parseInteractionContinuation, parseSessionReference } from '@mattsp1290/switchboard';
+import { parseInteractionContinuation, parseSessionReference } from '@operatorworks/switchboard';
 
 /** @import {
  * Capability, DispatchIdentity, DispatchSnapshot, EventObserver, InteractionContinuation,
  * Outcome, PendingApproval, ReconciliationHandle, SessionBinding, SessionCorrelation, SessionReference,
- * } from '@mattsp1290/switchboard' */
+ * } from '@operatorworks/switchboard' */
 /** @typedef {{ session: SessionReference, hostOperationId: string, continuation?: InteractionContinuation }} Request */
 /** @typedef {{
  * submit(request: Request, signal: AbortSignal): Promise<Outcome<DispatchSnapshot<unknown>, { code: string }>>,

@@ -50,15 +50,15 @@ const reasonOf = (text) => formatReason(text, secrets(), homedir());
 /** Text runtimes that share one `start` / `finished` / `abort` / `close` shape, keyed by engine name. */
 const textRuntimes = {
   async claude({ cwd, sessionDirectory, model }) {
-    const { createClaudeRuntime } = await import('@mattsp1290/switchboard/claude');
+    const { createClaudeRuntime } = await import('@operatorworks/switchboard/claude');
     return createClaudeRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_ANTHROPIC_API_KEY, model });
   },
   async codex({ cwd, model }) {
-    const { createCodexRuntime } = await import('@mattsp1290/switchboard/codex');
+    const { createCodexRuntime } = await import('@operatorworks/switchboard/codex');
     return createCodexRuntime({ cwd, model });
   },
   async cursor({ cwd, sessionDirectory, model }) {
-    const { createCursorRuntime } = await import('@mattsp1290/switchboard/cursor');
+    const { createCursorRuntime } = await import('@operatorworks/switchboard/cursor');
     return createCursorRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_CURSOR_API_KEY, model });
   },
 };
@@ -66,7 +66,7 @@ const textRuntimes = {
 /** Host engines' adapter open, keyed by engine name. `hostTurn` owns launch, run, result classification, and cleanup. */
 const hostOpeners = {
   async 'host/opencode'({ model, cwd, scratch, executableFile, launchWith, signal }) {
-    const { opencodeHostAdapter } = await import('@mattsp1290/switchboard/host/opencode');
+    const { opencodeHostAdapter } = await import('@operatorworks/switchboard/host/opencode');
     // The child environment is exactly `variables`. OpenCode reads its provider credential from OPENCODE_AUTH_CONTENT.
     // A private XDG_CONFIG_HOME keeps the operator's OpenCode config (plugins, MCP servers, providers) out of the run,
     // so nothing it would start inherits the key. Data and cache stay shared: a fresh data or cache directory makes
@@ -83,7 +83,7 @@ const hostOpeners = {
       nativeConfig: { cwd, executable: executableFile, account: 'live' } } }, signal);
   },
   async 'host/codex'({ model, cwd, scratch, executableFile, launchWith, signal }) {
-    const { codexHostAdapter } = await import('@mattsp1290/switchboard/host/codex');
+    const { codexHostAdapter } = await import('@operatorworks/switchboard/host/codex');
     const codexPrivate = { sqliteHome: join(scratch, 'codex-sqlite'), logDir: join(scratch, 'codex-logs') };
     for (const directory of Object.values(codexPrivate)) await mkdir(directory, { recursive: true });
     const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
@@ -93,7 +93,7 @@ const hostOpeners = {
         executable: executableFile } } }, signal);
   },
   async 'host/pi'({ model, scratch, signal }) {
-    const { piHostAdapter } = await import('@mattsp1290/switchboard/host/pi');
+    const { piHostAdapter } = await import('@operatorworks/switchboard/host/pi');
     const stream = await piHostStream(model);
     const temp = join(scratch, 'tmp');
     await mkdir(temp, { recursive: true });
@@ -299,8 +299,8 @@ async function runEngine(engine, model, lotelBinary, executableFile) {
   const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-proto');
   const { resourceFromAttributes } = await import('@opentelemetry/resources');
   const { ROOT_CONTEXT } = await import('@opentelemetry/api');
-  const { instrumentationScope } = await import('@mattsp1290/switchboard/observability');
-  const { createRunBaseline } = await import('@mattsp1290/switchboard/baseline');
+  const { instrumentationScope } = await import('@operatorworks/switchboard/observability');
+  const { createRunBaseline } = await import('@operatorworks/switchboard/baseline');
   const provider = new NodeTracerProvider({
     resource: resourceFromAttributes({ 'service.name': SERVICE }),
     spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || 'http://127.0.0.1:4318/v1/traces', timeoutMillis: 5000 }))],
@@ -415,7 +415,7 @@ async function textTurn({ engine, model, cwd, sessionDirectory, onObservation })
 }
 
 async function piTurn({ model, cwd, sessionDirectory, onObservation }) {
-  const { createPiRuntime } = await import('@mattsp1290/switchboard/pi');
+  const { createPiRuntime } = await import('@operatorworks/switchboard/pi');
   const runtime = await createPiRuntime({ cwd, sessionDirectory, apiKey: credentials.SWITCHBOARD_OPENCODE_API_KEY, provider: 'opencode-go', model });
   try {
     const session = await runtime.open();

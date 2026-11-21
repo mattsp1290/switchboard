@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { piHostAdapter, validatePiHostSessionState } from '@mattsp1290/switchboard/host/pi';
+import { piHostAdapter, validatePiHostSessionState } from '@operatorworks/switchboard/host/pi';
 
 const base = {
   launch: { kind: 'in-process' },

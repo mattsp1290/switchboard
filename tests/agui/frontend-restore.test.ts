@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assessFrontendRestore, frontendRestoreFact, frontendRestoreLimits, parsePendingFrontendBatch } from '@mattsp1290/switchboard';
-import type { FrontendRestoreFact, RestoreSituation } from '@mattsp1290/switchboard';
-import { createAguiProjection } from '@mattsp1290/switchboard/agui';
-import type { AguiProjection, ProjectionBounds, ProjectionFact } from '@mattsp1290/switchboard/agui';
+import { assessFrontendRestore, frontendRestoreFact, frontendRestoreLimits, parsePendingFrontendBatch } from '@operatorworks/switchboard';
+import type { FrontendRestoreFact, RestoreSituation } from '@operatorworks/switchboard';
+import { createAguiProjection } from '@operatorworks/switchboard/agui';
+import type { AguiProjection, ProjectionBounds, ProjectionFact } from '@operatorworks/switchboard/agui';
 import { collectEvents } from './collector.js';
 
 const bounds: ProjectionBounds = { maxEntities: 24, maxPayloadBytes: 8192, maxJsonDepth: 20, maxJsonNodes: 512 };

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 import { EventType, omitOptionalNulls, PROTOCOL_VERSION } from '@ag-ui/core';
 import type { RunStartedEvent } from '@ag-ui/core';
-import * as integration from '@mattsp1290/switchboard/agui';
+import * as integration from '@operatorworks/switchboard/agui';
 import { collectEvents } from './collector.js';
 
 const require = createRequire(import.meta.url);

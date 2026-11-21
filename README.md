@@ -1,7 +1,7 @@
 # Switchboard
 
 Switchboard is a Node-hosted TypeScript library for native agent interfaces and adapters.
-This foundation contains one private ESM package, `@mattsp1290/switchboard@0.0.0`.
+This foundation contains one private ESM package, `@operatorworks/switchboard@0.0.0`.
 Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
 The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output.
 The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go. The caller supplies the model id. The provider remains OpenCode Go, and an id missing from the bundled offline catalog is rejected.
@@ -42,17 +42,17 @@ The protocol matrix, exact per-definition dispositions, and validation differenc
 Installed verification requires actual projection output for all 28 explicit event kinds and five child terminal variants.
 Three canonical chunk kinds normalize to explicit stream events. Input and capability declarations do not create output events.
 
-The intended import is `import type { AdapterRegistration, Capability } from '@mattsp1290/switchboard'`.
-The separate `@mattsp1290/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
+The intended import is `import type { AdapterRegistration, Capability } from '@operatorworks/switchboard'`.
+The separate `@operatorworks/switchboard/agui` entry requires the exact optional peer `@ag-ui/core@1.0.4`.
 Repository development and the installed-consumer checks in `npm run verify:package` use the immutable core archive from owned [AG-UI PR 49](https://github.com/mattsp1290/ag-ui/pull/49).
 That archive is byte-identical to registry `@ag-ui/core@1.0.4`, so hosts satisfy the peer with the registry release.
 The [fork reuse record](docs/qualification/ag-ui-fork-reuse.md) pins its delivery and separates core adoption from native adapter qualification.
-The separate `@mattsp1290/switchboard/observability` entry requires the exact optional peer `@opentelemetry/api@1.9.0`.
+The separate `@operatorworks/switchboard/observability` entry requires the exact optional peer `@opentelemetry/api@1.9.0`.
 It borrows a tracer and explicit parent contexts. The host owns SDK setup, exporters, and shutdown.
 Content stays off by default. Model usage comes from individually observed requests.
 Native dispatch phases, RPC requests, and AG-UI chunks do not establish those boundaries.
 See [record observed agent work](docs/observability/usage.md) and [validate telemetry destinations](docs/observability/validation.md).
-The separate `@mattsp1290/switchboard/baseline` entry requires both optional peers.
+The separate `@operatorworks/switchboard/baseline` entry requires both optional peers.
 Every exported runtime accepts an optional `onObservation` listener (on the request, as the third `PiSession.prompt` argument, or per host segment).
 It receives `RunObservation` values taken at the native branch, including tool arguments, tool results, reasoning text, and token counts that the public callbacks omit.
 Feed one segment's observations into one `createRunBaseline` to get AG-UI events and GenAI spans. Families with no native evidence are reported `unsupported` and every family stays `unqualified`.
@@ -64,13 +64,13 @@ Each engine defaults to a cheap model, overridable with `SWITCHBOARD_LIVE_<ENGIN
 `SWITCHBOARD_LIVE_DRY_RUN=1` prints each selected engine's model, dispatch, credential presence, executable check, and model-proof level without a build, lotel, a model call, or a report. A live run passes only on a `success` terminal with a baseline that reports no dropped data (no diagnostics other than `tool-arguments-changed`; a dropped row reports `baseline-diagnostic` with the list, and a baseline that never terminated reports `baseline-unterminated`), tool arguments and results that equal the projected ones, and a failure prints one redacted reason. The model-span evidence is enforced: `claude` and `host/pi` must record a model span and every other engine must not. For the `native-record` engines (`codex`, `host/codex`) the report records the Codex session id. A `native-record` engine whose turn returns no session id fails with `native-record-missing`. Spans export to `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` when set, else `http://127.0.0.1:4318/v1/traces`.
 Installed package tests exercise the API and a real loopback HTTP provider without backend credentials.
 Separate lotel and Datadog verification commands require their documented backends.
-The optional `@mattsp1290/switchboard/testkit` entry exports reusable controlled qualification groups and a reference fake.
+The optional `@operatorworks/switchboard/testkit` entry exports reusable controlled qualification groups and a reference fake.
 It requires no AG-UI peer and registers no tests on import. The root module does not load it.
 Register its groups in your test runner and provide the runner's bounded cancellation signal.
 
 ```js
 import test from 'node:test';
-import { contracts, createFakeFixture } from '@mattsp1290/switchboard/testkit';
+import { contracts, createFakeFixture } from '@operatorworks/switchboard/testkit';
 
 for (const [name, contract] of Object.entries(contracts)) {
 	test(name, { timeout: 10_000 }, (t) => contract(createFakeFixture, t.signal));
@@ -83,11 +83,11 @@ The source is `src/testkit/types.ts`.
 The groups cover uncertainty, sessions, interaction, and events with separate result, effect, and delivery assertions.
 These controlled checks do not qualify native engines, credentials, or durable host admission.
 
-The `@mattsp1290/switchboard/pi` entry requires both exact optional peers, `@earendil-works/pi-ai@1.5.2` and `@earendil-works/pi-coding-agent@1.5.2`.
+The `@operatorworks/switchboard/pi` entry requires both exact optional peers, `@earendil-works/pi-ai@1.5.2` and `@earendil-works/pi-coding-agent@1.5.2`.
 Its public declarations do not import SDK types. The root entry does not load the SDK.
 
 ```js
-import { createPiRuntime } from '@mattsp1290/switchboard/pi';
+import { createPiRuntime } from '@operatorworks/switchboard/pi';
 
 const runtime = await createPiRuntime({
 	cwd: process.cwd(),
@@ -162,7 +162,7 @@ Disposal and close never cancel native work. See [event delivery boundaries](doc
 
 ## ChatGPT subscription chat
 
-Install the optional peer `@openai/codex-sdk@0.169.0` and make Codex CLI 0.169.0 available on PATH. Sign in with ChatGPT using `codex login`. Import `createCodexRuntime` from `@mattsp1290/switchboard/codex`. Supply an absolute working directory and a model id. `gpt-6.1-sol` is an example. Supply an absolute `codexPathOverride` for another path to the pinned CLI or `codexHome` for a separate native account and history directory.
+Install the optional peer `@openai/codex-sdk@0.169.0` and make Codex CLI 0.169.0 available on PATH. Sign in with ChatGPT using `codex login`. Import `createCodexRuntime` from `@operatorworks/switchboard/codex`. Supply an absolute working directory and a model id. `gpt-6.1-sol` is an example. Supply an absolute `codexPathOverride` for another path to the pinned CLI or `codexHome` for a separate native account and history directory.
 
 Call `await runtime.checkReady()` before opening the chat. Call `await runtime.start({ text, onEvent })` to submit a message. This resolves at the SDK's native turn-start event. Persist the returned `threadId` against the authorized conversation. To continue after a restart, pass that same ID and the new message to `runtime.start`. The SDK owns native history. Hosts own admission across processes and must never resubmit a prompt after an uncertain dispatch.
 
@@ -172,10 +172,10 @@ The child uses the existing ChatGPT login and official OpenAI provider endpoint.
 
 ### Claude text adapter
 
-`@mattsp1290/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies the exact model id the engine reports for the turn. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals it. An alias the engine rewrites to a different string is a legal caller string and a failed turn. The id in the example is a placeholder for that exact string, not a claim that the live API echoes it. A mismatch on the init frame, or on the first frame that would admit the turn, rejects `start()` with `Claude operation failed.` before admission. A mismatch on a later assistant frame, after `message_start` has admitted the turn, does not reject: `finished` resolves with outcome `failed`, and text events already delivered for that turn stand. In both cases the provider request was already sent, so the provider may bill it and the native transcript may remain in the session directory.
+`@operatorworks/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies the exact model id the engine reports for the turn. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals it. An alias the engine rewrites to a different string is a legal caller string and a failed turn. The id in the example is a placeholder for that exact string, not a claim that the live API echoes it. A mismatch on the init frame, or on the first frame that would admit the turn, rejects `start()` with `Claude operation failed.` before admission. A mismatch on a later assistant frame, after `message_start` has admitted the turn, does not reject: `finished` resolves with outcome `failed`, and text events already delivered for that turn stand. In both cases the provider request was already sent, so the provider may bill it and the native transcript may remain in the session directory.
 
 ```js
-import { createClaudeRuntime } from '@mattsp1290/switchboard/claude';
+import { createClaudeRuntime } from '@operatorworks/switchboard/claude';
 
 const claude = createClaudeRuntime({
 	cwd: '/work',
@@ -195,12 +195,12 @@ Stop is available on admitted turns. Before admission, `start()` has no per-requ
 
 ### Cursor local agent
 
-`@mattsp1290/switchboard/cursor` runs a local Cursor coding agent through the optional peer `@cursor/sdk@1.4.2`. Install that exact peer. Forcing a different SDK version is outside this contract. A missing peer fails the import with `ERR_MODULE_NOT_FOUND`.
+`@operatorworks/switchboard/cursor` runs a local Cursor coding agent through the optional peer `@cursor/sdk@1.4.2`. Install that exact peer. Forcing a different SDK version is outside this contract. A missing peer fails the import with `ERR_MODULE_NOT_FOUND`.
 
 The caller supplies the model id. The id in the example is a placeholder, not a default, and the runtime passes that string through as `model.id`. A missing or illegal id throws `Cursor operation failed.` before the SDK is called. Create the runtime with an absolute working directory, an absolute session directory, the API key, and that model id.
 
 ```js
-import { createCursorRuntime } from '@mattsp1290/switchboard/cursor';
+import { createCursorRuntime } from '@operatorworks/switchboard/cursor';
 
 const cursor = createCursorRuntime({
 	cwd: '/work',
@@ -251,7 +251,7 @@ What each adapter observes:
 A report is a point-in-time observation at `observedAt`. It is not cached, it does not guarantee that the next turn starts, and it is not native qualification. It never installs, updates, signs in, calls a model or refreshes a catalog. Tests use fixture CLIs only. The Codex `Not logged in` line was taken from the strings of the qualified 0.169.0 binary and has not been exercised natively. Any other output is reported as `unknown`, never as `signed_in`.
 
 ```ts
-import type { ReadinessReport, ReadinessSource } from '@mattsp1290/switchboard';
+import type { ReadinessReport, ReadinessSource } from '@operatorworks/switchboard';
 
 async function providerRows(sources: Record<string, ReadinessSource>, signal: AbortSignal) {
 	return Promise.all(Object.entries(sources).map(async ([name, runtime]) => {

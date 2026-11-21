@@ -6,7 +6,7 @@ import { resourceFromAttributes } from '@opentelemetry/resources';
 import { AlwaysOnSampler, BatchSpanProcessor, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
-import { createGenAiObserver } from '@mattsp1290/switchboard/observability';
+import { createGenAiObserver } from '@operatorworks/switchboard/observability';
 import { createDatadogExporter, datadogSpanView } from '../../support/datadog-exporter.mjs';
 import { fixtureBatchOptions, fixtureCanaries, fixtureContentPolicy, fixtureScenarios,
   runFixtureScenario, withHostDeadline } from '../../support/observability-fixture.mjs';
@@ -16,7 +16,7 @@ function host(scenario, processors) {
   const provider = new NodeTracerProvider({ sampler: new AlwaysOnSampler(),
     resource: resourceFromAttributes({ 'service.name': `switchboard-host-${scenario.id}-${crypto.randomUUID()}` }),
     spanProcessors: processors ?? [new SimpleSpanProcessor(memory)] });
-  const observer = createGenAiObserver({ tracer: provider.getTracer('@mattsp1290/switchboard', '0.0.0'),
+  const observer = createGenAiObserver({ tracer: provider.getTracer('@operatorworks/switchboard', '0.0.0'),
     contentPolicy: fixtureContentPolicy(scenario), allowedToolNames: ['fixture-add'], includeConversationId: true });
   return { observer, provider, memory };
 }

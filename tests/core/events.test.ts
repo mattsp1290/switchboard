@@ -9,7 +9,7 @@ import {
   type SubscribeError,
   type Subscription,
   type SubscriptionEnd,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 
 type NativeEvent = { readonly vendorKind: string; readonly usage: { readonly tokens: number } };
 const bounds = { maxObservers: 2, capacity: 8 } satisfies EventStreamBounds;

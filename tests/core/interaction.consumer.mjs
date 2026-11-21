@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { interactionLimits, parseInteractionContinuation, sessionLimits } from '@mattsp1290/switchboard';
+import { interactionLimits, parseInteractionContinuation, sessionLimits } from '@operatorworks/switchboard';
 
 const binding = { engine: 'fixture/native', nativeVersion: '1', account: 'account', authorizedScope: 'scope', nativeFormat: 'format' };
 const session = { kind: 'session', formatVersion: 1, binding, opaque: 'session-a' };

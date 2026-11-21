@@ -1,13 +1,13 @@
 import {
   assessFrontendRestore, compareRestoreDecisions, decideFrontendRestore, frontendRestoreCapabilities,
   frontendRestoreDelivery, frontendRestoreFact, parsePendingFrontendBatch, validateRestoreDecision,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import type {
   Capability, DeliveryClass, FrontendRestoreCapabilities, FrontendRestoreError, FrontendRestoreFact,
   FrontendRestorePayload, FrontendRestorePolicy, Outcome, PendingFrontendBatch, RestoreAdapter, RestoreChoice,
   RestoreDecision, RestoreDecisionComparison, RestoreMechanism, RestoreMechanismSupport, RestoreObservation,
   RestoreSituation, ToolTarget,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import { sessionReference } from './sessions.test.js';
 
 const target: ToolTarget = { kind: 'tool', session: sessionReference, nativeToolCallId: 'native-a' };

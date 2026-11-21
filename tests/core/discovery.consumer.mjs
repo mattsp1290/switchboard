@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import test from 'node:test';
-import { discoverFiles, fileDiscoveryLimits, sessionLimits } from '@mattsp1290/switchboard';
+import { discoverFiles, fileDiscoveryLimits, sessionLimits } from '@operatorworks/switchboard';
 
 const binding = { engine: 'fixture', nativeVersion: '1', account: 'fixture-account', authorizedScope: 'fixture-scope', nativeFormat: 'fixture-only' };
 const bounds = { maxResults: 20, maxExamined: 100, maxDurationMs: 1000, maxDepth: 4, maxFileBytes: 100, maxTotalBytes: 1000 };

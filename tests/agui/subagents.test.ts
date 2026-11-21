@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAguiProjection, describeProjection } from '@mattsp1290/switchboard/agui';
-import type { AguiProjection, NativeRef, ProjectionBounds, ProjectionEvent, ProjectionFact, SubagentFact, TerminalFact } from '@mattsp1290/switchboard/agui';
+import { createAguiProjection, describeProjection } from '@operatorworks/switchboard/agui';
+import type { AguiProjection, NativeRef, ProjectionBounds, ProjectionEvent, ProjectionFact, SubagentFact, TerminalFact } from '@operatorworks/switchboard/agui';
 import { collectEvents } from './collector.js';
 
 const ref = (id: string, scope: readonly string[] = ['native']): NativeRef => ({ scope, id });

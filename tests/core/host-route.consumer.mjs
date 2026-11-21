@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAuthContext } from '@mattsp1290/switchboard';
+import { createAuthContext } from '@operatorworks/switchboard';
 
 const scope = { engine: 'codex', account: 'account-a', adapterInstanceId: 'adapter-a', sessionId: 'session-a' };
 const request = { boundary: 'request', invocationId: 'run-one', requestId: 'one' };

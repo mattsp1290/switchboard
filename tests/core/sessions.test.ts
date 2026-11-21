@@ -2,7 +2,7 @@ import {
   parseCheckpointReference,
   parseSessionReference,
   validateSessionDiscoveryBounds,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 import type {
   CheckpointReference,
   Outcome,
@@ -16,7 +16,7 @@ import type {
   SessionInspectionResult,
   SessionReference,
   SessionReferenceError,
-} from '@mattsp1290/switchboard';
+} from '@operatorworks/switchboard';
 
 export const sessionBinding: SessionBinding = {
   engine: 'acme/native', nativeVersion: '1.2', account: 'account-a',

@@ -1,5 +1,5 @@
-import { createSafeError, normalizeError, serializeDiagnostic, summarizeDiagnostic } from '@mattsp1290/switchboard';
-import type { AdapterError, AuthError, DiagnosticCategory, DiagnosticCode, SafeDiagnostic, SafeError } from '@mattsp1290/switchboard';
+import { createSafeError, normalizeError, serializeDiagnostic, summarizeDiagnostic } from '@operatorworks/switchboard';
+import type { AdapterError, AuthError, DiagnosticCategory, DiagnosticCode, SafeDiagnostic, SafeError } from '@operatorworks/switchboard';
 
 export const codes: readonly DiagnosticCode[] = [
   'unsupported', 'busy', 'closed', 'invalid-input', 'native-failure',
