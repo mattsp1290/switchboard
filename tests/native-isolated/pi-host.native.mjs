@@ -109,7 +109,7 @@ test('a host tool pauses and a fresh adapter continues it once', async () => {
   });
   const pending = await second.adapter.capabilities.inspect.api.pending(openSignal());
   assert.equal(pending.kind, 'ok');
-  const call = pending.value[0];
+  const call = pending.value.calls[0];
   const continued = await second.adapter.continue({
     hostOperationId: 'op-continue',
     signal: openSignal(),
@@ -208,7 +208,7 @@ test('a segment listener receives model boundaries, tool facts, usage and a term
     yield { kind: 'usage', input: 5, output: 3 };
   } });
   const pending = await second.adapter.capabilities.inspect.api.pending(openSignal());
-  const call = pending.value[0];
+  const call = pending.value.calls[0];
   const next = [];
   const done = await second.adapter.continue({ hostOperationId: 'op-observed', signal: openSignal(), recordIntent: async () => {},
     onObservation: (o) => { next.push(o); },

@@ -89,6 +89,14 @@ async function segments(factory: HostConformanceFactory, signal: AbortSignal) {
     assert.deepEqual(adapter.identity, harness.subject.registration.identity);
     assert.equal(capabilities.toolDeclarations, 'fixed-at-creation');
     assert(Number.isSafeInteger(capabilities.maxPendingPerMessage) && capabilities.maxPendingPerMessage >= 1);
+    if (capabilities.imageInput.kind !== 'supported') {
+      const before = harness.subject.launches().attempts;
+      const refused = kind(await adapter.run({ prompt: harness.subject.prompts.text, signal, hostOperationId: 'image-refusal',
+        images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }],
+        recordIntent: () => { throw new Error('Unsupported images must not record intent.'); } }), 'failed');
+      assert.equal(refused.write.kind, 'not-attempted');
+      assert.equal(harness.subject.launches().attempts, before);
+    }
     const observed = await collect(adapter, (events) => events.some((event) => event.kind === 'text-delta'), signal);
     const intents: DispatchIdentity[] = [];
     let releaseRecorded = () => {};
@@ -161,6 +169,7 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
     const ended = (events: readonly HostAdapterEvent[]) => events.findIndex((event) => event.kind === 'tool-call-end');
     const observed = await collect(adapter, (events) => ended(events) >= 0, signal);
     const pending = kind(await harness.segment(adapter, subject.prompts.toolCall), 'pending');
+    assert(Array.isArray(pending.approvals));
     assert.equal(pending.calls.length, 1);
     const [call] = pending.calls as [HostToolCall];
     assert.equal(call.name, subject.tool.name);
@@ -172,7 +181,7 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
 
     if (adapter.capabilities.inspect.kind === 'supported') {
       const read = ok(await adapter.capabilities.inspect.api.pending(signal));
-      assert.deepEqual(read.map((value) => value.pending.target), [call.pending.target]);
+      assert.deepEqual(read.calls.map((value) => value.pending.target), [call.pending.target]);
     }
     const intents: DispatchIdentity[] = [];
     for (const invalid of [[], [answer(call), answer(call)],

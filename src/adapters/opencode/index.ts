@@ -815,6 +815,8 @@ async function openSession(ready: {
   const adapter: HostAdapter<'opencode'> = {
     identity,
     capabilities: Object.freeze({
+      imageInput: { kind: 'unsupported' as const, reason: 'image input is not supported' },
+      models: { kind: 'unsupported' as const, reason: 'model catalog is not supported' },
       maxPendingPerMessage: 0,
       continuation: 'same-process',
       inspect: Object.freeze({ kind: 'unsupported', reason: inspectReason }),
@@ -831,6 +833,7 @@ async function openSession(ready: {
       if (input === null || typeof input !== 'object') {
         return failed({ code: 'invalid-input', message: 'the segment request is malformed' }, notAttempted);
       }
+      if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0)) return failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, notAttempted);
       if (closePromise || phase === 'closed') return failed({ code: 'closed', message: 'the adapter is closed' }, notAttempted);
       if (unusable) return failed(unusable, notAttempted);
       if (turn) return failed({ code: 'busy', message: 'a segment is already running' }, notAttempted);

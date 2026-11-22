@@ -501,7 +501,7 @@ async function openAdapter(ready: {
     return undefined;
   }
   function pendingSegment(active: CodexSession, current: NonNullable<typeof segment>, pending: readonly CodexHostCall[]): HostSegmentResult {
-    return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), usage: current.usage };
+    return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), approvals: Object.freeze([]), usage: current.usage };
   }
   async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<Settled> {
     const current = segment;
@@ -681,8 +681,10 @@ async function openAdapter(ready: {
     } finally { segment = undefined; }
   }
   const adapter: HostAdapter<'codex'> = { identity, capabilities: Object.freeze({
+    imageInput: { kind: 'unsupported' as const, reason: 'image input is not supported' },
+    models: { kind: 'unsupported' as const, reason: 'model catalog is not supported' },
     maxPendingPerMessage, continuation: 'same-process', usage: 'cumulative', toolDeclarations: 'fixed-at-creation',
-    inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: Object.freeze(calls()) }) } },
+    inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: Object.freeze({ calls: calls(), approvals: [] }) }) } },
     fingerprint: { kind: 'supported' as const, api: { validity: 'segment-end' as const, read: async () => {
       if (!session) return fail({ code: 'unavailable', feature: 'fingerprint', message: 'no session is open' });
       const actual = await readCodexHistoryFingerprint(native.home, session.threadId);
@@ -690,7 +692,7 @@ async function openAdapter(ready: {
         : fail({ code: 'unavailable', feature: 'fingerprint', message: 'no rollout fingerprint is available' });
     } } },
   }), events: Object.freeze({ subscribe: stream.subscribe }),
-    run: (input: HostRunInput) => segmentOf(input, input.prompt, undefined),
+    run: (input: HostRunInput) => input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0) ? Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, { kind: 'not-attempted' })) : segmentOf(input, input.prompt, undefined),
     continue: (input: HostContinueInput) => segmentOf(input, undefined, input.answers),
     interrupt: async ({ timeoutMs }) => {
       if (!segment) return { kind: 'terminal-observed' as const };

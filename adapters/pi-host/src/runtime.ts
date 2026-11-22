@@ -29,7 +29,7 @@ class OpenRefusal extends Error {
 
 type WorkResult =
   | { readonly kind: 'complete'; readonly text: string; readonly usage: HostUsage }
-  | { readonly kind: 'pending'; readonly calls: readonly HostToolCall[]; readonly usage: HostUsage }
+  | { readonly kind: 'pending'; readonly approvals: readonly []; readonly calls: readonly HostToolCall[]; readonly usage: HostUsage }
   | { readonly kind: 'model-failed'; readonly error: HostAdapterError };
 
 function usageCounters(input = 0, output = 0): Usage {
@@ -482,7 +482,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       const exported = exportState();
       if (exported === undefined) return { kind: 'model-failed', error: { code: 'native-failure', message: 'The exported session state does not match the published schema.' } };
       options.onState?.(exported);
-      if (calls.length > 0) { pending = calls; return { kind: 'pending', calls, usage }; }
+      if (calls.length > 0) { pending = calls; return { kind: 'pending', calls, approvals: [], usage }; }
       pending = [];
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
@@ -568,11 +568,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     const adapter: PiHostAdapter = {
       identity: piHostIdentity,
       capabilities: {
+        imageInput: { kind: 'unsupported', reason: 'image input is not supported' },
+        models: { kind: 'unsupported', reason: 'model catalog is not supported' },
         maxPendingPerMessage: piHostLimits.maxPendingPerMessage, continuation: 'fresh-process', usage: 'segment',
         toolDeclarations: 'fixed-at-creation',
         inspect: { kind: 'supported', api: { pending: async (pendingSignal) => pendingSignal.aborted
           ? { kind: 'error', error: { code: 'native-failure', message: 'The pending read was aborted.' } }
-          : { kind: 'ok', value: pending } } },
+          : { kind: 'ok', value: { calls: pending, approvals: [] } } } },
         fingerprint: { kind: 'supported', api: { validity: 'segment-end', read: async () => {
           const opaque = createHash('sha256').update(JSON.stringify(current)).digest('hex');
           const checkpoint = parseCheckpointReference({
@@ -586,6 +588,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       events: events,
       state: () => current,
       async run(input) {
+        if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0)) return { kind: 'failed', error: { code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, write: { kind: 'not-attempted' } };
         if (typeof input.prompt !== 'string' || input.prompt.length === 0 || input.prompt.length > piHostLimits.maxText) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The prompt must be a non-empty string.' }, write: { kind: 'not-attempted' } };
         }

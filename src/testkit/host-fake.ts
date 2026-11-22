@@ -152,7 +152,7 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       }
       session.calls = Object.freeze(Array.from({ length: Math.min(wanted, maxPendingPerMessage) }, (_, index) => call(session, index)));
       session.holder = holder;
-      return Object.freeze({ kind: 'pending', session: session.reference, calls: session.calls, usage: usage() });
+      return Object.freeze({ kind: 'pending', session: session.reference, calls: session.calls, approvals: Object.freeze([]), usage: usage() });
     }
     async function dispatch(request: HostSegmentRequest, native: (accepted: DispatchEvidence) => HostSegmentResult) {
       const target: DispatchTarget = current === undefined ? { kind: 'new-session', binding } : { kind: 'session', reference: current.reference };
@@ -211,9 +211,11 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
     }
 
     const capabilities: HostAdapterCapabilities = {
+      imageInput: { kind: 'unsupported', reason: 'image input is not supported' },
+      models: { kind: 'unsupported', reason: 'model catalog is not supported' },
       maxPendingPerMessage, continuation, usage: 'segment', toolDeclarations: 'fixed-at-creation',
       inspect: inspect
-        ? { kind: 'supported', api: { pending: async () => ({ kind: 'ok', value: current?.calls ?? [] }) } }
+        ? { kind: 'supported', api: { pending: async () => ({ kind: 'ok', value: { calls: current?.calls ?? [], approvals: [] } }) } }
         : { kind: 'unsupported', reason: 'The fake was configured without inspection.' },
       fingerprint: fingerprint === 'unsupported'
         ? { kind: 'unsupported', reason: 'The fake was configured without fingerprints.' }
@@ -231,6 +233,7 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       capabilities: Object.freeze(capabilities),
       events: Object.freeze({ subscribe: stream.subscribe }),
       run: (input) => {
+        if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0)) return Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }));
         if (typeof input.prompt !== 'string') return Promise.resolve(failed(invalid('The prompt must be text.')));
         return occupy(() => dispatch(input, (accepted) => model(input.prompt, accepted)));
       },

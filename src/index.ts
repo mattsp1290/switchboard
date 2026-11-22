@@ -102,6 +102,7 @@ export type {
 } from './core/dispatch.js';
 export type {
   HostAdapter, HostAdapterCapabilities, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
+  HostImageInput, HostImageInputApi, HostPendingSet, HostNativeError, HostModel, HostModelsApi,
   HostEnvironment, HostFingerprintApi, HostInspectApi, HostInterruptResult, HostLaunch, HostOpenOptions, HostResume,
   HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage, HostWriteStatus,
 } from './core/host-adapter.js';
@@ -118,3 +119,6 @@ export type {
   RunObservation, RunObservationFamily, RunObservationListener, RunObservationOutcome, RunObservationToolPhase,
   RunObservationUsage, ToolTracker,
 } from './core/run-observation.js';
+
+export { parseHostImages, hostImageLimits } from './core/image-input.js';
+export type { ValidatedHostImage } from './core/image-input.js';

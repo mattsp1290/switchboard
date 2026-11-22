@@ -3,7 +3,7 @@ import type { Capability } from './capabilities.js';
 import type { AdapterError, AdapterIdentity, AdapterInstance, NativeExtension, Outcome } from './contracts.js';
 import type { DispatchObservation, FreshDispatchOptions } from './dispatch.js';
 import type { EventObserver } from './events.js';
-import type { InteractionContinuation, NativeDelivery, PendingInteraction, ToolTarget } from './interaction.js';
+import type { ApprovalTarget, InteractionContinuation, NativeDelivery, PendingApproval, PendingInteraction, ToolTarget } from './interaction.js';
 import type { RunObservationListener } from './run-observation.js';
 import type { CheckpointReference, SessionReference } from './sessions.js';
 
@@ -61,9 +61,10 @@ export interface HostSegmentRequest {
 }
 export interface HostRunInput extends HostSegmentRequest {
   readonly prompt: string;
+  readonly images?: readonly HostImageInput[];
 }
 export interface HostContinueInput extends HostSegmentRequest {
-  /** One tool continuation per pending call, covering the whole pending set exactly, in any order. */
+  /** One continuation per call and approval, covering both sets exactly once, in any order. */
   readonly answers: readonly InteractionContinuation[];
 }
 
@@ -72,6 +73,38 @@ export interface HostToolCall {
   readonly name: string;
   /** The JSON value the engine produced, neither re-parsed nor defaulted. */
   readonly arguments: unknown;
+}
+
+export interface HostPendingSet {
+  readonly calls: readonly HostToolCall[];
+  readonly approvals: readonly PendingApproval[];
+}
+export interface HostImageInput {
+  readonly mediaType: string;
+  readonly dataUrl: string;
+}
+export interface HostImageInputApi {
+  /** Decoded aggregate bytes per turn. */
+  readonly maxBytes: number;
+  readonly maxImages: number;
+  readonly mediaTypes: readonly string[];
+}
+export interface HostModel {
+  readonly model: string;
+  readonly displayName: string;
+  readonly hidden: boolean;
+  readonly isDefault: boolean;
+  readonly inputModalities: readonly string[];
+}
+export interface HostModelsApi {
+  readonly list: (signal: AbortSignal) => Promise<Outcome<readonly HostModel[], HostAdapterError>>;
+}
+export interface HostNativeError {
+  readonly source: 'turn/start-reply' | 'turn.error' | 'error-notification';
+  readonly code: number | null;
+  readonly message: string;
+  readonly info: unknown | null;
+  readonly truncated: boolean;
 }
 
 /** Raw native counters, never summed by the adapter. */
@@ -105,15 +138,18 @@ export type HostSegmentResult =
       readonly kind: 'pending';
       readonly session: SessionReference;
       readonly calls: readonly HostToolCall[];
+      readonly approvals: readonly PendingApproval[];
       readonly usage: HostUsage;
     }
   | {
       readonly kind: 'failed';
+      readonly nativeError?: HostNativeError;
       readonly error: Exclude<HostAdapterError, { readonly code: 'pending-limit' }>;
       readonly write: HostWriteStatus;
     }
   | {
       readonly kind: 'failed';
+      readonly nativeError?: HostNativeError;
       readonly error: { readonly code: 'pending-limit'; readonly message: string };
       readonly write: Extract<HostWriteStatus, { readonly kind: 'accepted' }>;
     };
@@ -125,21 +161,22 @@ export type HostAdapterEvent =
   | { readonly kind: 'tool-call-end'; readonly target: ToolTarget; readonly arguments: unknown }
   | { readonly kind: 'tool-delivery'; readonly target: ToolTarget; readonly delivery: NativeDelivery }
   | { readonly kind: 'usage'; readonly usage: HostUsage }
-  | { readonly kind: 'native-item'; readonly item: NativeExtension };
+  | { readonly kind: 'native-item'; readonly item: NativeExtension }
+  | { readonly kind: 'interaction-settled'; readonly target: ApprovalTarget | ToolTarget; readonly settlement: NativeExtension };
 
 /**
- * `terminal-observed`: the segment's native terminal fact arrived within the bound, or no segment was active.
+ * `terminal-observed`: the native terminal fact arrived within the bound, or no native turn was in flight.
  * `interrupted`: native acknowledged the interrupt within the bound; its terminal fact has not arrived.
  * No kind claims that a process stopped.
  */
 export type HostInterruptResult =
   | { readonly kind: 'terminal-observed' }
   | { readonly kind: 'interrupted'; readonly evidence: NativeExtension }
-  | { readonly kind: 'unconfirmed-within-bound' };
+  | { readonly kind: 'unconfirmed-within-bound'; readonly evidence?: NativeExtension };
 
 /** Reads unanswered host calls from native state without a model call. */
 export interface HostInspectApi {
-  readonly pending: (signal: AbortSignal) => Promise<Outcome<readonly HostToolCall[], HostAdapterError>>;
+  readonly pending: (signal: AbortSignal) => Promise<Outcome<HostPendingSet, HostAdapterError>>;
 }
 export interface HostFingerprintApi {
   readonly validity: 'segment-end' | 'after-process-exit';
@@ -151,13 +188,15 @@ export interface HostAdapterCapabilities {
   readonly maxPendingPerMessage: number;
   /** `fresh-process`: a continuation may be delivered to a session reopened in another process. */
   readonly continuation: 'same-process' | 'fresh-process';
+  readonly imageInput: Capability<HostImageInputApi>;
+  readonly models: Capability<HostModelsApi>;
   readonly inspect: Capability<HostInspectApi>;
   readonly fingerprint: Capability<HostFingerprintApi>;
   readonly usage: HostUsage['scope'];
   readonly toolDeclarations: 'fixed-at-creation';
 }
 
-/** One segment at a time. The adapter keeps no store, retries nothing and applies no approval policy. */
+/** One segment at a time. The adapter keeps no store, retries nothing and decides no approval; passes a host-selected native approval policy through. */
 export interface HostAdapter<Engine extends string = string> extends AdapterInstance<Engine> {
   readonly capabilities: HostAdapterCapabilities;
   readonly events: EventObserver<HostAdapterEvent>;

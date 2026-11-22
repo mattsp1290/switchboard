@@ -236,6 +236,18 @@ void [options, missingModel];
 `);
   writeFileSync(join(consumer, 'opencode-types.json'), JSON.stringify({ ...consumerConfig, files: ['opencode-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'opencode-types.json'], consumer);
+  writeFileSync(join(consumer, 'image-types.test.ts'), `
+import { parseHostImages, hostImageLimits } from '${manifest.name}';
+import type { HostImageInput, HostImageInputApi, HostPendingSet } from '${manifest.name}';
+const image: HostImageInput = { mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' };
+const api: HostImageInputApi = hostImageLimits;
+const parsed = parseHostImages([image], api);
+const invalid = parseHostImages(null, api);
+declare const pending: HostPendingSet;
+void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];
+`);
+  writeFileSync(join(consumer, 'image-types.json'), JSON.stringify({ ...consumerConfig, files: ['image-types.test.ts'] }));
+  run(process.execPath, [compiler, '-p', 'image-types.json'], consumer);
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';
