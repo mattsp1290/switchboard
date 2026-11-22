@@ -1,3 +1,4 @@
+import { callerModelId } from '#switchboard';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -58,15 +59,7 @@ export interface ClaudeRuntime {
 }
 
 const failure = () => new Error('Claude operation failed.');
-// Matches plain(value, 256) and must stay identical in the three text adapters.
-function callerModelId(value: unknown): boolean {
-  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || (code >= 127 && code <= 159)) return false;
-  }
-  return true;
-}
+
 function absolutePath(value: unknown): boolean {
   return typeof value === 'string' && isAbsolute(value);
 }

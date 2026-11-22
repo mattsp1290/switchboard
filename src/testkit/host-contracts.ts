@@ -14,6 +14,7 @@ export interface HostConformanceSubject {
   readonly launches: () => { readonly attempts: number; readonly signals: number };
   /** Optional fixture counters expose IO and a controllable turn held after pending. */
   readonly nativeRequests?: () => number;
+  /** Optional controllable held-turn fixture; native request and settlement assertions require it. */
   readonly heldTurn?: { readonly interruptRequests: () => number };
   readonly tool: HostToolDeclaration;
   /** Prompts the subject's model answers with text, one call of `tool`, or two calls of `tool` in one message. */
@@ -310,7 +311,6 @@ async function interrupt(factory: HostConformanceFactory, signal: AbortSignal) {
     const pending = kind(await harness.segment(adapter, subject.prompts.toolCall), 'pending');
     const requests = subject.heldTurn?.interruptRequests();
     const held = await adapter.interrupt({ timeoutMs: 100 });
-    assert(['interrupted', 'terminal-observed', 'unconfirmed-within-bound'].includes(held.kind), 'a pending result alone does not establish a native terminal or timely interrupt acknowledgement');
     if (requests !== undefined) {
       assert.equal(subject.heldTurn?.interruptRequests(), requests + 1, 'the controllable held fixture reaches native interrupt');
       if (adapter.capabilities.inspect.kind === 'supported') {

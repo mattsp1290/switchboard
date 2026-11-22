@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { addAbortListener } from 'node:events';
 import { createEventStream } from '../../core/events.js';
 import { createWireReader, encodeEnvelope } from './wire.js';
-import type { Envelope, IncomingCall, Notification, ReplyEnvelope, RpcReply, WireFault } from './wire.js';
+import type { Envelope, IncomingCall, Notification, ReplyEnvelope, RpcReply, RpcError, WireFault } from './wire.js';
 import type { RequestId } from './protocol/RequestId.js';
 
 export type Call = { readonly method: string; readonly params?: unknown };
@@ -57,7 +57,7 @@ export interface TransportBounds {
 }
 export interface IncomingRequestIntake {
   /** One trusted intake attached to the bounded handler lease until its reply enters the writer. */
-  readonly replyAllowed: (predicate: () => boolean, refusal: RpcReply) => void;
+  readonly replyAllowed: (predicate: () => boolean, refusal: RpcError) => void;
   readonly watchNotification: (listener: (notification: Extract<Observation, { readonly kind: 'notification' }>) => void) => () => void;
 }
 export interface TransportOptions {
@@ -92,9 +92,8 @@ type HandlerLease = {
   readonly request: IncomingCall;
   intake: Parameters<IncomingRequestIntake['watchNotification']>[0] | undefined;
   readonly controller: AbortController;
-  replyAllowed: (() => boolean) | undefined;
+  gate: { readonly allowed: () => boolean; readonly refusal: RpcError } | undefined;
   resultReply: boolean;
-  replyRefusal: RpcReply | undefined;
   phase: 'scheduled' | 'callback' | 'reply';
   timer: ReturnType<typeof setTimeout> | undefined;
 };
@@ -275,14 +274,14 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     let bytes = entry.bytes;
     if (owner.kind === 'reply') {
       const handler = owner.handler;
-      if (handler.resultReply && handler.replyAllowed && !handler.replyAllowed()) {
-        const refusal = handler.replyRefusal;
-        const replacement = refusal && encodeEnvelope(refusal.kind === 'error' ? { id: handler.id, error: refusal.error } : {}, maxFrameBytes);
+      if (handler.resultReply && handler.gate && !handler.gate.allowed()) {
+        const replacement = encodeEnvelope({ id: handler.id, error: handler.gate.refusal }, maxFrameBytes);
         if (!replacement) { finish('invalid-handler-reply'); return; }
         bytes = replacement;
       }
+      clearTimeout(handler.timer);
       handler.intake = undefined;
-      handler.replyAllowed = undefined;
+      handler.gate = undefined;
     }
     if (owner.kind !== 'reply' && owner.wait.signal.aborted) {
       failWait(owner, 'aborted');
@@ -300,9 +299,12 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     finally {
       clearTimeout(writeTimer);
       if (owner.kind === 'reply') handlers.delete(owner.handler.id);
-      else if (failed) failWait(owner, 'closed');
+      if (failed) {
+        fault('write-error');
+        // Notifications have no pending reply slot for teardown to settle after parsed intake drains.
+        if (owner.kind === 'notify') failWait(owner, 'closed');
+      }
       active = undefined;
-      if (failed) finish('write-error');
       schedulePump();
     }
   }
@@ -311,7 +313,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     handler.phase = 'callback';
     handler.timer = setTimeout(() => finish('handler-timeout'), handlerTimeoutMs);
     let reply: RpcReply;
-    try { reply = await onRequest(request, handler.controller.signal, { replyAllowed: (predicate, refusal) => { handler.replyAllowed = predicate; handler.replyRefusal = refusal; }, watchNotification: (listener) => {
+    try { reply = await onRequest(request, handler.controller.signal, { replyAllowed: (predicate, refusal) => { handler.gate = { allowed: predicate, refusal }; }, watchNotification: (listener) => {
       handler.intake = listener;
       return () => { if (handler.intake === listener) handler.intake = undefined; };
     } }); }
@@ -321,7 +323,6 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       finish('handler-error');
       return;
     }
-    clearTimeout(handler.timer);
     handler.phase = 'reply';
     if (isClosed()) { handlers.delete(handler.id); return; }
     let bytes: Uint8Array | undefined;
@@ -341,7 +342,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       const request = envelope.request;
       if (handlers.has(request.id)) { fault('duplicate-request'); return; }
       if (handlers.size >= maxHandlers) { fault('handler-overflow'); return; }
-      const handler: HandlerLease = { id: request.id, request, intake: undefined, controller: new AbortController(), replyAllowed: undefined, resultReply: false, replyRefusal: undefined, phase: 'scheduled', timer: undefined };
+      const handler: HandlerLease = { id: request.id, request, intake: undefined, controller: new AbortController(), gate: undefined, resultReply: false, phase: 'scheduled', timer: undefined };
       handlers.set(request.id, handler);
       intakeQueue.push({ kind: 'request', handler });
       scheduleIntake();

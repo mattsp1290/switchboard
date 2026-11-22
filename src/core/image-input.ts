@@ -12,6 +12,10 @@ export interface ValidatedHostImage extends HostImageInput {
   readonly bytes: number;
 }
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** Unsupported adapters allow omission and ordinary empty arrays; malformed or proxy media is present. */
+export function hostImagesRequested(value: unknown): boolean {
+  return value !== undefined && (!Array.isArray(value) || value.length !== 0 || types.isProxy(value));
+}
 /** Validate canonical encoding and aggregate size without allocating decoded attachments. */
 export function parseHostImages(value: unknown, limits: HostImageInputApi = hostImageLimits):
 Outcome<readonly ValidatedHostImage[], { readonly code: 'invalid-input'; readonly message: string }> {

@@ -1,5 +1,5 @@
 {
-  "date": "2026-11-22T20:11:43.312Z",
+  "date": "2026-11-22T21:37:02.254Z",
   "nativeVersion": "0.169.0",
   "binarySha256": "739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002",
   "login": "chatgpt",
@@ -8,6 +8,7 @@
       "id": "command-accept",
       "status": "passed",
       "approvals": 1,
+      "choiceWriterEntered": true,
       "markerPresent": true,
       "nativeTerminals": [
         "completed"
@@ -17,6 +18,7 @@
       "id": "command-cancel",
       "status": "passed",
       "approvals": 1,
+      "choiceWriterEntered": true,
       "declinedItem": true,
       "segmentKind": "failed",
       "segmentTerminal": "outcome-unknown",
@@ -33,6 +35,8 @@
       "approvals": 1,
       "interrupt": "interrupted",
       "localWithdrawal": true,
+      "interruptWriterEntered": true,
+      "interruptAcknowledged": true,
       "followupComplete": true,
       "markerPresent": false,
       "nativeTerminals": [
@@ -43,6 +47,7 @@
     {
       "id": "image-4mib",
       "status": "passed",
+      "imageWriterVerified": true,
       "decodedBytes": 4194304,
       "transportOpen": true,
       "nativeTerminals": [
@@ -61,14 +66,20 @@
       "reason": "QUALIFY_FILE_CHANGE=1 required"
     }
   ],
+  "build": "fresh-isolated-root-tsc",
+  "buildOptions": [
+    "noEmit:false",
+    "emitDeclarationOnly:false",
+    "incremental:false"
+  ],
   "fingerprint": {
     "source": {
-      "sha256": "e190f0ad1bf50c516f0991b02086d41e8b9ec04a513f2c68ff2695f9caf8a237",
-      "files": 111
+      "sha256": "00c7bee6f86dae81b53c6f5db73e5e74e0ec6310c59693e4bb2b0a97b67b1e75",
+      "files": 44
     },
     "runtime": {
-      "sha256": "921f1b474c5d9529565a622eaed7f7a249fac19959afe74c40345337c0360141",
-      "files": 79
+      "sha256": "a4f1401072a4bef94a65e814b4b87c737dc23b8a7f7812053a98042d03ed244e",
+      "files": 38
     }
   },
   "nodeVersion": "v24.22.3"

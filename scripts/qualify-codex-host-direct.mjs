@@ -1,21 +1,22 @@
 // Explicit owner-run live gate. Reports contain only synthetic scenario labels and bounded statuses/counts.
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { hostVariables } from './live-baseline-engines.mjs';
 import { qualificationImage } from './support/qualification-image.mjs';
-import { dedicatedHome, scopedCommand, scopedFileChange, stopChildren, closeAdapter, qualificationPassed, qualificationFingerprint, targetTerminals } from './support/codex-host-qualification.mjs';
+import { dedicatedHome, scopedCommand, scopedFileChange, stopChildren, closeAdapter, qualificationPassed, qualificationFingerprint, targetTerminals, scenarioDeadline } from './support/codex-host-qualification.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const delay = (ms) => new Promise((resolve) => { const timer = setTimeout(resolve, ms); timer.unref(); });
+class ScenarioFailure extends Error {}
 const exists = async (path) => { try { await access(path); return true; } catch { return false; } };
 const binary = join(root, 'node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex');
 
-async function launch(request, extra, children, nativeTerminals) {
+async function launch(request, extra, children, nativeTerminals, nativeDecisions, nativeInterrupts, nativeTurns) {
   const child = spawn(request.executable, [...request.args.slice(1), ...extra], { cwd: request.cwd, env: request.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise((resolve) => { child.once('close', resolve); });
   child.on('error', () => {});
@@ -44,6 +45,8 @@ async function launch(request, extra, children, nativeTerminals) {
           if (line.length <= 8388608) {
             try {
               const frame = JSON.parse(line);
+              const interrupted = nativeInterrupts.find((request) => Object.is(request.requestId, frame.id));
+              if (interrupted && Object.hasOwn(frame, 'result')) interrupted.acknowledged = true;
               const status = frame.params?.turn?.status;
               if (frame.method === 'turn/completed' && ['completed', 'failed', 'interrupted'].includes(status) && nativeTerminals.length < 16) nativeTerminals.push({ threadId: frame.params.threadId, turnId: frame.params.turn.id, status });
             } catch { /* The adapter remains the authority on malformed protocol input. */ }
@@ -58,6 +61,12 @@ async function launch(request, extra, children, nativeTerminals) {
     },
     write(bytes, signal) {
       if (signal.aborted) return Promise.reject(new Error('aborted'));
+      try {
+        const frame = JSON.parse(Buffer.from(bytes).toString('utf8'));
+        if (typeof frame.result?.decision === 'string' && nativeDecisions.length < 16) nativeDecisions.push({ requestId: frame.id, decision: frame.result.decision });
+        if (frame.method === 'turn/interrupt' && nativeInterrupts.length < 16) nativeInterrupts.push({ requestId: frame.id, threadId: frame.params?.threadId, turnId: frame.params?.turnId, acknowledged: false });
+        if (frame.method === 'turn/start' && Array.isArray(frame.params?.input) && nativeTurns.length < 16) nativeTurns.push({ images: frame.params.input.filter((item) => item.type === 'image' && typeof item.url === 'string').map((item) => createHash('sha256').update(item.url).digest('hex')) });
+      } catch { /* No decision-entry evidence is claimed for an unrecognized frame. */ }
       return new Promise((resolve, reject) => child.stdin.write(bytes, (error) => error ? reject(new Error('write failed')) : resolve()));
     },
   } };
@@ -75,7 +84,15 @@ async function main() {
     home = await dedicatedHome(home, join(homedir(), '.codex'));
     if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('unsupported-platform');
     if (!(await exists(binary))) throw new Error('native-binary-missing');
-    report.fingerprint = await qualificationFingerprint(root);
+    // Always emit into a fresh directory; a noEmit/declaration-only config cannot certify stale JS.
+    const runtimeRoot = join(scratch, 'runtime'); await mkdir(runtimeRoot);
+    await copyFile(join(root, 'package.json'), join(runtimeRoot, 'package.json'));
+    const buildOptions = ['--outDir', join(runtimeRoot, 'dist'), '--noEmit', 'false', '--emitDeclarationOnly', 'false', '--incremental', 'false'];
+    execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', join(root, 'tsconfig.json'), ...buildOptions], { cwd: root, timeout: 60000, maxBuffer: 1048576 });
+    const hostEntry = join(runtimeRoot, 'dist/adapters/codex/index.js'); await access(hostEntry);
+    report.build = 'fresh-isolated-root-tsc';
+    report.buildOptions = ['noEmit:false', 'emitDeclarationOnly:false', 'incremental:false'];
+    report.fingerprint = await qualificationFingerprint(root, runtimeRoot);
     report.nodeVersion = process.version;
     const version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 10000, maxBuffer: 65536 }).trim();
     if (version !== 'codex-cli 0.169.0') throw new Error('wrong-native-version');
@@ -86,41 +103,55 @@ async function main() {
       timeout: 10000, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'pipe'] });
     if (login.status !== 0 || !`${login.stdout}${login.stderr}`.includes('ChatGPT')) throw new Error('chatgpt-login-required');
     report.login = 'chatgpt';
-    const { codexHostAdapter } = await import('../dist/adapters/codex/index.js');
+    const { codexHostAdapter } = await import(pathToFileURL(hostEntry).href);
     async function scenario(name, body) {
       if (stopped.signal.aborted) { report.scenarios.push({ id: name, status: 'not-covered', reason: 'qualification-stopped' }); return; }
       const cwd = join(scratch, name);
       const children = [];
       const nativeTerminals = [];
+      const nativeDecisions = [];
+      const nativeInterrupts = []; const nativeTurns = [];
       let adapter;
       const events = [];
+      const eventWaiters = new Set();
       const observations = [];
-      const signal = AbortSignal.any([stopped.signal, AbortSignal.timeout(180000)]);
+      const deadline = scenarioDeadline(stopped.signal);
+      const signal = deadline.signal;
       const result = { id: name, status: 'failed' };
       try {
         await mkdir(cwd);
         const sqliteHome = join(scratch, `${name}-sqlite`); const logDir = join(scratch, `${name}-logs`);
         await mkdir(sqliteHome); await mkdir(logDir);
         const extra = ['-c', `sqlite_home=${JSON.stringify(sqliteHome)}`, '-c', `log_dir=${JSON.stringify(logDir)}`];
-        const opened = await codexHostAdapter.open({ launch: { kind: 'spawn', spawn: (request) => launch(request, extra, children, nativeTerminals) },
+        const opened = await codexHostAdapter.open({ launch: { kind: 'spawn', spawn: (request) => launch(request, extra, children, nativeTerminals, nativeDecisions, nativeInterrupts, nativeTurns) },
           builtInTools: ['shell'], environment: { variables, nativeConfig: { home, cwd, executable: binary, sqliteHome, logDir,
             sandbox: 'read-only', approvalPolicy: 'on-request', approvalsReviewer: 'user', activity: 'items' } } }, signal);
         if (opened.kind !== 'ok') {
           result.openCode = opened.error.code;
-          throw new Error('open-failed');
+          throw new ScenarioFailure('open-failed');
         }
         adapter = opened.value;
-        adapter.events.subscribe((event) => { events.push(event); });
+        adapter.events.subscribe((event) => { events.push(event); for (const waiter of eventWaiters) waiter(event); });
+        const activity = (predicate) => {
+          const previous = events.find(predicate);
+          if (previous) return Promise.resolve(previous);
+          return new Promise((resolve, reject) => {
+            const dispose = () => { eventWaiters.delete(onEvent); signal.removeEventListener('abort', onAbort); };
+            const onEvent = (event) => { if (predicate(event)) { dispose(); resolve(event); } };
+            const onAbort = () => { dispose(); reject(new ScenarioFailure('activity-deadline')); };
+            eventWaiters.add(onEvent); signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          });
+        };
         const request = { signal, hostOperationId: name, recordIntent: () => {}, onObservation: (event) => { observations.push(event); } };
-        await body({ adapter, cwd, events, observations, signal, request, result, nativeTerminals });
+        await body({ adapter, cwd, events, activity, observations, signal, request, result, nativeTerminals, nativeDecisions, nativeInterrupts, nativeTurns });
         result.nativeTerminals = nativeTerminals.map((terminal) => terminal.status);
         if (result.status === 'failed') result.status = 'passed';
       } catch (error) {
         result.nativeTerminals = nativeTerminals.map((terminal) => terminal.status);
-        const allowed = new Set(['no-approval', 'wrong-approval', 'missing-choice', 'turn-not-complete', 'marker-mismatch',
-          'missing-command-activity', 'missing-file-activity', 'interrupt-followup-failed', 'interrupt-unconfirmed', 'missing-withdrawal', 'pending-remains', 'image-failed', 'transport-not-open', 'catalog-failed', 'open-failed']);
-        result.reason = allowed.has(error.message) ? error.message : 'scenario-failed';
+        result.reason = error instanceof ScenarioFailure ? error.message : 'scenario-failed';
       } finally {
+        deadline.dispose();
         try {
           if ((await closeAdapter(adapter)) !== 'closed') { result.status = 'failed'; result.reason = 'close-failed'; }
         } catch { result.status = 'failed'; result.reason = 'close-failed'; }
@@ -131,78 +162,88 @@ async function main() {
       }
     }
     const commandPrompt = (marker) => `Use the shell tool to run /usr/bin/touch ${marker}, with shell=/bin/sh and login=false so the command uses a non-login /bin/sh -c invocation. This is a disposable qualification marker. Request escalated permissions with sandbox_permissions=require_escalated and ask the user for approval. Do not use another tool, do not work around the read-only sandbox, and do not write anything before the approval is answered. After the decision, finish without another attempt.`;
-    for (const choice of ['accept', 'cancel', 'interrupt']) await scenario(`command-${choice}`, async ({ adapter, cwd, events, observations, signal, request, result, nativeTerminals }) => {
+    for (const choice of ['accept', 'cancel', 'interrupt']) await scenario(`command-${choice}`, async ({ adapter, cwd, events, activity, observations, signal, request, result, nativeTerminals, nativeDecisions, nativeInterrupts }) => {
       const marker = join(cwd, 'marker');
       const pending = await adapter.run({ ...request, prompt: commandPrompt(marker) });
-      if (pending.kind !== 'pending' || pending.approvals.length !== 1) throw new Error('no-approval');
+      if (pending.kind !== 'pending' || pending.approvals.length !== 1) throw new ScenarioFailure('no-approval');
       const approval = pending.approvals[0];
-      if (!scopedCommand(pending, cwd, marker)) throw new Error('wrong-approval');
+      if (!scopedCommand(pending, cwd, marker)) throw new ScenarioFailure('wrong-approval');
       result.approvals = pending.approvals.length;
       if (choice === 'interrupt') {
         const interrupted = await adapter.interrupt({ timeoutMs: 10000 });
-        if (!['interrupted', 'terminal-observed'].includes(interrupted.kind)) throw new Error('interrupt-unconfirmed');
+        if (!['interrupted', 'terminal-observed'].includes(interrupted.kind)) throw new ScenarioFailure('interrupt-unconfirmed');
         for (let i = 0; i < 100 && !events.some((e) => e.kind === 'interaction-settled' && e.settlement.data.kind === 'withdrawn'); i++) await delay(10);
         const settled = events.find((e) => e.kind === 'interaction-settled' && e.settlement.data.kind === 'withdrawn'
           && e.target.nativeApprovalId === approval.target.nativeApprovalId);
-        if (!settled) throw new Error('missing-withdrawal');
+        if (!settled) throw new ScenarioFailure('missing-withdrawal');
         const current = await adapter.capabilities.inspect.api.pending(signal);
-        if (current.kind !== 'ok' || current.value.approvals.length || current.value.calls.length) throw new Error('pending-remains');
+        if (current.kind !== 'ok' || current.value.approvals.length || current.value.calls.length) throw new ScenarioFailure('pending-remains');
         result.interrupt = interrupted.kind; result.localWithdrawal = settled.settlement.data.by === 'turn/interrupt';
         let terminal = interrupted;
         for (let i = 0; i < 1000 && terminal.kind !== 'terminal-observed' && !signal.aborted; i++) {
           await delay(100); terminal = await adapter.interrupt({ timeoutMs: 100 });
         }
-        if (terminal.kind !== 'terminal-observed') throw new Error('interrupt-followup-failed');
+        if (terminal.kind !== 'terminal-observed') throw new ScenarioFailure('interrupt-followup-failed');
         const followup = await adapter.run({ ...request, hostOperationId: `${request.hostOperationId}-followup`, prompt: 'Reply with OK. Do not use tools.' });
-        if (followup.kind !== 'complete') throw new Error('interrupt-followup-failed');
+        if (followup.kind !== 'complete') throw new ScenarioFailure('interrupt-followup-failed');
+        const target = approval.request.data.params;
+        const writes = nativeInterrupts.filter((request) => request.threadId === target.threadId && request.turnId === target.turnId);
+        result.interruptWriterEntered = writes.length > 0;
+        result.interruptAcknowledged = writes.some((request) => request.acknowledged);
+        if (!result.interruptWriterEntered || (!result.interruptAcknowledged && !targetTerminals(nativeTerminals, approval).includes('interrupted'))) throw new ScenarioFailure('interrupt-not-written');
         result.followupComplete = true;
       } else {
-        if (!approval.choices.some((c) => c.nativeChoiceId === choice)) throw new Error('missing-choice');
+        if (!approval.choices.some((c) => c.nativeChoiceId === choice)) throw new ScenarioFailure('missing-choice');
         const continued = await adapter.continue({ ...request, hostOperationId: `${request.hostOperationId}-answer`,
           answers: [{ formatVersion: 1, kind: 'approval', target: approval.target, nativeChoiceId: choice }] });
+        result.choiceWriterEntered = nativeDecisions.some((decision) => Object.is(decision.requestId, approval.request.data.id) && decision.decision === choice);
+        if (!result.choiceWriterEntered) throw new ScenarioFailure('choice-not-written');
         if (choice === 'cancel') {
-          const declined = events.some((e) => e.kind === 'native-item' && e.item.data.method === 'item/completed'
-            && e.item.data.params.item?.id === approval.target.tool.nativeToolCallId && e.item.data.params.item.status === 'declined');
+          const declined = Boolean(await activity((e) => e.kind === 'native-item' && e.item.data.method === 'item/completed'
+            && e.item.data.params.item?.id === approval.target.tool.nativeToolCallId && e.item.data.params.item.status === 'declined'));
           result.declinedItem = declined; result.segmentKind = continued.kind;
           result.segmentTerminal = observations.findLast((e) => e.kind === 'terminal')?.outcome;
           if (continued.kind === 'failed') result.writeKind = continued.write.kind;
           // Reply delivery certainty is separate from the native turn's terminal fact.
           const ended = targetTerminals(nativeTerminals, approval).some((status) => status === 'interrupted' || status === 'completed');
           result.nativeCancellationObserved = declined && ended;
-          if (!declined || !ended || !['complete', 'failed'].includes(continued.kind)) throw new Error('turn-not-complete');
-          if ((await adapter.interrupt({ timeoutMs: 100 })).kind !== 'terminal-observed') throw new Error('turn-not-complete');
-        } else if (continued.kind !== 'complete') throw new Error('turn-not-complete');
-        if (choice === 'accept' && !events.some((e) => e.kind === 'native-item' && e.item.data.method === 'item/completed'
-          && e.item.data.params.item?.type === 'commandExecution' && e.item.data.params.item.id === approval.target.tool.nativeToolCallId && e.item.data.params.item.status === 'completed')) throw new Error('missing-command-activity');
+          if (!declined || !ended || !['complete', 'failed'].includes(continued.kind)) throw new ScenarioFailure('turn-not-complete');
+          if ((await adapter.interrupt({ timeoutMs: 100 })).kind !== 'terminal-observed') throw new ScenarioFailure('turn-not-complete');
+        } else if (continued.kind !== 'complete') throw new ScenarioFailure('turn-not-complete');
+        if (choice === 'accept' && !await activity((e) => e.kind === 'native-item' && e.item.data.method === 'item/completed'
+          && e.item.data.params.item?.type === 'commandExecution' && e.item.data.params.item.id === approval.target.tool.nativeToolCallId && e.item.data.params.item.status === 'completed')) throw new ScenarioFailure('missing-command-activity');
       }
-      if (await exists(marker) !== (choice === 'accept')) throw new Error('marker-mismatch');
+      if (await exists(marker) !== (choice === 'accept')) throw new ScenarioFailure('marker-mismatch');
       result.markerPresent = choice === 'accept';
     });
-    await scenario('image-4mib', async ({ adapter, request, result }) => {
+    await scenario('image-4mib', async ({ adapter, request, result, nativeTurns }) => {
       const image = qualificationImage();
-      if ((await adapter.run({ ...request, prompt: 'Briefly describe this image.', images: [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${image.toString('base64')}` }] })).kind !== 'complete') throw new Error('image-failed');
-      if ((await adapter.run({ ...request, hostOperationId: 'image-followup', prompt: 'Reply with OK.' })).kind !== 'complete') throw new Error('transport-not-open');
+      const imageUrl = `data:image/png;base64,${image.toString('base64')}`;
+      if ((await adapter.run({ ...request, prompt: 'Briefly describe this image.', images: [{ mediaType: 'image/png', dataUrl: imageUrl }] })).kind !== 'complete') throw new ScenarioFailure('image-failed');
+      if ((await adapter.run({ ...request, hostOperationId: 'image-followup', prompt: 'Reply with OK.' })).kind !== 'complete') throw new ScenarioFailure('transport-not-open');
+      result.imageWriterVerified = nativeTurns[0]?.images.length === 1 && nativeTurns[0].images[0] === createHash('sha256').update(imageUrl).digest('hex') && nativeTurns[1]?.images.length === 0;
+      if (!result.imageWriterVerified) throw new ScenarioFailure('image-not-written');
       result.decodedBytes = image.length; result.transportOpen = true;
     });
     if (process.env.QUALIFY_MODEL_LIST === '1') await scenario('model-list', async ({ adapter, signal, result }) => {
       const listed = await adapter.capabilities.models.api.list(signal);
-      if (listed.kind !== 'ok') throw new Error('catalog-failed');
+      if (listed.kind !== 'ok') throw new ScenarioFailure('catalog-failed');
       result.models = listed.value.length;
     });
     else report.scenarios.push({ id: 'model-list', status: 'not-covered', reason: 'QUALIFY_MODEL_LIST=1 required' });
-    if (process.env.QUALIFY_FILE_CHANGE === '1') await scenario('file-change', async ({ adapter, cwd, request, events, result }) => {
+    if (process.env.QUALIFY_FILE_CHANGE === '1') await scenario('file-change', async ({ adapter, cwd, request, activity, result }) => {
       const file = join(cwd, 'file.txt'); await writeFile(file, 'old\n');
       const pending = await adapter.run({ ...request, prompt: `Use the native patch/file-change tool to change old to new in ${file}, requesting user approval. If that tool is unavailable with the present shell-only configuration, explain that and do not use another tool.` });
       if (pending.kind === 'complete') { result.status = 'not-covered'; result.reason = 'native-file-change-not-reachable'; return; }
-      if (pending.kind !== 'pending' || !pending.approvals.some((a) => a.request.data.method === 'item/fileChange/requestApproval')) throw new Error('wrong-approval');
+      if (pending.kind !== 'pending' || !pending.approvals.some((a) => a.request.data.method === 'item/fileChange/requestApproval')) throw new ScenarioFailure('wrong-approval');
       const approval = pending.approvals.find((a) => a.request.data.method === 'item/fileChange/requestApproval');
-      const item = events.find((e) => e.kind === 'native-item' && e.item.data.params.item?.type === 'fileChange'
+      const item = await activity((e) => e.kind === 'native-item' && e.item.data.params.item?.type === 'fileChange'
         && e.item.data.params.item.id === approval.target.tool.nativeToolCallId);
-      if (!scopedFileChange(pending, item?.item.data.params.item, file)) throw new Error('missing-file-activity');
-      if (!approval.choices.some((c) => c.nativeChoiceId === 'accept')) throw new Error('missing-choice');
+      if (!scopedFileChange(pending, item?.item.data.params.item, file)) throw new ScenarioFailure('missing-file-activity');
+      if (!approval.choices.some((c) => c.nativeChoiceId === 'accept')) throw new ScenarioFailure('missing-choice');
       const continued = await adapter.continue({ ...request, hostOperationId: `${request.hostOperationId}-answer`, answers: [{ formatVersion: 1, kind: 'approval', target: approval.target, nativeChoiceId: 'accept' }] });
-      if (continued.kind !== 'complete') throw new Error('turn-not-complete');
-      if (await readFile(file, 'utf8') !== 'new\n') throw new Error('marker-mismatch');
+      if (continued.kind !== 'complete') throw new ScenarioFailure('turn-not-complete');
+      if (await readFile(file, 'utf8') !== 'new\n') throw new ScenarioFailure('marker-mismatch');
       result.correlatedChanges = item.item.data.params.item.changes.length;
     });
     else report.scenarios.push({ id: 'file-change', status: 'not-covered', reason: 'QUALIFY_FILE_CHANGE=1 required' });

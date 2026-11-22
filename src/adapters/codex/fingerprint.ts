@@ -32,8 +32,6 @@ async function rollouts(root: string, dir: string, suffix: string, found: string
     let stat;
     try { stat = await lstat(path); } catch { continue; }
     if (stat.isSymbolicLink()) continue;
-    const real = resolve(path);
-    if (!inside(real, root)) continue;
     if (stat.isDirectory()) await rollouts(root, path, suffix, found, depth + 1);
     else if (stat.isFile() && entry.name.endsWith(suffix)) found.push(path);
   }
@@ -52,14 +50,15 @@ function taskTurn(line: string): string | undefined {
   } catch { return undefined; }
 }
 
-async function readRollout(path: string, root: string, stable: boolean): Promise<CodexHistoryFingerprint | undefined> {
+async function readRollout(path: string, stable: boolean): Promise<CodexHistoryFingerprint | undefined> {
   let file;
   try {
-    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (await realpath(path) !== path) return undefined;
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > limitBytes) return undefined;
     // Validate the opened descriptor against an authorized named inode before reading any bytes.
-    if (!inside(await realpath(path), root)) return undefined;
+    if (await realpath(path) !== path) return undefined;
     const openedName = await lstat(path);
     if (openedName.isSymbolicLink() || openedName.dev !== stat.dev || openedName.ino !== stat.ino) return undefined;
     const hash = createHash('sha256');
@@ -93,7 +92,7 @@ async function readRollout(path: string, root: string, stable: boolean): Promise
       position += bytesRead;
     }
     if (lineBytes > 0) finishLine();
-    if (!inside(await realpath(path), root)) return undefined;
+    if (await realpath(path) !== path) return undefined;
     const after = await file.stat();
     const named = await lstat(path);
     if (named.isSymbolicLink() || named.dev !== stat.dev || named.ino !== stat.ino
@@ -101,7 +100,22 @@ async function readRollout(path: string, root: string, stable: boolean): Promise
       || after.size < stat.size || named.size < stat.size
       || [after, named].some((sample) => sample.size === stat.size
         && (sample.mtimeMs !== stat.mtimeMs || sample.ctimeMs !== stat.ctimeMs))) return undefined;
-    return turnId === undefined ? undefined : { bytes: stat.size, sha256: hash.digest('hex'), turnId };
+    const digest = hash.digest('hex');
+    if (!stable && (after.size > stat.size || named.size > stat.size)) {
+      // Growth must not mask an in-place rewrite: verify the same opening-length bytes twice.
+      const verification = createHash('sha256');
+      let offset = 0;
+      while (offset < stat.size) {
+        const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, stat.size - offset), offset);
+        if (bytesRead === 0) return undefined;
+        verification.update(chunk.subarray(0, bytesRead)); offset += bytesRead;
+      }
+      if (verification.digest('hex') !== digest || await realpath(path) !== path) return undefined;
+      const verified = await file.stat(); const current = await lstat(path);
+      if (current.isSymbolicLink() || current.dev !== stat.dev || current.ino !== stat.ino
+        || verified.size < stat.size || current.size < stat.size) return undefined;
+    }
+    return turnId === undefined ? undefined : { bytes: stat.size, sha256: digest, turnId };
   } catch {
     return undefined;
   } finally {
@@ -109,8 +123,9 @@ async function readRollout(path: string, root: string, stable: boolean): Promise
   }
 }
 
-/** Reads the one rollout under `home/sessions` named for `threadId`. Missing, ambiguous, or oversized history is `undefined`. */
-export async function readCodexHistoryFingerprint(home: string, threadId: string, stable = false): Promise<CodexHistoryFingerprint | undefined> {
+/** Reads the one rollout under `home/sessions` named for `threadId`. Missing, ambiguous, symlinked, oversized, replaced, mutated or short-read history is `undefined`.
+ * `prefix` tolerates append growth; `stable` refuses growth during the read, for expected-history resume. */
+export async function readCodexHistoryFingerprint(home: string, threadId: string, mode: 'prefix' | 'stable' = 'prefix'): Promise<CodexHistoryFingerprint | undefined> {
   if (threadId.length === 0 || threadId.includes('/') || threadId.includes('\\') || threadId.includes('\0')) {
     return undefined;
   }
@@ -120,7 +135,7 @@ export async function readCodexHistoryFingerprint(home: string, threadId: string
   await rollouts(root, join(root, 'sessions'), `-${threadId}.jsonl`, found, 0);
   const path = found.length === 1 ? found[0] : undefined;
   if (path === undefined) return undefined;
-  return readRollout(path, root, stable);
+  return readRollout(path, mode === 'stable');
 }
 
 export function codexCheckpoint(session: SessionReference, fingerprint: CodexHistoryFingerprint): CheckpointReference {

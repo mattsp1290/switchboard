@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 const source = new URL('../../../src/adapters/codex/fingerprint.ts', import.meta.url).href;
 const { readCodexHistoryFingerprint } = await import(source);
@@ -13,6 +13,7 @@ const thread = '0192a0b0-0000-7000-8000-000000000001';
 
 async function home() {
   const root = await mkdtemp(join(tmpdir(), 'switchboard-codex-fingerprint-'));
+  after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'sessions', '2026', '11', '19'), { recursive: true });
   return root;
 }

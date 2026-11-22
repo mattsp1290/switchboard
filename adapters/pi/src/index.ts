@@ -1,3 +1,4 @@
+import { callerModelId } from '#switchboard';
 import { closeSync, existsSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -60,15 +61,7 @@ export interface PiRuntime {
 const writers = new Set<string>();
 const MAX_SESSIONS = 32;
 const failure = () => new Error('Pi operation failed.');
-// Matches plain(value, 256) and must stay identical in the three text adapters.
-function callerModelId(value: unknown): boolean {
-  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || (code >= 127 && code <= 159)) return false;
-  }
-  return true;
-}
+
 const remedies = {
   workspace_unavailable: 'Make the Pi working directory and session directory available.',
   retry_check: 'Pi did not finish the readiness check. Try again.',

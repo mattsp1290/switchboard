@@ -114,9 +114,9 @@ export interface HostUsage {
 }
 
 /**
- * `not-attempted`: refused before `createDispatchOperation` ran, so nothing was sent.
+ * `not-attempted`: refused before `createDispatchOperation` ran, so no selected segment request was sent.
  * `not-dispatched`: that helper's not-sent observation. On host continuations, `intent-failed` also
- * covers a stale pending set after intent but before the first reply; `invalid-input` identifies that case. `outcome-unknown`: its result after entry is unknown.
+ * covers a stale pending set after intent but before the first positive reply; `invalid-input` identifies that case. `outcome-unknown`: its result after entry is unknown.
  * `accepted`: native acceptance was observed and the segment still failed. No failed status authorizes a retry.
  */
 export type HostWriteStatus =
@@ -185,7 +185,7 @@ export interface HostFingerprintApi {
 }
 
 export interface HostAdapterCapabilities {
-  /** A further call or approval in the same assistant message is a `pending-limit` failure, never a silent loss. */
+  /** Overflow fails the segment. `pending-limit` requires accepted write evidence; after local replies, Codex reports `native-failure` with an unknown outcome. */
   readonly maxPendingPerMessage: number;
   /** `fresh-process`: a continuation may be delivered to a session reopened in another process. */
   readonly continuation: 'same-process' | 'fresh-process';

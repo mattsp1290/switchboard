@@ -433,6 +433,7 @@ for (const operation of ['observer', 'write']) for (const failure of ['throw', '
     if (operation === 'observer') f.input({ method: 'bad' });
     else result = track(f.transport.notify({ method: 'bad' }, signal()));
     await checkpoint();
+    await f.transport.ended;
     assert.equal(f.reports[0]?.reason, operation === 'observer' ? 'observation-error' : 'write-error');
     assert.deepEqual(f.reports[0].unsettled, { handlers: 0, observer: false, write: false });
     if (result) assert.deepEqual(result, [{ kind: 'uncertain', reason: 'closed' }]);
@@ -607,4 +608,14 @@ for(const ending of ['oversized','truncated','intake'])test(`parsed reply eviden
  else f.bytes(Buffer.concat([reply,...Array.from({length:5},(_,i)=>line({method:'notice-'+i}))]));
  assert.equal((await requested).kind,'reply');assert.equal(order[0],'reply');
  assert.equal((await f.transport.ended).reason,ending==='oversized'?'oversized-frame':ending==='truncated'?'malformed-frame':'observation-overflow');
+});
+
+test('a parsed reply survives a channel that throws synchronously after delivering it',async(t)=>{
+ const f=fixture(t,{write(f){const sent=f.writes.at(-1);f.input({id:sent.id,result:{accepted:true}});throw new Error('after reply');}});
+ const result=await f.transport.request({method:'probed'},signal());assert.equal(result.kind,'reply');assert.deepEqual(result.envelope.reply.value,{accepted:true});assert.equal((await f.transport.ended).reason,'write-error');
+});
+
+test('an unanswered reply queued behind a writer retains its handler deadline',async(t)=>{
+ const held=gate();const f=fixture(t,{bounds:{handlerTimeoutMs:10,writeTimeoutMs:1000},write:()=>held.promise});const outstanding=f.transport.notify({method:'block'},signal());await checkpoint();
+ f.input({id:'held-request',method:'question'});await checkpoint();assert.equal(f.writes.length,1);assert.equal((await f.transport.ended).reason,'handler-timeout');held.resolve();await outstanding;assert.equal(f.writes.length,1);
 });

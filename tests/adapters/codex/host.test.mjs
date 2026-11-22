@@ -454,13 +454,22 @@ async function openHost(t, native = {}, options = {}) {
   const made = subject();
   const signal = AbortSignal.timeout(15000);
   const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool],
-    environment: { ...made.environment, nativeConfig: { ...made.environment.nativeConfig, ...native } }, ...options }, signal);
+    environment: { ...made.environment, nativeConfig: { ...made.environment.nativeConfig, approvalPolicy: 'on-request', ...native } }, ...options }, signal);
   assert.equal(opened.kind, 'ok', JSON.stringify(opened));
   const adapter = opened.value;
   t.after(async () => { await adapter.close(); await made.dispose(); });
   return { made, signal, adapter, f: made.state.servers[0],
     run: (prompt = 'approval') => adapter.run({ prompt, signal, hostOperationId: randomUUID(), recordIntent: () => {} }),
     answer: (answers, recordIntent = () => {}) => adapter.continue({ answers, signal, hostOperationId: randomUUID(), recordIntent }) };
+}
+async function blockWriterBehindList(ctx) {
+  const original = ctx.f.channel.write.bind(ctx.f.channel);
+  const gate = Promise.withResolvers();
+  ctx.f.handlers['model/list'] = () => ({ data: [], nextCursor: null });
+  ctx.f.channel.write = (bytes) => { const message = JSON.parse(Buffer.from(bytes)); const written = original(bytes); return message.method === 'model/list' ? gate.promise : written; };
+  await ctx.adapter.capabilities.models.api.list(ctx.signal);
+  await tick();
+  return gate.resolve;
 }
 function approvalTurns(f, { mixed = false, file = false, offered = ['accept', 'cancel'] } = {}) {
   f.handlers['turn/start'] = (params, id) => {
@@ -645,17 +654,17 @@ test('interrupt rejection preserves bounded evidence and no approval decision', 
   ctx.f.finishTurn(ctx.f.turnIdentity.threadId, ctx.f.turnIdentity.turnId);
 });
 
-test('aborting a locally staged batch before writer entry sends no selected reply', async (t) => {
+test('aborting from a sent tool observation leaves the actual prefix outcome unknown', async (t) => {
   const ctx = await openHost(t);
-  approvalTurns(ctx.f, { mixed: true });
-  const pending = await ctx.run();
+  const pending = await ctx.run(prompts.toolCall);
+  ctx.f.autoFinish = false;
   const controller = new AbortController();
-  const result = await ctx.adapter.continue({ answers: [callAnswer(pending.calls[0]), approvalAnswer(pending.approvals[0])],
+  const result = await ctx.adapter.continue({ answers: [callAnswer(pending.calls[0])],
     signal: controller.signal, hostOperationId: 'partial', recordIntent: () => {},
     onObservation: (event) => { if (event.kind === 'tool' && event.phase === 'completed') controller.abort(); } });
-  assert.equal(result.write.kind, 'not-dispatched');
+  assert.equal(result.write.kind, 'outcome-unknown');
   await tick();
-  assert.equal(ctx.f.replies.filter((r) => r.result).length, 0);
+  assert.equal(ctx.f.replies.filter((r) => r.result).length, 1);
   await ctx.adapter.interrupt({ timeoutMs: 1000 });
 });
 
@@ -859,13 +868,13 @@ test('model listing is sessionless, follows pages and keeps exactly native metad
   assert.deepEqual(requests, [{ includeHidden: true }, { includeHidden: true }, { includeHidden: true, cursor: 'b' }, { includeHidden: true, cursor: 'c' }]);
 });
 
-for (const kind of ['repeat', 'ninth', 'malformed', 'over-limit', 'rpc']) test(`model listing refuses ${kind} without partial success`, async (t) => {
+for (const kind of ['repeat', 'ninth', 'malformed', 'modality', 'over-limit', 'rpc']) test(`model listing refuses ${kind} without partial success`, async (t) => {
   const ctx = await openHost(t);
   let page = 0;
   ctx.f.handlers['model/list'] = () => {
     page++;
     if (kind === 'rpc') return { error: { code: -1, message: 'unavailable' } };
-    return { data: kind === 'malformed' ? [{ model: 'missing' }] : kind === 'over-limit' ? Array(1001).fill(catalogModel('x')) : [catalogModel('x')],
+    return { data: kind === 'malformed' ? [{ model: 'missing' }] : kind === 'modality' ? [{ ...catalogModel('x'), inputModalities: ['video'] }] : kind === 'over-limit' ? Array(1001).fill(catalogModel('x')) : [catalogModel('x')],
       nextCursor: kind === 'repeat' ? 'same' : kind === 'ninth' ? String(page) : null };
   };
   const result = await ctx.adapter.capabilities.models.api.list(ctx.signal);
@@ -1062,7 +1071,8 @@ test('regression: reply certainty before writer entry', async (t) => {
   ctx.f.handlers['model/list']=()=>({deferred:true});
   ctx.f.channel.write=(bytes,signal)=>{const frame=JSON.parse(Buffer.from(bytes).toString());if(frame.method==='model/list'){original(bytes,signal);entered.resolve();return gate.promise;}return original(bytes,signal);};
   const listing=ctx.adapter.capabilities.models.api.list(ctx.signal);await entered.promise;const controller=new AbortController();
-  const result=await ctx.adapter.continue({answers:[callAnswer(pending.calls[0])],signal:controller.signal,hostOperationId:'queued-reply',recordIntent(){},onObservation(e){if(e.kind==='tool'&&e.phase==='completed')controller.abort();}});
+  const observed=[];const continuing=ctx.adapter.continue({answers:[callAnswer(pending.calls[0])],signal:controller.signal,hostOperationId:'queued-reply',recordIntent(){},onObservation(e){observed.push(e);}});
+  await tick();assert.equal(observed.some(e=>e.kind==='tool'&&e.phase==='completed'),false);controller.abort();const result=await continuing;
   const replies=ctx.f.replies.length;ctx.f.sink.ended('eof');gate.resolve();await listing;
   assert.equal(replies,0);assert.equal(result.write.kind,'not-dispatched');
 });
@@ -1336,15 +1346,7 @@ test('a later segment cannot borrow turn-start evidence after an earlier reply',
   ctx.f.finishTurn(ctx.f.turnIdentity.threadId, ctx.f.turnIdentity.turnId);
 });
 
-test('withdrawal during local staging prevents every selected reply before writer entry', async (t) => {
-  const ctx = await openHost(t); approvalTurns(ctx.f, { mixed: true }); const pending = await ctx.run();
-  const result = await ctx.adapter.continue({ answers: [callAnswer(pending.calls[0]), approvalAnswer(pending.approvals[0])],
-    signal: ctx.signal, hostOperationId: 'withdraw-after-first', recordIntent() {}, onObservation(event) {
-      if (event.kind === 'tool' && event.phase === 'completed') ctx.f.send({ method: 'serverRequest/resolved', params: { ...ctx.f.turnIdentity, requestId: 'approval-call' } });
-    } });
-  assert.equal(result.kind, 'failed'); assert.equal(result.write.kind, 'not-dispatched');
-  await tick(); assert.equal(ctx.f.replies.some((reply) => reply.result), false);
-});
+
 
 test('forged signals are refused before native catalog or segment admission', async (t) => {
   const ctx = await openHost(t); const before = ctx.f.raw.length;
@@ -1408,7 +1410,7 @@ test('a terminal stays definitive while a continuation is still recording intent
  assert.equal((await ctx.adapter.interrupt({timeoutMs:100})).kind,'terminal-observed');
  assert.equal(ctx.f.sent.filter(m=>m==='turn/interrupt').length,before);release();assert.equal((await continuing).write.kind,'not-dispatched');
 });
-test('settlement projection survives private diagnostic overflow and precedes later activity', async (t) => {
+test('settlement projection precedes later activity after repeated native observations', async (t) => {
  const ctx=await openHost(t,{activity:'items'});approvalTurns(ctx.f);const first=await ctx.run();await ctx.answer([approvalAnswer(first.approvals[0])]);
  const old=ctx.f.turnIdentity;
  for(let i=0;i<65;i++)ctx.f.send({method:'item/completed',params:{...old,item:{id:'approval-item',type:'fileChange',status:'completed'}}});
@@ -1461,7 +1463,7 @@ test('close takes over an interrupt cancelled before writer entry without retryi
  await ctx.adapter.capabilities.models.api.list(ctx.signal);await tick();assert.equal((await ctx.adapter.interrupt({timeoutMs:1})).kind,'unconfirmed-within-bound');
  const closed=ctx.adapter.close();await tick();release();assert.equal((await closed).kind,'ok');assert.equal(ctx.f.sent.filter(m=>m==='turn/interrupt').length,1);
 });
-test('private diagnostic bursts cannot settle a segment before its native terminal',async(t)=>{
+test('repeated settlement observations cannot settle a segment before its native terminal',async(t)=>{
  const ctx=await openHost(t);approvalTurns(ctx.f);const pending=await ctx.run();ctx.f.autoFinish=false;
  let settled=false;const continuing=ctx.answer([approvalAnswer(pending.approvals[0])]).then(value=>{settled=true;return value;});
  await tick();for(let i=0;i<65;i++)ctx.f.send({method:'serverRequest/resolved',params:{...ctx.f.turnIdentity,requestId:'approval-call'}});
@@ -1516,18 +1518,16 @@ test('an approval withdrawn in the same intake drain cannot pause a waiting cont
  ctx.f.finishTurn(ctx.f.turnIdentity.threadId,ctx.f.turnIdentity.turnId);assert.equal((await continuing).kind,'complete');
 });
 test('the entire queued mixed batch is refused if another member withdraws before its first writer entry',async(t)=>{
- const ctx=await openHost(t);approvalTurns(ctx.f,{mixed:true});const pending=await ctx.run();ctx.f.autoFinish=false;
- const original=ctx.f.channel.write.bind(ctx.f.channel);let release;const gate=new Promise(r=>{release=r;});ctx.f.handlers['model/list']=()=>({data:[],nextCursor:null});
- ctx.f.channel.write=(bytes)=>{const message=JSON.parse(Buffer.from(bytes));const written=original(bytes);return message.method==='model/list'?gate:written;};
- await ctx.adapter.capabilities.models.api.list(ctx.signal);const continuing=ctx.answer([approvalAnswer(pending.approvals[0]),callAnswer(pending.calls[0])]);await tick();
+ const ctx=await openHost(t);const events=[];ctx.adapter.events.subscribe(e=>events.push(e));approvalTurns(ctx.f,{mixed:true});const pending=await ctx.run();ctx.f.autoFinish=false;
+ const release=await blockWriterBehindList(ctx);const continuing=ctx.answer([approvalAnswer(pending.approvals[0]),callAnswer(pending.calls[0])]);await tick();
  ctx.f.send({method:'serverRequest/resolved',params:{...ctx.f.turnIdentity,requestId:'host-call'}});await tick();release();const result=await continuing;await tick();
- assert.equal(result.kind,'failed');assert.equal(result.write.kind,'not-dispatched');assert.equal(ctx.f.replies.filter(r=>r.result).length,0);ctx.f.finishTurn(ctx.f.turnIdentity.threadId,ctx.f.turnIdentity.turnId);
+ assert.equal(result.kind,'failed');assert.equal(result.write.kind,'not-dispatched');assert.equal(ctx.f.replies.filter(r=>r.result).length,0);
+ const settlements=events.filter(e=>e.kind==='interaction-settled');assert.equal(settlements.length,2);assert.deepEqual(settlements.map(e=>e.settlement.data.kind).sort(),['lost','withdrawn']);assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.calls.length,0);
+ ctx.f.finishTurn(ctx.f.turnIdentity.threadId,ctx.f.turnIdentity.turnId);
 });
 test('public approval redaction cannot change native withdrawal correlation',async(t)=>{
  const ctx=await openHost(t);approvalTurns(ctx.f);const pending=await ctx.run();ctx.f.autoFinish=false;
- const original=ctx.f.channel.write.bind(ctx.f.channel);let release;const gate=new Promise(r=>{release=r;});ctx.f.handlers['model/list']=()=>({data:[],nextCursor:null});
- ctx.f.channel.write=(bytes)=>{const message=JSON.parse(Buffer.from(bytes));const written=original(bytes);return message.method==='model/list'?gate:written;};
- await ctx.adapter.capabilities.models.api.list(ctx.signal);const continuing=ctx.answer([approvalAnswer(pending.approvals[0])]);await tick();
+ const release=await blockWriterBehindList(ctx);const continuing=ctx.answer([approvalAnswer(pending.approvals[0])]);await tick();
  pending.approvals[0].request.data.params.threadId='[redacted]';ctx.f.send({method:'serverRequest/resolved',params:{...ctx.f.turnIdentity,requestId:'approval-call'}});await tick();release();const result=await continuing;await tick();
  assert.equal(result.write.kind,'not-dispatched');assert.equal(ctx.f.replies.filter(r=>r.result).length,0);ctx.f.finishTurn(ctx.f.turnIdentity.threadId,ctx.f.turnIdentity.turnId);
 });
@@ -1543,4 +1543,59 @@ test('an outstanding interrupt observes host-attested exit without inventing the
  const ctx=await openHost(t);approvalTurns(ctx.f);await ctx.run();ctx.f.handlers['turn/interrupt']=()=>({deferred:true});
  const interrupted=ctx.adapter.interrupt({timeoutMs:1000});while(!ctx.f.sent.includes('turn/interrupt'))await tick();ctx.f.attestExit();
  assert.equal((await interrupted).kind,'terminal-observed');assert.equal(ctx.f.replies.some(r=>r.result?.decision),false);
+});
+
+test('queued mixed targets emit loss on EOF before positive writer admission', async (t) => {
+ const ctx=await openHost(t);approvalTurns(ctx.f,{mixed:true});const events=[];ctx.adapter.events.subscribe(e=>events.push(e));
+ const pending=await ctx.run();ctx.f.autoFinish=false;const release=await blockWriterBehindList(ctx);
+ const continuing=ctx.answer([approvalAnswer(pending.approvals[0]),callAnswer(pending.calls[0])]);await tick();
+ ctx.f.sink.ended('eof');const result=await continuing;release();await tick();
+ assert.equal(result.write.kind,'not-dispatched');assert.equal(ctx.f.replies.filter(r=>r.result).length,0);
+ const settlements=events.filter(e=>e.kind==='interaction-settled');assert.equal(settlements.length,2);assert.ok(settlements.every(e=>e.settlement.data.kind==='lost'&&e.settlement.data.cause==='eof'));
+});
+for (const activityMethod of ['item/commandExecution/outputDelta', 'item/fileChange/patchUpdated']) test(`old lifetime activity ${activityMethod} before a new acknowledgement cannot poison the new segment`,async(t)=>{
+ const ctx=await openHost(t,{activity:'items'});let start;ctx.f.handlers['turn/start']=(params,id)=>{start={...params,id,turnId:randomUUID()};return{deferred:true};};
+ const events=[];ctx.adapter.events.subscribe(e=>events.push(e));const running=ctx.run('text');while(!start)await tick();
+ const old= randomUUID();for(let i=0;i<40;i++)ctx.f.send({method:activityMethod,params:{threadId:start.threadId,turnId:old,itemId:'old',delta:'old output'}});
+ ctx.f.send({id:start.id,result:{turn:{id:start.turnId,status:'inProgress'}}});ctx.f.finishTurn(start.threadId,start.turnId);
+ assert.equal((await running).kind,'complete');await tick();assert.equal(events.filter(e=>e.kind==='native-item').length,40);
+});
+test('an unanswerable composite native tool identity is refused before becoming pending',async(t)=>{
+ const ctx=await openHost(t);let start;ctx.f.handlers['turn/start']=(params,id)=>{start={...params,id,turnId:randomUUID()};return{deferred:true};};
+ const running=ctx.run('text');while(!start)await tick();ctx.f.send({id:start.id,result:{turn:{id:start.turnId,status:'inProgress'}}});await tick();
+ ctx.f.send({id:'oversized-call',method:'item/tool/call',params:{threadId:start.threadId,turnId:start.turnId,callId:'x'.repeat(1024),namespace:'application',tool:toolName,arguments:{}}});await tick();
+ assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.calls.length,0);assert.ok(ctx.f.replies.find(r=>r.id==='oversized-call')?.error);
+ ctx.f.finishTurn(start.threadId,start.turnId);assert.equal((await running).kind,'complete');
+});
+test('bounded retained native error info cannot be changed through a public result',()=>{
+ const cause=codexNativeError('turn.error',{message:'failed',codexErrorInfo:{nested:{message:'original'}}});
+ assert.throws(()=>{cause.info.nested.message='x'.repeat(2000);},TypeError);assert.equal(cause.info.nested.message,'original');
+});
+test('native catalog ignores a late final page even before the timeout callback runs',async(t)=>{
+ const ctx=await openHost(t);let now=0;t.mock.method(performance,'now',()=>now);ctx.f.handlers['model/list']=()=>{now=5001;return{data:[],nextCursor:null};};
+ assert.equal((await ctx.adapter.capabilities.models.api.list(ctx.signal)).error.code,'unavailable');
+});
+
+test('native turn withdrawal classifies every staged mixed target before batch refusal',async(t)=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f,{mixed:true});const events=[];ctx.adapter.events.subscribe(e=>events.push(e));const pending=await ctx.run();ctx.f.autoFinish=false;
+ const release=await blockWriterBehindList(ctx);const continuing=ctx.answer([approvalAnswer(pending.approvals[0]),callAnswer(pending.calls[0])]);await tick();
+ ctx.f.send({method:'turn/completed',params:{threadId:ctx.f.turnIdentity.threadId,turn:{id:ctx.f.turnIdentity.turnId,status:'interrupted',error:null}}});release();
+ assert.equal((await continuing).write.kind,'not-dispatched');await tick();const settled=events.filter(e=>e.kind==='interaction-settled');assert.equal(settled.length,2);assert.ok(settled.every(e=>e.settlement.data.kind==='withdrawn'&&e.settlement.data.by==='turn/completed'));
+});
+test('one item completion withdraws all unanswered approvals for that native item',async(t)=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f);const events=[];ctx.adapter.events.subscribe(e=>events.push(e));await ctx.run();ctx.f.autoFinish=false;
+ ctx.f.send({id:'second-same-item',method:'item/commandExecution/requestApproval',params:{...ctx.f.turnIdentity,itemId:'approval-item',availableDecisions:['accept','cancel']}});await tick();
+ assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length,2);
+ ctx.f.send({method:'item/completed',params:{...ctx.f.turnIdentity,item:{id:'approval-item',type:'commandExecution',status:'declined'}}});await tick();
+ assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length,0);assert.equal(events.filter(e=>e.kind==='interaction-settled').length,2);ctx.f.finishTurn(ctx.f.turnIdentity.threadId,ctx.f.turnIdentity.turnId);
+});
+for(const policy of [undefined,'never'])test(`direct policy ${policy??'omitted'} refuses unexpected native approval requests`,async(t)=>{
+ const ctx=await openHost(t,{approvalPolicy:policy});approvalTurns(ctx.f);const result=await ctx.run();await tick();assert.equal(result.kind,'complete');
+ assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length,0);assert.ok(ctx.f.replies.find(r=>r.id==='approval-call')?.error);assert.equal(ctx.f.replies.some(r=>r.result?.decision),false);
+});
+test('ordinary pre-ack data overflow refuses later approval admission for the failed turn',async(t)=>{
+ const ctx=await openHost(t);let start;ctx.f.handlers['turn/start']=(params,id)=>{start={...params,id,turnId:randomUUID()};return{deferred:true};};const running=ctx.run();while(!start)await tick();
+ for(let i=0;i<33;i++)ctx.f.send({method:'item/agentMessage/delta',params:{threadId:start.threadId,turnId:start.turnId,itemId:'text',delta:'x'}});
+ ctx.f.send({id:start.id,result:{turn:{id:start.turnId,status:'inProgress'}}});ctx.f.send({id:'late-after-overflow',method:'item/commandExecution/requestApproval',params:{threadId:start.threadId,turnId:start.turnId,itemId:'late',availableDecisions:['accept']}});
+ assert.equal((await running).kind,'failed');await tick();assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length,0);assert.ok(ctx.f.replies.find(r=>r.id==='late-after-overflow')?.error);ctx.f.finishTurn(start.threadId,start.turnId);
 });

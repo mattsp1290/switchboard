@@ -16,7 +16,7 @@ The runtime APIs remain separate from HostAdapter. Their media support does not 
 
 ## Evidence and limits
 
-The isolated suite runs the real pinned SDKs with deterministic provider/CLI fixtures in Docker, with no network, read-only package mounts, decoy credentials and syscall tracing. It verifies actual Claude user frames, Cursor send arguments and Pi provider requests/history. Cursor catalog fixtures exercise only the SDK catalog seam, including explicit-key isolation and uncancellable-call lease behavior. Fixture success does not prove current account entitlement, live provider access or image understanding.
+The isolated suite runs the real pinned SDKs with deterministic provider/CLI fixtures in Docker, with no network, read-only package mounts, decoy credentials and syscall tracing. It verifies actual Claude user frames, Cursor SDK send arguments and Pi provider requests/history. The pinned local Cursor SDK then emits base64-only executor items without mimeType; executor acceptance and media-type handling have not been qualified. Cursor fixtures do not prove executor MIME preservation. Cursor catalog fixtures exercise only the SDK catalog seam, including explicit-key isolation and uncancellable-call lease behavior. Fixture success does not prove current account entitlement, live provider access or image understanding.
 
 [Codex direct qualification](codex-host-direct.md) records the separate exact-pin native command accept/cancel/held interrupt and valid 4 MiB image proof. File-change accept/cancel has inert public-event correlation coverage; its optional native proof remains separately labelled. The common root tripwire continues to forbid importing SDK suites through npm test.
 

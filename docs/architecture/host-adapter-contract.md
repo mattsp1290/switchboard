@@ -34,12 +34,12 @@ A host-signal abort ends the segment with a per-adapter terminal. `./host/codex`
 
 | Status | Meaning |
 | --- | --- |
-| `not-attempted` | Refused before that helper ran. Nothing was sent. |
-| `not-dispatched` | Nothing was sent: `aborted` or `intent-failed`. A continuation whose pending set changes after durable intent also uses `intent-failed`, with `error.code: invalid-input`; the intent may already exist. |
+| `not-attempted` | Refused before that helper ran; no selected segment request was sent. |
+| `not-dispatched` | No selected segment request or positive continuation answer was sent: `aborted` or `intent-failed`. A continuation whose pending set changes after durable intent also uses `intent-failed`, with `error.code: invalid-input`; the intent may already exist. |
 | `outcome-unknown` | The helper entered native dispatch and lost the result. |
 | `accepted` | Native acceptance was observed, and the segment still failed. |
 
-The plan's names `not-sent` and `outcome-unknown` are the helper's `not-dispatched` and `outcome-unknown` observations. `not-attempted` is the refusal that happens before the helper. `accepted` is the helper's accepted observation, used when a typed failure follows a write the host must not treat as unsent. `pending-limit` is the accepted-before-reply case: the native write was accepted and one assistant message produced more calls and approvals than `maxPendingPerMessage`. The excess interaction is a typed failure, not a silent loss. None of these statuses authorizes a retry.
+The plan's names `not-sent` and `outcome-unknown` are the helper's `not-dispatched` and `outcome-unknown` observations. `not-attempted` is the refusal that happens before the helper. `accepted` is the helper's accepted observation, used when a typed failure follows a write the host must not treat as unsent. `pending-limit` is the accepted-before-reply case: the native write was accepted and one assistant message produced more calls and approvals than `maxPendingPerMessage`. The excess interaction is a typed failure, not a silent loss. Decision-free native protocol refusals may still retire queued targets when a batch becomes invalid before its first positive answer. Such targets emit explicit loss/withdrawal settlements and cannot be answered again. These statuses describe the selected operation, not every protocol frame on the connection. None authorizes a retry.
 
 A host-launcher denial at `open` is an `Outcome` error. A denial first seen during `run` or `continue` is a `failed` segment whose write status is `not-attempted` or `not-dispatched` when the write did not start. `unavailable` names the denied feature, including `host-launcher`. `Capability` `unavailable` remains the report when configuration already shows the feature cannot be offered. Neither path starts a different process or route.
 
@@ -98,8 +98,8 @@ What the contract takes from those decisions:
 
 - D1. The fingerprint is a `CheckpointReference`. Resume can require it to match. The reference does not carry a whole session transcript.
 - D2. Launch is a host spawn, a host channel plus process-exit attestation, or an in-process declaration. Interrupt never signals a host-owned process.
-- D3. In-process launch is how a Pi adapter loads inside a host-owned worker. This package does not implement that adapter, the relay, or worker verification.
-- D4. A host tool call is a pending interaction with native identity. The Codex app-server adapter is a later package.
+- D3. In-process launch is how a Pi adapter loads inside a host-owned worker. The Pi host adapter implements that execution boundary; the relay and worker verification remain host responsibilities.
+- D4. A host tool call is a pending interaction with native identity. The Codex app-server adapter is exported as `./host/codex`.
 - D5. Pause and resume reuse `PendingInteraction` and `InteractionContinuation`. Inspect reads `{ calls, approvals }` with no model call. Fresh-process continuation is a capability, not a restore policy.
 - D6. Interrupt returns one of the three results above and does not claim termination.
 - D7. Events are ordered typed facts, including argument deltas and native identifiers.
@@ -147,7 +147,7 @@ See [Codex direct qualification](../qualification/codex-host-direct.md) for requ
 
 ## Cursor runtime media and catalog
 
-The existing `./cursor` runtime accepts CursorRequest.images and reports imageInput support with the shared 4 MiB/16-image PNG/JPEG limits. Images are validated and copied before reserving a writer or creating/resuming an agent. Empty/omitted images preserve string sends; image requests use the SDK's structured message. This runtime does not acquire a host approval contract through this addition.
+The existing `./cursor` runtime accepts CursorRequest.images and reports imageInput support with the shared 4 MiB/16-image PNG/JPEG limits. Images are validated and copied before reserving a writer or creating/resuming an agent. Empty/omitted images preserve string sends; image requests use the SDK's structured message. In the pinned local-agent path, the SDK converts these to base64-only executor items and omits mimeType; executor acceptance and media-type handling have not been qualified. The fixture asserts the SDK send boundary, not executor MIME preservation. This runtime does not acquire a host approval contract through this addition.
 
 CursorRuntime.models.list uses only the runtime's captured explicit key and creates no agent or store. CursorModel keeps native id/displayName and optional description/aliases, without Codex hidden/default/modality fields. Each call admits at most 1000 records, validates the whole result and preserves order. IDs/aliases are capped at 256 UTF-8 bytes, display names at 1024, descriptions at 4096 and aliases at 64 entries. There is no cache or partial success.
 
@@ -159,6 +159,6 @@ The existing `./claude` runtime accepts ClaudeRequest.images with the shared PNG
 
 ## Pi runtime media
 
-The existing `./pi` session accepts either the legacy text string or PiPromptInput `{ text, images? }`. PiSession.imageInput reflects the selected native model's input declaration. A text-only model reports unavailable and rejects nonempty media before native prompt or history changes. Accepted images use native ImageContent without resizing/re-encoding; SettingsManager sets images.autoResize:false. String and empty-image calls retain the existing text path. Provider/model selection stays exact/offline; tools, extensions and retries stay disabled. Registry discovery is separate from a live account model catalog.
+The existing `./pi` session accepts either the legacy text string or PiPromptInput `{ text, images? }`. PiSession.imageInput reflects the selected native model's input declaration. A text-only model reports unavailable and rejects nonempty media before native prompt or history changes. Accepted images use native ImageContent with image resizing disabled. The SDK decodes and regenerates base64 while preserving the image bytes and MIME type; SettingsManager sets images.autoResize:false. String and empty-image calls retain the existing text path. Provider/model selection stays exact/offline; tools, extensions and retries stay disabled. Registry discovery is separate from a live account model catalog.
 
 The [capability matrix](../qualification/host-capability-parity.md) distinguishes these runtime additions from the host execution contracts and their deliberate deferrals.

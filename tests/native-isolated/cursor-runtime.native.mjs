@@ -774,3 +774,17 @@ serial('Cursor discards fulfilled and rejected SDK results after the monotonic d
   sdk.listModels=async()=>[];assert.deepEqual((await runtime.models.api.list(signal)).value,[]);
  }finally{await runtime.close();restore();await place.remove();}
 });
+
+serial('Cursor catalog startup consumes its deadline and proxy arrays cannot hide entries',async(t)=>{
+ const place=await workspace();install([]);let now=0;t.mock.method(performance,'now',()=>now);t.mock.timers.enable({apis:['setTimeout']});
+ const runtime=createCursorRuntime(options(place.cwd,place.session));const signal=new AbortController().signal;const held=Promise.withResolvers();
+ try{
+  sdk.listModels=()=>{now+=5000;return held.promise;};let result;const pending=runtime.models.api.list(signal).then(v=>{result=v;});
+  t.mock.timers.tick(24999);await Promise.resolve();assert.equal(result,undefined);t.mock.timers.tick(1);await pending;assert.equal(result.error.code,'unavailable');
+  assert.equal((await runtime.models.api.list(signal)).error.code,'busy');held.resolve([]);await Promise.resolve();await Promise.resolve();
+  for(const value of [new Proxy([{id:'hidden',displayName:'Hidden'}],{get(target,key){return key==='length'?0:Reflect.get(target,key);}}),[{id:'ok',displayName:'OK',aliases:new Proxy(['hidden'],{get(target,key){return key==='length'?0:Reflect.get(target,key);}})}]]){
+   sdk.listModels=async()=>value;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
+  }
+  const growing=[{get id(){growing.push({id:'late',displayName:'Late'});return'first';},displayName:'First'}];sdk.listModels=async()=>growing;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
+ }finally{t.mock.timers.reset();await runtime.close();restore();await place.remove();}
+});

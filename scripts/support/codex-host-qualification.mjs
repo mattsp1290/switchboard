@@ -77,11 +77,11 @@ export function qualificationPassed(report) {
     && report.scenarios.every((scenario) => scenario.status !== 'failed');
 }
 
-export async function qualificationFingerprint(root) {
-  async function tree(directories, include, manifests) {
+export async function qualificationFingerprint(root, runtimeRoot = root) {
+  async function tree(base, directories, include, manifests) {
     const files = [...manifests];
     async function walk(directory) {
-      for (const entry of await readdir(join(root, directory), { withFileTypes: true })) {
+      for (const entry of await readdir(join(base, directory), { withFileTypes: true })) {
         const path = `${directory}/${entry.name}`;
         if (entry.isSymbolicLink()) throw new Error('unhashed-symlink');
         if (entry.isDirectory()) await walk(path);
@@ -90,11 +90,11 @@ export async function qualificationFingerprint(root) {
     }
     for (const directory of directories) await walk(directory);
     const digest = createHash('sha256');
-    for (const path of files.sort()) digest.update(`${path}\0${createHash('sha256').update(await readFile(join(root, path))).digest('hex')}\n`);
+    for (const path of files.sort()) digest.update(`${path}\0${createHash('sha256').update(await readFile(join(base, path))).digest('hex')}\n`);
     return { sha256: digest.digest('hex'), files: files.length };
   }
-  const source = await tree(['src', 'adapters', 'scripts'], (path) => path.endsWith('.ts') || path.endsWith('.mjs'), ['package.json', 'package-lock.json']);
-  const runtime = await tree(['dist'], (path) => path.endsWith('.js'), ['package.json']);
+  const source = await tree(root, ['src/core', 'src/adapters/codex'], (path) => path.endsWith('.ts'), ['src/index.ts', 'package.json', 'package-lock.json', 'tsconfig.json', 'scripts/qualify-codex-host-direct.mjs', 'scripts/live-baseline-engines.mjs', 'scripts/support/codex-host-qualification.mjs', 'scripts/support/qualification-image.mjs']);
+  const runtime = await tree(runtimeRoot, ['dist/core', 'dist/adapters/codex'], (path) => path.endsWith('.js'), ['dist/index.js', 'package.json']);
   return { source, runtime };
 }
 
@@ -103,4 +103,11 @@ export function targetTerminals(terminals, approval) {
   const params = approval?.request?.data?.params;
   if (typeof params?.threadId !== 'string' || typeof params.turnId !== 'string') return [];
   return terminals.filter((terminal) => terminal.threadId === params.threadId && terminal.turnId === params.turnId).map((terminal) => terminal.status);
+}
+
+/** A live scenario owns a referenced deadline until its report/cleanup path can run. */
+export function scenarioDeadline(parent, milliseconds = 180000) {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), milliseconds);
+  return { signal: AbortSignal.any([parent, deadline.signal]), dispose: () => clearTimeout(timer) };
 }

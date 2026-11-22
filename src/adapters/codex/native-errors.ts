@@ -11,6 +11,14 @@ export function boundedCodexMessage(message: string): { readonly message: string
   }
   return { message: message.slice(0, end), truncated: true };
 }
+/** Only traverses the bounded JSON copy, never caller/native accessors. */
+function freezeInfo(value: unknown): unknown {
+  if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value)) freezeInfo(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 /** Native text is untrusted host data; never log it automatically. */
 export function codexNativeError(source: HostNativeError['source'], raw: unknown): HostNativeError | undefined {
   if (typeof raw !== 'object' || raw === null || !('message' in raw) || typeof raw.message !== 'string') return undefined;
@@ -24,7 +32,7 @@ export function codexNativeError(source: HostNativeError['source'], raw: unknown
   } else if ('codexErrorInfo' in raw && raw.codexErrorInfo !== null) {
     try {
       const json = JSON.stringify(raw.codexErrorInfo);
-      if (json !== undefined && Buffer.byteLength(json) <= 1024) info = JSON.parse(json);
+      if (json !== undefined && Buffer.byteLength(json) <= 1024) info = freezeInfo(JSON.parse(json));
       else truncated = true;
     } catch { truncated = true; }
   }

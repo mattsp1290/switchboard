@@ -5,7 +5,7 @@ import { sdk } from './sdk.js';
 import type { CursorMessage } from './sdk.js';
 import { createCursorModels } from './models.js';
 import type { CursorModelsApi } from './models.js';
-export type { CursorModel, CursorModelsApi } from './models.js';
+export type { CursorModel, CursorModelsApi, CursorModelsError } from './models.js';
 import { hostImageLimits, parseHostImages, createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
 import type { Capability, HostImageInput, HostImageInputApi, RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
@@ -129,17 +129,8 @@ function workspaceErrno(error: unknown): 'inaccessible' | 'unknown' {
 
 type Step = 'next' | 'request' | 'bad-tool' | 'overflow';
 
-interface AgentHandle {
-  readonly agentId: string;
-  send(message: CursorMessage): Promise<RunHandle>;
-  [Symbol.asyncDispose](): Promise<void>;
-}
-interface RunHandle {
-  supports(operation: 'cancel'): boolean;
-  stream(): AsyncIterable<unknown>;
-  wait(): Promise<{ status: string }>;
-  cancel(): Promise<void>;
-}
+type AgentHandle = Awaited<ReturnType<typeof sdk.create>>;
+type RunHandle = Awaited<ReturnType<AgentHandle['send']>>;
 
 export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime {
   const read = readCursorOptions(input);

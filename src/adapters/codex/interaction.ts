@@ -138,9 +138,13 @@ interface PreparedReply {
   readonly isLive: () => boolean;
   readonly nativeLive: () => boolean;
   readonly signal: AbortSignal;
-  readonly beforeWrite: (gate: () => boolean) => void;
+  readonly beforeWrite: (gate: () => boolean, withheld: () => void) => void;
   readonly record: (intent: CodexReplyOptions['recordIntent'], signal: AbortSignal) => ReturnType<typeof recordChoice>;
   readonly commit: () => boolean;
+  readonly stage: () => boolean;
+  readonly staged: () => boolean;
+  readonly discard: () => void;
+  readonly release: () => void;
 }
 export interface CodexInteraction {
   /** One trusted host projection; public diagnostic observers remain independently bounded. */
@@ -150,7 +154,7 @@ export interface CodexInteraction {
   readonly prepareBatch: (values: unknown) => Outcome<CodexPreparedBatch, CodexReplyError>;
   /** Pass as `openCodexExecution`'s `onServerRequest`; one bridge per execution. */
   readonly onServerRequest: TransportOptions['onRequest'];
-  /** Before its first turn: binds the thread to the session reference and observes it (one observer lease). */
+  /** Before its first turn: binds the thread to the session reference and registers one trusted bounded intake. */
   readonly attach: (session: CodexSession) => Outcome<void, { readonly code: 'busy' | 'capacity' | 'closed' }>;
   /** Single use: the first valid continuation for a live target is the only native reply ever written for it. */
   readonly reply: (options: CodexReplyOptions) => Promise<Outcome<{ readonly nativeChoiceId: string;
@@ -177,13 +181,14 @@ type Entry = {
   readonly finish: (reply: RpcReply) => void;
   readonly admission: Admission;
   readonly signal: AbortSignal;
+  readonly cleanup: () => void;
 };
-type Attached = { readonly session: CodexSession; readonly policy: NativeExtension };;
+type Attached = { readonly session: CodexSession; readonly policy: NativeExtension };
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const positive = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= max;
-const refusal = (code: number, message: string): RpcReply =>
+const refusal = (code: number, message: string): Extract<RpcReply, { readonly kind: 'error' }> =>
   Object.freeze({ kind: 'error', error: Object.freeze({ code, message, data: null }) });
 const withdrawnReply = refusal(-32000, 'Request no longer pending');
 const expiredReply = refusal(-32000, 'Approval expired unanswered');
@@ -191,11 +196,30 @@ const unknown = Object.freeze({ kind: 'unknown' } as const);
 const fail = <E>(error: E) => Object.freeze({ kind: 'error', error: Object.freeze(error) }) as { kind: 'error'; error: E };
 /** The file-change request carries no `availableDecisions` in the 0.169 bindings; its decision enum is this set. */
 const fileChangeDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
-const endReasons: readonly (EndReason | 'aborted')[] = ['malformed-frame', 'oversized-frame', 'input-overflow',
-  'invalid-envelope', 'caller-close', 'eof', 'transport-error', 'process-exit', 'listen-error', 'handler-overflow',
-  'duplicate-request', 'handler-error', 'invalid-handler-reply', 'handler-timeout', 'observation-overflow',
-  'observation-error', 'observation-timeout', 'write-error', 'write-timeout', 'aborted'];
-const endReason = (value: unknown): EndReason | 'aborted' => endReasons.find((reason) => reason === value) ?? 'aborted';
+const endReasons = {
+  'malformed-frame': 'malformed-frame',
+  'oversized-frame': 'oversized-frame',
+  'input-overflow': 'input-overflow',
+  'invalid-envelope': 'invalid-envelope',
+  'caller-close': 'caller-close',
+  'eof': 'eof',
+  'transport-error': 'transport-error',
+  'process-exit': 'process-exit',
+  'listen-error': 'listen-error',
+  'handler-overflow': 'handler-overflow',
+  'duplicate-request': 'duplicate-request',
+  'handler-error': 'handler-error',
+  'invalid-handler-reply': 'invalid-handler-reply',
+  'handler-timeout': 'handler-timeout',
+  'observation-overflow': 'observation-overflow',
+  'observation-error': 'observation-error',
+  'observation-timeout': 'observation-timeout',
+  'write-error': 'write-error',
+  'write-timeout': 'write-timeout',
+  'aborted': 'aborted',
+} as const satisfies Record<EndReason | 'aborted', EndReason | 'aborted'>;
+const isEndReason = (value: unknown): value is keyof typeof endReasons => typeof value === 'string' && Object.hasOwn(endReasons, value);
+const endReason = (value: unknown): EndReason | 'aborted' => isEndReason(value) ? endReasons[value] : 'aborted';
 const unanswered = (entry: Entry) => entry.state === 'live' || entry.state === 'reserved';
 
 /**
@@ -289,15 +313,16 @@ async function recordChoice(entry: { state: string }, target: ApprovalTarget | T
   return entry.state === 'reserved' ? 'ok' : 'stale-interaction';
 }
 
-/** Host tool calls and request_user_input. Separate from the approval `live` map: different identity, body, and settlement. */
 type Admission = { readonly matched: boolean | Promise<boolean>; readonly withdrawn: () => boolean; readonly stop: () => void;
-  readonly live: () => boolean; readonly beforeWrite: (gate: () => boolean) => void };
+  readonly live: () => boolean; readonly beforeWrite: (gate: () => boolean, withheld: () => void) => void; readonly clear: () => void; readonly retire: () => void };
+/** Preserve primitive native identity and a withdrawal guard through queued writer admission. */
 function matchesLiveTurn(attached: Attached, request: IncomingCall, turnId: string, signal: AbortSignal,
 intake: IncomingRequestIntake): Admission {
   const params = record(request.params) ? request.params : {};
   const { threadId, itemId, callId } = params;
   const requestId = request.id;
   let gate: (() => boolean) | undefined;
+  let withheld: (() => void) | undefined;
   let withdrawn = false;
   const stop = intake.watchNotification(({ method, params: raw }) => {
     if (!record(raw) || raw.threadId !== threadId) return;
@@ -308,11 +333,12 @@ intake: IncomingRequestIntake): Admission {
       && raw.item.id === (itemId ?? callId)) withdrawn = true;
   });
   const live = () => !withdrawn && attached.session.matchesTurn(turnId, signal) === true;
-  intake.replyAllowed(() => gate ? gate() : live(), withdrawnReply);
+  intake.replyAllowed(() => gate ? gate() : live(), withdrawnReply.error);
   const matched = attached.session.matchesTurn(turnId, signal);
-  return { matched, withdrawn: () => withdrawn, stop, live, beforeWrite: (value) => { gate = value; } };
+  return { matched, withdrawn: () => withdrawn, stop, live, beforeWrite: (value, lost) => { gate = value; withheld = lost; }, clear: () => { gate = undefined; withheld = undefined; }, retire: () => { withdrawn = true; const lost = withheld; gate = undefined; withheld = undefined; lost?.(); } };
 }
 
+/** Tool requests use a separate ledger because their reply bodies and settlement identities differ from approvals. */
 function createHostLedger(deps: {
   readonly publish: (event: CodexInteractionEvent) => void;
   readonly threads: Map<string, Attached>;
@@ -325,7 +351,7 @@ function createHostLedger(deps: {
   const { publish, threads, declared, maxSettled, maxPending, live, refuse } = deps;
   type HostEntry = { readonly id: string; readonly threadId: string; readonly turnId: string; readonly requestId: IncomingCall['id'];
     readonly callId: string; readonly call: CodexHostCall; state: 'live' | 'reserved' | 'replied' | 'lost'; delivered: boolean;
-    readonly finish: (reply: RpcReply) => void; readonly admission: Admission; readonly signal: AbortSignal };
+    readonly finish: (reply: RpcReply) => void; readonly admission: Admission; readonly signal: AbortSignal; readonly cleanup: () => void };
   const hostLive = new Map<string, HostEntry>();
   const hostSettled = new Map<string, HostEntry>();
   const hostByRequest = new Map<IncomingCall['id'], HostEntry>();
@@ -353,10 +379,12 @@ function createHostLedger(deps: {
   function loseHost(entry: HostEntry, settlement: Extract<CodexSettlement, { kind: 'withdrawn' | 'lost' }>): void {
     if (entry.state === 'replied' || entry.state === 'lost') return;
     entry.state = 'lost';
+    entry.cleanup();
     hostLive.delete(entry.id);
     rememberHost(entry);
     publish({ kind: 'host-settled', target: entry.call.pending.target, settlement: Object.freeze(settlement) });
     entry.finish(withdrawnReply);
+    entry.admission.retire();
   }
   function onEvent(threadId: string, event: CodexSessionEvent): void {
     if (event.kind === 'turn-completed') {
@@ -397,21 +425,22 @@ function createHostLedger(deps: {
     if (hostLive.has(id) || hostSettled.has(id)) return refuse(request, 'malformed');
     const matches = matchesLiveTurn(attached, request, turnId, signal, intake);
     if (!(typeof matches.matched === 'boolean' ? matches.matched : await matches.matched) || matches.withdrawn() || signal.aborted) { matches.stop(); return withdrawnReply; }
-    if (live.size + hostLive.size >= maxPending) return refuse(request, 'capacity');
+    if (live.size + hostLive.size >= maxPending) { matches.stop(); return refuse(request, 'capacity'); }
     const target: ToolTarget = Object.freeze({ kind: 'tool', session: attached.session.reference, nativeToolCallId: id });
+    if (parseInteractionContinuation({ value: { formatVersion: 1, kind: 'tool', outcome: { target, result: { kind: 'ok', value: { namespace: 'codex/target-check', schemaVersion: 1, data: null } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } }, expected: { kind: 'tool', target } }).kind === 'error') { matches.stop(); return refuse(request, 'malformed'); }
     const call: CodexHostCall = Object.freeze({ method: user ? 'item/tool/requestUserInput' : 'item/tool/call', name,
       arguments: user ? params.questions : params.arguments, pending: Object.freeze({ kind: 'tool', target }) });
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
-    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', delivered: false, finish, admission: matches, signal };
+    const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', delivered: false, finish, admission: matches, signal, cleanup: () => signal.removeEventListener('abort', onAbort) };
     const onAbort = () => loseHost(entry, { kind: 'lost', reply: 'not-sent', cause: endReason(signal.reason) });
     signal.addEventListener('abort', onAbort, { once: true });
     hostLive.set(id, entry);
     hostByRequest.set(request.id, entry);
     hostByItem.set(hostItemKey(turnId, callId), entry);
     publish({ kind: 'host-call', call });
-    try { return await answered; } finally { signal.removeEventListener('abort', onAbort); }
+    try { return await answered; } finally { if (entry.state !== 'reserved') entry.cleanup(); }
   }
   function prepare(value: unknown): Outcome<PreparedReply, CodexReplyError> {
     const outcome = record(value) && record(value.outcome) ? value.outcome : undefined;
@@ -430,10 +459,15 @@ function createHostLedger(deps: {
       key: `tool:${entry.id}`, requestId: entry.requestId, answer: parsed.value, call: entry.call,
       nativeChoiceId: entry.id, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal, beforeWrite: entry.admission.beforeWrite,
       isLive: () => entry.state === 'live' && hostLive.get(entry.id) === entry,
+      staged: () => entry.state === 'reserved' && hostLive.get(entry.id) === entry,
+      stage: () => { if (entry.state !== 'live' || hostLive.get(entry.id) !== entry) return false; entry.state = 'reserved'; entry.finish(replyValue); return true; },
+      discard: () => { if (entry.state === 'reserved') loseHost(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }); },
+      release: entry.admission.clear,
       record: (intent, signal) => recordChoice(entry, entry.call.pending.target, entry.id, intent, signal),
       commit: () => {
         if ((entry.state !== 'live' && entry.state !== 'reserved') || hostLive.get(entry.id) !== entry) return false;
         entry.state = 'replied';
+        entry.cleanup();
         hostLive.delete(entry.id);
         rememberHost(entry);
         entry.finish(replyValue);
@@ -510,6 +544,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   }
   function settle(entry: Entry, settlement: CodexSettlement, reply: RpcReply): void {
     clearTimeout(entry.timer);
+    entry.cleanup();
     entry.state = settlement.kind;
     live.delete(entry.id);
     settled.set(entry.id, entry);
@@ -519,6 +554,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     }
     publish({ kind: 'settled', target: entry.pending.target, settlement: Object.freeze(settlement) });
     entry.finish(reply);
+    if (settlement.kind !== 'replied') entry.admission.retire();
   }
   const withdraw = (entry: Entry, by: Extract<CodexSettlement, { kind: 'withdrawn' }>['by']) =>
     settle(entry, { kind: 'withdrawn', by, evidence: 'unqualified' }, withdrawnReply);
@@ -554,14 +590,15 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       }
     } else if (event.method === 'item/completed' && record(params.item)) {
       const { item } = params;
-      const entry = entries().find((candidate) => candidate.itemId === item.id && candidate.turnId === params.turnId);
-      if (!entry) return;
-      if (unanswered(entry)) { withdraw(entry, 'item/completed'); return; }
+      const matching = entries().filter((candidate) => candidate.itemId === item.id && candidate.turnId === params.turnId);
+      for (const entry of matching) {
+      if (unanswered(entry)) { withdraw(entry, 'item/completed'); continue; }
       // Only a declined command is natively qualified to have no effect (probe.mjs); every other status stays unknown.
       const declined = entry.method === 'item/commandExecution/requestApproval' && item.status === 'declined';
       publish({ kind: 'observed', target: entry.pending.target, method: event.method, evidence: declined ? 'qualified' : 'unqualified',
         effect: declined ? Object.freeze({ kind: 'known', effect: 'none',
           evidence: Object.freeze({ namespace: 'codex-app-server/item-completed', schemaVersion: 1, data: item }) }) : unknown });
+      }
     }
   }
 
@@ -594,12 +631,12 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     const matches = matchesLiveTurn(attached, request, turnId, signal, intake);
     if (!(typeof matches.matched === 'boolean' ? matches.matched : await matches.matched) || matches.withdrawn() || signal.aborted) { matches.stop(); return withdrawnReply; }
     // Refused while a transport handler slot remains (maxPending < maxHandlers), so a burst never reaches overflow.
-    if (live.size + hostLedger.size >= maxPending) return refuse(request, 'capacity');
+    if (live.size + hostLedger.size >= maxPending) { matches.stop(); return refuse(request, 'capacity'); }
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
     const entry: Entry = { id, requestId: request.id, threadId, turnId, itemId, method, decisions: choices,
-      pending, state: 'live', timer: undefined, finish, admission: matches, signal };
+      pending, state: 'live', timer: undefined, finish, admission: matches, signal, cleanup: () => signal.removeEventListener('abort', onAbort) };
     const onAbort = () => {
       if (unanswered(entry)) settle(entry, { kind: 'lost', reply: 'not-sent',
         cause: endReason(signal.reason) }, withdrawnReply);
@@ -612,7 +649,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
         if (unanswered(entry)) settle(entry, { kind: 'expired', delivery: unknown }, expiredReply);
       }, expiryMs);
     }
-    try { return await answered; } finally { signal.removeEventListener('abort', onAbort); }
+    try { return await answered; } finally { if (entry.state !== 'reserved') entry.cleanup(); }
   }
 
   function attach(session: CodexSession): ReturnType<CodexInteraction['attach']> {
@@ -655,6 +692,10 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       key: `approval:${entry.id}`, requestId: entry.requestId, answer: parsed.value, call: undefined,
       nativeChoiceId, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal, beforeWrite: entry.admission.beforeWrite,
       isLive: () => entry.state === 'live' && live.get(entry.id) === entry,
+      staged: () => entry.state === 'reserved' && live.get(entry.id) === entry,
+      stage: () => { if (entry.state !== 'live' || live.get(entry.id) !== entry) return false; entry.state = 'reserved'; entry.finish(replyValue); return true; },
+      discard: () => { if (entry.state === 'reserved') settle(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }, withdrawnReply); },
+      release: entry.admission.clear,
       record: (intent, signal) => recordChoice(entry, entry.pending.target, nativeChoiceId, intent, signal),
       commit: () => {
         if (!unanswered(entry) || live.get(entry.id) !== entry) return false;
@@ -693,9 +734,12 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       let written!: (value: Awaited<CodexPreparedBatch['entry']>) => void;
       const completion: CodexPreparedBatch['entry'] = new Promise((resolve) => { written = resolve; });
       let abort: ReturnType<typeof addAbortListener> | undefined;
-      const refuseEntry = (code: 'aborted' | 'stale-interaction') => {
+      const refuseEntry = (code: 'aborted' | 'stale-interaction', afterIntake = false) => {
         if (finished) return;
         finished = true; blocked = code; abort?.[Symbol.dispose]();
+        const release = () => { for (const entry of entries) { entry.discard(); entry.release(); } entries.length = 0; };
+        // Native turn/item retirement must finish classifying all peers before batch-only losses are applied.
+        if (afterIntake) queueMicrotask(release); else release();
         if (!entered) admit(fail({ code }));
         written(fail({ code }));
       };
@@ -706,27 +750,30 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
         if (used || entries.length !== live.size + hostLedger.size || entries.some((entry) => !entry.isLive())) return refused('stale-interaction');
         used = true;
         const lifetime = AbortSignal.any([signal, ...entries.map((entry) => entry.signal)]);
-        abort = addAbortListener(lifetime, () => refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction'));
+        abort = addAbortListener(lifetime, () => refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction', !signal.aborted));
         for (const entry of entries) entry.beforeWrite(() => {
           if (blocked) return false;
           if (!entered) {
-            if (lifetime.aborted || capacityRefused || live.size + hostLedger.size > 0 || entries.some((member) => !member.nativeLive())) {
+            if (lifetime.aborted || capacityRefused || live.size + hostLedger.size !== entries.length || entries.some((member) => !member.staged() || !member.nativeLive())) {
               refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction'); return false;
             }
             entered = true; admit({ kind: 'ok', value: undefined });
           }
           if (!entry.nativeLive() || lifetime.aborted) { refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction'); return false; }
+          if (!entry.commit()) { refuseEntry('stale-interaction'); return false; }
+          entry.release();
+          // The channel write runs synchronously after this gate; external observers run afterward.
+          queueMicrotask(() => onReply(entry.answer, entry.call));
           remaining--;
-          if (remaining === 0) { finished = true; abort?.[Symbol.dispose](); written({ kind: 'ok', value: undefined }); }
+          if (remaining === 0) { finished = true; abort?.[Symbol.dispose](); entries.length = 0; written({ kind: 'ok', value: undefined }); }
           return true;
-        });
+        }, () => refuseEntry('stale-interaction', true));
         for (const entry of entries) {
           beforeReply();
           if (capacityRefused) return refused('stale-interaction');
           if (signal.aborted) return refused('aborted');
-          if (!entry.commit()) return refused('stale-interaction');
+          if (!entry.stage()) return refused('stale-interaction');
           replies++;
-          onReply(entry.answer, entry.call);
         }
         return { kind: 'ok', value: { replies } };
       } } satisfies CodexPreparedBatch) };

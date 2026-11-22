@@ -99,16 +99,21 @@ test('any failed optional scenario fails the aggregate qualification', () => {
 test('qualification fingerprints include codec, PNG generator and other transitive source/runtime files', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qualification-hash-'));
   try {
-    for (const dir of ['src', 'adapters', 'scripts', 'dist']) await mkdir(join(root, dir));
-    for (const file of ['package.json', 'package-lock.json']) await writeFile(join(root, file), '{}');
-    await writeFile(join(root, 'src', 'wire.ts'), 'codec'); await writeFile(join(root, 'scripts', 'image.mjs'), 'png');
-    await writeFile(join(root, 'dist', 'wire.js'), 'built codec');
+    for (const dir of ['src/core', 'src/adapters/codex', 'scripts/support', 'dist/core', 'dist/adapters/codex', 'adapters/cursor']) await mkdir(join(root, dir), { recursive: true });
+    for (const file of ['package.json', 'package-lock.json', 'tsconfig.json', 'src/index.ts', 'dist/index.js', 'scripts/qualify-codex-host-direct.mjs', 'scripts/live-baseline-engines.mjs', 'scripts/support/codex-host-qualification.mjs']) await writeFile(join(root, file), '{}');
+    await writeFile(join(root, 'src/adapters/codex/wire.ts'), 'codec'); await writeFile(join(root, 'scripts/support/qualification-image.mjs'), 'png');
+    await writeFile(join(root, 'dist/adapters/codex/wire.js'), 'built codec');
     const original = await qualificationFingerprint(root);
-    await writeFile(join(root, 'src', 'wire.ts'), 'changed codec');
+    await writeFile(join(root, 'tsconfig.json'), '{"compilerOptions":{"noEmit":true}}');
+    assert.notEqual((await qualificationFingerprint(root)).source.sha256, original.source.sha256);
+    await writeFile(join(root, 'tsconfig.json'), '{}');
+    await writeFile(join(root, 'adapters/cursor/unrelated.ts'), 'unrelated');
+    assert.deepEqual(await qualificationFingerprint(root), original);
+    await writeFile(join(root, 'src/adapters/codex/wire.ts'), 'changed codec');
     const changed = await qualificationFingerprint(root); assert.notEqual(changed.source.sha256, original.source.sha256);
-    await writeFile(join(root, 'scripts', 'image.mjs'), 'changed png');
+    await writeFile(join(root, 'scripts/support/qualification-image.mjs'), 'changed png');
     assert.notEqual((await qualificationFingerprint(root)).source.sha256, changed.source.sha256);
-    await writeFile(join(root, 'dist', 'wire.js'), 'changed built codec');
+    await writeFile(join(root, 'dist/adapters/codex/wire.js'), 'changed built codec');
     assert.notEqual((await qualificationFingerprint(root)).runtime.sha256, original.runtime.sha256);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -132,4 +137,11 @@ test('qualification terminals match the exact approved thread and turn before re
  const approval={request:{data:{params:{threadId:'thread',turnId:'turn'}}}};
  assert.deepEqual(targetTerminals([{threadId:'other',turnId:'turn',status:'completed'},{threadId:'thread',turnId:'old',status:'interrupted'}],approval),[]);
  assert.deepEqual(targetTerminals([{threadId:'thread',turnId:'turn',status:'interrupted'}],approval),['interrupted']);
+});
+
+test('live scenario deadline owns a referenced timer and releases it after completion',async(t)=>{
+ const {scenarioDeadline}=await import('../../scripts/support/codex-host-qualification.mjs');const schedule=globalThis.setTimeout;let timer;
+ t.mock.method(globalThis,'setTimeout',(...args)=>{timer=schedule(...args);return timer;});
+ const deadline=scenarioDeadline(new AbortController().signal,10000);assert.equal(timer.hasRef(),true);deadline.dispose();assert.equal(deadline.signal.aborted,false);
+ const child=spawnSync(process.execPath,['--input-type=module','-e',`import {scenarioDeadline} from ${JSON.stringify(new URL('../../scripts/support/codex-host-qualification.mjs',import.meta.url).href)};const deadline=scenarioDeadline(new AbortController().signal,10000);deadline.dispose();`],{timeout:1000,encoding:'utf8'});assert.equal(child.status,0,child.stderr);
 });

@@ -1,6 +1,5 @@
-import { types } from 'node:util';
 import {
-  createDispatchOperation, createEventStream, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
+  hostImagesRequested, createDispatchOperation, createEventStream, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
 } from '../index.js';
 import type {
   CheckpointReference, DispatchEvidence, DispatchTarget, HostAdapter, HostAdapterCapabilities, HostAdapterError, HostAdapterEvent,
@@ -235,7 +234,7 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       events: Object.freeze({ subscribe: stream.subscribe }),
       run: (input) => {
         let requestedImages: boolean;
-        try { const images = input.images; requestedImages = images !== undefined && (!Array.isArray(images) || images.length !== 0 || types.isProxy(images)); } catch { return Promise.resolve(failed(invalid('Image input is malformed.'))); }
+        try { const images = input.images; requestedImages = hostImagesRequested(images); } catch { return Promise.resolve(failed(invalid('Image input is malformed.'))); }
         if (requestedImages) return Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }));
         const prompt = input.prompt;
         if (typeof prompt !== 'string') return Promise.resolve(failed(invalid('The prompt must be text.')));

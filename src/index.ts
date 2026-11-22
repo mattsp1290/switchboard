@@ -120,5 +120,7 @@ export type {
   RunObservationUsage, ToolTracker,
 } from './core/run-observation.js';
 
-export { parseHostImages, hostImageLimits } from './core/image-input.js';
+export { parseHostImages, hostImageLimits, hostImagesRequested } from './core/image-input.js';
 export type { ValidatedHostImage } from './core/image-input.js';
+
+export { callerModelId } from './core/model-input.js';

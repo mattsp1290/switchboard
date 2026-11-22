@@ -1,4 +1,4 @@
-import { types } from 'node:util';
+import { hostImagesRequested } from '../../core/image-input.js';
 import { isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AdapterError, AdapterIdentity, Outcome } from '../../core/contracts.js';
@@ -835,7 +835,7 @@ async function openSession(ready: {
         return failed({ code: 'invalid-input', message: 'the segment request is malformed' }, notAttempted);
       }
       let requestedImages: boolean;
-      try { const images = input.images; requestedImages = images !== undefined && (!Array.isArray(images) || images.length !== 0 || types.isProxy(images)); } catch { return failed({ code: 'invalid-input', message: 'image input is malformed' }, notAttempted); }
+      try { const images = input.images; requestedImages = hostImagesRequested(images); } catch { return failed({ code: 'invalid-input', message: 'image input is malformed' }, notAttempted); }
       if (requestedImages) return failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, notAttempted);
       if (closePromise || phase === 'closed') return failed({ code: 'closed', message: 'the adapter is closed' }, notAttempted);
       if (unusable) return failed(unusable, notAttempted);

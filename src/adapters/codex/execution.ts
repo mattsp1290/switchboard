@@ -1,3 +1,4 @@
+import { codexActivityMethods } from './activity.js';
 import { addAbortListener } from 'node:events';
 import type { Outcome } from '../../core/contracts.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
@@ -181,7 +182,7 @@ export interface CodexSession {
   /**
    * Cancel without close: at most one native `turn/interrupt` per turn, shared with `close`. Reports the request only;
    * termination is the turn's `completion`. `not-needed`: no active turn, it settled, or no native turn id within
-   * `cleanupTimeoutMs`. Never closes the session, releases the writer or resends; unsubscribing is not cancellation.
+   * the caller signal, or the default `cleanupTimeoutMs` when omitted. Never closes the session, releases the writer or resends; unsubscribing is not cancellation.
    */
   readonly interrupt: (options?: { readonly signal?: AbortSignal }) => Promise<CodexInterruptResult>;
 }
@@ -284,6 +285,9 @@ const turnStatuses = new Set(['completed', 'interrupted', 'failed']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function notificationThread(owner: Record<string, unknown> | undefined): unknown {
+  return typeof owner?.threadId === 'string' ? owner.threadId : owner && record(owner.thread) ? owner.thread.id : undefined;
 }
 function text(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= sessionLimits.identifierLength;
@@ -481,7 +485,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     }
     const { method, params } = observation;
     const owner = record(params) ? params : undefined;
-    const thread = typeof owner?.threadId === 'string' ? owner.threadId : owner && record(owner.thread) ? owner.thread.id : undefined;
+    const thread = notificationThread(owner);
     const session = typeof thread === 'string' ? byThread.get(thread) : undefined;
     if (!owner || !session) { publishNative(method, params); return; }
     const turnId = record(owner.turn) ? owner.turn.id : owner.turnId;
@@ -489,6 +493,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const turn = [session.active, session.previous]
       .find((candidate) => candidate?.phase.kind === 'identified' && candidate.phase.id === turnId);
     if (turn) { deliver(session, turn, turnId, method, owner); return; }
+    if (codexActivityMethods.includes(method) || method === 'error') { publishNative(method, params); return; }
     const active = session.active;
     const pending = active && !active.settled && active.phase.kind === 'pending' ? active.phase : undefined;
     // Bound ordinary events and distinct terminal candidates independently: an old terminal cannot take
@@ -569,7 +574,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     onNotification: (notification) => {
       const { method, params } = notification;
       const owner = record(params) ? params : undefined;
-      const threadId = typeof owner?.threadId === 'string' ? owner.threadId : owner && record(owner.thread) ? owner.thread.id : undefined;
+      const threadId = notificationThread(owner);
       const session = typeof threadId === 'string' ? byThread.get(threadId) : undefined;
       if (session) for (const intake of session.intakes) intake.notification?.(method, params);
       observe(notification);
@@ -803,7 +808,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const turnId = record(reply.value) && record(reply.value.turn) ? reply.value.turn.id : undefined;
       if (!text(turnId)) return;
       identified = turnId;
-      turn.interactionUncertain = pending.terminalOverflow;
+      turn.interactionUncertain = pending.terminalOverflow || pending.dropped > 0;
       turn.phase = { kind: 'identified', id: turnId };
       turn.identified.resolve();
       publishSession(session, Object.freeze({ kind: 'turn-accepted', turnId, evidence: 'qualified' }));

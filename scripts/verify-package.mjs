@@ -11,6 +11,7 @@ import { assertInstalledForkCore, coreArtifact } from './support/agui-fork.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
+const nativeSdkDeclarations = /\/@(?:openai|anthropic-ai|earendil-works|cursor)\//;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -105,7 +106,7 @@ try {
         `dist/${directory}/${file} does not name the AG-UI or OpenTelemetry peers.`);
     }
   }
-  writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
+  writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal, PiPromptInput } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
 // @ts-expect-error Property 'model' is missing.
@@ -114,6 +115,9 @@ declare const runtime: PiRuntime;
 const session = await runtime.open();
 const accepted = await session.prompt('hello', (event: PiEvent) => { if (event.kind === 'text') event.text.toUpperCase(); });
 const terminal: PiTerminal = await accepted.finished;
+const input: PiPromptInput = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }] };
+void session.prompt(input, () => {});
+if (session.imageInput.kind === 'supported') void session.imageInput.api.mediaTypes;
 void [options, flash, missingModel, terminal];
 `);
   assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
@@ -236,7 +240,14 @@ void [options, missingModel];
 `);
   writeFileSync(join(consumer, 'opencode-types.json'), JSON.stringify({ ...consumerConfig, files: ['opencode-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'opencode-types.json'], consumer);
-  writeFileSync(join(consumer, 'image-types.test.ts'), `
+  function checkConsumer(name, source) {
+    writeFileSync(join(consumer, `${name}-types.test.ts`), source);
+    writeFileSync(join(consumer, `${name}-types.json`), JSON.stringify({ ...consumerConfig, files: [`${name}-types.test.ts`] }));
+    const files = run(process.execPath, [compiler, '-p', `${name}-types.json`, '--listFilesOnly'], consumer);
+    assert(!nativeSdkDeclarations.test(files), `${name} declarations remain independent of native SDK declarations.`);
+    run(process.execPath, [compiler, '-p', `${name}-types.json`], consumer);
+  }
+  checkConsumer('image', `
 import { parseHostImages, hostImageLimits } from '${manifest.name}';
 import type { HostImageInput, HostImageInputApi, HostPendingSet, HostRunInput } from '${manifest.name}';
 const image: HostImageInput = { mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' };
@@ -248,9 +259,7 @@ const invalid = parseHostImages(null, api);
 declare const pending: HostPendingSet;
 void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];
 `);
-  writeFileSync(join(consumer, 'image-types.json'), JSON.stringify({ ...consumerConfig, files: ['image-types.test.ts'] }));
-  run(process.execPath, [compiler, '-p', 'image-types.json'], consumer);
-  writeFileSync(join(consumer, 'codex-host-types.test.ts'), `
+  checkConsumer('codex-host', `
 import { codexHostAdapter } from '${manifest.name}/host/codex';
 import type { CodexHostNativeConfig, CodexHostModel } from '${manifest.name}/host/codex';
 import type { HostAdapter, HostAdapterEvent, HostSegmentResult, InteractionContinuation } from '${manifest.name}';
@@ -283,9 +292,7 @@ const interrupted = await adapter.interrupt({ timeoutMs: 10 });
 if (interrupted.kind === 'unconfirmed-within-bound') void interrupted.evidence;
 void [config, invalid];
 `);
-  writeFileSync(join(consumer, 'codex-host-types.json'), JSON.stringify({ ...consumerConfig, files: ['codex-host-types.test.ts'] }));
-  run(process.execPath, [compiler, '-p', 'codex-host-types.json'], consumer);
-  writeFileSync(join(consumer, 'cursor-media-types.test.ts'), `
+  checkConsumer('cursor-media', `
 import type { CursorRuntime, CursorRequest, CursorModel } from '${manifest.name}/cursor';
 declare const runtime: CursorRuntime;
 const request: CursorRequest = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} };
@@ -297,32 +304,14 @@ if (runtime.models.kind === 'supported') {
 }
 void [request, nativeModel];
 `);
-  writeFileSync(join(consumer, 'cursor-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['cursor-media-types.test.ts'] }));
-  run(process.execPath, [compiler, '-p', 'cursor-media-types.json'], consumer);
-  writeFileSync(join(consumer, 'claude-media-types.test.ts'), `
+  checkConsumer('claude-media', `
 import type { ClaudeRuntime, ClaudeRequest } from '${manifest.name}/claude';
 declare const runtime: ClaudeRuntime;
 const request: ClaudeRequest = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} };
 if (runtime.imageInput.kind === 'supported') void runtime.imageInput.api.maxImages;
 void request;
 `);
-  writeFileSync(join(consumer, 'claude-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['claude-media-types.test.ts'] }));
-  run(process.execPath, [compiler, '-p', 'claude-media-types.json'], consumer);
-  writeFileSync(join(consumer, 'pi-media-types.test.ts'), `
-import type { PiSession, PiPromptInput } from '${manifest.name}/pi';
-declare const session: PiSession;
-const input: PiPromptInput = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }] };
-void session.prompt('legacy', () => {});
-void session.prompt(input, () => {});
-if (session.imageInput.kind === 'supported') void session.imageInput.api.mediaTypes;
-`);
-  writeFileSync(join(consumer, 'pi-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['pi-media-types.test.ts'] }));
-  run(process.execPath, [compiler, '-p', 'pi-media-types.json'], consumer);
-  for (const name of ['image', 'codex-host', 'cursor-media', 'claude-media', 'pi-media']) {
-    const files = run(process.execPath, [compiler, '-p', `${name}-types.json`, '--listFilesOnly'], consumer);
-    assert(!/\/@(?:openai|anthropic-ai|earendil-works|cursor)\//.test(files), `${name} declarations remain independent of native SDK declarations.`);
-  }
-  writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
+  checkConsumer('readiness', `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';
 import type { PiReadinessReport, PiRuntime } from '${manifest.name}/pi';
@@ -381,10 +370,6 @@ const codexOnly: CodexReadinessReport = wide;
 wide.verdict = 'ready';
 void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, cursorReady, cursorBlocked, cursorReport, codexOnly, claudeOptions, codexOptions, cursorOptions, missingClaude, missingCodex, missingCursor];
 `);
-  writeFileSync(join(consumer, 'readiness-types.json'), JSON.stringify({ ...consumerConfig, files: ['readiness-types.test.ts'] }));
-  const readinessTypes = run(process.execPath, [compiler, '-p', 'readiness-types.json', '--listFilesOnly'], consumer);
-  assert(!/\/@(?:openai|anthropic-ai|earendil-works|cursor)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
-  run(process.execPath, [compiler, '-p', 'readiness-types.json'], consumer);
 
   // These two consumers execute the packed adapters, which load the Pi and Codex SDKs.
   // The ordinary test preloads the tripwire and must not. `npm run verify:package` does not, and runs them.
