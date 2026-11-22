@@ -20,3 +20,8 @@ test('image parser refuses malformed, noncanonical and excessive input', () => {
     [image(Buffer.from('x'), 'image/gif')]]) assert.equal(parseHostImages(value).kind, 'error');
   for (const s of ['YQ==', 'YWI=', 'YWJj']) assert.equal(parseHostImages([{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${s}` }]).kind, 'ok');
 });
+
+test('throwing image input accessors are refused at the validation boundary', () => {
+  const input = { get mediaType() { throw new Error('untrusted'); } };
+  assert.equal(parseHostImages([input]).kind, 'error');
+});

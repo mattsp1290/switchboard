@@ -238,3 +238,20 @@ test('a throwing listener does not change a segment and an invalid one is refuse
   assert.equal(intents, 0);
   await host.close();
 });
+
+test('Pi-host rejects unsupported media before intent, stream dispatch or history changes', async () => {
+  const subject = await open({});
+  try {
+    assert.equal(subject.adapter.capabilities.imageInput.kind, 'unsupported');
+    assert.equal((await subject.adapter.run(run('baseline'))).kind, 'complete');
+    const before = subject.adapter.state();
+    const writes = subject.requests.length;
+    for (const images of [[{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], null, {}]) {
+      const result = await subject.adapter.run({ ...run('image', () => assert.fail('unsupported media must not record intent')), images });
+      assert.equal(result.error.code, 'unsupported');
+      assert.equal(result.write.kind, 'not-attempted');
+    }
+    assert.equal(subject.requests.length, writes);
+    assert.deepEqual(subject.adapter.state(), before);
+  } finally { await subject.close(); }
+});

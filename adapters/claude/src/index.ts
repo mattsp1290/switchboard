@@ -3,8 +3,9 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { emitObservation, emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
-import type { RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { hostImageLimits, parseHostImages, emitObservation, emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
+import type { Capability, HostImageInput, HostImageInputApi, RunObservation, RunObservationListener, RunObservationUsage } from '#switchboard';
 import { createStreamObserver } from './observe.js';
 
 export interface ClaudeRuntimeOptions {
@@ -23,6 +24,7 @@ export interface ClaudeTurn {
   abort(): Promise<void>;
 }
 export interface ClaudeRequest {
+  readonly images?: readonly HostImageInput[];
   readonly text: string;
   readonly threadId?: string;
   readonly onEvent: (event: ClaudeEvent) => void;
@@ -48,6 +50,7 @@ export type ClaudeReadinessReport = {
   | { readonly verdict: 'unverified';
     readonly remediation: { readonly code: 'retry_check' | 'check_cancelled' | 'runtime_closed' | 'check_unavailable'; readonly message: string } });
 export interface ClaudeRuntime {
+  readonly imageInput: Capability<HostImageInputApi>;
   checkReady(): Promise<void>;
   readinessReport(options?: { readonly signal?: AbortSignal }): Promise<ClaudeReadinessReport>;
   start(request: ClaudeRequest): Promise<ClaudeTurn>;
@@ -147,6 +150,15 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
     if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
       || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation)
       || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
+    const images = parseHostImages(request.images === undefined ? [] : request.images);
+    if (images.kind === 'error') return Promise.reject(failure());
+    const validatedImages = images.value;
+    async function* structuredPrompt(): AsyncIterable<SDKUserMessage> {
+      yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [
+        { type: 'text', text }, ...validatedImages.map((image) => ({ type: 'image' as const,
+          source: { type: 'base64' as const, media_type: image.mediaType === 'image/png' ? 'image/png' as const : 'image/jpeg' as const, data: image.base64 } })),
+      ] } };
+    }
     let reserved = requested;
     if (reserved) writers.add(reserved);
     const controller = new AbortController();
@@ -170,7 +182,7 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
       try {
         await checkReady();
         controller.signal.throwIfAborted();
-        native = query({ prompt: text, options: {
+        native = query({ prompt: validatedImages.length ? structuredPrompt() : text, options: {
           cwd, env, model: options.model, abortController: controller, tools: [], settingSources: [],
           mcpServers: {}, strictMcpConfig: true, permissionMode: 'dontAsk', verbatimPrompts: true,
           persistSession: true, includePartialMessages: true, extraArgs: { bare: null }, ...(requested ? { resume: requested } : {}),
@@ -303,7 +315,7 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
     active.set(controller, finished);
     return admission.promise;
   }
-  return { checkReady, readinessReport, start, async close() {
+  return { imageInput: { kind: 'supported', api: hostImageLimits }, checkReady, readinessReport, start, async close() {
     closed = true;
     const pending = [...active.entries()];
     for (const [controller] of pending) controller.abort();

@@ -6,8 +6,8 @@ import {
   createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
-import { emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
-import type { RunObservationListener } from '#switchboard';
+import { hostImageLimits, parseHostImages, emitRunStarted, isOptionalObservationListener, runtimeOutcome } from '#switchboard';
+import type { Capability, HostImageInput, HostImageInputApi, RunObservationListener } from '#switchboard';
 import { createMessageObserver } from './observe.js';
 import { terminalOutcome } from './terminal.js';
 
@@ -24,11 +24,13 @@ export interface PiTerminal {
 }
 export type PiEvent = { readonly kind: 'text'; readonly text: string } | PiTerminal;
 export interface PiPrompt { readonly finished: Promise<PiTerminal> }
+export interface PiPromptInput { readonly text: string; readonly images?: readonly HostImageInput[] }
 export interface PiSession {
+  readonly imageInput: Capability<HostImageInputApi>;
   readonly id: string;
   readonly sessionFile: string;
   /** `onObservation` receives the final `usage` and `terminal` observations after the `ended` callback, because the terminal outcome depends on whether a callback failed. */
-  prompt(text: string, onEvent: (event: PiEvent) => void, onObservation?: RunObservationListener): Promise<PiPrompt>;
+  prompt(text: string | PiPromptInput, onEvent: (event: PiEvent) => void, onObservation?: RunObservationListener): Promise<PiPrompt>;
   abort(): Promise<void>;
   close(): Promise<void>;
 }
@@ -127,6 +129,8 @@ function resumeManager(directory: string, file: string, cwd: string): SessionMan
 function sessionHandle(native: AgentSession, release: () => void): PiSession {
   const file = native.sessionFile;
   if (!file) throw failure();
+  const imageInput: Capability<HostImageInputApi> = native.model?.input.includes('image')
+    ? { kind: 'supported', api: hostImageLimits } : { kind: 'unavailable', reason: 'the selected model does not accept images' };
   let running: { finished: Promise<PiTerminal>; stop: () => void } | undefined;
   let closing: Promise<void> | undefined;
   const abort = async () => {
@@ -136,13 +140,18 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
     try { await native.abort(); await current.finished; } catch { throw failure(); }
   };
   return {
+    imageInput,
     id: native.sessionId,
     sessionFile: basename(file),
-    async prompt(text, onEvent, onObservation) {
+    async prompt(input, onEvent, onObservation) {
+      const text = typeof input === 'string' ? input : input?.text;
       if (closing) throw new Error('Pi session is closed.');
       if (running) throw new Error('Pi session is busy.');
       if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function'
         || !isOptionalObservationListener(onObservation)) throw failure();
+      const images = parseHostImages(typeof input === 'string' || input.images === undefined ? [] : input.images);
+      if (images.kind === 'error' || (images.value.length > 0 && imageInput.kind !== 'supported')) throw failure();
+      const nativeImages = images.value.map((image) => ({ type: 'image' as const, data: image.base64, mimeType: image.mediaType }));
       const admission = Promise.withResolvers<PiPrompt>();
       const completion = Promise.withResolvers<PiTerminal>();
       let started = false;
@@ -195,6 +204,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
         let outcome: PiTerminal['outcome'] = 'failed';
         try {
           await native.prompt(text, {
+            ...(nativeImages.length ? { images: nativeImages } : {}),
             expandPromptTemplates: false,
             preflightResult(disposition) {
               if (disposition !== 'started') { stop(); rejectAdmission(); void native.abort().catch(() => {}); return; }
@@ -284,6 +294,7 @@ export async function createPiRuntime(options: PiRuntimeOptions): Promise<PiRunt
               cwd, agentDir: directory, modelRuntime: models, model, thinkingLevel: 'off',
               tools: [], noTools: 'all', customTools: [], resourceLoader: emptyResources(), sessionManager: manager,
               settingsManager: SettingsManager.inMemory({
+                images: { autoResize: false },
                 compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
                 cacheWarming: 'off', enableAnalytics: false, enableInstallTelemetry: false, transport: 'sse',
               }),

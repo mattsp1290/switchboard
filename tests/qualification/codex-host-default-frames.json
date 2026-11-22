@@ -1,0 +1,4 @@
+[
+  "{\"id\":\"<request>\",\"method\":\"thread/start\",\"params\":{\"approvalPolicy\":\"never\",\"cwd\":\"<cwd>\",\"sandbox\":\"read-only\"}}\n",
+  "{\"id\":\"<request>\",\"method\":\"turn/start\",\"params\":{\"threadId\":\"<thread>\",\"input\":[{\"type\":\"text\",\"text\":\"say hello\",\"text_elements\":[]}]}}\n"
+]

@@ -296,6 +296,25 @@ void [request, nativeModel];
 `);
   writeFileSync(join(consumer, 'cursor-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['cursor-media-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'cursor-media-types.json'], consumer);
+  writeFileSync(join(consumer, 'claude-media-types.test.ts'), `
+import type { ClaudeRuntime, ClaudeRequest } from '${manifest.name}/claude';
+declare const runtime: ClaudeRuntime;
+const request: ClaudeRequest = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} };
+if (runtime.imageInput.kind === 'supported') void runtime.imageInput.api.maxImages;
+void request;
+`);
+  writeFileSync(join(consumer, 'claude-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['claude-media-types.test.ts'] }));
+  run(process.execPath, [compiler, '-p', 'claude-media-types.json'], consumer);
+  writeFileSync(join(consumer, 'pi-media-types.test.ts'), `
+import type { PiSession, PiPromptInput } from '${manifest.name}/pi';
+declare const session: PiSession;
+const input: PiPromptInput = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }] };
+void session.prompt('legacy', () => {});
+void session.prompt(input, () => {});
+if (session.imageInput.kind === 'supported') void session.imageInput.api.mediaTypes;
+`);
+  writeFileSync(join(consumer, 'pi-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['pi-media-types.test.ts'] }));
+  run(process.execPath, [compiler, '-p', 'pi-media-types.json'], consumer);
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';

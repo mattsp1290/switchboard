@@ -672,7 +672,7 @@ serial('Cursor catalogs use each explicit key, remain sessionless and copy only 
     assert.equal(Object.hasOwn(result.value[0], 'inputModalities'), false);
     assert.deepEqual(calls, [{ apiKey: key }, { apiKey: 'second-explicit-key' }]);
     assert.deepEqual([fake.created.length, fake.resumed.length, fake.roots.length], [0, 0, 0]);
-    for (const invalid of [null, {}, [{}], Array(1001).fill({ id: 'x', displayName: 'X' }),
+    for (const invalid of [null, {}, [{}], [{ get id() { throw new Error('untrusted catalog'); } }], Array(1001).fill({ id: 'x', displayName: 'X' }),
       [{ id: 'x'.repeat(257), displayName: 'X' }], [{ id: 'x', displayName: '雪'.repeat(342) }],
       [{ id: 'x', displayName: 'X', description: 'x'.repeat(4097) }],
       [{ id: 'x', displayName: 'X', aliases: Array(65).fill('a') }], [{ id: 'x', displayName: 'X', aliases: ['a'.repeat(257)] }]]) {

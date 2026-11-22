@@ -57,8 +57,10 @@ export function createCursorModels(request: () => Promise<unknown>): { readonly 
         if (signal.aborted || lifetime.signal.aborted) closed();
         void upstream.then((value) => {
           if (done) return;
-          const models = catalog(value);
-          finish(models ? { kind: 'ok', value: models } : fail({ code: 'native-failure', message: 'Cursor returned an invalid catalog.' }));
+          try {
+            const models = catalog(value);
+            finish(models ? { kind: 'ok', value: models } : fail({ code: 'native-failure', message: 'Cursor returned an invalid catalog.' }));
+          } catch { finish(fail({ code: 'native-failure', message: 'Cursor returned an invalid catalog.' })); }
         }, () => finish(fail({ code: 'native-failure', message: 'Cursor model listing failed.' })));
       });
     } },

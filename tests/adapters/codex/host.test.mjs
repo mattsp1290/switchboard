@@ -978,3 +978,20 @@ test('the largest escaped text envelope accompanies 4 MiB and larger echo metada
   assert.equal(reopened.kind, 'ok', JSON.stringify(reopened));
   await reopened.value.close();
 });
+
+test('omitted new options preserve the pre-parity thread and text frame bytes', async () => {
+  const made = subject(); const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow') }, signal);
+    const events = []; opened.value.events.subscribe((event) => { events.push(event); });
+    await opened.value.run({ prompt: prompts.text, signal, hostOperationId: 'default', recordIntent() {} });
+    const frames = made.state.servers[0].raw.filter((line) => ['thread/start', 'turn/start'].includes(JSON.parse(line).method))
+      .map((line) => { const frame = JSON.parse(line); return line.replaceAll(JSON.stringify(frame.id), JSON.stringify('<request>'))
+        .replaceAll(JSON.stringify(made.home), JSON.stringify('<cwd>'))
+        .replaceAll(JSON.stringify(frame.params.threadId ?? '<thread>'), JSON.stringify('<thread>')); });
+    const baseline = JSON.parse(readFileSync(new URL('../../qualification/codex-host-default-frames.json', import.meta.url), 'utf8'));
+    assert.deepEqual(frames, baseline);
+    assert.equal(events.some((event) => event.kind === 'native-item'), false);
+    await opened.value.close();
+  } finally { await made.dispose(); }
+});

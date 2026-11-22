@@ -152,3 +152,13 @@ The existing `./cursor` runtime accepts CursorRequest.images and reports imageIn
 CursorRuntime.models.list uses only the runtime's captured explicit key and creates no agent or store. CursorModel keeps native id/displayName and optional description/aliases, without Codex hidden/default/modality fields. Each call admits at most 1000 records, validates the whole result and preserves order. IDs/aliases are capped at 256 UTF-8 bytes, display names at 1024, descriptions at 4096 and aliases at 64 entries. There is no cache or partial success.
 
 The Cursor SDK has no catalog AbortSignal. Caller abort, close or the 30-second local deadline detaches the public waiter; it does not cancel network IO. One unresolved SDK call retains the runtime's catalog lease even after timeout/abort. Another list is busy until that upstream call settles. Close settles public waiters immediately without waiting indefinitely for upstream. Late fulfillment/rejection is observed and discarded. Fixture catalog success establishes translation and lifetime behavior, not current account entitlement.
+
+## Claude runtime media
+
+The existing `./claude` runtime accepts ClaudeRequest.images with the shared PNG/JPEG limits. Validation/copying precedes writer reservation and process launch. Text-only calls retain the string query prompt. Image calls submit a finite one-message SDKUserMessage iterable containing text followed by native base64 image blocks. The iterable cannot yield tool replies. Resume, persistence, verbatim prompts, explicit key/model, empty tools/MCP and dontAsk remain in force. imageInput reports transport support; it does not enable approvals/tools or expose the SDK's query-scoped catalog as a sessionless service.
+
+## Pi runtime media
+
+The existing `./pi` session accepts either the legacy text string or PiPromptInput `{ text, images? }`. PiSession.imageInput reflects the selected native model's input declaration. A text-only model reports unavailable and rejects nonempty media before native prompt or history changes. Accepted images use native ImageContent without resizing/re-encoding; SettingsManager sets images.autoResize:false. String and empty-image calls retain the existing text path. Provider/model selection stays exact/offline; tools, extensions and retries stay disabled. Registry discovery is separate from a live account model catalog.
+
+The [capability matrix](../qualification/host-capability-parity.md) distinguishes these runtime additions from the host execution contracts and their deliberate deferrals.
