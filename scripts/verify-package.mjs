@@ -282,6 +282,20 @@ void [config, invalid];
 `);
   writeFileSync(join(consumer, 'codex-host-types.json'), JSON.stringify({ ...consumerConfig, files: ['codex-host-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'codex-host-types.json'], consumer);
+  writeFileSync(join(consumer, 'cursor-media-types.test.ts'), `
+import type { CursorRuntime, CursorRequest, CursorModel } from '${manifest.name}/cursor';
+declare const runtime: CursorRuntime;
+const request: CursorRequest = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} };
+const nativeModel: CursorModel = { id: 'native', displayName: 'Native' };
+if (runtime.imageInput.kind === 'supported') void runtime.imageInput.api.maxBytes;
+if (runtime.models.kind === 'supported') {
+  const result = await runtime.models.api.list(new AbortController().signal);
+  if (result.kind === 'ok') void result.value[0]?.aliases;
+}
+void [request, nativeModel];
+`);
+  writeFileSync(join(consumer, 'cursor-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['cursor-media-types.test.ts'] }));
+  run(process.execPath, [compiler, '-p', 'cursor-media-types.json'], consumer);
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';

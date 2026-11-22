@@ -144,3 +144,11 @@ Failed Codex results may carry `nativeError`: numeric RPC code for turn/start re
 Direct `models.list(signal)` requests model/list on the open connection without creating a session. It preserves the native five-field records and order, follows at most eight pages, accepts at most 1000 records and has one five-second deadline. Malformed/paging/error results return no partial list. Caller cancellation and close return closed; deadline expiry returns unavailable. Routes report unavailable because the route fixes the model.
 
 See [Codex direct qualification](../qualification/codex-host-direct.md) for request shapes, bounds and the distinction between fixture coverage and native evidence.
+
+## Cursor runtime media and catalog
+
+The existing `./cursor` runtime accepts CursorRequest.images and reports imageInput support with the shared 4 MiB/16-image PNG/JPEG limits. Images are validated and copied before reserving a writer or creating/resuming an agent. Empty/omitted images preserve string sends; image requests use the SDK's structured message. This runtime does not acquire a host approval contract through this addition.
+
+CursorRuntime.models.list uses only the runtime's captured explicit key and creates no agent or store. CursorModel keeps native id/displayName and optional description/aliases, without Codex hidden/default/modality fields. Each call admits at most 1000 records, validates the whole result and preserves order. IDs/aliases are capped at 256 UTF-8 bytes, display names at 1024, descriptions at 4096 and aliases at 64 entries. There is no cache or partial success.
+
+The Cursor SDK has no catalog AbortSignal. Caller abort, close or the 30-second local deadline detaches the public waiter; it does not cancel network IO. One unresolved SDK call retains the runtime's catalog lease even after timeout/abort. Another list is busy until that upstream call settles. Close settles public waiters immediately without waiting indefinitely for upstream. Late fulfillment/rejection is observed and discarded. Fixture catalog success establishes translation and lifetime behavior, not current account entitlement.
