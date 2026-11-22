@@ -99,7 +99,8 @@
     "build:cursor": "tsc -p adapters/cursor/tsconfig.json",
     "check:cursor": "tsc -p tsconfig.json --emitDeclarationOnly --outDir dist && tsc -p adapters/cursor/tsconfig.json --noEmit",
     "verify:observability:lotel": "node scripts/verify-observability-lotel.mjs",
-    "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs"
+    "verify:observability:datadog": "node scripts/verify-observability-datadog.mjs",
+    "qualify:codex-host-direct": "node scripts/qualify-codex-host-direct.mjs"
   },
   "devDependencies": {
     "@ag-ui/core": "https://raw.githubusercontent.com/mattsp1290/agentui/661216eab627be33067951ffad7a1691127a80fe/vendor/ag-ui/ed2c1d5b63299d3f08676a1418cc2640bbe55fd1/ag-ui-core-1.0.4.tgz",

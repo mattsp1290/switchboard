@@ -20,10 +20,18 @@ function frameModel(field) {
 let sent = false;
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line);
+  if (config.mode === 'images' && frame.type === 'user') {
+    writeFileSync('user-frame.json', JSON.stringify(frame));
+    send({ type: 'assistant', session_id: id, parent_tool_use_id: null,
+      message: { id: 'image-result', model: frameModel('assistantModel'), content: [{ type: 'text', text: 'image received' }] } });
+    send({ type: 'result', subtype: 'success', is_error: false, session_id: id });
+    continue;
+  }
   if (frame.type !== 'control_request' || sent) continue;
   sent = true;
   send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response: {} } });
   send({type:'system',subtype:'init',session_id:id,model:frameModel('initModel'),apiKeySource:'ANTHROPIC_API_KEY',tools:[],mcp_servers:[]});
+  if (config.mode === 'images') continue;
   if (config.mode === 'init-only' || config.mode === 'stubborn-init') continue;
   if (config.mode === 'missing') { send({type:'result',subtype:'error_during_execution',is_error:true,session_id:id}); continue; }
   if (config.mode === 'stream-rich') {

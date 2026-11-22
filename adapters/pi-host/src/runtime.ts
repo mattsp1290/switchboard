@@ -7,7 +7,7 @@ import type { AssistantMessage, Message, Model, Provider, Usage } from '@earendi
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import {
-  answeredToolObservations, createDispatchOperation, createEventStream, emitObservation, emitRunStarted,
+  hostImagesRequested, declaredToolObservations, createDispatchOperation, createEventStream, emitObservation, emitRunStarted,
   isOptionalObservationListener, jsonString, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
   segmentTerminal, usageFromCounts,
 } from '#switchboard';
@@ -29,7 +29,7 @@ class OpenRefusal extends Error {
 
 type WorkResult =
   | { readonly kind: 'complete'; readonly text: string; readonly usage: HostUsage }
-  | { readonly kind: 'pending'; readonly calls: readonly HostToolCall[]; readonly usage: HostUsage }
+  | { readonly kind: 'pending'; readonly approvals: readonly []; readonly calls: readonly HostToolCall[]; readonly usage: HostUsage }
   | { readonly kind: 'model-failed'; readonly error: HostAdapterError };
 
 function usageCounters(input = 0, output = 0): Usage {
@@ -443,12 +443,16 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     let agentRun: Promise<void> | undefined;
     let undoContinuation = () => {};
     let continuedIds: readonly string[] = [];
+    let continuedResults: ReadonlyMap<string, { readonly text: string; readonly isError: boolean }> = new Map();
     const deliveries: { readonly target: { readonly kind: 'tool'; readonly session: SessionReference; readonly nativeToolCallId: string } }[] = [];
     const reference = () => sessionReference;
     function exportState(): PiHostSessionState | undefined {
       const fresh = turnsFrom(session.messages.slice(seen).filter((message): message is Message =>
         message.role === 'system' || message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult'), segmentNumber);
-      const next = { formatVersion: 1 as const, sessionId: session.sessionId, turns: [...current.turns, ...fresh] };
+      const next = { formatVersion: 1 as const, sessionId: session.sessionId, turns: [...current.turns.map((turn) => {
+        const result = turn.role === 'tool' && turn.toolCallId ? continuedResults.get(turn.toolCallId) : undefined;
+        return result ? { ...turn, text: result.text, pending: false } : turn;
+      }), ...fresh] };
       if (!validatePiHostSessionState(next)) return undefined;
       seen = session.messages.length;
       segmentNumber += 1;
@@ -481,13 +485,20 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       const calls = toolCalls(assistant?.role === 'assistant' ? assistant : undefined);
       const exported = exportState();
       if (exported === undefined) return { kind: 'model-failed', error: { code: 'native-failure', message: 'The exported session state does not match the published schema.' } };
+      pending = calls;
+      for (const id of continuedIds) answered.add(id);
+      for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
+      continuedIds = []; continuedResults = new Map(); deliveries.length = 0;
+      undoContinuation = () => {};
       options.onState?.(exported);
-      if (calls.length > 0) { pending = calls; return { kind: 'pending', calls, usage }; }
-      pending = [];
+      if (calls.length > 0) return { kind: 'pending', calls, approvals: [], usage };
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
     async function dispatch(input: HostSegmentRequest, work: () => Promise<void>): Promise<HostSegmentResult> {
-      const { hostOperationId, recordIntent, signal: hostSignal, onObservation } = input;
+      const { hostOperationId, recordIntent, onObservation } = input;
+      let hostSignal: AbortSignal;
+      try { hostSignal = AbortSignal.any([input.signal]); }
+      catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'A segment requires a signal.' }, write: { kind: 'not-attempted' } }; }
       if (!isOptionalObservationListener(onObservation)) {
         return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
       }
@@ -517,18 +528,14 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
               const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
               if (aborted) {
                 undoContinuation();
-                continuedIds = [];
+                continuedIds = []; continuedResults = new Map();
                 deliveries.length = 0;
                 return { kind: 'outcome-unknown' };
               }
               const result = await finish(hostSignal);
-              if (result.kind === 'model-failed') undoContinuation();
-              else {
-                for (const id of continuedIds) answered.add(id);
-                for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
+              if (result.kind === 'model-failed') {
+                undoContinuation(); continuedIds = []; continuedResults = new Map(); deliveries.length = 0;
               }
-              continuedIds = [];
-              deliveries.length = 0;
               return { kind: 'conclusive', evidence, result };
             },
           });
@@ -568,11 +575,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     const adapter: PiHostAdapter = {
       identity: piHostIdentity,
       capabilities: {
+        imageInput: { kind: 'unsupported', reason: 'image input is not supported' },
+        models: { kind: 'unsupported', reason: 'model catalog is not supported' },
         maxPendingPerMessage: piHostLimits.maxPendingPerMessage, continuation: 'fresh-process', usage: 'segment',
         toolDeclarations: 'fixed-at-creation',
         inspect: { kind: 'supported', api: { pending: async (pendingSignal) => pendingSignal.aborted
           ? { kind: 'error', error: { code: 'native-failure', message: 'The pending read was aborted.' } }
-          : { kind: 'ok', value: pending } } },
+          : { kind: 'ok', value: { calls: pending, approvals: [] } } } },
         fingerprint: { kind: 'supported', api: { validity: 'segment-end', read: async () => {
           const opaque = createHash('sha256').update(JSON.stringify(current)).digest('hex');
           const checkpoint = parseCheckpointReference({
@@ -586,11 +595,15 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       events: events,
       state: () => current,
       async run(input) {
-        if (typeof input.prompt !== 'string' || input.prompt.length === 0 || input.prompt.length > piHostLimits.maxText) {
+        let requestedImages: boolean;
+        try { const images = input.images; requestedImages = hostImagesRequested(images); } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'image input is malformed' }, write: { kind: 'not-attempted' } }; }
+        if (requestedImages) return { kind: 'failed', error: { code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, write: { kind: 'not-attempted' } };
+        const prompt = input.prompt;
+        if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > piHostLimits.maxText) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The prompt must be a non-empty string.' }, write: { kind: 'not-attempted' } };
         }
         return dispatch(input, async () => {
-          await session.prompt(input.prompt, { expandPromptTemplates: false });
+          await session.prompt(prompt, { expandPromptTemplates: false });
           await session.waitForIdle();
         });
       },
@@ -613,9 +626,15 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           }
           const result = parsed.value.outcome.result;
           const data = result.kind === 'ok' ? result.value.data : result.error.data;
-          replacements.set(id, { text: JSON.stringify(data) ?? 'null', isError: result.kind === 'error' });
+          let text: string;
+          try { const serialized = JSON.stringify(data);
+            if (serialized === undefined || serialized.length > piHostLimits.maxText) throw new Error('unexportable tool result');
+            text = serialized;
+            replacements.set(id, { text, isError: result.kind === 'error' });
+          } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'The tool result must be JSON.' }, write: { kind: 'not-attempted' } }; }
           if (input.onObservation) {
-            observedAnswers.push(...answeredToolObservations(id, call.name, call.arguments, result));
+            observedAnswers.push(...declaredToolObservations(id, call.name, call.arguments),
+              { kind: 'tool', callId: id, name: call.name, phase: result.kind === 'ok' ? 'completed' : 'failed', resultJson: text });
           }
         }
         if (replacements.size !== expected.size) {
@@ -654,6 +673,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           undoContinuation = restore;
           for (const o of observedAnswers) observe(o);
           continuedIds = [...replacements.keys()];
+          continuedResults = replacements;
           for (const call of expected.values()) deliveries.push({ target: call.pending.target });
           try {
             agentRun = session.agent.continue();
@@ -669,13 +689,17 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         });
       },
       async interrupt({ timeoutMs }) {
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return { kind: 'unconfirmed-within-bound' };
         const stop = stopping;
         const done = stopped;
         if (!stop || !done) return { kind: 'terminal-observed' };
         stop();
-        const timeout = new Promise<'timeout'>((resolve) => { setTimeout(() => resolve('timeout'), timeoutMs); });
-        const winner = await Promise.race([done.then(() => 'done' as const), timeout]);
-        return winner === 'done' ? { kind: 'terminal-observed' } : { kind: 'unconfirmed-within-bound' };
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const timeout = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); });
+          const winner = await Promise.race([done.then(() => 'done' as const), timeout]);
+          return winner === 'done' ? { kind: 'terminal-observed' } : { kind: 'unconfirmed-within-bound' };
+        } finally { clearTimeout(timer); }
       },
       async close() {
         const running = agentRun;

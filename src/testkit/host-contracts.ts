@@ -12,6 +12,10 @@ export interface HostConformanceSubject {
   readonly launch: (mode: 'allow' | 'deny') => HostLaunch;
   /** `attempts` counts host launcher calls; `signals` counts signals sent to host-owned processes. */
   readonly launches: () => { readonly attempts: number; readonly signals: number };
+  /** Optional fixture counters expose IO and a controllable turn held after pending. */
+  readonly nativeRequests?: () => number;
+  /** Optional controllable held-turn fixture; native request and settlement assertions require it. */
+  readonly heldTurn?: { readonly interruptRequests: () => number };
   readonly tool: HostToolDeclaration;
   /** Prompts the subject's model answers with text, one call of `tool`, or two calls of `tool` in one message. */
   readonly prompts: { readonly text: string; readonly toolCall: string; readonly twoToolCalls: string };
@@ -89,6 +93,41 @@ async function segments(factory: HostConformanceFactory, signal: AbortSignal) {
     assert.deepEqual(adapter.identity, harness.subject.registration.identity);
     assert.equal(capabilities.toolDeclarations, 'fixed-at-creation');
     assert(Number.isSafeInteger(capabilities.maxPendingPerMessage) && capabilities.maxPendingPerMessage >= 1);
+    if (capabilities.imageInput.kind !== 'supported') {
+      const before = harness.subject.launches().attempts;
+      const writes = harness.subject.nativeRequests?.();
+      let intents = 0;
+      const refused = kind(await adapter.run({ prompt: harness.subject.prompts.text, signal, hostOperationId: 'image-refusal',
+        images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }],
+        recordIntent: () => { intents++; } }), 'failed');
+      assert.equal(refused.write.kind, 'not-attempted');
+      assert.equal(refused.error.code, 'unsupported'); assert.equal(intents, 0);
+      assert.equal(harness.subject.launches().attempts, before);
+      if (writes !== undefined) assert.equal(harness.subject.nativeRequests?.(), writes);
+    }
+    if (capabilities.imageInput.kind === 'supported') {
+      for (const images of [null, {}, [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR=='}]]) {
+        const result = kind(await Reflect.apply(adapter.run, adapter, [{ prompt: harness.subject.prompts.text, signal, hostOperationId: 'invalid-media',
+          images,
+          recordIntent: () => { throw new Error('Malformed media must not record intent.'); } }]), 'failed');
+        assert.equal(result.error.code, 'invalid-input'); assert.equal(result.write.kind, 'not-attempted');
+      }
+    }
+    const malformed = kind(await adapter.run({ prompt: harness.subject.prompts.text, signal, hostOperationId: 'throwing-media',
+      get images(): never { throw new Error('untrusted'); }, recordIntent() { throw new Error('Malformed media must not record intent.'); } }), 'failed');
+    assert.equal(malformed.error.code, 'invalid-input'); assert.equal(malformed.write.kind, 'not-attempted');
+    const poisoned = new Proxy([], { get(target, key) { if (key === 'length') throw new Error('untrusted'); return Reflect.get(target, key); } });
+    const poisonedResult = kind(await Reflect.apply(adapter.run, adapter, [{ prompt: harness.subject.prompts.text, images: poisoned,
+      signal, hostOperationId: 'poisoned-media', recordIntent() { throw new Error('Malformed media must not record intent.'); } }]), 'failed');
+    assert.equal(poisonedResult.error.code, 'invalid-input'); assert.equal(poisonedResult.write.kind, 'not-attempted');
+    const hidden = new Proxy([{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], {
+      get(target, key) { return key === 'length' ? 0 : Reflect.get(target, key); },
+    });
+    let hiddenIntents = 0;
+    const hiddenResult = kind(await Reflect.apply(adapter.run, adapter, [{ prompt: harness.subject.prompts.text, images: hidden,
+      signal, hostOperationId: 'hidden-media', recordIntent() { hiddenIntents++; } }]), 'failed');
+    assert.equal(hiddenResult.error.code, adapter.capabilities.imageInput.kind === 'supported' ? 'invalid-input' : 'unsupported');
+    assert.equal(hiddenResult.write.kind, 'not-attempted'); assert.equal(hiddenIntents, 0);
     const observed = await collect(adapter, (events) => events.some((event) => event.kind === 'text-delta'), signal);
     const intents: DispatchIdentity[] = [];
     let releaseRecorded = () => {};
@@ -109,6 +148,8 @@ async function segments(factory: HostConformanceFactory, signal: AbortSignal) {
     assert.equal(typeof complete.text, 'string');
     assert.equal(complete.usage.scope, capabilities.usage);
     await observed.settled();
+    kind(await adapter.run({ prompt: harness.subject.prompts.text, signal, hostOperationId: 'empty-media', images: [], recordIntent() {} }), 'complete');
+
     const next: DispatchIdentity[] = [];
     kind(await harness.segment(adapter, harness.subject.prompts.text, next), 'complete');
     assert.deepEqual(next[0]?.target, { kind: 'session', reference: complete.session });
@@ -161,6 +202,7 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
     const ended = (events: readonly HostAdapterEvent[]) => events.findIndex((event) => event.kind === 'tool-call-end');
     const observed = await collect(adapter, (events) => ended(events) >= 0, signal);
     const pending = kind(await harness.segment(adapter, subject.prompts.toolCall), 'pending');
+    assert(Array.isArray(pending.approvals));
     assert.equal(pending.calls.length, 1);
     const [call] = pending.calls as [HostToolCall];
     assert.equal(call.name, subject.tool.name);
@@ -172,7 +214,9 @@ async function interaction(factory: HostConformanceFactory, signal: AbortSignal)
 
     if (adapter.capabilities.inspect.kind === 'supported') {
       const read = ok(await adapter.capabilities.inspect.api.pending(signal));
-      assert.deepEqual(read.map((value) => value.pending.target), [call.pending.target]);
+      assert.deepEqual(read.calls.map((value) => value.pending.target), [call.pending.target]);
+      assert(Array.isArray(read.approvals), 'inspect includes the required approvals array');
+      assert.deepEqual(read.approvals, pending.approvals);
     }
     const intents: DispatchIdentity[] = [];
     for (const invalid of [[], [answer(call), answer(call)],
@@ -264,6 +308,17 @@ async function interrupt(factory: HostConformanceFactory, signal: AbortSignal) {
     release();
     kind(await running, 'complete');
     assert.equal((await adapter.interrupt({ timeoutMs: 20 })).kind, 'terminal-observed');
+    const pending = kind(await harness.segment(adapter, subject.prompts.toolCall), 'pending');
+    const requests = subject.heldTurn?.interruptRequests();
+    const held = await adapter.interrupt({ timeoutMs: 100 });
+    if (requests !== undefined) {
+      assert.equal(subject.heldTurn?.interruptRequests(), requests + 1, 'the controllable held fixture reaches native interrupt');
+      if (adapter.capabilities.inspect.kind === 'supported') {
+        const current = ok(await adapter.capabilities.inspect.api.pending(signal));
+        if (held.kind === 'unconfirmed-within-bound') assert.deepEqual(current.calls.map((call) => call.pending.target), pending.calls.map((call) => call.pending.target));
+        else assert.equal(current.calls.length + current.approvals.length, 0, 'acknowledgement or terminal withdraws the held fixture interactions');
+      }
+    }
     ok(await adapter.close());
     assert.equal(subject.launches().signals, 0, 'the adapter never signals a host-owned process');
   });

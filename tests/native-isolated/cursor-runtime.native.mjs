@@ -10,7 +10,7 @@ import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 // The SDK seam is internal to the packed entry, so it is loaded by file URL past the exports map.
 const { sdk } = await import(new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor')).href);
 assert.equal(sdk.Store, JsonlLocalAgentStore);
-const original = { create: sdk.create, resume: sdk.resume, Store: sdk.Store };
+const original = { create: sdk.create, resume: sdk.resume, Store: sdk.Store, listModels: sdk.listModels };
 
 const caller = 'caller-model';
 const key = 'fixture-key-never-log';
@@ -19,6 +19,7 @@ function restore() {
   sdk.create = original.create;
   sdk.resume = original.resume;
   sdk.Store = original.Store;
+  sdk.listModels = original.listModels;
 }
 
 async function workspace() {
@@ -46,9 +47,9 @@ function serial(name, fn) {
   const previous = chain;
   let gate = () => {};
   chain = new Promise(resolve => { gate = resolve; });
-  test(name, async () => {
+  test(name, async (t) => {
     await previous;
-    try { await fn(); }
+    try { await fn(t); }
     finally { gate(); }
   });
 }
@@ -61,6 +62,7 @@ function install(scripted) {
   let sends = 0;
   const state = {
     createError: undefined, resumeError: undefined, sendError: undefined, scripts: scripted,
+    messages: [],
     waitStatus: 'finished', cancelError: undefined, holdCreate: undefined, holdSend: undefined,
     holdStream: undefined, holdWait: undefined, holdDispose: undefined, disposals: [],
   };
@@ -70,7 +72,8 @@ function install(scripted) {
   function agent(id) {
     return {
       agentId: id,
-      async send() {
+      async send(message) {
+        state.messages.push(structuredClone(message));
         sends += 1;
         if (state.holdSend) await state.holdSend;
         if (state.sendError) throw state.sendError;
@@ -624,3 +627,164 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
 });
 
 const SNAPSHOT_BYTES = 4 * 1024 * 1024;
+
+serial('Cursor image sends preserve exact bytes on create and resume and refuse invalid input before admission', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('one')], [assistant('two')], [assistant('three')]]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  try {
+    assert.equal(runtime.imageInput.kind, 'supported');
+    const first = await runtime.start({ text: 'legacy', onEvent() {} }); await first.finished;
+    const images = [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194304, 1).toString('base64')}` }];
+    const expected = images[0].dataUrl.split(',')[1];
+    const second = runtime.start({ text: 'image', images, onEvent() {} });
+    images[0].dataUrl = 'mutated';
+    await (await second).finished;
+    const jpeg = { mediaType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,YQ==' };
+    await (await runtime.start({ text: 'resume image', agentId: first.agentId, images: [jpeg], onEvent() {} })).finished;
+    assert.deepEqual(fake.state.messages, ['legacy', { text: 'image', images: [{ data: expected, mimeType: 'image/png' }] },
+      { text: 'resume image', images: [{ data: 'YQ==', mimeType: 'image/jpeg' }] }]);
+    const before = fake.created.length + fake.resumed.length;
+    for (const invalid of [null, {}, [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR==' }],
+      [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` }]]) {
+      await assert.rejects(runtime.start({ text: 'invalid', images: invalid, agentId: first.agentId, onEvent() {} }), /Cursor operation failed/);
+    }
+    assert.equal(fake.created.length + fake.resumed.length, before);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor catalogs use each explicit key, remain sessionless and copy only native metadata', async () => {
+  const place = await workspace();
+  const fake = install([]);
+  const one = createCursorRuntime(options(place.cwd, place.session));
+  const two = createCursorRuntime(options(place.cwd, place.session, { apiKey: 'second-explicit-key' }));
+  const calls = [];
+  let returned = [];
+  sdk.listModels = async (options) => { calls.push(options); return returned; };
+  const signal = new AbortController().signal;
+  try {
+    assert.equal((await one.models.api.list(Object.create(AbortSignal.prototype))).error.code, 'invalid-input');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(await one.models.api.list(signal), { kind: 'ok', value: [] });
+    returned = [{ id: 'native', displayName: 'Native', description: 'description', aliases: ['alias'], parameters: ['omit'], variants: ['omit'] }];
+    const result = await two.models.api.list(signal);
+    returned[0].aliases.push('mutation');
+    assert.deepEqual(result.value, [{ id: 'native', displayName: 'Native', description: 'description', aliases: ['alias'] }]);
+    assert.equal(Object.hasOwn(result.value[0], 'hidden'), false);
+    assert.equal(Object.hasOwn(result.value[0], 'inputModalities'), false);
+    assert.deepEqual(calls, [{ apiKey: key }, { apiKey: 'second-explicit-key' }]);
+    assert.deepEqual([fake.created.length, fake.resumed.length, fake.roots.length], [0, 0, 0]);
+    for (const invalid of [null, {}, [{}], [{ get id() { throw new Error('untrusted catalog'); } }], Array(1001).fill({ id: 'x', displayName: 'X' }),
+      [{ id: 'x'.repeat(257), displayName: 'X' }], [{ id: 'x', displayName: '雪'.repeat(342) }],
+      [{ id: 'x', displayName: 'X', description: 'x'.repeat(4097) }],
+      [{ id: 'x', displayName: 'X', aliases: new Array(1) }], [{ id: 'x', displayName: 'X', aliases: Array(65).fill('a') }], [{ id: 'x', displayName: 'X', aliases: ['a'.repeat(257)] }]]) {
+      returned = invalid;
+      assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+    }
+    const changesLength = (entries) => {
+      let reads = 0;
+      return new Proxy(entries, { get(target, key) { return key === 'length' ? (++reads === 1 ? 1 : target.length) : Reflect.get(target, key); } });
+    };
+    for (const invalid of [changesLength(Array(1001).fill({ id: 'native', displayName: 'Native' })),
+      [{ id: 'native', displayName: 'Native', aliases: changesLength(Array(65).fill('alias')) }],
+      [{ id: ' native ', displayName: 'Native' }], [{ id: '', displayName: 'Native' }]]) {
+      returned = invalid; assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+    }
+    sdk.listModels = async () => { throw new Error('must not escape'); };
+    assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+  } finally { await one.close(); await two.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor catalog timeout and abort detach the waiter while retaining one upstream lease', async (t) => {
+  const place = await workspace();
+  install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  const signal = new AbortController().signal;
+  let calls = 0;
+  let held = Promise.withResolvers();
+  sdk.listModels = () => { calls++; return held.promise; };
+  try {
+    assert.equal((await runtime.models.api.list(AbortSignal.abort())).error.code, 'closed');
+    assert.equal(calls, 0);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const waiting = runtime.models.api.list(signal);
+    t.mock.timers.tick(30000);
+    assert.equal((await waiting).error.code, 'unavailable');
+    assert.equal((await runtime.models.api.list(signal)).error.code, 'busy');
+    held.resolve([{ id: 'late', displayName: 'Late' }]);
+    await Promise.resolve(); await Promise.resolve();
+    held = Promise.withResolvers();
+    const control = new AbortController();
+    control.signal.addEventListener('abort', (event) => event.stopImmediatePropagation());
+    const aborted = runtime.models.api.list(control.signal);
+    control.abort();
+    assert.equal((await aborted).error.code, 'closed');
+    assert.equal((await runtime.models.api.list(signal)).error.code, 'busy');
+    await runtime.close();
+    assert.equal((await runtime.models.api.list(signal)).error.code, 'closed');
+    held.reject(new Error('late failure is observed'));
+    await Promise.resolve();
+  } finally { t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('closing Cursor settles an active catalog waiter without waiting for its uncancellable upstream', async () => {
+  const place = await workspace(); install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  const held = Promise.withResolvers(); sdk.listModels = () => held.promise;
+  try {
+    const waiting = runtime.models.api.list(new AbortController().signal);
+    await runtime.close();
+    assert.equal((await waiting).error.code, 'closed');
+    held.resolve([{ malformed: true }]);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor image getters cannot reserve the same writer twice', async () => {
+  const place = await workspace(); const fake = install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  try {
+    const first = await runtime.start({ text: 'first', onEvent() {} }); await first.finished;
+    let inner;
+    const outer = runtime.start({ text: 'outer', agentId: first.agentId, onEvent() {}, get images() {
+      inner = runtime.start({ text: 'inner', agentId: first.agentId, onEvent() {} }); return [];
+    } });
+    await assert.rejects(outer, /Cursor operation failed/); await (await inner).finished;
+    assert.equal(fake.resumed.length, 1);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor discards fulfilled and rejected SDK results after the monotonic deadline even before timers run', async (t) => {
+ const place=await workspace();install([]);let now=0;t.mock.method(performance,'now',()=>now);
+ const runtime=createCursorRuntime(options(place.cwd,place.session));const signal=new AbortController().signal;
+ try {
+  for(const reject of [false,true]){const held=Promise.withResolvers();sdk.listModels=()=>held.promise;
+   const waiting=runtime.models.api.list(signal);now+=30001;
+   if(reject)held.reject(new Error('late'));else held.resolve([{id:'late',displayName:'Late'}]);
+   assert.equal((await waiting).error.code,'unavailable');
+  }
+  const held=Promise.withResolvers();sdk.listModels=()=>held.promise;
+  const parsing=runtime.models.api.list(signal);
+  held.resolve([{get id(){now+=30001;return 'late-validation';},displayName:'Late'}]);
+  assert.equal((await parsing).error.code,'unavailable');
+  const throwing=Promise.withResolvers();sdk.listModels=()=>throwing.promise;
+  const lateThrow=runtime.models.api.list(signal);throwing.resolve([{get id(){now+=30001;throw new Error('late validation');},displayName:'Late'}]);
+  assert.equal((await lateThrow).error.code,'unavailable');
+  sdk.listModels=()=>{now+=30001;throw new Error('late synchronous SDK');};
+  assert.equal((await runtime.models.api.list(signal)).error.code,'unavailable');
+  sdk.listModels=async()=>[];assert.deepEqual((await runtime.models.api.list(signal)).value,[]);
+ }finally{await runtime.close();restore();await place.remove();}
+});
+
+serial('Cursor catalog startup consumes its deadline and proxy arrays cannot hide entries',async(t)=>{
+ const place=await workspace();install([]);let now=0;t.mock.method(performance,'now',()=>now);t.mock.timers.enable({apis:['setTimeout']});
+ const runtime=createCursorRuntime(options(place.cwd,place.session));const signal=new AbortController().signal;const held=Promise.withResolvers();
+ try{
+  sdk.listModels=()=>{now+=5000;return held.promise;};let result;const pending=runtime.models.api.list(signal).then(v=>{result=v;});
+  t.mock.timers.tick(24999);await Promise.resolve();assert.equal(result,undefined);t.mock.timers.tick(1);await pending;assert.equal(result.error.code,'unavailable');
+  assert.equal((await runtime.models.api.list(signal)).error.code,'busy');held.resolve([]);await Promise.resolve();await Promise.resolve();
+  for(const value of [new Proxy([{id:'hidden',displayName:'Hidden'}],{get(target,key){return key==='length'?0:Reflect.get(target,key);}}),[{id:'ok',displayName:'OK',aliases:new Proxy(['hidden'],{get(target,key){return key==='length'?0:Reflect.get(target,key);}})}]]){
+   sdk.listModels=async()=>value;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
+  }
+  const growing=[{get id(){growing.push({id:'late',displayName:'Late'});return'first';},displayName:'First'}];sdk.listModels=async()=>growing;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
+ }finally{t.mock.timers.reset();await runtime.close();restore();await place.remove();}
+});

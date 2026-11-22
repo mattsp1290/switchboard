@@ -2,8 +2,12 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
 import { sdk } from './sdk.js';
-import { createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
-import type { RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
+import type { CursorMessage } from './sdk.js';
+import { createCursorModels } from './models.js';
+import type { CursorModelsApi } from './models.js';
+export type { CursorModel, CursorModelsApi, CursorModelsError } from './models.js';
+import { hostImageLimits, parseHostImages, createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
+import type { Capability, HostImageInput, HostImageInputApi, RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
 
@@ -19,6 +23,7 @@ export interface CursorTurn {
   abort(): Promise<void>;
 }
 export interface CursorRequest {
+  readonly images?: readonly HostImageInput[];
   readonly text: string;
   readonly agentId?: string;
   readonly onEvent: (event: CursorEvent) => void;
@@ -44,6 +49,8 @@ export type CursorReadinessReport = {
   | { readonly verdict: 'unverified';
     readonly remediation: { readonly code: 'retry_check' | 'check_cancelled' | 'runtime_closed' | 'check_unavailable'; readonly message: string } });
 export interface CursorRuntime {
+  readonly imageInput: Capability<HostImageInputApi>;
+  readonly models: Capability<CursorModelsApi>;
   checkReady(): Promise<void>;
   readinessReport(options?: { readonly signal?: AbortSignal }): Promise<CursorReadinessReport>;
   start(request: CursorRequest): Promise<CursorTurn>;
@@ -122,17 +129,8 @@ function workspaceErrno(error: unknown): 'inaccessible' | 'unknown' {
 
 type Step = 'next' | 'request' | 'bad-tool' | 'overflow';
 
-interface AgentHandle {
-  readonly agentId: string;
-  send(message: string): Promise<RunHandle>;
-  [Symbol.asyncDispose](): Promise<void>;
-}
-interface RunHandle {
-  supports(operation: 'cancel'): boolean;
-  stream(): AsyncIterable<unknown>;
-  wait(): Promise<{ status: string }>;
-  cancel(): Promise<void>;
-}
+type AgentHandle = Awaited<ReturnType<typeof sdk.create>>;
+type RunHandle = Awaited<ReturnType<AgentHandle['send']>>;
 
 export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime {
   const read = readCursorOptions(input);
@@ -146,6 +144,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   const cancellers = new Set<() => Promise<void>>();
   let closed = false;
   let closing: Promise<void> | undefined;
+  const catalog = createCursorModels(() => sdk.listModels({ apiKey: options.apiKey }));
 
   function dispose(agent: AgentHandle): Promise<void> {
     const existing = disposals.get(agent);
@@ -243,6 +242,12 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   function start(request: CursorRequest): Promise<CursorTurn> {
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
     const { text, agentId: requested, onEvent, onObservation } = request;
+    let images: ReturnType<typeof parseHostImages>;
+    try { const value = request.images; images = parseHostImages(value === undefined ? [] : value); }
+    catch { return Promise.reject(failure()); }
+    if (images.kind === 'error') return Promise.reject(failure());
+    const message: CursorMessage = images.value.length === 0 ? text : { text,
+      images: images.value.map((image) => ({ data: image.base64, mimeType: image.mediaType })) };
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
       || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
@@ -296,7 +301,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
           writers.add(agent.agentId);
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
-        const sending = limitAdmission(agent.send(text), ownLateRun);
+        const sending = limitAdmission(agent.send(message), ownLateRun);
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
@@ -347,8 +352,10 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   }
 
   return {
+    imageInput: { kind: 'supported', api: hostImageLimits }, models: { kind: 'supported', api: catalog.api },
     checkReady, readinessReport, start, close() {
       closed = true;
+      catalog.close();
       if (!closing) {
         closing = shutdown().then(() => undefined, (error: unknown) => {
           closing = undefined;

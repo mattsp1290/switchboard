@@ -1,3 +1,4 @@
+import { codexActivityMethods } from './activity.js';
 import { addAbortListener } from 'node:events';
 import type { Outcome } from '../../core/contracts.js';
 import { createDispatchOperation } from '../../core/dispatch.js';
@@ -17,7 +18,7 @@ import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
 import type { BorrowedChannel, CloseReport, CodexTransport, EndReason, Observation, SendFailure, TransportBounds,
   TransportOptions } from './transport.js';
-import type { RpcError } from './wire.js';
+import type { RpcError, RpcReply } from './wire.js';
 
 /**
  * Process-local writer reservations keyed by the complete validated canonical SessionReference. One registry spans
@@ -60,7 +61,7 @@ export interface CodexExecutionOptions {
   readonly signal: AbortSignal;
   readonly writers?: CodexWriters;
   /**
-   * Host attestation that the app-server process exited: the only release of this execution's reservations. Required:
+   * Host attestation after the app-server process and its stdout close (not an early child exit event): the only release of this execution's reservations. Required:
    * after `close()` detaches the channel, a later channel `process-exit` can no longer be observed.
    */
   readonly processExit: PromiseLike<unknown>;
@@ -131,6 +132,7 @@ export type CodexNativeEvent = { readonly kind: 'native'; readonly method: strin
   readonly evidence: 'unqualified' };
 export type CodexExecutionEvent = CodexNativeEvent | { readonly kind: 'unmatched-reply' };
 export interface CodexTurnOptions {
+  readonly maxFrameBytes?: number;
   readonly hostOperationId: string;
   /** Native `UserInput[]`, passed through. */
   readonly input: readonly unknown[];
@@ -153,7 +155,21 @@ export interface CodexSessionCloseReport {
   /** False until host-attested process exit: neither the turn terminal nor `thread/unsubscribe` unloads the thread. */
   readonly released: boolean;
 }
+export interface CodexInterruptResult {
+  readonly step: CleanupStep;
+  readonly turnId: string | null;
+  readonly rejection: { readonly code: number; readonly message: string } | null;
+}
+export interface CodexSessionIntake {
+  readonly notification?: (method: string, params: unknown) => void;
+  readonly turnEvent?: (event: CodexSessionEvent) => void;
+  readonly interrupted?: (turnId: string) => void;
+}
 export interface CodexSession {
+  /** Trusted ordered protocol intake. Consumer observations use events instead. */
+  readonly intake: (listener: CodexSessionIntake) => Outcome<() => void, { readonly code: 'closed' | 'capacity' }>;
+  /** Server requests may wait for the existing turn acknowledgement, without remembering completed IDs. */
+  readonly matchesTurn: (turnId: string, signal: AbortSignal) => boolean | Promise<boolean>;
   readonly reference: SessionReference;
   readonly threadId: string;
   /** `created`: start-only until a first turn is accepted; such an ID is not durable across process exit. */
@@ -166,9 +182,9 @@ export interface CodexSession {
   /**
    * Cancel without close: at most one native `turn/interrupt` per turn, shared with `close`. Reports the request only;
    * termination is the turn's `completion`. `not-needed`: no active turn, it settled, or no native turn id within
-   * `cleanupTimeoutMs`. Never closes the session, releases the writer or resends; unsubscribing is not cancellation.
+   * the caller signal, or the default `cleanupTimeoutMs` when omitted. Never closes the session, releases the writer or resends; unsubscribing is not cancellation.
    */
-  readonly interrupt: () => Promise<CleanupStep>;
+  readonly interrupt: (options?: { readonly signal?: AbortSignal }) => Promise<CodexInterruptResult>;
 }
 export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: CodexSession }
   | Exclude<CodexResumePreparation, { readonly kind: 'ready' }>;
@@ -178,6 +194,8 @@ type Access<Features = CodexThreadFeatures> = { readonly bounds: SessionDiscover
   /** Placed as native `developerInstructions` on thread/start and thread/resume. */
   readonly instructions?: string };
 export interface CodexExecution {
+  readonly flushIntake: () => void;
+  readonly processExited: () => boolean;
   /** pg51 scope over this connection, for `codexSessions` reads. Writer methods go only through this module. */
   readonly scope: CodexSessionScope;
   readonly events: EventObserver<CodexExecutionEvent>;
@@ -238,7 +256,7 @@ type Early = { readonly method: string; readonly params: Record<string, unknown>
  * buffered. `identified`: the reply named the native turn. `orphaned`: written without a usable acknowledgement; its
  * later notifications go to the execution stream, never a session.
  */
-type TurnPhase = { readonly kind: 'prepared' } | { readonly kind: 'pending'; readonly early: Early[]; dropped: number }
+type TurnPhase = { readonly kind: 'prepared' } | { readonly kind: 'pending'; readonly early: Early[]; dropped: number; terminalOverflow: boolean }
   | { readonly kind: 'identified'; readonly id: string } | { readonly kind: 'orphaned' };
 type Turn = {
   phase: TurnPhase;
@@ -247,12 +265,16 @@ type Turn = {
   readonly done: Promise<CodexTurnCompletion>;
   /** Settles when the native turn id is known or the turn settled without one. */
   readonly identified: Deferred<void>;
-  interrupting: Promise<CleanupStep> | undefined;
+  interrupting: { readonly signal: AbortSignal; readonly result: Promise<CodexInterruptResult> } | undefined;
+  readonly interruptAbort: AbortController;
+  interruptAcknowledged: boolean;
+  interactionUncertain: boolean;
 };
 type Session = {
   readonly threadId: string;
   readonly lease: Lease;
   readonly stream: EventStream<CodexSessionEvent>;
+  readonly intakes: Set<CodexSessionIntake>;
   readonly abort: AbortController;
   active: Turn | undefined;
   previous: Turn | undefined;
@@ -263,6 +285,9 @@ const turnStatuses = new Set(['completed', 'interrupted', 'failed']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function notificationThread(owner: Record<string, unknown> | undefined): unknown {
+  return typeof owner?.threadId === 'string' ? owner.threadId : owner && record(owner.thread) ? owner.thread.id : undefined;
 }
 function text(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= sessionLimits.identifierLength;
@@ -286,12 +311,13 @@ function passthrough(value: unknown, refused: readonly string[]): Record<string,
 }
 function newTurn(): Turn {
   const { promise, resolve } = deferred<CodexTurnCompletion>();
-  const turn: Turn = { phase: { kind: 'prepared' }, settled: false, done: promise, interrupting: undefined,
+  const turn: Turn = { phase: { kind: 'prepared' }, settled: false, done: promise, interrupting: undefined, interruptAcknowledged: false, interactionUncertain: false, interruptAbort: new AbortController(),
     identified: deferred<void>(), settle: (completion) => {
       if (turn.settled) return;
       turn.settled = true;
       turn.identified.resolve();
       resolve(Object.freeze(completion));
+      if (completion.kind === 'terminal') turn.interruptAbort.abort();
     } };
   return turn;
 }
@@ -459,34 +485,45 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     }
     const { method, params } = observation;
     const owner = record(params) ? params : undefined;
-    const thread = owner && record(owner.thread) ? owner.thread.id : owner?.threadId;
+    const thread = notificationThread(owner);
     const session = typeof thread === 'string' ? byThread.get(thread) : undefined;
     if (!owner || !session) { publishNative(method, params); return; }
     const turnId = record(owner.turn) ? owner.turn.id : owner.turnId;
-    if (typeof turnId !== 'string') { session.stream.publish(Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' })); return; }
+    if (typeof turnId !== 'string') { publishSession(session, Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' })); return; }
     const turn = [session.active, session.previous]
       .find((candidate) => candidate?.phase.kind === 'identified' && candidate.phase.id === turnId);
     if (turn) { deliver(session, turn, turnId, method, owner); return; }
+    if (codexActivityMethods.includes(method) || method === 'error') { publishNative(method, params); return; }
     const active = session.active;
     const pending = active && !active.settled && active.phase.kind === 'pending' ? active.phase : undefined;
-    // One slot beyond the bound is reserved for a terminal, so overflow can never strand the pending turn.
-    const room = bounds.maxEarlyNotifications + (method === 'turn/completed' ? 1 : 0);
-    if (pending && pending.early.length < room) pending.early.push({ method, params: owner, turnId });
+    // Bound ordinary events and distinct terminal candidates independently: an old terminal cannot take
+    // the current turn's only slot. Preserve arrival order in the one bounded early-event ledger.
+    const terminal = method === 'turn/completed' && record(owner.turn) && turnStatuses.has(owner.turn.status as string);
+    const terminals = pending?.early.filter((event) => event.method === 'turn/completed'
+      && record(event.params.turn) && turnStatuses.has(event.params.turn.status as string)) ?? [];
+    if (terminal && terminals.some((event) => event.turnId === turnId)) return;
+    const buffered = terminal ? terminals.length : (pending?.early.length ?? 0) - terminals.length;
+    if (pending && buffered < bounds.maxEarlyNotifications) pending.early.push({ method, params: owner, turnId });
     else {
-      if (pending) pending.dropped++;
+      if (pending && terminal) pending.terminalOverflow = true;
+      if (pending) pending.dropped = Math.min(Number.MAX_SAFE_INTEGER, pending.dropped + 1);
       publishNative(method, params);
     }
+  }
+  function publishSession(session: Session, event: CodexSessionEvent): void {
+    for (const intake of session.intakes) intake.turnEvent?.(event);
+    session.stream.publish(event);
   }
   function deliver(session: Session, turn: Turn, turnId: string, method: string, params: Record<string, unknown>): void {
     if (method === 'turn/completed' && !turn.settled && record(params.turn) && turnStatuses.has(params.turn.status as string)) {
       const terminal: CodexTurnTerminal = Object.freeze({ turnId, status: params.turn.status as CodexTurnTerminal['status'],
         error: params.turn.error ?? null, turn: params.turn });
-      session.stream.publish(Object.freeze({ kind: 'turn-completed', evidence: evidenceOf(method), ...terminal }));
+      publishSession(session, Object.freeze({ kind: 'turn-completed', evidence: evidenceOf(method), ...terminal }));
       conclude(session, turn, { kind: 'terminal', terminal });
       return;
     }
     if (method === 'item/agentMessage/delta' && text(params.itemId) && typeof params.delta === 'string') {
-      session.stream.publish(Object.freeze({ kind: 'text-delta', turnId, itemId: params.itemId, delta: params.delta,
+      publishSession(session, Object.freeze({ kind: 'text-delta', turnId, itemId: params.itemId, delta: params.delta,
         evidence: evidenceOf(method) }));
       return;
     }
@@ -496,12 +533,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const lastUsage = usage(last);
       const modelContextWindow = window === null ? null : positive(window) ? window : undefined;
       if (totalUsage && lastUsage && modelContextWindow !== undefined) {
-        session.stream.publish(Object.freeze({ kind: 'usage', turnId, total: totalUsage, last: lastUsage, modelContextWindow,
+        publishSession(session, Object.freeze({ kind: 'usage', turnId, total: totalUsage, last: lastUsage, modelContextWindow,
           evidence: evidenceOf(method) }));
         return;
       }
     }
-    session.stream.publish(Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' }));
+    publishSession(session, Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' }));
   }
   const stopAdmission = () => { closed = true; opening.abort(); };
   /** A turn leaving `pending` without a native id: whatever it buffered is unrouted, never dropped silently. */
@@ -523,7 +560,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
    * release either.
    */
   function exit(): void {
+    if (exited) return;
     exited = true;
+    transport.processExited();
     stopAdmission();
     for (const lease of leases) release(lease);
     leases.clear();
@@ -531,7 +570,15 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   const keep = (lease: Lease) => { if (exited) release(lease); else leases.add(lease); };
 
   const transport: CodexTransport = openCodexTransport({ channel: captured.channel, bounds: captured.transportBounds,
-    onRequest: captured.onServerRequest, onObservation: observe });
+    onRequest: captured.onServerRequest,
+    onNotification: (notification) => {
+      const { method, params } = notification;
+      const owner = record(params) ? params : undefined;
+      const threadId = notificationThread(owner);
+      const session = typeof threadId === 'string' ? byThread.get(threadId) : undefined;
+      if (session) for (const intake of session.intakes) intake.notification?.(method, params);
+      observe(notification);
+    }, onObservation: (observation) => { if (observation.kind !== 'notification') observe(observation); } });
   void transport.ended.then((report) => {
     stopAdmission();
     for (const session of sessions) {
@@ -542,6 +589,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         drain(turn);
         turn.settle({ kind: 'unconcluded', accepted: turn.phase.kind === 'identified', reason: report.reason });
       }
+      session.intakes.clear();
       session.stream.close();
     }
     sessions.clear();
@@ -552,9 +600,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   });
   void Promise.resolve(captured.processExit).then(exit, () => {});
 
-  async function request(method: string, params: unknown, wait: AbortSignal): Promise<
+  async function request(method: string, params: unknown, wait: AbortSignal, maxFrameBytes?: number,
+    onReply?: (reply: RpcReply) => void): Promise<
     { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly error: RpcError } | SendFailure> {
-    const exchange = await transport.request({ method, params }, wait);
+    const exchange = await transport.request({ method, params }, wait, { ...(maxFrameBytes === undefined ? {} : { maxFrameBytes }),
+      ...(onReply === undefined ? {} : { onReply: (envelope) => onReply(envelope.reply) }) });
     return exchange.kind === 'reply' ? exchange.envelope.reply : exchange;
   }
   const step = (reply: Awaited<ReturnType<typeof request>>): CleanupStep =>
@@ -587,17 +637,30 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
   function attach(threadId: string, reference: SessionReference, lease: Lease, origin: CodexSession['origin'],
     native: unknown): CodexSession {
-    const session: Session = { threadId, lease, stream: createEventStream(streamBounds), abort: new AbortController(),
+    const session: Session = { threadId, lease, stream: createEventStream(streamBounds), intakes: new Set(), abort: new AbortController(),
       active: undefined, previous: undefined, state: 'open', closing: undefined };
     keep(lease);
     sessions.add(session);
     byThread.set(threadId, session);
-    return Object.freeze({ reference, threadId, origin, native, events: Object.freeze({ subscribe: session.stream.subscribe }),
+    return Object.freeze({ reference, threadId, origin, native,
+      intake: (listener: CodexSessionIntake) => {
+        if (closed || session.state !== 'open') return { kind: 'error' as const, error: { code: 'closed' as const } };
+        if (session.intakes.size >= bounds.maxObservers) return { kind: 'error' as const, error: { code: 'capacity' as const } };
+        session.intakes.add(listener);
+        return { kind: 'ok' as const, value: () => { session.intakes.delete(listener); } };
+      },
+      matchesTurn: (turnId: string, signal: AbortSignal) => {
+        const turn = session.active;
+        if (!turn || turn.settled) return false;
+        const matches = () => !signal.aborted && !turn.settled && !turn.interruptAcknowledged && !turn.interactionUncertain && turn.phase.kind === 'identified' && turn.phase.id === turnId;
+        if (turn.phase.kind === 'identified' || turn.phase.kind === 'orphaned') return matches();
+        return until(turn.identified.promise, AbortSignal.any([signal, session.abort.signal])).then(matches);
+      }, events: Object.freeze({ subscribe: session.stream.subscribe }),
       turn: (turnOptions: CodexTurnOptions) => startTurn(session, reference, turnOptions),
       close: () => (session.closing ??= shutdown(session)),
-      interrupt: async () => {
+      interrupt: async (options?: { readonly signal?: AbortSignal }) => {
         const turn = session.active;
-        return turn ? interrupt(session, turn, AbortSignal.timeout(bounds.cleanupTimeoutMs)) : 'not-needed';
+        return turn ? interrupt(session, turn, options?.signal ?? AbortSignal.timeout(bounds.cleanupTimeoutMs)) : { step: 'not-needed' as const, turnId: null, rejection: null };
       } });
   }
   async function create(access: Access<CodexStartFeatures>): Promise<Outcome<CodexSession, CodexOpenError>> {
@@ -726,7 +789,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         // Host or session abort prevents entry (core checks it just before this call). Once entered, only the
         // acknowledgement deadline bounds the wait: the caller's signal never turns a written turn/start uncertain.
         dispatchNative: (canonical) => dispatch(session, turn, canonical,
-          { ...params, threadId: session.threadId, input: [...input] }) });
+          { ...params, threadId: session.threadId, input: [...input] }, options.maxFrameBytes) });
     } catch { return invalid; }
     session.active = turn;
     void handle.run().then((snapshot) => {
@@ -736,10 +799,28 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
   /** One native `turn/start`, never resent. `not-sent` is adapter evidence; core still records `outcome-unknown`. */
   async function dispatch(session: Session, turn: Turn, identity: DispatchIdentity,
-    params: Record<string, unknown>): Promise<NativeDispatchObservation<CodexTurnResult>> {
-    const pending: Extract<TurnPhase, { kind: 'pending' }> = { kind: 'pending', early: [], dropped: 0 };
+    params: Record<string, unknown>, maxFrameBytes?: number): Promise<NativeDispatchObservation<CodexTurnResult>> {
+    const pending: Extract<TurnPhase, { kind: 'pending' }> = { kind: 'pending', early: [], dropped: 0, terminalOverflow: false };
     turn.phase = pending;
-    const reply = await request('turn/start', params, AbortSignal.timeout(bounds.acknowledgementTimeoutMs));
+    let identified: string | undefined;
+    const reply = await request('turn/start', params, AbortSignal.timeout(bounds.acknowledgementTimeoutMs), maxFrameBytes, (reply) => {
+      if (reply.kind === 'error') { conclude(session, turn, { kind: 'rejected', error: reply.error }); return; }
+      const turnId = record(reply.value) && record(reply.value.turn) ? reply.value.turn.id : undefined;
+      if (!text(turnId)) return;
+      identified = turnId;
+      turn.interactionUncertain = pending.terminalOverflow || pending.dropped > 0;
+      turn.phase = { kind: 'identified', id: turnId };
+      turn.identified.resolve();
+      publishSession(session, Object.freeze({ kind: 'turn-accepted', turnId, evidence: 'qualified' }));
+      if (pending.dropped > 0) {
+        count('earlyOverflow', pending.dropped);
+        publishSession(session, Object.freeze({ kind: 'early-overflow', turnId, discarded: pending.dropped }));
+      }
+      for (const early of pending.early.splice(0)) {
+        if (early.turnId === turnId) deliver(session, turn, turnId, early.method, early.params);
+        else publishNative(early.method, early.params);
+      }
+    });
     if (reply.kind === 'not-sent') {
       conclude(session, turn, { kind: 'not-sent', reason: reply.reason });
       return { kind: 'outcome-unknown' };
@@ -753,19 +834,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       conclude(session, turn, result);
       return { kind: 'conclusive', evidence: evidence(null, reply.error), result };
     }
-    const turnId = record(reply.value) && record(reply.value.turn) ? reply.value.turn.id : undefined;
-    if (!text(turnId)) return orphan(turn);
-    turn.identified.resolve();
-    turn.phase = { kind: 'identified', id: turnId };
-    session.stream.publish(Object.freeze({ kind: 'turn-accepted', turnId, evidence: 'qualified' }));
-    if (pending.dropped > 0) {
-      count('earlyOverflow', pending.dropped);
-      session.stream.publish(Object.freeze({ kind: 'early-overflow', turnId, discarded: pending.dropped }));
-    }
-    for (const early of pending.early.splice(0)) {
-      if (early.turnId === turnId) deliver(session, turn, turnId, early.method, early.params);
-      else publishNative(early.method, early.params);
-    }
+    const turnId = identified;
+    if (turnId === undefined) return orphan(turn);
     const nativeOperation = { namespace: 'codex-turn', id: turnId };
     const settled = turn.settled ? await turn.done : undefined;
     return settled?.kind === 'terminal'
@@ -787,18 +857,27 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     void promise.then(() => { listener[Symbol.dispose](); resolve(); });
   });
   /** `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel). */
-  async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CleanupStep> {
-    const result = await (turn.interrupting ??= until(turn.identified.promise, deadline).then(async () => {
+  async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CodexInterruptResult> {
+    const attempt = turn.interrupting ??= { signal: deadline, result: until(turn.identified.promise, deadline).then(async () => {
       const { phase } = turn;
       if (phase.kind !== 'identified' || turn.settled || deadline.aborted) {
         // Nothing was written: a still-pending turn may yet be identified, so a later interrupt or close tries again.
         if (!turn.settled && phase.kind !== 'orphaned') turn.interrupting = undefined;
-        return 'not-needed';
+        return { step: 'not-needed' as const, turnId: phase.kind === 'identified' ? phase.id : null, rejection: null };
       }
-      return step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
-    }));
+      const reply = await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, AbortSignal.any([deadline, turn.interruptAbort.signal]), undefined, (reply) => {
+        if (reply.kind !== 'result') return;
+        turn.interruptAcknowledged = true;
+        for (const intake of session.intakes) intake.interrupted?.(phase.id);
+      });
+      const outcome = step(reply);
+      if (outcome === 'not-sent') turn.interrupting = undefined;
+      return { step: outcome, turnId: phase.id,
+        rejection: reply.kind === 'error' ? { code: reply.error.code, message: reply.error.message } : null };
+    }) };
+    const result = await attempt.result;
     // A joined attempt ran on its starter's deadline; if that expired unwritten, retry within this caller's own.
-    const retry = result === 'not-needed' && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
+    const retry = (result.step === 'not-needed' || (result.step === 'not-sent' && attempt.signal !== deadline && attempt.signal.aborted)) && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
     return retry ? interrupt(session, turn, deadline) : result;
   }
   async function shutdown(session: Session): Promise<CodexSessionCloseReport> {
@@ -808,7 +887,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     let interrupted: CleanupStep = 'not-needed';
     const turn = session.active;
     if (turn) {
-      interrupted = await interrupt(session, turn, deadline);
+      interrupted = (await interrupt(session, turn, deadline)).step;
       // An orphaned turn settles only when the transport ends; waiting would only spend the cleanup deadline.
       if (turn.phase.kind !== 'orphaned') await until(turn.done, deadline);
     }
@@ -824,6 +903,6 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     executionEvents.close();
     return Object.freeze({ transport: report, retained: leases.size });
   }
-  return { kind: 'ok', value: Object.freeze({ scope, events: Object.freeze({ subscribe: executionEvents.subscribe }),
+  return { kind: 'ok', value: Object.freeze({ scope, flushIntake: transport.flushIntake, processExited: () => exited, events: Object.freeze({ subscribe: executionEvents.subscribe }),
     create, resume, close: () => (closing ??= closeAll()), counts: () => Object.freeze({ ...counts }) }) };
 }

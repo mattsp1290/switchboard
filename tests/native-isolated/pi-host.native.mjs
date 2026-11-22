@@ -19,7 +19,7 @@ async function open(extra) {
   const states = [];
   const events = [];
   const opened = await piHostAdapter.open({
-    ...base, ...extra, onState: (state) => { states.push(state); },
+    ...base, ...extra, onState: (state) => { states.push(state); extra.onState?.(state); },
     stream: extra.stream ?? (async function* stream(request) {
       requests.push(request);
       yield { kind: 'text', text: 'hello' };
@@ -109,7 +109,7 @@ test('a host tool pauses and a fresh adapter continues it once', async () => {
   });
   const pending = await second.adapter.capabilities.inspect.api.pending(openSignal());
   assert.equal(pending.kind, 'ok');
-  const call = pending.value[0];
+  const call = pending.value.calls[0];
   const continued = await second.adapter.continue({
     hostOperationId: 'op-continue',
     signal: openSignal(),
@@ -137,7 +137,11 @@ test('a host tool pauses and a fresh adapter continues it once', async () => {
   });
   assert.equal(again.kind, 'failed');
   assert.equal(again.write.kind, 'not-attempted');
+  const completedState = second.adapter.state();
   await second.close();
+  const third = await open({ tools, state: completedState });
+  assert.equal((await third.adapter.capabilities.inspect.api.pending(openSignal())).value.calls.length, 0);
+  await third.close();
 });
 
 test('a mixed tool batch fails before a host tool runs', async () => {
@@ -208,7 +212,7 @@ test('a segment listener receives model boundaries, tool facts, usage and a term
     yield { kind: 'usage', input: 5, output: 3 };
   } });
   const pending = await second.adapter.capabilities.inspect.api.pending(openSignal());
-  const call = pending.value[0];
+  const call = pending.value.calls[0];
   const next = [];
   const done = await second.adapter.continue({ hostOperationId: 'op-observed', signal: openSignal(), recordIntent: async () => {},
     onObservation: (o) => { next.push(o); },
@@ -237,4 +241,87 @@ test('a throwing listener does not change a segment and an invalid one is refuse
   assert.equal(refused.write.kind, 'not-attempted');
   assert.equal(intents, 0);
   await host.close();
+});
+
+test('Pi-host rejects unsupported media before intent, stream dispatch or history changes', async () => {
+  const subject = await open({});
+  try {
+    assert.equal(subject.adapter.capabilities.imageInput.kind, 'unsupported');
+    assert.equal((await subject.adapter.run(run('baseline'))).kind, 'complete');
+    const before = subject.adapter.state();
+    const writes = subject.requests.length;
+    for (const images of [[{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], null, {}]) {
+      const result = await subject.adapter.run({ ...run('image', () => assert.fail('unsupported media must not record intent')), images });
+      assert.equal(result.error.code, 'unsupported');
+      assert.equal(result.write.kind, 'not-attempted');
+    }
+    assert.equal(subject.requests.length, writes);
+    assert.deepEqual(subject.adapter.state(), before);
+  } finally { await subject.close(); }
+});
+
+test('Pi-host captures prompt once before validation and intent', async () => {
+  const host = await open({}); let reads = 0;
+  try {
+    const result = await host.adapter.run({ ...run('captured'), get prompt() { return ++reads <= 3 ? 'captured' : 'x'.repeat(4194305); } });
+    assert.equal(result.kind, 'complete'); assert.equal(reads, 1);
+    assert(host.requests[0].turns.some((turn) => turn.role === 'user' && turn.text === 'captured'));
+  } finally { await host.close(); }
+});
+
+test('Pi-host returns a typed pre-dispatch refusal for non-JSON tool results', async () => {
+  let calls = 0;
+  const host = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }],
+    stream: async function* () { calls++; yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: {} }; } });
+  try {
+    const pending = await host.adapter.run(run('tool')); assert.equal(pending.kind, 'pending');
+    const cycle = []; cycle.push(cycle);
+    for (const data of [cycle, 1n, undefined, () => 1, Symbol('not JSON'), 'x'.repeat(100000)]) {
+      let intents = 0;
+      const result = await host.adapter.continue({ hostOperationId: 'invalid-result', signal: openSignal(), recordIntent() { intents++; },
+        answers: [{ formatVersion: 1, kind: 'tool', outcome: { target: pending.calls[0].pending.target,
+          result: { kind: 'ok', value: { namespace: 'fixture', schemaVersion: 1, data } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } }] });
+      assert.equal(result.error.code, 'invalid-input'); assert.equal(result.write.kind, 'not-attempted'); assert.equal(intents, 0);
+      assert.equal(calls, 1); assert.equal((await host.adapter.capabilities.inspect.api.pending(openSignal())).value.calls.length, 1);
+    }
+  } finally { await host.close(); }
+});
+
+test('Pi-host provider and observer receive one captured serialization of a tool answer',async()=>{
+ let calls=0;let provider;const host=await open({tools:[{name:'lookup',description:'Lookup',inputSchema:{type:'object'}}],stream:async function*(request){
+  if(++calls===1)yield{kind:'tool-call',id:'call-1',name:'lookup',arguments:{}};else{provider=request;yield{kind:'text',text:'done'};}
+ }});
+ try{
+  const pending=await host.adapter.run(run('tool'));let serializations=0;const data={toJSON(){return{version:++serializations};}};const seen=[];
+  const result=await host.adapter.continue({hostOperationId:'captured-answer',signal:openSignal(),recordIntent(){},onObservation(e){seen.push(e);},answers:[{formatVersion:1,kind:'tool',outcome:{target:pending.calls[0].pending.target,result:{kind:'ok',value:{namespace:'fixture',schemaVersion:1,data}},effect:{kind:'unknown'},delivery:{kind:'unknown'}}}]});
+  assert.equal(result.kind,'complete');assert.equal(serializations,1);assert.equal(provider.turns.find(t=>t.role==='tool').text,seen.find(e=>e.kind==='tool'&&e.phase==='completed').resultJson);
+ }finally{await host.close();}
+});
+
+test('Pi-host interrupt validates bounds before abort and clears a completed long deadline',async(t)=>{
+ const started=Promise.withResolvers();let signal;const host=await open({stream:async function*(request){signal=request.signal;started.resolve();await new Promise(resolve=>request.signal.addEventListener('abort',resolve,{once:true}));yield{kind:'text',text:''};}});
+ const running=host.adapter.run(run('wait'));await started.promise;const armed=new Set();const schedule=globalThis.setTimeout;const cancel=globalThis.clearTimeout;
+ t.mock.method(globalThis,'setTimeout',(fn,ms,...args)=>{const timer=schedule(fn,ms,...args);if(ms===2147483647)armed.add(timer);return timer;});
+ t.mock.method(globalThis,'clearTimeout',timer=>{armed.delete(timer);return cancel(timer);});
+ try{
+  for(const timeoutMs of [0,1.5,2147483648]){assert.equal((await host.adapter.interrupt({timeoutMs})).kind,'unconfirmed-within-bound');assert.equal(signal.aborted,false);}
+  assert.equal((await host.adapter.interrupt({timeoutMs:2147483647})).kind,'terminal-observed');assert.equal(armed.size,0);await running;
+ }finally{for(const timer of armed)cancel(timer);await host.close();}
+});
+
+test('malformed Pi-host signals refuse before claiming the segment',async()=>{
+ const host=await open({});try{
+  const result=await host.adapter.run({...run('bad-signal'),signal:{},recordIntent(){assert.fail('invalid signal must not record');}});
+  assert.equal(result.error.code,'invalid-input');assert.equal(result.write.kind,'not-attempted');assert.equal((await host.adapter.run(run('valid-after-refusal'))).kind,'complete');
+ }finally{await host.close();}
+});
+
+test('a throwing Pi-host store callback cannot reoffer an answered target',async()=>{
+ let exports=0;let requests=0;const host=await open({tools:[{name:'lookup',description:'Lookup',inputSchema:{type:'object'}}],onState(){if(++exports===2)throw new Error('store failed');},stream:async function*(){if(++requests===1)yield{kind:'tool-call',id:'call-1',name:'lookup',arguments:{}};else yield{kind:'text',text:'done'};}});
+ try{
+  const pending=await host.adapter.run(run('tool'));const answer={formatVersion:1,kind:'tool',outcome:{target:pending.calls[0].pending.target,result:{kind:'ok',value:{namespace:'fixture',schemaVersion:1,data:{value:'saved'}}},effect:{kind:'unknown'},delivery:{kind:'unknown'}}};
+  const result=await host.adapter.continue({hostOperationId:'store-failure',signal:openSignal(),recordIntent(){},answers:[answer]});assert.equal(result.kind,'failed');
+  assert.equal(host.adapter.state().turns.find(t=>t.role==='tool').pending,false);assert.equal((await host.adapter.capabilities.inspect.api.pending(openSignal())).value.calls.length,0);
+  const duplicate=await host.adapter.continue({hostOperationId:'duplicate-after-store-failure',signal:openSignal(),recordIntent(){assert.fail('an answered target cannot record another intent');},answers:[answer]});assert.equal(duplicate.write.kind,'not-attempted');assert.equal(requests,2);
+ }finally{await host.close();}
 });

@@ -20,7 +20,7 @@ export type CoreAnswers = Expect<Equal<Parameters<HostAdapter['continue']>[0]['a
 export type CoreFingerprint = Expect<Equal<NonNullable<HostOpenOptions['resume']>['expectedHistory'], CheckpointReference | undefined>>;
 export type FixedTools = Expect<Equal<HostAdapterCapabilities['toolDeclarations'], 'fixed-at-creation'>>;
 export type EventKinds = Expect<Equal<HostAdapterEvent['kind'], 'text-delta' | 'tool-call-start' | 'tool-call-arguments-delta'
-  | 'tool-call-end' | 'tool-delivery' | 'usage' | 'native-item'>>;
+  | 'tool-call-end' | 'tool-delivery' | 'usage' | 'native-item' | 'interaction-settled'>>;
 export type LaunchKinds = Expect<Equal<HostLaunch['kind'], 'spawn' | 'channel' | 'in-process'>>;
 export type PendingLimitWrite = Expect<Equal<Extract<HostSegmentResult, { kind: 'failed'; error: { code: 'pending-limit' } }>['write']['kind'], 'accepted'>>;
 export type CredentialForms = Expect<Equal<HostRouteCredential['form'], 'none' | 'bearer' | 'helper'>>;

@@ -1164,7 +1164,7 @@ test('interrupt cancels a streaming turn without closing the session, releasing 
   const f = appServer(t, w, { turn: streaming });
   const execution = await open(t, real, f, writers);
   const session = await resumed(execution, id);
-  assert.equal(await session.interrupt(), 'not-needed', 'no active turn');
+  assert.equal((await session.interrupt()).step, 'not-needed', 'no active turn');
   const events = collect(session.events);
   const turn = await turnOn(session);
   await turn.run();
@@ -1174,10 +1174,10 @@ test('interrupt cancels a streaming turn without closing the session, releasing 
   await settle();
   assert.equal(f.sent.includes('turn/interrupt'), false, 'observer detach is not cancellation');
   const [first, second] = await Promise.all([session.interrupt(), session.interrupt()]);
-  assert.deepEqual([first, second], ['replied', 'replied']);
+  assert.deepEqual([first.step, second.step], ['replied', 'replied']);
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   assert.ok(events.some((event) => event.kind === 'text-delta'));
-  assert.equal(await session.interrupt(), 'not-needed', 'after the terminal');
+  assert.equal((await session.interrupt()).step, 'not-needed', 'after the terminal');
   assert.equal(writers.held(), 1);
   const next = await turnOn(session, 'after');
   await next.run();
@@ -1195,7 +1195,7 @@ test('an interrupt that expires before the turn is identified does not stop clos
   const turn = await turnOn(session);
   const running = turn.run();
   while (!f.sent.includes('turn/start')) await settle();
-  assert.equal(await session.interrupt(), 'not-needed', 'deadline spent before the turn had a native id');
+  assert.equal((await session.interrupt()).step, 'not-needed', 'deadline spent before the turn had a native id');
   assert.equal(f.sent.includes('turn/interrupt'), false);
   acknowledged.open();
   await running;
@@ -1218,7 +1218,7 @@ test('close that joins a waiting interrupt keeps its own deadline for a turn ide
   const interrupting = session.interrupt();
   await delay(200);
   const closing = session.close();
-  assert.equal(await interrupting, 'not-needed', 'the earlier deadline ran out before the turn had a native id');
+  assert.equal((await interrupting).step, 'not-needed', 'the earlier deadline ran out before the turn had a native id');
   await delay(50);
   acknowledged.open();
   await running;
@@ -1239,7 +1239,7 @@ test('close reuses an in-flight interrupt and never sends a second turn/interrup
   while (!f.sent.includes('turn/interrupt')) await settle();
   const closing = session.close();
   gated.open();
-  assert.equal(await interrupting, 'replied');
+  assert.equal((await interrupting).step, 'replied');
   assert.deepEqual(await closing, { interrupt: 'replied', unsubscribe: 'replied', released: false });
   assert.equal(f.sent.filter((method) => method === 'turn/interrupt').length, 1);
 });

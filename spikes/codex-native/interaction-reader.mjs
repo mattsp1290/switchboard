@@ -286,7 +286,7 @@ try {
     const seen = watch(session);
     const turn = turnOn(session, marker);
     await b.pending('approval');
-    if (scenario === 'N4') report.interrupt = await session.interrupt();
+    if (scenario === 'N4') report.interrupt = (await session.interrupt()).step;
     else await until(() => b.settlements().length > 0, 'expiry', 5000);
     const settledTurn = await settledWithin(turn.completion, 5000);
     report.terminalWithin5s = settledTurn ? status(settledTurn.value) : null;
@@ -299,7 +299,7 @@ try {
     // the approval is still live, else by interrupt (N9's first); recorded, never assumed.
     if (!settledTurn) {
       const live = b.interaction.pending()[0];
-      report.cleanup = live ? `cancel:${outcome(await b.reply(live, 'cancel'))}` : `interrupt:${await session.interrupt()}`;
+      report.cleanup = live ? `cancel:${outcome(await b.reply(live, 'cancel'))}` : `interrupt:${(await session.interrupt()).step}`;
     }
     report.terminal = await terminal(turn, 'terminal');
     report.item = commandItem(seen);
@@ -347,7 +347,7 @@ try {
     const started = await until(() => seen.items.some((item) => item.method === 'item/started' && item.type === 'commandExecution'),
       'command started', 5000).catch(() => false);
     report.commandStarted = started;
-    report.interrupt = await session.interrupt();
+    report.interrupt = (await session.interrupt()).step;
     report.terminal = await terminal(turn, 'terminal');
     await delay(5000);
     report.item = commandItem(seen);
@@ -367,7 +367,7 @@ try {
       const turn = turnOn(session, marker);
       const ended = await terminal(turn, name, 6000).catch(async () => {
         // Held by native after the refusal: interrupt so the session is free for the next candidate; recorded.
-        const interrupted = await session.interrupt();
+        const interrupted = (await session.interrupt()).step;
         return `held:${interrupted}:${await terminal(turn, `${name} interrupt`, 6000).catch(() => 'none')}`;
       });
       report.reactions[name] = { terminal: ended, items: seen.items.filter((item) => item.method === 'item/completed').map((item) => item.type),
