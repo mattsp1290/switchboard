@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import {
   createDispatchOperation, createEventStream, parseCheckpointReference, parseInteractionContinuation, parseSessionReference,
 } from '../index.js';
@@ -233,9 +234,12 @@ export function createFakeHostSubject(options: FakeHostOptions = {}): HostConfor
       capabilities: Object.freeze(capabilities),
       events: Object.freeze({ subscribe: stream.subscribe }),
       run: (input) => {
-        if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0)) return Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }));
-        if (typeof input.prompt !== 'string') return Promise.resolve(failed(invalid('The prompt must be text.')));
-        return occupy(() => dispatch(input, (accepted) => model(input.prompt, accepted)));
+        let requestedImages: boolean;
+        try { const images = input.images; requestedImages = images !== undefined && (!Array.isArray(images) || images.length !== 0 || types.isProxy(images)); } catch { return Promise.resolve(failed(invalid('Image input is malformed.'))); }
+        if (requestedImages) return Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }));
+        const prompt = input.prompt;
+        if (typeof prompt !== 'string') return Promise.resolve(failed(invalid('The prompt must be text.')));
+        return occupy(() => dispatch(input, (accepted) => model(prompt, accepted)));
       },
       continue: (input) => occupy(() => answer(input)),
       interrupt: ({ timeoutMs }) => new Promise((resolve) => {

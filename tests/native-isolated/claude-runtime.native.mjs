@@ -413,3 +413,11 @@ test('invalid Claude images reject before any child process launches', async () 
   }
   await assert.rejects(access(resolve(dir, 'observed.json')));
 }));
+
+test('Claude image getters cannot reserve the same writer twice', { timeout: 10000 }, async () => fixture({}, async (runtime) => {
+  let inner;
+  const outer = runtime.start({ text: 'outer', threadId: id, onEvent() {}, get images() {
+    inner = runtime.start({ text: 'inner', threadId: id, onEvent() {} }); return [];
+  } });
+  await assert.rejects(outer, /Claude operation failed/); await (await inner).finished;
+}));

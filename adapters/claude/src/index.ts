@@ -147,18 +147,20 @@ export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime 
   }
   function start(request: ClaudeRequest): Promise<ClaudeTurn> {
     const { text, threadId: requested, onEvent, onObservation } = request;
-    if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
-      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation)
-      || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
-    const images = parseHostImages(request.images === undefined ? [] : request.images);
+    let images: ReturnType<typeof parseHostImages>;
+    try { const value = request.images; images = parseHostImages(value === undefined ? [] : value); }
+    catch { return Promise.reject(failure()); }
     if (images.kind === 'error') return Promise.reject(failure());
     const validatedImages = images.value;
     async function* structuredPrompt(): AsyncIterable<SDKUserMessage> {
       yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: [
         { type: 'text', text }, ...validatedImages.map((image) => ({ type: 'image' as const,
-          source: { type: 'base64' as const, media_type: image.mediaType === 'image/png' ? 'image/png' as const : 'image/jpeg' as const, data: image.base64 } })),
+          source: { type: 'base64' as const, media_type: image.mediaType, data: image.base64 } })),
       ] } };
     }
+    if (closed || active.size >= 32 || typeof text !== 'string' || !text.trim()
+      || Buffer.byteLength(text) > 1024 * 1024 || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation)
+      || (requested !== undefined && (!uuid.test(requested) || writers.has(requested) || lostSessions.has(requested)))) return Promise.reject(failure());
     let reserved = requested;
     if (reserved) writers.add(reserved);
     const controller = new AbortController();

@@ -251,14 +251,16 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   function start(request: CursorRequest): Promise<CursorTurn> {
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
     const { text, agentId: requested, onEvent, onObservation } = request;
+    let images: ReturnType<typeof parseHostImages>;
+    try { const value = request.images; images = parseHostImages(value === undefined ? [] : value); }
+    catch { return Promise.reject(failure()); }
+    if (images.kind === 'error') return Promise.reject(failure());
+    const message: CursorMessage = images.value.length === 0 ? text : { text,
+      images: images.value.map((image) => ({ data: image.base64, mimeType: image.mediaType })) };
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
       || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
-    const images = parseHostImages(request.images === undefined ? [] : request.images);
-    if (images.kind === 'error') return Promise.reject(failure());
-    const message: CursorMessage = images.value.length === 0 ? text : { text,
-      images: images.value.map((image) => ({ data: image.base64, mimeType: image.mediaType })) };
     let trackedId = requested;
     if (requested !== undefined) writers.add(requested);
     const release = (): void => {

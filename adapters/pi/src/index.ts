@@ -129,8 +129,8 @@ function resumeManager(directory: string, file: string, cwd: string): SessionMan
 function sessionHandle(native: AgentSession, release: () => void): PiSession {
   const file = native.sessionFile;
   if (!file) throw failure();
-  const imageInput: Capability<HostImageInputApi> = native.model?.input.includes('image')
-    ? { kind: 'supported', api: hostImageLimits } : { kind: 'unavailable', reason: 'the selected model does not accept images' };
+  const imageInput: Capability<HostImageInputApi> = Object.freeze(native.model?.input.includes('image')
+    ? { kind: 'supported', api: hostImageLimits } : { kind: 'unavailable', reason: 'the selected model does not accept images' });
   let running: { finished: Promise<PiTerminal>; stop: () => void } | undefined;
   let closing: Promise<void> | undefined;
   const abort = async () => {
@@ -144,14 +144,21 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
     id: native.sessionId,
     sessionFile: basename(file),
     async prompt(input, onEvent, onObservation) {
-      const text = typeof input === 'string' ? input : input?.text;
       if (closing) throw new Error('Pi session is closed.');
       if (running) throw new Error('Pi session is busy.');
+      let text: unknown;
+      let images: ReturnType<typeof parseHostImages>;
+      try {
+        text = typeof input === 'string' ? input : input?.text;
+        const value = typeof input === 'string' ? undefined : input.images;
+        images = parseHostImages(value === undefined ? [] : value);
+      } catch { throw failure(); }
       if (typeof text !== 'string' || !text.trim() || typeof onEvent !== 'function'
         || !isOptionalObservationListener(onObservation)) throw failure();
-      const images = parseHostImages(typeof input === 'string' || input.images === undefined ? [] : input.images);
       if (images.kind === 'error' || (images.value.length > 0 && imageInput.kind !== 'supported')) throw failure();
       const nativeImages = images.value.map((image) => ({ type: 'image' as const, data: image.base64, mimeType: image.mediaType }));
+      if (closing) throw new Error('Pi session is closed.');
+      if (running) throw new Error('Pi session is busy.');
       const admission = Promise.withResolvers<PiPrompt>();
       const completion = Promise.withResolvers<PiTerminal>();
       let started = false;

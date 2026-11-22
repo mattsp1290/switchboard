@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, readdir } from 'node:fs/promises';
+import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import type { CheckpointReference, SessionReference } from '../../core/sessions.js';
 
@@ -20,6 +20,10 @@ function inside(path: string, root: string): boolean {
 
 async function rollouts(root: string, dir: string, suffix: string, found: string[], depth: number): Promise<void> {
   if (depth > 6 || found.length > 1) return;
+  try {
+    const stat = await lstat(dir);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || !inside(await realpath(dir), root)) return;
+  } catch { return; }
   let entries;
   try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
   for (const entry of entries) {
@@ -48,12 +52,16 @@ function taskTurn(line: string): string | undefined {
   } catch { return undefined; }
 }
 
-async function readRollout(path: string): Promise<CodexHistoryFingerprint | undefined> {
+async function readRollout(path: string, root: string, stable: boolean): Promise<CodexHistoryFingerprint | undefined> {
   let file;
   try {
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > limitBytes) return undefined;
+    // Validate the opened descriptor against an authorized named inode before reading any bytes.
+    if (!inside(await realpath(path), root)) return undefined;
+    const openedName = await lstat(path);
+    if (openedName.isSymbolicLink() || openedName.dev !== stat.dev || openedName.ino !== stat.ino) return undefined;
     const hash = createHash('sha256');
     const chunk = Buffer.allocUnsafe(64 * 1024);
     let position = 0;
@@ -85,11 +93,14 @@ async function readRollout(path: string): Promise<CodexHistoryFingerprint | unde
       position += bytesRead;
     }
     if (lineBytes > 0) finishLine();
+    if (!inside(await realpath(path), root)) return undefined;
     const after = await file.stat();
     const named = await lstat(path);
     if (named.isSymbolicLink() || named.dev !== stat.dev || named.ino !== stat.ino
+      || (stable && (after.size !== stat.size || named.size !== stat.size))
       || after.size < stat.size || named.size < stat.size
-      || (after.size === stat.size && (after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs))) return undefined;
+      || [after, named].some((sample) => sample.size === stat.size
+        && (sample.mtimeMs !== stat.mtimeMs || sample.ctimeMs !== stat.ctimeMs))) return undefined;
     return turnId === undefined ? undefined : { bytes: stat.size, sha256: hash.digest('hex'), turnId };
   } catch {
     return undefined;
@@ -99,16 +110,17 @@ async function readRollout(path: string): Promise<CodexHistoryFingerprint | unde
 }
 
 /** Reads the one rollout under `home/sessions` named for `threadId`. Missing, ambiguous, or oversized history is `undefined`. */
-export async function readCodexHistoryFingerprint(home: string, threadId: string): Promise<CodexHistoryFingerprint | undefined> {
+export async function readCodexHistoryFingerprint(home: string, threadId: string, stable = false): Promise<CodexHistoryFingerprint | undefined> {
   if (threadId.length === 0 || threadId.includes('/') || threadId.includes('\\') || threadId.includes('\0')) {
     return undefined;
   }
-  const root = resolve(home);
+  let root: string;
+  try { root = await realpath(resolve(home)); } catch { return undefined; }
   const found: string[] = [];
   await rollouts(root, join(root, 'sessions'), `-${threadId}.jsonl`, found, 0);
   const path = found.length === 1 ? found[0] : undefined;
   if (path === undefined) return undefined;
-  return readRollout(path);
+  return readRollout(path, root, stable);
 }
 
 export function codexCheckpoint(session: SessionReference, fingerprint: CodexHistoryFingerprint): CheckpointReference {

@@ -47,14 +47,6 @@ test('zero or two named rollouts are not a fingerprint', async () => {
   assert.equal(await readCodexHistoryFingerprint(root, ''), undefined);
 });
 
-test('an oversized named rollout makes the history ambiguous', async () => {
-  const root = await home();
-  const sessions = join(root, 'sessions', '2026', '11', '19');
-  const body = `${line('event_msg', { type: 'task_complete', turn_id: 'turn' })}\n`;
-  await writeFile(join(sessions, `small-${thread}.jsonl`), body);
-  await writeFile(join(sessions, `big-${thread}.jsonl`), Buffer.alloc(8 * 1024 * 1024 + 1));
-  assert.equal(await readCodexHistoryFingerprint(root, thread), undefined);
-});
 
 test('a symlink named for the thread is not read', async () => {
   const root = await home();

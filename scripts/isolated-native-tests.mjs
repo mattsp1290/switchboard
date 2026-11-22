@@ -162,7 +162,7 @@ async function stageTree(stage, machine) {
   }
   const lockPackages = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')).packages;
   const fetched = await stageLockedPackages(tree, containerPlatformPackages(lockPackages, closure.optional, machine), lockPackages);
-  for (const file of [...SUITES, ...CONTROLS.map((control) => control.entry), ...FIXTURES]) {
+  for (const file of [...SUITES, ...CONTROLS.map((control) => control.entry), ...FIXTURES, 'scripts/support/qualification-image.mjs']) {
     mkdirSync(dirname(join(tree, file)), { recursive: true });
     copyFileSync(join(root, file), join(tree, file));
   }

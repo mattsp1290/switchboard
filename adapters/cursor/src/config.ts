@@ -27,8 +27,8 @@ export function textWithoutControls(value: string): boolean {
   return true;
 }
 
-// Same caller-id rule as the text adapters. Not exported: index.ts reaches it through readCursorOptions.
-function callerModelId(value: unknown): value is string {
+// Catalog IDs and selected model IDs share the same admission rule.
+export function callerModelId(value: unknown): value is string {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);

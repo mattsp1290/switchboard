@@ -115,7 +115,8 @@ export interface HostUsage {
 
 /**
  * `not-attempted`: refused before `createDispatchOperation` ran, so nothing was sent.
- * `not-dispatched`: that helper's not-sent observation. `outcome-unknown`: its result after entry is unknown.
+ * `not-dispatched`: that helper's not-sent observation. On host continuations, `intent-failed` also
+ * covers a stale pending set after intent but before the first reply; `invalid-input` identifies that case. `outcome-unknown`: its result after entry is unknown.
  * `accepted`: native acceptance was observed and the segment still failed. No failed status authorizes a retry.
  */
 export type HostWriteStatus =
@@ -124,7 +125,7 @@ export type HostWriteStatus =
 
 /**
  * `history-mismatch`: resume refused a different native history.
- * `pending-limit`: one assistant message produced more host calls than `maxPendingPerMessage`.
+ * `pending-limit`: one assistant message produced more calls and approvals than `maxPendingPerMessage`.
  * `unavailable`: a denial first seen at this operation, including a host launcher that refused to start.
  */
 export type HostAdapterError = AdapterError
@@ -174,7 +175,7 @@ export type HostInterruptResult =
   | { readonly kind: 'interrupted'; readonly evidence: NativeExtension }
   | { readonly kind: 'unconfirmed-within-bound'; readonly evidence?: NativeExtension };
 
-/** Reads unanswered host calls from native state without a model call. */
+/** Reads unanswered calls and approvals from native state without a model call. */
 export interface HostInspectApi {
   readonly pending: (signal: AbortSignal) => Promise<Outcome<HostPendingSet, HostAdapterError>>;
 }
@@ -184,7 +185,7 @@ export interface HostFingerprintApi {
 }
 
 export interface HostAdapterCapabilities {
-  /** A further host call in the same assistant message is a `pending-limit` failure, never a silent loss. */
+  /** A further call or approval in the same assistant message is a `pending-limit` failure, never a silent loss. */
   readonly maxPendingPerMessage: number;
   /** `fresh-process`: a continuation may be delivered to a session reopened in another process. */
   readonly continuation: 'same-process' | 'fresh-process';

@@ -51,11 +51,14 @@ function fixture(t, options = {}) {
     },
   };
   f.transport = openCodexTransport({ channel, bounds: { ...bounds, ...options.bounds },
-    onRequest(request, deliverySignal) {
+    onRequest(request, deliverySignal, intake) {
       assert.equal(f.depth, 0, 'handler-outside-reader');
       f.requests.push(request);
-      return options.request ? options.request(request, deliverySignal, f) : { kind: 'result', value: null };
+      return options.request ? options.request(request, deliverySignal, f, intake) : { kind: 'result', value: null };
     },
+    ...(options.notification ? { onNotification(notification) {
+      assert.equal(f.depth, 0, 'intake-outside-reader'); options.notification(notification, f);
+    } } : {}),
     onObservation(observation, deliverySignal) {
       assert.equal(f.depth, 0, 'observer-outside-reader');
       f.observations.push(observation);
@@ -487,8 +490,9 @@ test('diagnostic tail remains bounded while client replies progress', async (t) 
 test('every bound and product is validated before listener acquisition', () => {
   let acquired = 0;
   const channel = { listen: () => { acquired++; return () => {}; }, write: () => Promise.resolve() };
-  const bad = Object.keys(bounds).flatMap((key) => [0, -1, 1.5, NaN, Infinity].map((value) => ({ [key]: value })));
-  bad.push({ maxFrameBytes: constants.MAX_LENGTH }, { maxChunkBytes: constants.MAX_LENGTH + 1 },
+  const bad = [...Object.keys(bounds), 'maxInboundFrameBytes', 'maxOutboundFrameBytes'].flatMap((key) => [0, -1, 1.5, NaN, Infinity].map((value) => ({ [key]: value })));
+  bad.push(...['maxInboundFrameBytes', 'maxOutboundFrameBytes'].flatMap((key) => [null, bounds.maxFrameBytes - 1, constants.MAX_LENGTH].map((value) => ({ [key]: value }))),
+    { maxInboundFrameBytes: constants.MAX_LENGTH - 1, observationCapacity: Number.MAX_SAFE_INTEGER }, { maxFrameBytes: constants.MAX_LENGTH }, { maxChunkBytes: constants.MAX_LENGTH + 1 },
     { maxDiagnosticBytes: constants.MAX_LENGTH + 1 }, { maxWrites: Number.MAX_SAFE_INTEGER },
     { observationCapacity: Number.MAX_SAFE_INTEGER }, ...['handlerTimeoutMs', 'observationTimeoutMs', 'writeTimeoutMs'].map((key) => ({ [key]: 2147483648 })));
   for (const invalid of bad) assert.throws(() => openCodexTransport({ channel, bounds: { ...bounds, ...invalid },
@@ -554,4 +558,53 @@ test('the direct paired-echo callback bound remains independent of line size', a
   assert.equal(f.reports.length, 0);
   f.bytes(Buffer.alloc(16777216));
   assert.equal((await f.transport.ended).reason, 'input-overflow');
+});
+
+for (const extra of [0, 1]) test(`direct inbound frame at 8 MiB plus ${extra} bytes`, async (t) => {
+  const f = fixture(t, { bounds: { maxFrameBytes: 1048576, maxInboundFrameBytes: 8388608, maxOutboundFrameBytes: 8388608, maxChunkBytes: 16777215 } });
+  const envelope = { method: 'boundary', params: '' };
+  const overhead = Buffer.byteLength(JSON.stringify(envelope));
+  envelope.params = 'x'.repeat(8388608 + extra - overhead);
+  f.bytes(line(envelope)); await checkpoint();
+  if (extra) assert.equal((await f.transport.ended).reason, 'oversized-frame');
+  else { assert.equal(f.observations.length, 1); assert.equal(f.reports.length, 0); }
+});
+
+test('flushing parsed server requests admits each handler once outside the reader', async (t) => {
+  const f = fixture(t); f.input({ id: 'flush', method: 'approval' });
+  assert.equal(f.requests.length, 0);
+  f.transport.flushIntake(); assert.equal(f.requests.length, 1);
+  f.transport.flushIntake(); await checkpoint(); assert.equal(f.requests.length, 1);
+  assert.equal(f.writes.length, 1);
+});
+
+test('ordered intake hands requests and following notifications to the same lease before process exit', async (t) => {
+ const order=[];const held=gate();
+ const f=fixture(t,{request(_,__,___,intake){order.push('request');intake.watchNotification(n=>order.push('watch:'+n.method));return held.promise;},notification(n){order.push('notification:'+n.method);}});
+ f.bytes(Buffer.concat([line({id:'R',method:'request'}),line({method:'N1'}),line({method:'N2'})]));
+ f.transport.processExited();
+ assert.deepEqual(order,['request','watch:N1','notification:N1','watch:N2','notification:N2']);
+ assert.equal((await f.transport.ended).reason,'process-exit');held.resolve({kind:'result',value:null});
+});
+test('matched reply hooks precede following notifications and run only once', async (t) => {
+ const order=[];
+ const f=fixture(t,{notification(n){order.push(n.method);},write(current){const id=current.writes.at(-1).id;current.bytes(Buffer.concat([line({id,result:{}}),line({method:'following'}),line({id,result:{}})]));}});
+ const reply=await f.transport.request({method:'query'},signal(),{onReply(){assert.equal(f.depth,0);order.push('reply');}});
+ assert.equal(reply.kind,'reply');assert.deepEqual(order,['reply','following']);
+});
+test('trusted notification intake has a bounded queue even without diagnostic publication', async (t) => {
+ const f=fixture(t,{notification(){}});
+ f.bytes(Buffer.concat(Array.from({length:13},()=>line({method:'n'}))));
+ assert.equal((await f.transport.ended).reason,'observation-overflow');
+});
+
+for(const ending of ['oversized','truncated','intake'])test(`parsed reply evidence survives a subsequent ${ending} fault`,async(t)=>{
+ const order=[];const f=fixture(t,{notification(n){order.push(n.method);}});
+ const requested=f.transport.request({method:'query'},signal(),{onReply(){assert.equal(f.depth,0);order.push('reply');}});await checkpoint();
+ const id=f.writes[0].id;const reply=line({id,error:{code:-1,message:'rejected'}});
+ if(ending==='oversized')f.bytes(Buffer.concat([reply,Buffer.alloc(513,32)]));
+ else if(ending==='truncated'){f.bytes(Buffer.concat([reply,Buffer.from('{')]));f.sink.ended('eof');}
+ else f.bytes(Buffer.concat([reply,...Array.from({length:5},(_,i)=>line({method:'notice-'+i}))]));
+ assert.equal((await requested).kind,'reply');assert.equal(order[0],'reply');
+ assert.equal((await f.transport.ended).reason,ending==='oversized'?'oversized-frame':ending==='truncated'?'malformed-frame':'observation-overflow');
 });

@@ -1,0 +1,75 @@
+{
+  "date": "2026-11-22T20:11:43.312Z",
+  "nativeVersion": "0.169.0",
+  "binarySha256": "739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002",
+  "login": "chatgpt",
+  "scenarios": [
+    {
+      "id": "command-accept",
+      "status": "passed",
+      "approvals": 1,
+      "markerPresent": true,
+      "nativeTerminals": [
+        "completed"
+      ]
+    },
+    {
+      "id": "command-cancel",
+      "status": "passed",
+      "approvals": 1,
+      "declinedItem": true,
+      "segmentKind": "failed",
+      "segmentTerminal": "outcome-unknown",
+      "writeKind": "outcome-unknown",
+      "nativeCancellationObserved": true,
+      "markerPresent": false,
+      "nativeTerminals": [
+        "interrupted"
+      ]
+    },
+    {
+      "id": "command-interrupt",
+      "status": "passed",
+      "approvals": 1,
+      "interrupt": "interrupted",
+      "localWithdrawal": true,
+      "followupComplete": true,
+      "markerPresent": false,
+      "nativeTerminals": [
+        "interrupted",
+        "completed"
+      ]
+    },
+    {
+      "id": "image-4mib",
+      "status": "passed",
+      "decodedBytes": 4194304,
+      "transportOpen": true,
+      "nativeTerminals": [
+        "completed",
+        "completed"
+      ]
+    },
+    {
+      "id": "model-list",
+      "status": "not-covered",
+      "reason": "QUALIFY_MODEL_LIST=1 required"
+    },
+    {
+      "id": "file-change",
+      "status": "not-covered",
+      "reason": "QUALIFY_FILE_CHANGE=1 required"
+    }
+  ],
+  "fingerprint": {
+    "source": {
+      "sha256": "e190f0ad1bf50c516f0991b02086d41e8b9ec04a513f2c68ff2695f9caf8a237",
+      "files": 111
+    },
+    "runtime": {
+      "sha256": "921f1b474c5d9529565a622eaed7f7a249fac19959afe74c40345337c0360141",
+      "files": 79
+    }
+  },
+  "nodeVersion": "v24.22.3"
+}

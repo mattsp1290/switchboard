@@ -155,6 +155,7 @@ test('deny: decline is replied once and a declined item is the only qualified no
   const turnId = ctx.f.turns.get(session.threadId);
   const pending = await approval(ctx, session);
   assert.equal((await reply(ctx, choose(pending, 'decline'))).kind, 'ok');
+  await settle();
   ctx.f.notify('serverRequest/resolved', { threadId: session.threadId, requestId: 'req-1' });
   ctx.f.notify('item/completed', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'declined' } });
   await settle();
@@ -295,7 +296,7 @@ test('interrupt while waiting on approval: the native terminal withdraws it with
   const [session] = ctx.sessions;
   const turn = await turnOn(session);
   const pending = await approval(ctx, session);
-  assert.equal((await session.interrupt()).step, 'replied');
+  assert.equal((await session.interrupt()).step, 'uncertain', 'the fixture sends the native terminal before its RPC reply; terminal retirement aborts the unanswered exchange');
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   await settle();
   assert.deepEqual(settledOf(ctx.events), [{ kind: 'withdrawn', by: 'turn/completed', evidence: 'unqualified' }]);
@@ -314,7 +315,7 @@ test('cancel while a tool runs after approval reports the request and the native
   const pending = await approval(ctx, session);
   await reply(ctx, choose(pending, 'accept'));
   ctx.f.notify('item/started', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'inProgress' } });
-  assert.equal((await session.interrupt()).step, 'replied');
+  assert.equal((await session.interrupt()).step, 'uncertain', 'the fixture sends the native terminal before its RPC reply; terminal retirement aborts the unanswered exchange');
   ctx.f.notify('item/completed', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'failed' } });
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   await settle();
@@ -502,7 +503,7 @@ test('approvals beyond maxPending are refused with a decision-free error and nev
   assert.deepEqual(settledOf(ctx.events).map((settlement) => settlement.kind), ['lost', 'lost', 'lost']);
 });
 
-test('a request for a turn whose terminal was already observed is withdrawn at once', async (t) => {
+test('a request for a completed turn is withdrawn without being offered as pending', async (t) => {
   const ctx = await setup(t);
   const [session] = ctx.sessions;
   const turn = await turnOn(session);
@@ -512,25 +513,19 @@ test('a request for a turn whose terminal was already observed is withdrawn at o
   await settle();
   ctx.f.request('late', 'item/commandExecution/requestApproval', { threadId: session.threadId, turnId, itemId: 'i', availableDecisions });
   await settle();
-  assert.deepEqual(settledOf(ctx.events), [{ kind: 'withdrawn', by: 'turn/completed', evidence: 'unqualified' }]);
+  assert.deepEqual(settledOf(ctx.events), []);
+  assert.equal(ctx.events.some((event) => event.kind === 'pending'), false);
   assert.equal(ctx.f.replies[0].error.code, -32000);
 });
 
-test('a blind bridge observer is reported and its live approvals stay answerable', async (t) => {
-  const ctx = await setup(t);
-  const [session] = ctx.sessions;
-  const threadId = randomUUID();
-  // A session whose stream disconnected the bridge's observer on overflow.
-  const overflowed = { ...session, threadId, events: { subscribe: () => ({ kind: 'ok', value: { dispose() {}, ended: Promise.resolve('overflow') } }) } };
-  assert.equal(ctx.bridge.attach(overflowed).kind, 'ok');
-  await settle();
-  assert.deepEqual(ctx.events.filter((event) => event.kind === 'blind'), [{ kind: 'blind', threadId }]);
-  ctx.f.request('blind-1', 'item/commandExecution/requestApproval', { threadId, turnId: 'turn-b', itemId: 'item-b', availableDecisions });
-  await settle();
-  const pending = ctx.events.findLast((event) => event.kind === 'pending').pending;
-  assert.equal((await reply(ctx, choose(pending, 'decline'))).kind, 'ok');
-  await settle();
-  assert.deepEqual(ctx.f.replies, [{ id: 'blind-1', result: { decision: 'decline' } }]);
+test('a slow public session observer cannot disconnect trusted interaction intake', async (t) => {
+  const ctx = await setup(t); const [session] = ctx.sessions; await turnOn(session);
+  const stuck = session.events.subscribe(() => new Promise(() => {}));
+  for (let i = 0; i < 70; i++) { ctx.f.notify('fixture/padding', { threadId: session.threadId, turnId: ctx.f.turns.get(session.threadId) }); await settle(1); }
+  assert.equal(await stuck.value.ended, 'overflow');
+  const pending = await approval(ctx, session);
+  assert.equal((await reply(ctx, choose(pending, 'decline'))).kind, 'ok'); await settle();
+  assert.equal(ctx.f.replies[0].result.decision, 'decline');
 });
 
 test('a second host tool reply is duplicate-interaction and a completion without a string turn id does not deliver', async (t) => {
@@ -582,7 +577,7 @@ for (const reason of [new Error('untrusted'), { arbitrary: true }, 'unknown-reas
     params: { threadId: session.threadId, turnId, itemId: 'a', availableDecisions }, raw: {} };
   const tool = { id: 'direct-tool', method: 'item/tool/call', params: { threadId: session.threadId, turnId,
     callId: 't', namespace: 'application', tool: 'lookup', arguments: {} }, raw: {} };
-  const held = [ctx.bridge.onServerRequest(command, control.signal), ctx.bridge.onServerRequest(tool, control.signal)];
+  const held = [ctx.bridge.onServerRequest(command, control.signal, { replyAllowed() {}, watchNotification: () => () => {} }), ctx.bridge.onServerRequest(tool, control.signal, { replyAllowed() {}, watchNotification: () => () => {} })];
   control.abort(reason);
   await Promise.all(held);
   await settle();
@@ -591,4 +586,15 @@ for (const reason of [new Error('untrusted'), { arbitrary: true }, 'unknown-reas
   control.abort();
   assert.equal(projected.length, 2);
   ctx.f.complete(session.threadId);
+});
+
+for(const method of ['item/fileChange/requestApproval','item/tool/call']) test(`pre-ack ${method} watcher hands off without a withdrawal gap`,async(t)=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];const gate=Promise.withResolvers();const listeners=[];let watcher;
+ const made=createCodexInteraction({...options,declaredTools:[{name:'lookup',namespace:'application'}]});assert.equal(made.kind,'ok');
+ const bridge=made.value;assert.equal(bridge.attach({...session,matchesTurn:()=>gate.promise,intake(listener){listeners.push(listener);return {kind:'ok',value(){}};}}).kind,'ok');
+ const params={threadId:session.threadId,turnId:'preack-turn',itemId:'item',callId:'call',tool:'lookup',namespace:'application',arguments:{}};
+ const request={id:'preack',method,params,raw:{id:'preack',method,params}};
+ const reply=bridge.onServerRequest(request,access.signal,{replyAllowed(){},watchNotification(fn){watcher=fn;return ()=>{watcher=undefined;};}});
+ gate.resolve(true);queueMicrotask(()=>{const params={threadId:session.threadId,turnId:'preack-turn',requestId:'preack'};watcher?.({kind:'notification',method:'serverRequest/resolved',params,raw:{}});for(const listener of listeners)listener.notification?.('serverRequest/resolved',params);});
+ const result=await reply;assert.equal(result.kind,'error');assert.equal(result.error.code,-32000);assert.deepEqual(bridge.pending(),[]);assert.deepEqual(bridge.hostCalls(),[]);
 });

@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -588,12 +589,15 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       events: events,
       state: () => current,
       async run(input) {
-        if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0)) return { kind: 'failed', error: { code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, write: { kind: 'not-attempted' } };
-        if (typeof input.prompt !== 'string' || input.prompt.length === 0 || input.prompt.length > piHostLimits.maxText) {
+        let requestedImages: boolean;
+        try { const images = input.images; requestedImages = images !== undefined && (!Array.isArray(images) || images.length !== 0 || types.isProxy(images)); } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'image input is malformed' }, write: { kind: 'not-attempted' } }; }
+        if (requestedImages) return { kind: 'failed', error: { code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, write: { kind: 'not-attempted' } };
+        const prompt = input.prompt;
+        if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > piHostLimits.maxText) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The prompt must be a non-empty string.' }, write: { kind: 'not-attempted' } };
         }
         return dispatch(input, async () => {
-          await session.prompt(input.prompt, { expandPromptTemplates: false });
+          await session.prompt(prompt, { expandPromptTemplates: false });
           await session.waitForIdle();
         });
       },
@@ -616,7 +620,10 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           }
           const result = parsed.value.outcome.result;
           const data = result.kind === 'ok' ? result.value.data : result.error.data;
-          replacements.set(id, { text: JSON.stringify(data) ?? 'null', isError: result.kind === 'error' });
+          try { const text = JSON.stringify(data);
+          if (text === undefined) throw new Error('non-JSON tool result');
+          replacements.set(id, { text, isError: result.kind === 'error' }); }
+          catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'The tool result must be JSON.' }, write: { kind: 'not-attempted' } }; }
           if (input.onObservation) {
             observedAnswers.push(...answeredToolObservations(id, call.name, call.arguments, result));
           }

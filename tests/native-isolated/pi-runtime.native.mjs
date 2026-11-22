@@ -1,3 +1,4 @@
+import { qualificationImage } from '../../scripts/support/qualification-image.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
@@ -217,6 +218,7 @@ test('native admission resolves before the streamed answer and Stop drains owner
     await requestStarted.promise;
     assert.equal(await partial.promise, 'partial');
     await assert.rejects(session.prompt('Overlap', () => {}), /busy/);
+    await assert.rejects(session.prompt(' ', () => {}), /busy/);
     await session.abort();
     assert.equal((await accepted.finished).outcome, 'interrupted');
     await session.close();
@@ -271,6 +273,7 @@ test('runtime closes sessions and enforces its limit', { timeout: 10_000 }, asyn
     await current.close();
     await assert.rejects(current.open(), /closed/);
     await assert.rejects(sessions[0].prompt('Closed', () => {}), /closed/);
+    await assert.rejects(sessions[0].prompt(' ', () => {}), /closed/);
   });
 });
 
@@ -588,7 +591,7 @@ test('Pi transports exact 4 MiB image bytes and preserves them through native hi
     const current = await runtime({ model: 'fixture-image' });
     const session = await current.open();
     assert.equal(session.imageInput.kind, 'supported');
-    const base64 = Buffer.alloc(4194304, 7).toString('base64');
+    const base64 = qualificationImage().toString('base64');
     const images = [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${base64}` }];
     const started = session.prompt({ text: 'Describe', images }, () => {});
     images[0].dataUrl = 'mutated';
@@ -612,6 +615,7 @@ test('Pi refuses images for the real text-only model before provider dispatch or
   await fixture(async ({ runtime, directory, requests }) => {
     const current = await runtime(); const session = await current.open();
     assert.equal(session.imageInput.kind, 'unavailable');
+    assert.throws(() => { session.imageInput.kind = 'supported'; }, TypeError);
     await prompt(session, 'legacy text');
     const path = join(directory, 'sessions', session.sessionFile);
     const before = await readFile(path, 'utf8');
@@ -646,5 +650,29 @@ test('disabling Pi image resize preserves text-only requests and observable sett
     const secondHistory = JSON.parse((await readFile(join(directory, 'sessions', second.sessionFile), 'utf8')).split('\n').find((line) => line.includes('"role":"user"'))).message.content;
     assert.deepEqual(firstHistory, secondHistory);
     assert.deepEqual(settings, [false, true]);
+  });
+});
+
+test('Pi validates malformed and over-limit media for an image-capable model before persistence', { timeout: 10000 }, async (t) => {
+  imageModel(t);
+  await fixture(async ({ runtime, directory, requests }) => {
+    const current = await runtime({ model: 'fixture-image' }); const session = await current.open();
+    await prompt(session, 'initial');
+    const path = join(directory, 'sessions', session.sessionFile); const before = await readFile(path, 'utf8');
+    for (const images of [null, {}, [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR=\n' }],
+      [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` }]]) {
+      await assert.rejects(session.prompt({ text: 'refuse', images }, () => {}), /Pi operation failed/);
+    }
+    assert.equal(requests.length, 1); assert.equal(await readFile(path, 'utf8'), before);
+  });
+});
+
+test('Pi reserves a writer after caller image getters finish', { timeout: 10000 }, async (t) => {
+  imageModel(t);
+  await fixture(async ({ runtime }) => {
+    const current = await runtime({ model: 'fixture-image' }); const session = await current.open();
+    let inner;
+    const outer = session.prompt({ text: 'outer', get images() { inner = session.prompt('inner', () => {}); return []; } }, () => {});
+    await assert.rejects(outer, /busy/); await (await inner).finished;
   });
 });

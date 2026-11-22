@@ -251,12 +251,15 @@ void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];
   writeFileSync(join(consumer, 'image-types.json'), JSON.stringify({ ...consumerConfig, files: ['image-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'image-types.json'], consumer);
   writeFileSync(join(consumer, 'codex-host-types.test.ts'), `
+import { codexHostAdapter } from '${manifest.name}/host/codex';
 import type { CodexHostNativeConfig, CodexHostModel } from '${manifest.name}/host/codex';
 import type { HostAdapter, HostAdapterEvent, HostSegmentResult, InteractionContinuation } from '${manifest.name}';
 const config: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'on-request', approvalsReviewer: 'user', model: 'selected', effort: 'high', activity: 'items' };
 // @ts-expect-error The public host surface does not admit granular policy objects or strings.
 const invalid: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'granular' };
 declare const adapter: HostAdapter;
+if (adapter.capabilities.imageInput.kind === 'supported') void adapter.capabilities.imageInput.api.maxBytes;
+void codexHostAdapter;
 declare const result: HostSegmentResult;
 declare const event: HostAdapterEvent;
 if (result.kind === 'pending') {
@@ -315,6 +318,10 @@ if (session.imageInput.kind === 'supported') void session.imageInput.api.mediaTy
 `);
   writeFileSync(join(consumer, 'pi-media-types.json'), JSON.stringify({ ...consumerConfig, files: ['pi-media-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'pi-media-types.json'], consumer);
+  for (const name of ['image', 'codex-host', 'cursor-media', 'claude-media', 'pi-media']) {
+    const files = run(process.execPath, [compiler, '-p', `${name}-types.json`, '--listFilesOnly'], consumer);
+    assert(!/\/@(?:openai|anthropic-ai|earendil-works|cursor)\//.test(files), `${name} declarations remain independent of native SDK declarations.`);
+  }
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';

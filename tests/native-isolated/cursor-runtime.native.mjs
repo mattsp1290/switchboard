@@ -663,6 +663,8 @@ serial('Cursor catalogs use each explicit key, remain sessionless and copy only 
   sdk.listModels = async (options) => { calls.push(options); return returned; };
   const signal = new AbortController().signal;
   try {
+    assert.equal((await one.models.api.list(Object.create(AbortSignal.prototype))).error.code, 'invalid-input');
+    assert.equal(calls.length, 0);
     assert.deepEqual(await one.models.api.list(signal), { kind: 'ok', value: [] });
     returned = [{ id: 'native', displayName: 'Native', description: 'description', aliases: ['alias'], parameters: ['omit'], variants: ['omit'] }];
     const result = await two.models.api.list(signal);
@@ -675,9 +677,18 @@ serial('Cursor catalogs use each explicit key, remain sessionless and copy only 
     for (const invalid of [null, {}, [{}], [{ get id() { throw new Error('untrusted catalog'); } }], Array(1001).fill({ id: 'x', displayName: 'X' }),
       [{ id: 'x'.repeat(257), displayName: 'X' }], [{ id: 'x', displayName: '雪'.repeat(342) }],
       [{ id: 'x', displayName: 'X', description: 'x'.repeat(4097) }],
-      [{ id: 'x', displayName: 'X', aliases: Array(65).fill('a') }], [{ id: 'x', displayName: 'X', aliases: ['a'.repeat(257)] }]]) {
+      [{ id: 'x', displayName: 'X', aliases: new Array(1) }], [{ id: 'x', displayName: 'X', aliases: Array(65).fill('a') }], [{ id: 'x', displayName: 'X', aliases: ['a'.repeat(257)] }]]) {
       returned = invalid;
       assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+    }
+    const changesLength = (entries) => {
+      let reads = 0;
+      return new Proxy(entries, { get(target, key) { return key === 'length' ? (++reads === 1 ? 1 : target.length) : Reflect.get(target, key); } });
+    };
+    for (const invalid of [changesLength(Array(1001).fill({ id: 'native', displayName: 'Native' })),
+      [{ id: 'native', displayName: 'Native', aliases: changesLength(Array(65).fill('alias')) }],
+      [{ id: ' native ', displayName: 'Native' }], [{ id: '', displayName: 'Native' }]]) {
+      returned = invalid; assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
     }
     sdk.listModels = async () => { throw new Error('must not escape'); };
     assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
@@ -704,6 +715,7 @@ serial('Cursor catalog timeout and abort detach the waiter while retaining one u
     await Promise.resolve(); await Promise.resolve();
     held = Promise.withResolvers();
     const control = new AbortController();
+    control.signal.addEventListener('abort', (event) => event.stopImmediatePropagation());
     const aborted = runtime.models.api.list(control.signal);
     control.abort();
     assert.equal((await aborted).error.code, 'closed');
@@ -725,4 +737,40 @@ serial('closing Cursor settles an active catalog waiter without waiting for its 
     assert.equal((await waiting).error.code, 'closed');
     held.resolve([{ malformed: true }]);
   } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor image getters cannot reserve the same writer twice', async () => {
+  const place = await workspace(); const fake = install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  try {
+    const first = await runtime.start({ text: 'first', onEvent() {} }); await first.finished;
+    let inner;
+    const outer = runtime.start({ text: 'outer', agentId: first.agentId, onEvent() {}, get images() {
+      inner = runtime.start({ text: 'inner', agentId: first.agentId, onEvent() {} }); return [];
+    } });
+    await assert.rejects(outer, /Cursor operation failed/); await (await inner).finished;
+    assert.equal(fake.resumed.length, 1);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor discards fulfilled and rejected SDK results after the monotonic deadline even before timers run', async (t) => {
+ const place=await workspace();install([]);let now=0;t.mock.method(performance,'now',()=>now);
+ const runtime=createCursorRuntime(options(place.cwd,place.session));const signal=new AbortController().signal;
+ try {
+  for(const reject of [false,true]){const held=Promise.withResolvers();sdk.listModels=()=>held.promise;
+   const waiting=runtime.models.api.list(signal);now+=30001;
+   if(reject)held.reject(new Error('late'));else held.resolve([{id:'late',displayName:'Late'}]);
+   assert.equal((await waiting).error.code,'unavailable');
+  }
+  const held=Promise.withResolvers();sdk.listModels=()=>held.promise;
+  const parsing=runtime.models.api.list(signal);
+  held.resolve([{get id(){now+=30001;return 'late-validation';},displayName:'Late'}]);
+  assert.equal((await parsing).error.code,'unavailable');
+  const throwing=Promise.withResolvers();sdk.listModels=()=>throwing.promise;
+  const lateThrow=runtime.models.api.list(signal);throwing.resolve([{get id(){now+=30001;throw new Error('late validation');},displayName:'Late'}]);
+  assert.equal((await lateThrow).error.code,'unavailable');
+  sdk.listModels=()=>{now+=30001;throw new Error('late synchronous SDK');};
+  assert.equal((await runtime.models.api.list(signal)).error.code,'unavailable');
+  sdk.listModels=async()=>[];assert.deepEqual((await runtime.models.api.list(signal)).value,[]);
+ }finally{await runtime.close();restore();await place.remove();}
 });

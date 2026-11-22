@@ -255,3 +255,30 @@ test('Pi-host rejects unsupported media before intent, stream dispatch or histor
     assert.deepEqual(subject.adapter.state(), before);
   } finally { await subject.close(); }
 });
+
+test('Pi-host captures prompt once before validation and intent', async () => {
+  const host = await open({}); let reads = 0;
+  try {
+    const result = await host.adapter.run({ ...run('captured'), get prompt() { return ++reads <= 3 ? 'captured' : 'x'.repeat(4194305); } });
+    assert.equal(result.kind, 'complete'); assert.equal(reads, 1);
+    assert(host.requests[0].turns.some((turn) => turn.role === 'user' && turn.text === 'captured'));
+  } finally { await host.close(); }
+});
+
+test('Pi-host returns a typed pre-dispatch refusal for non-JSON tool results', async () => {
+  let calls = 0;
+  const host = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }],
+    stream: async function* () { calls++; yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: {} }; } });
+  try {
+    const pending = await host.adapter.run(run('tool')); assert.equal(pending.kind, 'pending');
+    const cycle = []; cycle.push(cycle);
+    for (const data of [cycle, 1n, undefined, () => 1, Symbol('not JSON')]) {
+      let intents = 0;
+      const result = await host.adapter.continue({ hostOperationId: 'invalid-result', signal: openSignal(), recordIntent() { intents++; },
+        answers: [{ formatVersion: 1, kind: 'tool', outcome: { target: pending.calls[0].pending.target,
+          result: { kind: 'ok', value: { namespace: 'fixture', schemaVersion: 1, data } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } }] });
+      assert.equal(result.error.code, 'invalid-input'); assert.equal(result.write.kind, 'not-attempted'); assert.equal(intents, 0);
+      assert.equal(calls, 1); assert.equal((await host.adapter.capabilities.inspect.api.pending(openSignal())).value.calls.length, 1);
+    }
+  } finally { await host.close(); }
+});
