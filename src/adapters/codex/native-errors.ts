@@ -30,3 +30,30 @@ export function codexNativeError(source: HostNativeError['source'], raw: unknown
   }
   return Object.freeze({ source, code, message: bounded.message, info, truncated });
 }
+
+type ErrorIntake = { readonly kind: 'idle' }
+  | { readonly kind: 'awaiting'; readonly previousId: string | undefined; readonly candidates: Map<string, HostNativeError> }
+  | { readonly kind: 'identified'; readonly id: string; error: HostNativeError | undefined };
+/** Retains a cause only after native acknowledgement establishes the exact turn identity. */
+export function createCodexErrorIntake() {
+  let state: ErrorIntake = { kind: 'idle' };
+  return {
+    begin() {
+      state = { kind: 'awaiting', previousId: state.kind === 'identified' ? state.id : undefined, candidates: new Map() };
+    },
+    accepted(id: string) {
+      if (state.kind === 'awaiting') state = { kind: 'identified', id, error: state.candidates.get(id) };
+    },
+    notification(params: unknown, threadId: string) {
+      if (typeof params !== 'object' || params === null || !('threadId' in params) || params.threadId !== threadId
+        || !('turnId' in params) || typeof params.turnId !== 'string' || !('willRetry' in params) || params.willRetry !== false
+        || !('error' in params)) return;
+      const cause = codexNativeError('error-notification', params.error);
+      if (!cause) return;
+      if (state.kind === 'identified' && state.id === params.turnId) state.error = cause;
+      else if (state.kind === 'awaiting' && state.previousId !== params.turnId
+        && (state.candidates.has(params.turnId) || state.candidates.size < 8)) state.candidates.set(params.turnId, cause);
+    },
+    current: () => state.kind === 'identified' ? state.error : undefined,
+  };
+}

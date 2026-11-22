@@ -8,13 +8,15 @@ import { createEventStream } from '../../core/events.js';
 import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
-  HostLaunch, HostOpenOptions, HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
+  HostModel, HostNativeError, HostLaunch, HostOpenOptions, HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
   HostWriteStatus,
 } from '../../core/host-adapter.js';
 import type { InteractionContinuation } from '../../core/interaction.js';
 import { parseInteractionContinuation } from '../../core/interaction.js';
 import type { SessionBinding } from '../../core/sessions.js';
-import { boundedCodexMessage } from './native-errors.js';
+import { codexActivityItem } from './activity.js';
+import { listCodexModels } from './models.js';
+import { boundedCodexMessage, codexNativeError, createCodexErrorIntake } from './native-errors.js';
 import { codexSettlement } from './settlement.js';
 import { codexImages, codexImageLimits, codexImageFrameBytes } from './images.js';
 import type { CodexImage } from './images.js';
@@ -32,6 +34,7 @@ import { openCodexTransport } from './transport.js';
 import type { BorrowedChannel, CodexTransport, TransportBounds } from './transport.js';
 
 /** Pinned app-server this adapter was proved against. */
+export type CodexHostModel = HostModel;
 export const CODEX_HOST_NATIVE_VERSION = '0.169.0';
 
 export interface CodexHostNativeConfig {
@@ -108,14 +111,14 @@ const featurePins = [
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const fail = (error: HostAdapterError) => ({ kind: 'error' as const, error: Object.freeze(error) });
-function failed(error: HostAdapterError, write: HostWriteStatus): HostSegmentResult {
+function failed(error: HostAdapterError, write: HostWriteStatus, nativeError?: HostNativeError): HostSegmentResult {
   if (error.code === 'pending-limit') {
     if (write.kind !== 'accepted') {
       return { kind: 'failed', error: { code: 'native-failure', message: 'a pending limit was not an accepted write' }, write: { kind: 'not-attempted' } };
     }
-    return { kind: 'failed', error, write };
+    return { kind: 'failed', error, write, ...(nativeError === undefined ? {} : { nativeError }) };
   }
-  return { kind: 'failed', error, write };
+  return { kind: 'failed', error, write, ...(nativeError === undefined ? {} : { nativeError }) };
 }
 /** Native `total` as one observation row. `reasoningOutputTokens` is the AG-UI `reasoningTokens`. */
 function usageRow(total: CodexTokenUsage): RunObservationUsage {
@@ -432,7 +435,10 @@ async function openAdapter(ready: {
   const tools = options.tools ?? [];
   const canonical = canonicalTools(tools);
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 4, capacity: 64 });
+  const lifetime = new AbortController();
+  const errors = createCodexErrorIntake();
   let session: CodexSession | undefined;
+  let sessionSubscription: import('../../core/events.js').Subscription | undefined;
   let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
   /** Whether `run-started` went out for this segment. */
   type SegmentState = { started: boolean };
@@ -463,6 +469,16 @@ async function openAdapter(ready: {
       for (const o of declaredToolObservations(target.nativeToolCallId, event.call.name, event.call.arguments ?? null)) observe(o);
     }
   });
+  const nativeIntake = (method: string, params: unknown) => {
+    if (native.activity === 'items') {
+      const item = codexActivityItem(method, params);
+      if (item) publishFact({ kind: 'native-item', item });
+    }
+    if (method === 'error' && session) errors.notification(params, session.threadId);
+  };
+  const executionSubscription = execution.events.subscribe((event) => {
+    if (event.kind === 'native' && session && record(event.params) && event.params.threadId === session.threadId) nativeIntake(event.method, event.params);
+  });
   const resume = options.resume;
   const resumedKey = resume ? declarationKey(native.home, resume.session.opaque) : undefined;
   if (resumedKey && remembered.has(resumedKey) && remembered.get(resumedKey) !== canonical) {
@@ -489,7 +505,9 @@ async function openAdapter(ready: {
     rememberDeclaration(native.home, session.threadId, canonical);
   }
   function watch(current: CodexSession): void {
-    current.events.subscribe((event) => {
+    const subscription = current.events.subscribe((event) => {
+      if (event.kind === 'turn-accepted') errors.accepted(event.turnId);
+      if (event.kind === 'native') nativeIntake(event.method, event.params);
       if (!segment || segment.phase === 'intent') return;
       if (event.kind === 'text-delta') {
         segment.text += event.delta;
@@ -510,6 +528,7 @@ async function openAdapter(ready: {
         observe({ kind: 'usage', rows: [normalizeUsage(usageRow(event.total))] });
       }
     });
+    if (subscription.kind === 'ok') sessionSubscription = subscription.value;
   }
   async function credentialOk(hostSignal: AbortSignal): Promise<HostAdapterError | undefined> {
     const route = options.route;
@@ -550,16 +569,16 @@ async function openAdapter(ready: {
         return { result: pendingSegment(active, current, pending) };
       case 'completion':
         return turnResult ? completionResult(active, current, turnResult, accepted, pending)
-          : { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+          : { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       case 'aborted':
-        return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted }),
+        return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted }, errors.current()),
           failedAs: 'outcome-unknown' };
       case 'wait':
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       default: {
         const leftover: never = choice;
         void leftover;
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       }
     }
   }
@@ -573,7 +592,7 @@ async function openAdapter(ready: {
             return { result: (pending.length > 0 || bridge.pending().length > 0) ? pendingSegment(active, current, pending)
               : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage } };
           case 'failed':
-            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite) };
+            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite, codexNativeError('turn.error', completion.terminal.error) ?? errors.current()) };
           case 'interrupted':
             return { result: failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite),
               failedAs: 'cancelled' };
@@ -583,11 +602,11 @@ async function openAdapter(ready: {
           }
         }
       case 'rejected':
-        return { result: failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite, codexNativeError('turn/start-reply', completion.error)) };
       case 'unconcluded':
       case 'not-sent':
       case 'not-dispatched':
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       default: {
         const leftover: never = completion;
         return { result: failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' }) };
@@ -637,6 +656,7 @@ async function openAdapter(ready: {
       }
     }
     if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
+    errors.begin();
     const started = active.turn({ hostOperationId: 'turn', input: [{ type: 'text', text: prompt, text_elements: [] }, ...images],
       ...(images.length ? { maxFrameBytes: codexImageFrameBytes } : {}),
       ...(native.effort === undefined ? {} : { features: { effort: native.effort } }),
@@ -726,7 +746,7 @@ async function openAdapter(ready: {
         return refuse({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
       }
       if (snapshot.observation.kind !== 'accepted' && snapshot.observation.kind !== 'conclusive') {
-        return refuse({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
+        return refuse({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current());
       }
       return await settle(input.signal, snapshot.observation.evidence);
     } finally { segment = undefined; }
@@ -735,7 +755,9 @@ async function openAdapter(ready: {
     imageInput: ready.prepared.kind === 'direct'
       ? { kind: 'supported' as const, api: codexImageLimits }
       : { kind: 'unavailable' as const, reason: 'image input is qualified on direct sessions only' },
-    models: { kind: 'unsupported' as const, reason: 'model catalog is not supported' },
+    models: ready.prepared.kind === 'direct' ? { kind: 'supported' as const, api: {
+      list: (signal: AbortSignal) => listCodexModels(execution.scope.request, AbortSignal.any([signal, lifetime.signal])),
+    } } : { kind: 'unavailable' as const, reason: 'the route fixes the model' },
     maxPendingPerMessage, continuation: 'same-process', usage: 'cumulative', toolDeclarations: 'fixed-at-creation',
     inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: pendingSet() }) } },
     fingerprint: { kind: 'supported' as const, api: { validity: 'segment-end' as const, read: async () => {
@@ -772,7 +794,10 @@ async function openAdapter(ready: {
       } finally { clearTimeout(timer); }
     },
     close: () => closing ??= (async () => {
+      lifetime.abort();
       await execution.close();
+      sessionSubscription?.dispose();
+      if (executionSubscription.kind === 'ok') executionSubscription.value.dispose();
       if (bridgeSubscription.kind === 'ok') bridgeSubscription.value.dispose();
       stream.close();
       return { kind: 'ok' as const, value: undefined };

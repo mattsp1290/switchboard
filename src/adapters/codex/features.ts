@@ -100,7 +100,8 @@ export const codexFeatureCapabilities = Object.freeze({
     + 'proxy route native sends none: approvals are pinned off (approvals-under-route).'),
   'approval-policy': supported('typed-unqualified', everyTarget(['approvalPolicy', 'approvalsReviewer']),
     `Delivered exactly; a granular approvalPolicy requires ${gate}. Approval acceptance, file-change and permission `
-    + 'journeys are unqualified. Under a proxy route only "never" is accepted and an absent approvalPolicy is sent as "never" (approvals-under-route).'),
+    + 'journeys are unqualified. Under a proxy route only "never" is accepted and an absent approvalPolicy is sent as "never" (approvals-under-route). '
+    + './host/codex direct sessions send the host approvalPolicy (omitted: never); native accept/cancel/interrupt qualification is recorded separately in codex-host-direct.md.'),
   'sandbox': supported('typed-unqualified', everyTarget(['sandbox', 'permissions'], ['sandbox', 'permissions'], ['sandboxPolicy', 'permissions']),
     `Delivered exactly; permissions requires ${gate}. Native enforcement is unqualified. Under a proxy route a networked `
     + 'shell is refused (networked-shell-under-route) and routed config pins a read-only sandbox without network.'),

@@ -251,7 +251,7 @@ void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];
   writeFileSync(join(consumer, 'image-types.json'), JSON.stringify({ ...consumerConfig, files: ['image-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'image-types.json'], consumer);
   writeFileSync(join(consumer, 'codex-host-types.test.ts'), `
-import type { CodexHostNativeConfig } from '${manifest.name}/host/codex';
+import type { CodexHostNativeConfig, CodexHostModel } from '${manifest.name}/host/codex';
 import type { HostAdapter, HostAdapterEvent, HostSegmentResult, InteractionContinuation } from '${manifest.name}';
 const config: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'on-request', approvalsReviewer: 'user', model: 'selected', effort: 'high', activity: 'items' };
 // @ts-expect-error The public host surface does not admit granular policy objects or strings.
@@ -271,6 +271,10 @@ if (event.kind === 'interaction-settled') void [event.target, event.settlement];
 if (adapter.capabilities.inspect.kind === 'supported') {
   const pending = await adapter.capabilities.inspect.api.pending(new AbortController().signal);
   if (pending.kind === 'ok') void [pending.value.calls, pending.value.approvals];
+}
+if (adapter.capabilities.models.kind === 'supported') {
+  const catalog = await adapter.capabilities.models.api.list(new AbortController().signal);
+  if (catalog.kind === 'ok') { const model: CodexHostModel | undefined = catalog.value[0]; void model?.inputModalities; }
 }
 const interrupted = await adapter.interrupt({ timeoutMs: 10 });
 if (interrupted.kind === 'unconfirmed-within-bound') void interrupted.evidence;

@@ -20,6 +20,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 const { codexHostAdapter, CODEX_HOST_NATIVE_VERSION } = await import(new URL('adapters/codex/index.ts', src).href);
 const { checkCodexHostRoute, codexHostRoutePrincipal, copyCodexHostRoute } = await import(new URL('adapters/codex/route.ts', src).href);
 const { hostAdapterContracts } = await import(new URL('testkit/host-contracts.ts', src).href);
+const { codexNativeError, createCodexErrorIntake } = await import(new URL('adapters/codex/native-errors.ts', src).href);
 hook.deregister();
 
 const usage = { totalTokens: 3, inputTokens: 2, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0 };
@@ -96,8 +97,9 @@ function fakeServer(home, tool) {
       const turnId = randomUUID();
       const text = params.input?.[0]?.text;
       const threadId = params.threadId;
+      f.turnIdentity = { threadId, turnId };
       if (params.input.some((input) => input.type === 'image')) {
-        const item = { type: 'userMessage', id: `image-${turnId}`, content: params.input };
+        const item = { type: 'userMessage', id: `image-${turnId}`, content: params.input, metadata: f.echoMetadata };
         const frames = ['item/started', 'item/completed'].map((method) => `${JSON.stringify({ method, params: { threadId, turnId, item } })}\n`);
         queueMicrotask(() => f.sink.data(Buffer.from(frames.join(''))));
         appendFileSync(join(home, 'sessions', `rollout-${threadId}.jsonl`), `${JSON.stringify({ type: 'response_item', payload: item })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } })}\n`);
@@ -136,6 +138,7 @@ function fakeServer(home, tool) {
         const hit = pending.get(message.id);
         if (hit) {
           pending.delete(message.id);
+          f.onReply?.(message, hit);
           queueMicrotask(() => {
             send({ method: 'item/completed', params: { threadId: hit.threadId, turnId: hit.turnId, item: { id: hit.itemId, type: 'dynamicToolCall' } } });
             if (![...pending.values()].some((item) => item.turnId === hit.turnId)) finishTurn(hit.threadId, hit.turnId);
@@ -157,7 +160,7 @@ function fakeServer(home, tool) {
   return f;
 }
 
-function subject() {
+function subject(configure = () => {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'codex-host-')));
   mkdirSync(join(home, 'sessions'));
   const sentinel = 'LEAK-SENTINEL-config';
@@ -172,6 +175,7 @@ function subject() {
         state.spawned.push(request);
         if (mode === 'deny') throw new Error('denied');
         const server = fakeServer(home, toolName);
+        configure(server);
         state.servers.push(server);
         return { channel: server.channel, processExit: server.processExit };
       } };
@@ -676,4 +680,301 @@ test('close-before-loss retires event streams without requiring host pending cle
   hostPending.clear();
   assert.equal(hostPending.size, 0);
   assert.equal(await subscription.value.ended, 'closed');
+});
+
+for (const decision of ['accept', 'cancel']) test(`file-change ${decision} correlates public activity and the approval target`, async (t) => {
+  const ctx = await openHost(t, { activity: 'items', approvalPolicy: 'on-request' });
+  approvalTurns(ctx.f, { file: true });
+  const original = ctx.f.handlers['turn/start'];
+  const changes = [{ path: '/fixture/file.txt', kind: { type: 'update', move_path: null }, diff: '-old\n+new' }];
+  ctx.f.handlers['turn/start'] = (params, id) => {
+    const result = original(params, id);
+    queueMicrotask(() => ctx.f.send({ method: 'item/started', params: { ...ctx.f.turnIdentity,
+      item: { id: 'approval-item', type: 'fileChange', changes, status: 'inProgress' } } }));
+    return result;
+  };
+  ctx.f.onReply = (reply) => {
+    if (reply.id === 'approval-call') ctx.f.send({ method: 'item/completed', params: { ...ctx.f.turnIdentity,
+      item: { id: 'approval-item', type: 'fileChange', changes, status: decision === 'accept' ? 'completed' : 'declined' } } });
+  };
+  const events = [];
+  ctx.adapter.events.subscribe((e) => { events.push(e); });
+  const pending = await ctx.run();
+  await tick();
+  const item = events.find((e) => e.kind === 'native-item' && e.item.data.method === 'item/started').item.data.params.item;
+  assert.equal(pending.approvals[0].target.tool.nativeToolCallId, item.id);
+  assert.deepEqual(item.changes, changes);
+  assert.deepEqual(pending.approvals[0].choices.map((c) => c.nativeChoiceId), ['accept', 'acceptForSession', 'decline', 'cancel']);
+  assert.equal((await ctx.answer([approvalAnswer(pending.approvals[0], decision)])).kind, 'complete');
+  await tick();
+  assert.equal(ctx.f.replies.find((r) => r.id === 'approval-call').result.decision, decision);
+  assert.equal(events.find((e) => e.kind === 'native-item' && e.item.data.method === 'item/completed').item.data.params.item.status,
+    decision === 'accept' ? 'completed' : 'declined');
+});
+
+test('activity crosses segment boundaries exactly once and excludes other threads and user echoes', async (t) => {
+  const ctx = await openHost(t, { activity: 'items' });
+  const identities = [];
+  for (let i = 0; i < 3; i++) { await ctx.run(prompts.text); identities.push(ctx.f.turnIdentity); }
+  const events = [];
+  ctx.adapter.events.subscribe((e) => { events.push(e); });
+  const methods = ['item/started', 'item/completed', 'item/commandExecution/outputDelta', 'item/fileChange/patchUpdated'];
+  for (const [index, identity] of identities.entries()) {
+    for (const method of methods) ctx.f.send({ method, params: { ...identity, itemId: `item-${index}`, delta: 'output',
+      changes: [{ path: '/fixture/f', kind: { type: 'add' }, diff: '+line' }],
+      item: { type: index === 1 ? 'fileChange' : 'commandExecution', id: `item-${index}`, status: index === 1 ? 'failed' : 'completed' } } });
+  }
+  const identity = identities[0];
+  for (const params of [{ ...identity, threadId: randomUUID(), item: { type: 'commandExecution' } },
+    { ...identity, item: { type: 'userMessage', content: [{ type: 'image', url: 'not-forwarded' }] } }]) ctx.f.send({ method: 'item/completed', params });
+  ctx.f.send({ method: 'item/commandExecution/outputDelta', params: identity });
+  ctx.f.send({ method: 'item/reasoning/textDelta', params: { ...identity, itemId: 'reason', delta: 'hidden' } });
+  await tick(8);
+  const items = events.filter((e) => e.kind === 'native-item');
+  assert.equal(items.length, 12);
+  assert(items.every((e) => e.item.namespace === 'codex-app-server/item'));
+  for (const method of methods) assert.equal(items.filter((e) => e.item.data.method === method).length, 3);
+});
+
+test('activity overflow retires only the lagging observer', async (t) => {
+  const ctx = await openHost(t, { activity: 'items' });
+  await ctx.run(prompts.text);
+  const stuck = ctx.adapter.events.subscribe(() => new Promise(() => {}));
+  const items = [];
+  ctx.adapter.events.subscribe((e) => { if (e.kind === 'native-item') items.push(e); });
+  for (let i = 0; i < 65; i++) {
+    ctx.f.send({ method: 'item/commandExecution/outputDelta', params: { ...ctx.f.turnIdentity, itemId: `c-${i}`, delta: 'x' } });
+    await tick();
+  }
+  assert.equal(await stuck.value.ended, 'overflow');
+  assert.equal(items.length, 65);
+});
+
+function failTurn(f, { rpc, terminal, notification, beforeAck = false, noTerminal = false, retry = false } = {}) {
+  f.handlers['turn/start'] = (params, id) => {
+    if (rpc) return { error: rpc };
+    const turnId = randomUUID();
+    const identity = { threadId: params.threadId, turnId };
+    f.turnIdentity = identity;
+    queueMicrotask(() => {
+      const notify = () => { if (notification) f.send({ method: 'error', params: { ...identity, error: notification, willRetry: retry } }); };
+      if (beforeAck) notify();
+      f.send({ id, result: { turn: { id: turnId, status: 'inProgress' } } });
+      if (!beforeAck) notify();
+      if (!noTerminal) f.send({ method: 'turn/completed', params: { threadId: identity.threadId, turn: { id: turnId, status: 'failed', error: terminal ?? null } } });
+    });
+    return { deferred: true };
+  };
+}
+
+test('native failure causes preserve their source without changing generic errors or write certainty', async (t) => {
+  const ctx = await openHost(t);
+  const error = { message: 'usage limit', codexErrorInfo: 'usageLimitExceeded', additionalDetails: 'omitted', misalignment: 'omitted' };
+  for (const [config, source, code, info] of [
+    [{ rpc: { code: -32600, message: 'bad input', data: { secret: 'omitted' } } }, 'turn/start-reply', -32600, null],
+    [{ terminal: error }, 'turn.error', null, 'usageLimitExceeded'],
+    [{ notification: error, beforeAck: true }, 'error-notification', null, 'usageLimitExceeded'],
+    [{ notification: error, retry: true }, undefined, undefined, undefined],
+  ]) {
+    failTurn(ctx.f, config);
+    const result = await ctx.run('fail');
+    assert.equal(result.kind, 'failed');
+    assert.equal(result.write.kind, 'accepted');
+    assert.equal(result.error.code, 'native-failure');
+    assert.equal(result.nativeError?.source, source);
+    assert.equal(result.nativeError?.code, code);
+    assert.equal(result.nativeError?.info, info);
+    if (result.nativeError) assert.deepEqual(Object.keys(result.nativeError).sort(), ['code', 'info', 'message', 'source', 'truncated']);
+  }
+});
+
+for (const ending of ['abort', 'process-loss']) test(`matching nonretry error survives ${ending} without a native terminal`, async (t) => {
+  const ctx = await openHost(t);
+  failTurn(ctx.f, { notification: { message: 'limit', codexErrorInfo: 'usageLimitExceeded' }, beforeAck: true, noTerminal: true });
+  const controller = new AbortController();
+  const running = ctx.adapter.run({ prompt: 'fail', hostOperationId: ending, signal: controller.signal, recordIntent: () => {} });
+  while (!ctx.f.turnIdentity) await tick();
+  await tick();
+  if (ending === 'abort') controller.abort(); else ctx.f.sink.ended('eof');
+  const result = await running;
+  assert.equal(result.nativeError.source, 'error-notification');
+  assert.equal(result.nativeError.info, 'usageLimitExceeded');
+  if (ending === 'abort') {
+    assert.equal(result.write.kind, 'accepted');
+    ctx.f.finishTurn(ctx.f.turnIdentity.threadId, ctx.f.turnIdentity.turnId);
+  }
+});
+
+test('old-turn and retryable error evidence never contaminates a new dispatch', async (t) => {
+  const ctx = await openHost(t);
+  await ctx.run(prompts.text);
+  const previous = ctx.f.turnIdentity;
+  failTurn(ctx.f, { noTerminal: true });
+  const running = ctx.run('new');
+  await tick();
+  ctx.f.send({ method: 'error', params: { ...previous, willRetry: false, error: { message: 'old' } } });
+  ctx.f.send({ method: 'error', params: { ...ctx.f.turnIdentity, willRetry: true, error: { message: 'retry' } } });
+  ctx.f.send({ method: 'turn/completed', params: { threadId: previous.threadId, turn: { id: ctx.f.turnIdentity.turnId, status: 'failed', error: null } } });
+  assert.equal((await running).nativeError, undefined);
+});
+
+test('error mapping bounds Unicode and info, and identity staging stays bounded and total', () => {
+  const cyclic = {}; cyclic.self = cyclic;
+  for (const codexErrorInfo of [cyclic, Symbol('unsupported'), 'x'.repeat(1025)]) {
+    const result = codexNativeError('turn.error', { message: '雪'.repeat(1000), codexErrorInfo, additionalDetails: 'omit' });
+    assert.equal(result.truncated, true);
+    assert.equal(result.info, null);
+    assert.equal(Buffer.byteLength(result.message), 2046);
+    assert(!result.message.includes('\ufffd'));
+  }
+  const intake = createCodexErrorIntake();
+  intake.begin();
+  for (let i = 0; i < 9; i++) intake.notification({ threadId: 'thread', turnId: `t${i}`, willRetry: false, error: { message: `m${i}` } }, 'thread');
+  assert.equal(intake.current(), undefined);
+  intake.accepted('t8');
+  assert.equal(intake.current(), undefined, 'overflow never attaches another turn cause');
+  intake.begin();
+  intake.notification({ threadId: 'thread', turnId: 'current', willRetry: false, error: { message: 'first' } }, 'thread');
+  intake.notification({ threadId: 'thread', turnId: 'current', willRetry: false, error: { message: 'latest' } }, 'thread');
+  intake.accepted('current');
+  assert.equal(intake.current().message, 'latest');
+});
+
+const catalogModel = (name) => ({ model: name, displayName: name, hidden: false, isDefault: false, inputModalities: ['text', 'image'], extra: 'omitted' });
+test('model listing is sessionless, follows pages and keeps exactly native metadata', async (t) => {
+  const ctx = await openHost(t);
+  ctx.f.handlers['model/list'] = () => ({ data: [], nextCursor: null });
+  assert.deepEqual(await ctx.adapter.capabilities.models.api.list(ctx.signal), { kind: 'ok', value: [] });
+  const pages = [{ data: [catalogModel('a')], nextCursor: 'b' }, { data: [], nextCursor: 'c' }, { data: [catalogModel('z')], nextCursor: null }];
+  ctx.f.handlers['model/list'] = () => pages.shift();
+  const result = await ctx.adapter.capabilities.models.api.list(ctx.signal);
+  assert.deepEqual(result.value.map((m) => m.model), ['a', 'z']);
+  assert.equal(Object.hasOwn(result.value[0], 'extra'), false);
+  assert(Object.isFrozen(result.value) && Object.isFrozen(result.value[0].inputModalities));
+  assert.equal(ctx.f.sent.includes('thread/start'), false);
+  const requests = ctx.f.params.filter((_, index) => ctx.f.sent[index] === 'model/list');
+  assert.deepEqual(requests, [{ includeHidden: true }, { includeHidden: true }, { includeHidden: true, cursor: 'b' }, { includeHidden: true, cursor: 'c' }]);
+});
+
+for (const kind of ['repeat', 'ninth', 'malformed', 'over-limit', 'rpc']) test(`model listing refuses ${kind} without partial success`, async (t) => {
+  const ctx = await openHost(t);
+  let page = 0;
+  ctx.f.handlers['model/list'] = () => {
+    page++;
+    if (kind === 'rpc') return { error: { code: -1, message: 'unavailable' } };
+    return { data: kind === 'malformed' ? [{ model: 'missing' }] : kind === 'over-limit' ? Array(1001).fill(catalogModel('x')) : [catalogModel('x')],
+      nextCursor: kind === 'repeat' ? 'same' : kind === 'ninth' ? String(page) : null };
+  };
+  const result = await ctx.adapter.capabilities.models.api.list(ctx.signal);
+  assert.equal(result.error.code, 'native-failure');
+  if (kind === 'ninth') assert.equal(page, 8);
+});
+
+for (const ending of ['caller', 'close', 'deadline']) test(`model listing settles on ${ending} and never opens a thread`, async (t) => {
+  const ctx = await openHost(t);
+  ctx.f.handlers['model/list'] = () => ({ deferred: true });
+  const controller = new AbortController();
+  const pending = ctx.adapter.capabilities.models.api.list(controller.signal);
+  await tick();
+  if (ending === 'caller') controller.abort();
+  if (ending === 'close') await ctx.adapter.close();
+  const result = await pending;
+  assert.equal(result.error.code, ending === 'deadline' ? 'unavailable' : 'closed');
+  assert.equal(ctx.f.sent.includes('thread/start'), false);
+  await ctx.adapter.close();
+  assert.equal((await ctx.adapter.capabilities.models.api.list(ctx.signal)).error.code, 'closed');
+});
+
+test('routed capabilities refuse media/catalog and keep routed resume parameters unchanged', async () => {
+  const endpoint = 'http://127.0.0.1:12345/';
+  const made = subject((f) => {
+    f.handlers['account/read'] = () => ({ account: null, requiresOpenaiAuth: false });
+    const original = f.handlers['config/read'];
+    f.handlers['config/read'] = () => { const result = original(); return { config: { ...result.config, model_provider: 'host',
+      model_providers: { host: { base_url: endpoint, wire_api: 'responses', requires_openai_auth: false } } } }; };
+    for (const method of ['thread/start', 'thread/resume']) {
+      const handler = f.handlers[method];
+      f.handlers[method] = (params) => { const result = handler(params); result.thread.modelProvider = 'host'; return { ...result, sandbox: { type: 'readOnly' }, approvalPolicy: 'never', model: 'route-model' }; };
+    }
+    const read = f.handlers['thread/read'];
+    f.handlers['thread/read'] = (params) => { const result = read(params); result.thread.modelProvider = 'host'; return result; };
+  });
+  const signal = AbortSignal.timeout(10000);
+  const options = { environment: { ...made.environment, nativeConfig: { ...made.environment.nativeConfig,
+    sqliteHome: '/codex-host-index', logDir: '/codex-host-logs', effort: 'high', loopbackRelay: true } },
+    route: { config: { kind: 'host-route', endpoint, protocol: 'responses', credentialPurpose: 'host-route', credentialForm: 'none',
+      principal: 'fixture', model: 'route-model', resolve: async () => ({ kind: 'ok', value: { form: 'none' } }) },
+    scope: { engine: 'codex', account: 'fixture', adapterInstanceId: 'fixture', sessionId: 'fixture' } } };
+  try {
+    const opened = await made.registration.open({ ...options, launch: made.launch('allow') }, signal);
+    assert.equal(opened.kind, 'ok', JSON.stringify(opened));
+    assert.equal(opened.value.capabilities.models.kind, 'unavailable');
+    assert.equal(opened.value.capabilities.imageInput.kind, 'unavailable');
+    const input = { prompt: prompts.text, signal, hostOperationId: 'route', recordIntent: () => {} };
+    const refused = await opened.value.run({ ...input, images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }] });
+    assert.equal(refused.error.code, 'unsupported');
+    assert.equal(refused.write.kind, 'not-attempted');
+    const result = await opened.value.run(input);
+    assert.equal(result.kind, 'complete');
+    const f = made.state.servers[0];
+    assert.equal(f.params[f.sent.indexOf('thread/start')].model, 'route-model');
+    assert.equal(f.params[f.sent.indexOf('turn/start')].effort, 'high');
+    await opened.value.close();
+    const resumed = await made.registration.open({ ...options, launch: made.launch('allow'), resume: { session: result.session } }, signal);
+    assert.equal(resumed.kind, 'ok', JSON.stringify(resumed));
+    const later = made.state.servers.at(-1);
+    assert.equal(Object.hasOwn(later.params[later.sent.indexOf('thread/resume')], 'excludeTurns'), false);
+    await resumed.value.close();
+  } finally { await made.dispose(); }
+});
+
+test('model listing multiplexes with a held turn and close interrupts pagination', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f);
+  ctx.f.handlers['model/list'] = () => ({ data: [catalogModel('x')], nextCursor: null });
+  const [pending, models] = await Promise.all([ctx.run(), ctx.adapter.capabilities.models.api.list(ctx.signal)]);
+  assert.equal(pending.kind, 'pending');
+  assert.equal(models.value[0].model, 'x');
+  await ctx.answer([approvalAnswer(pending.approvals[0])]);
+  let pages = 0;
+  let closing;
+  ctx.f.handlers['model/list'] = () => {
+    if (++pages === 1) return { data: [], nextCursor: 'second' };
+    closing = ctx.adapter.close();
+    return { deferred: true };
+  };
+  assert.equal((await ctx.adapter.capabilities.models.api.list(ctx.signal)).error.code, 'closed');
+  assert.equal(pages, 2);
+  await closing;
+});
+
+test('error evidence without acknowledged identity is never attached after process loss', async (t) => {
+  const ctx = await openHost(t);
+  ctx.f.handlers['turn/start'] = (params) => {
+    ctx.f.send({ method: 'error', params: { threadId: params.threadId, turnId: 'unverified', willRetry: false, error: { message: 'unbound' } } });
+    queueMicrotask(() => ctx.f.sink.ended('eof'));
+    return { deferred: true };
+  };
+  const result = await ctx.run();
+  assert.equal(result.kind, 'failed');
+  assert.equal(result.nativeError, undefined);
+  assert.equal(result.write.kind, 'outcome-unknown');
+});
+
+test('the largest escaped text envelope accompanies 4 MiB and larger echo metadata', async (t) => {
+  const ctx = await openHost(t);
+  ctx.f.echoMetadata = 'x'.repeat(65536);
+  const overhead = Buffer.byteLength(JSON.stringify({ id: `${'x'.repeat(36)}:${Number.MAX_SAFE_INTEGER}`, method: 'turn/start',
+    params: { threadId: 'x'.repeat(36), input: [{ type: 'text', text: '', text_elements: [] }] } }));
+  const prompt = '\u0000'.repeat(Math.floor((1048576 - overhead) / 6));
+  const result = await ctx.adapter.run({ prompt, images: [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194304).toString('base64')}` }],
+    signal: ctx.signal, hostOperationId: 'largest', recordIntent: () => {} });
+  assert.equal(result.kind, 'complete');
+  const checkpoint = await ctx.adapter.capabilities.fingerprint.api.read(ctx.signal);
+  assert.equal(checkpoint.kind, 'ok');
+  await ctx.adapter.close();
+  const reopened = await ctx.made.registration.open({ launch: ctx.made.launch('allow'), tools: [ctx.made.tool],
+    resume: { session: result.session, expectedHistory: checkpoint.value } }, ctx.signal);
+  assert.equal(reopened.kind, 'ok', JSON.stringify(reopened));
+  await reopened.value.close();
 });
