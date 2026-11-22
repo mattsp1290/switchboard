@@ -238,10 +238,12 @@ void [options, missingModel];
   run(process.execPath, [compiler, '-p', 'opencode-types.json'], consumer);
   writeFileSync(join(consumer, 'image-types.test.ts'), `
 import { parseHostImages, hostImageLimits } from '${manifest.name}';
-import type { HostImageInput, HostImageInputApi, HostPendingSet } from '${manifest.name}';
+import type { HostImageInput, HostImageInputApi, HostPendingSet, HostRunInput } from '${manifest.name}';
 const image: HostImageInput = { mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' };
 const api: HostImageInputApi = hostImageLimits;
-const parsed = parseHostImages([image], api);
+declare const request: HostRunInput;
+const withImages: HostRunInput = { ...request, images: [image] };
+const parsed = parseHostImages(withImages.images, api);
 const invalid = parseHostImages(null, api);
 declare const pending: HostPendingSet;
 void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];

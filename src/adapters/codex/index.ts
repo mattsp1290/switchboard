@@ -14,6 +14,8 @@ import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegist
 import type { InteractionContinuation } from '../../core/interaction.js';
 import { parseInteractionContinuation } from '../../core/interaction.js';
 import type { SessionBinding } from '../../core/sessions.js';
+import { codexImages, codexImageLimits, codexImageFrameBytes } from './images.js';
+import type { CodexImage } from './images.js';
 import { createCodexWriters, openCodexExecution } from './execution.js';
 import type { CleanupStep, CodexSession, CodexTokenUsage, CodexTurnCompletion } from './execution.js';
 import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
@@ -318,7 +320,8 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
         declaredTools: (options.tools ?? []).map((tool) => ({ name: tool.name, namespace: 'application' as const })) });
       if (bridgeResult.kind === 'error') return fail({ code: 'invalid-input', message: 'interaction bounds were rejected' });
       const bridge = bridgeResult.value;
-      transportBounds = { maxFrameBytes: 1048576, maxChunkBytes: 2097151, maxDiagnosticBytes: 65536,
+      transportBounds = { maxFrameBytes: 1048576,
+        ...(prepared.kind === 'direct' ? { maxInboundFrameBytes: 8388608, maxOutboundFrameBytes: 8388608, maxChunkBytes: 16777215 } : { maxChunkBytes: 2097151 }), maxDiagnosticBytes: 65536,
         maxPending: 8, maxHandlers: 16, maxWrites: 8, observationCapacity: 256, handlerTimeoutMs,
         observationTimeoutMs: 5000, writeTimeoutMs: 20000 };
       const executable = native.executable;
@@ -448,6 +451,7 @@ async function openAdapter(ready: {
   }
   if (resume) {
     const resumed = await execution.resume({ binding: resume.session.binding, reference: resume.session, signal, bounds: discovery,
+      ...(ready.prepared.kind === 'direct' ? { params: { excludeTurns: true } } : {}),
       ...(options.instructions === undefined ? {} : { instructions: options.instructions }), features: threadFeatures(ready.prepared, native, options) });
     if (resumed.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: resumed.error.message ?? resumed.error.code }); }
     if (resumed.value.kind !== 'resumed') { await execution.close(); return fail({ code: 'busy', message: `resume is ${resumed.value.kind}` }); }
@@ -567,7 +571,7 @@ async function openAdapter(ready: {
       source: 'native-acknowledgement' as const, nativeOperation: null,
       observation: { namespace: 'codex-app-server/turn', schemaVersion: 1, data: { kind: completion.kind } } };
   }
-  async function dispatchTurn(prompt: string | undefined, answers: readonly InteractionContinuation[] | undefined, hostSignal: AbortSignal) {
+  async function dispatchTurn(prompt: string | undefined, answers: readonly InteractionContinuation[] | undefined, hostSignal: AbortSignal, images: readonly CodexImage[] = []) {
     const current = session;
     if (!current && prompt === undefined) return { kind: 'outcome-unknown' as const };
     if (!current) {
@@ -601,7 +605,8 @@ async function openAdapter(ready: {
       }
     }
     if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
-    const started = active.turn({ hostOperationId: 'turn', input: [{ type: 'text', text: prompt, text_elements: [] }],
+    const started = active.turn({ hostOperationId: 'turn', input: [{ type: 'text', text: prompt, text_elements: [] }, ...images],
+      ...(images.length ? { maxFrameBytes: codexImageFrameBytes } : {}),
       signal: hostSignal, recordIntent: () => {} });
     if (started.kind === 'error') return { kind: 'outcome-unknown' as const };
     turnResult = undefined;
@@ -626,14 +631,14 @@ async function openAdapter(ready: {
     }) && ids.size === 0;
   }
   async function segmentOf(input: HostSegmentRequest, prompt: string | undefined,
-  answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
+  answers: readonly InteractionContinuation[] | undefined, images: readonly CodexImage[] = []): Promise<HostSegmentResult> {
     if (!isOptionalObservationListener(input.onObservation)) {
       return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
     }
     const state: SegmentState = { started: false };
     let settled: Settled | undefined;
     try {
-      settled = await segmentInner(input, prompt, answers, state);
+      settled = await segmentInner(input, prompt, answers, state, images);
       return settled.result;
     } finally {
       // A throw after the run started still gives the baseline its one terminal.
@@ -643,7 +648,7 @@ async function openAdapter(ready: {
     }
   }
   async function segmentInner(input: HostSegmentRequest, prompt: string | undefined,
-  answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<Settled> {
+  answers: readonly InteractionContinuation[] | undefined, state: SegmentState, images: readonly CodexImage[]): Promise<Settled> {
     const refuse = (...args: Parameters<typeof failed>): Settled => ({ result: failed(...args) });
     if (closing) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
     if (segment) return refuse({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
@@ -666,7 +671,7 @@ async function openAdapter(ready: {
             state.started = true;
             emitRunStarted(segment.observer);
           }
-          const observation = await dispatchTurn(prompt, answers, input.signal);
+          const observation = await dispatchTurn(prompt, answers, input.signal, images);
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
           return { kind: 'accepted', evidence: { ...observation.evidence, identity: recorded } };
         } });
@@ -681,7 +686,9 @@ async function openAdapter(ready: {
     } finally { segment = undefined; }
   }
   const adapter: HostAdapter<'codex'> = { identity, capabilities: Object.freeze({
-    imageInput: { kind: 'unsupported' as const, reason: 'image input is not supported' },
+    imageInput: ready.prepared.kind === 'direct'
+      ? { kind: 'supported' as const, api: codexImageLimits }
+      : { kind: 'unavailable' as const, reason: 'image input is qualified on direct sessions only' },
     models: { kind: 'unsupported' as const, reason: 'model catalog is not supported' },
     maxPendingPerMessage, continuation: 'same-process', usage: 'cumulative', toolDeclarations: 'fixed-at-creation',
     inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: Object.freeze({ calls: calls(), approvals: [] }) }) } },
@@ -692,7 +699,14 @@ async function openAdapter(ready: {
         : fail({ code: 'unavailable', feature: 'fingerprint', message: 'no rollout fingerprint is available' });
     } } },
   }), events: Object.freeze({ subscribe: stream.subscribe }),
-    run: (input: HostRunInput) => input.images !== undefined && (!Array.isArray(input.images) || input.images.length !== 0) ? Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, { kind: 'not-attempted' })) : segmentOf(input, input.prompt, undefined),
+    run: (input: HostRunInput) => {
+      if (typeof input.prompt !== 'string') return Promise.resolve(failed({ code: 'invalid-input', message: 'The prompt must be text.' }, { kind: 'not-attempted' }));
+      if (input.images === undefined) return segmentOf(input, input.prompt, undefined);
+      const parsed = codexImages(input.images, input.prompt);
+      if (parsed.kind === 'error') return Promise.resolve(failed(parsed.error, { kind: 'not-attempted' }));
+      if (parsed.value.length && ready.prepared.kind !== 'direct') return Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input requires a direct session' }, { kind: 'not-attempted' }));
+      return segmentOf(input, input.prompt, undefined, parsed.value);
+    },
     continue: (input: HostContinueInput) => segmentOf(input, undefined, input.answers),
     interrupt: async ({ timeoutMs }) => {
       if (!segment) return { kind: 'terminal-observed' as const };

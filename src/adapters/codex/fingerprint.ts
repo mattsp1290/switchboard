@@ -10,7 +10,8 @@ export interface CodexHistoryFingerprint {
   readonly sha256: string;
   readonly turnId: string;
 }
-const limitBytes = 8 * 1024 * 1024;
+const limitBytes = 256 * 1024 * 1024;
+const lineLimitBytes = 8 * 1024 * 1024;
 
 function inside(path: string, root: string): boolean {
   const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
@@ -47,13 +48,49 @@ function taskTurn(line: string): string | undefined {
   } catch { return undefined; }
 }
 
-async function readRollout(path: string): Promise<Buffer | undefined> {
+async function readRollout(path: string): Promise<CodexHistoryFingerprint | undefined> {
   let file;
   try {
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > limitBytes) return undefined;
-    return await file.readFile();
+    const hash = createHash('sha256');
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    let parts: Buffer[] = [];
+    let lineBytes = 0;
+    let turnId: string | undefined;
+    const finishLine = () => {
+      const turn = taskTurn(Buffer.concat(parts, lineBytes).toString('utf8'));
+      if (turn) turnId = turn;
+      parts = [];
+      lineBytes = 0;
+    };
+    while (position < stat.size) {
+      const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, stat.size - position), position);
+      if (bytesRead === 0) return undefined;
+      const bytes = chunk.subarray(0, bytesRead);
+      hash.update(bytes);
+      let start = 0;
+      while (start < bytesRead) {
+        const newline = bytes.indexOf(10, start);
+        const end = newline === -1 ? bytesRead : newline;
+        lineBytes += end - start;
+        if (lineBytes > lineLimitBytes) return undefined;
+        parts.push(Buffer.from(bytes.subarray(start, end)));
+        if (newline === -1) break;
+        finishLine();
+        start = end + 1;
+      }
+      position += bytesRead;
+    }
+    if (lineBytes > 0) finishLine();
+    const after = await file.stat();
+    const named = await lstat(path);
+    if (named.isSymbolicLink() || named.dev !== stat.dev || named.ino !== stat.ino
+      || after.size < stat.size || named.size < stat.size
+      || (after.size === stat.size && (after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs))) return undefined;
+    return turnId === undefined ? undefined : { bytes: stat.size, sha256: hash.digest('hex'), turnId };
   } catch {
     return undefined;
   } finally {
@@ -71,14 +108,7 @@ export async function readCodexHistoryFingerprint(home: string, threadId: string
   await rollouts(root, join(root, 'sessions'), `-${threadId}.jsonl`, found, 0);
   const path = found.length === 1 ? found[0] : undefined;
   if (path === undefined) return undefined;
-  const bytes = await readRollout(path);
-  if (!bytes) return undefined;
-  let turnId: string | undefined;
-  for (const line of bytes.toString('utf8').split('\n')) {
-    const turn = taskTurn(line);
-    if (turn) turnId = turn;
-  }
-  return turnId === undefined ? undefined : { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), turnId };
+  return readRollout(path);
 }
 
 export function codexCheckpoint(session: SessionReference, fingerprint: CodexHistoryFingerprint): CheckpointReference {

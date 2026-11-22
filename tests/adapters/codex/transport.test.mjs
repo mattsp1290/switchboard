@@ -529,3 +529,29 @@ for (const send of ['request', 'notify']) for (const action of ['close', 'abort'
   assert.deepEqual(result[0], { kind: 'not-sent', reason: action === 'close' ? 'closed' : action === 'abort' ? 'aborted' : 'capacity' });
   assert.equal(f.writes.filter((value) => value.method === 'outer').length, 0);
 });
+
+test('inbound and per-request outbound bounds are independent', async (t) => {
+  const f = fixture(t, { bounds: { maxInboundFrameBytes: 1024, maxOutboundFrameBytes: 1024 } });
+  const call = { method: 'large', params: { data: 'x'.repeat(600) } };
+  assert.deepEqual(await f.transport.request(call, signal()), { kind: 'not-sent', reason: 'invalid-outgoing' });
+  const accepted = f.transport.request(call, signal(), { maxFrameBytes: 1024 });
+  await checkpoint();
+  f.input({ id: f.writes[0].id, result: 'x'.repeat(600) });
+  assert.equal((await accepted).kind, 'reply');
+  assert.deepEqual(await f.transport.request(call, signal(), { maxFrameBytes: 1025 }), { kind: 'not-sent', reason: 'invalid-outgoing' });
+  f.bytes(Buffer.alloc(1025, 32));
+  assert.equal((await f.transport.ended).reason, 'oversized-frame');
+});
+
+test('the direct paired-echo callback bound remains independent of line size', async (t) => {
+  const config = { maxFrameBytes: 1048576, maxInboundFrameBytes: 8388608,
+    maxOutboundFrameBytes: 8388608, maxChunkBytes: 16777215 };
+  const f = fixture(t, { bounds: config });
+  const echo = line({ method: 'item/started', params: { item: { type: 'userMessage', data: 'x'.repeat(5592408) } } });
+  f.bytes(Buffer.concat([echo, echo]));
+  await checkpoint();
+  assert.equal(f.observations.length, 2);
+  assert.equal(f.reports.length, 0);
+  f.bytes(Buffer.alloc(16777216));
+  assert.equal((await f.transport.ended).reason, 'input-overflow');
+});

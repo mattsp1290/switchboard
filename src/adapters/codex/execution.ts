@@ -131,6 +131,7 @@ export type CodexNativeEvent = { readonly kind: 'native'; readonly method: strin
   readonly evidence: 'unqualified' };
 export type CodexExecutionEvent = CodexNativeEvent | { readonly kind: 'unmatched-reply' };
 export interface CodexTurnOptions {
+  readonly maxFrameBytes?: number;
   readonly hostOperationId: string;
   /** Native `UserInput[]`, passed through. */
   readonly input: readonly unknown[];
@@ -552,9 +553,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   });
   void Promise.resolve(captured.processExit).then(exit, () => {});
 
-  async function request(method: string, params: unknown, wait: AbortSignal): Promise<
+  async function request(method: string, params: unknown, wait: AbortSignal, maxFrameBytes?: number): Promise<
     { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly error: RpcError } | SendFailure> {
-    const exchange = await transport.request({ method, params }, wait);
+    const exchange = await transport.request({ method, params }, wait, maxFrameBytes === undefined ? undefined : { maxFrameBytes });
     return exchange.kind === 'reply' ? exchange.envelope.reply : exchange;
   }
   const step = (reply: Awaited<ReturnType<typeof request>>): CleanupStep =>
@@ -726,7 +727,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         // Host or session abort prevents entry (core checks it just before this call). Once entered, only the
         // acknowledgement deadline bounds the wait: the caller's signal never turns a written turn/start uncertain.
         dispatchNative: (canonical) => dispatch(session, turn, canonical,
-          { ...params, threadId: session.threadId, input: [...input] }) });
+          { ...params, threadId: session.threadId, input: [...input] }, options.maxFrameBytes) });
     } catch { return invalid; }
     session.active = turn;
     void handle.run().then((snapshot) => {
@@ -736,10 +737,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
   /** One native `turn/start`, never resent. `not-sent` is adapter evidence; core still records `outcome-unknown`. */
   async function dispatch(session: Session, turn: Turn, identity: DispatchIdentity,
-    params: Record<string, unknown>): Promise<NativeDispatchObservation<CodexTurnResult>> {
+    params: Record<string, unknown>, maxFrameBytes?: number): Promise<NativeDispatchObservation<CodexTurnResult>> {
     const pending: Extract<TurnPhase, { kind: 'pending' }> = { kind: 'pending', early: [], dropped: 0 };
     turn.phase = pending;
-    const reply = await request('turn/start', params, AbortSignal.timeout(bounds.acknowledgementTimeoutMs));
+    const reply = await request('turn/start', params, AbortSignal.timeout(bounds.acknowledgementTimeoutMs), maxFrameBytes);
     if (reply.kind === 'not-sent') {
       conclude(session, turn, { kind: 'not-sent', reason: reply.reason });
       return { kind: 'outcome-unknown' };

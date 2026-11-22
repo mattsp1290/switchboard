@@ -64,3 +64,34 @@ test('a symlink named for the thread is not read', async () => {
   await symlink(real, join(sessions, `link-${thread}.jsonl`));
   assert.equal(await readCodexHistoryFingerprint(root, thread), undefined);
 });
+
+test('two image-size lines retain the exact prefix fingerprint', async () => {
+  const root = await home();
+  const path = join(root, 'sessions', `images-${thread}.jsonl`);
+  const image = JSON.stringify({ type: 'response_item', payload: 'x'.repeat(5592408) });
+  const body = `${image}\n${image}\n${line('event_msg', { type: 'task_complete', turn_id: 'image-turn' })}\n`;
+  await writeFile(path, body);
+  assert.deepEqual(await readCodexHistoryFingerprint(root, thread), {
+    bytes: Buffer.byteLength(body), sha256: createHash('sha256').update(body).digest('hex'), turnId: 'image-turn',
+  });
+});
+
+test('history line bound permits equality and refuses one extra byte', async () => {
+  const root = await home();
+  const path = join(root, 'sessions', `line-${thread}.jsonl`);
+  const terminal = `${line('event_msg', { type: 'task_complete', turn_id: 'turn' })}\n`;
+  await writeFile(path, `${' '.repeat(8388608)}\n${terminal}`);
+  assert.equal((await readCodexHistoryFingerprint(root, thread)).turnId, 'turn');
+  await writeFile(path, `${' '.repeat(8388609)}\n${terminal}`);
+  assert.equal(await readCodexHistoryFingerprint(root, thread), undefined);
+});
+
+test('over-limit opening stat refuses even a sparse history', async () => {
+  const { open } = await import('node:fs/promises');
+  const root = await home();
+  const path = join(root, 'sessions', `huge-${thread}.jsonl`);
+  const file = await open(path, 'w');
+  await file.truncate(256 * 1024 * 1024 + 1);
+  await file.close();
+  assert.equal(await readCodexHistoryFingerprint(root, thread), undefined);
+});

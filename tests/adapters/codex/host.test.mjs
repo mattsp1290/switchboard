@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -96,6 +96,12 @@ function fakeServer(home, tool) {
       const turnId = randomUUID();
       const text = params.input?.[0]?.text;
       const threadId = params.threadId;
+      if (params.input.some((input) => input.type === 'image')) {
+        const item = { type: 'userMessage', id: `image-${turnId}`, content: params.input };
+        const frames = ['item/started', 'item/completed'].map((method) => `${JSON.stringify({ method, params: { threadId, turnId, item } })}\n`);
+        queueMicrotask(() => f.sink.data(Buffer.from(frames.join(''))));
+        appendFileSync(join(home, 'sessions', `rollout-${threadId}.jsonl`), `${JSON.stringify({ type: 'response_item', payload: item })}\n${JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } })}\n`);
+      }
       queueMicrotask(() => send({ id, result: { turn: { id: turnId, status: 'inProgress' } } }));
       if (text === prompts.toolCall) {
         arm(threadId, turnId, [{ id: `call-${turnId}`, frame: { id: `call-${turnId}`, method: 'item/tool/call', params: { threadId, turnId, callId: 'call-1', namespace: 'application', tool, arguments: { city: 'Paris' } } } }]);
@@ -117,6 +123,7 @@ function fakeServer(home, tool) {
     'turn/interrupt': () => ({}),
     'thread/unsubscribe': () => ({ status: 'unsubscribed' }),
   };
+  Object.assign(f, { handlers: answer, send, arm, finishTurn, pending });
   f.channel = {
     listen(sink) { f.sink = sink; return () => { f.gone = true; exit(); }; },
     write(bytes) {
@@ -372,5 +379,65 @@ test('a throwing or invalid listener does not change a segment', async () => {
     assert.equal(invalid.write.kind, 'not-attempted');
     assert.equal(intents.length, 0);
     await adapter.close();
+  } finally { await made.dispose(); }
+});
+
+test('4 MiB images survive paired native echoes, history and direct resume', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow') }, signal);
+    assert.equal(opened.kind, 'ok');
+    const adapter = opened.value;
+    assert.equal(adapter.capabilities.imageInput.kind, 'supported');
+    const events = [];
+    adapter.events.subscribe((event) => { events.push(event); });
+    for (const mediaType of ['image/png', 'image/jpeg']) {
+      const dataUrl = `data:${mediaType};base64,${Buffer.alloc(4194304).toString('base64')}`;
+      const result = await adapter.run({ prompt: prompts.text, images: [{ mediaType, dataUrl }], signal,
+        hostOperationId: mediaType, recordIntent: () => {} });
+      assert.equal(result.kind, 'complete');
+      const f = made.state.servers[0];
+      const turn = f.params[f.sent.lastIndexOf('turn/start')];
+      assert.deepEqual(turn.input[1], { type: 'image', url: dataUrl });
+    }
+    assert.equal(events.some((event) => event.kind === 'native-item'), false);
+    const checkpoint = await adapter.capabilities.fingerprint.api.read(signal);
+    assert.equal(checkpoint.kind, 'ok');
+    const fingerprint = JSON.parse(checkpoint.value.opaque);
+    assert(fingerprint[1] > 8 * 1024 * 1024);
+    const complete = await adapter.run({ prompt: prompts.text, signal, hostOperationId: 'text', recordIntent: () => {} });
+    await adapter.close();
+    const resumed = await made.registration.open({ launch: made.launch('allow'), resume: { session: complete.session,
+      expectedHistory: checkpoint.value } }, signal);
+    assert.equal(resumed.kind, 'ok', JSON.stringify(resumed));
+    const f = made.state.servers.at(-1);
+    assert.equal(f.params[f.sent.indexOf('thread/resume')].excludeTurns, true);
+    assert.equal((await resumed.value.run({ prompt: prompts.text, signal, hostOperationId: 'resume', recordIntent: () => {} })).kind, 'complete');
+    await resumed.value.close();
+  } finally { await made.dispose(); }
+});
+
+test('invalid image calls write nothing and never record intent', async () => {
+  const made = subject();
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const opened = await made.registration.open({ launch: made.launch('allow') }, signal);
+    const f = made.state.servers[0];
+    const image = { mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` };
+    const before = f.sent.length;
+    for (const images of [[image], null, {}, [{ mediaType: 'image/jpeg', dataUrl: 'data:image/png;base64,YQ==' }],
+      [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR==' }], Array(17).fill({ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' })]) {
+      const result = await opened.value.run({ prompt: prompts.text, images, signal, hostOperationId: 'invalid-image',
+        recordIntent: () => assert.fail('invalid images record no intent') });
+      assert.equal(result.error.code, 'invalid-input');
+      assert.equal(result.write.kind, 'not-attempted');
+    }
+    const escaped = await opened.value.run({ prompt: '\u0000'.repeat(180000), images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }],
+      signal, hostOperationId: 'escaped', recordIntent: () => assert.fail('escaped frame exceeds text budget') });
+    assert.equal(escaped.write.kind, 'not-attempted');
+    assert.equal(f.sent.length, before);
+    assert.equal((await opened.value.run({ prompt: prompts.text, images: [], signal, hostOperationId: 'empty', recordIntent: () => {} })).kind, 'complete');
+    await opened.value.close();
   } finally { await made.dispose(); }
 });

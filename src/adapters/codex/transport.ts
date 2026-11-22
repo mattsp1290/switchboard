@@ -36,7 +36,12 @@ export interface BorrowedChannel {
   readonly listen: (sink: ChannelSink) => () => void;
   readonly write: (frame: Uint8Array, signal: AbortSignal) => PromiseLike<void>;
 }
+export interface RequestBounds {
+  readonly maxFrameBytes?: number;
+}
 export interface TransportBounds {
+  readonly maxInboundFrameBytes?: number;
+  readonly maxOutboundFrameBytes?: number;
   readonly maxFrameBytes: number;
   readonly maxChunkBytes: number;
   readonly maxDiagnosticBytes: number;
@@ -56,7 +61,7 @@ export interface TransportOptions {
   readonly onObservation: (observation: Observation, signal: AbortSignal) => void | PromiseLike<void>;
 }
 export interface CodexTransport {
-  readonly request: (call: Call, signal: AbortSignal) => Promise<Exchange>;
+  readonly request: (call: Call, signal: AbortSignal, bounds?: RequestBounds) => Promise<Exchange>;
   readonly notify: (call: Call, signal: AbortSignal) => Promise<SendOutcome>;
   readonly close: () => Promise<CloseReport>;
   readonly ended: Promise<CloseReport>;
@@ -86,9 +91,13 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   const bounds = { ...options.bounds };
   const { maxFrameBytes, maxChunkBytes, maxDiagnosticBytes, maxPending, maxHandlers, maxWrites,
     observationCapacity, handlerTimeoutMs, observationTimeoutMs, writeTimeoutMs } = bounds;
-  const counts = [maxFrameBytes, maxChunkBytes, maxDiagnosticBytes, maxPending, maxHandlers, maxWrites,
-    observationCapacity, (maxWrites + maxHandlers) * (maxFrameBytes + 1), observationCapacity * maxFrameBytes];
+  const maxInboundFrameBytes = bounds.maxInboundFrameBytes ?? maxFrameBytes;
+  const maxOutboundFrameBytes = bounds.maxOutboundFrameBytes ?? maxFrameBytes;
+  const counts = [maxInboundFrameBytes, maxOutboundFrameBytes, maxFrameBytes, maxChunkBytes, maxDiagnosticBytes, maxPending, maxHandlers, maxWrites,
+    observationCapacity, (maxWrites + maxHandlers) * (maxOutboundFrameBytes + 1), observationCapacity * maxInboundFrameBytes];
   if (counts.some((value) => !Number.isSafeInteger(value) || value <= 0)
+    || maxInboundFrameBytes < maxFrameBytes || maxOutboundFrameBytes < maxFrameBytes
+    || maxInboundFrameBytes >= constants.MAX_LENGTH || maxOutboundFrameBytes >= constants.MAX_LENGTH
     || maxFrameBytes >= constants.MAX_LENGTH || maxChunkBytes > constants.MAX_LENGTH
     || maxDiagnosticBytes > constants.MAX_LENGTH
     || [handlerTimeoutMs, observationTimeoutMs, writeTimeoutMs].some((value) => !Number.isSafeInteger(value) || value < 1 || value > 2147483647)) {
@@ -113,7 +122,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   let diagnostics: Uint8Array = new Uint8Array();
   let settleReport: (report: CloseReport) => void;
   const ended = new Promise<CloseReport>((resolve) => { settleReport = resolve; });
-  const reader = createWireReader({ maxFrameBytes, maxChunkBytes, onEnvelope: route, onFault: finish });
+  const reader = createWireReader({ maxFrameBytes: maxInboundFrameBytes, maxChunkBytes, onEnvelope: route, onFault: finish });
   const isClosed = () => phase.kind === 'closed';
 
   function report(): void {
@@ -186,11 +195,15 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     if (request && sequence >= Number.MAX_SAFE_INTEGER) return { kind: 'not-sent', reason: 'id-exhausted' };
     return undefined;
   }
-  function request(call: Call, signal: AbortSignal): Promise<Exchange> {
+  function request(call: Call, signal: AbortSignal, requestBounds?: RequestBounds): Promise<Exchange> {
+    const frameLimit = requestBounds?.maxFrameBytes ?? maxFrameBytes;
+    if (!Number.isSafeInteger(frameLimit) || frameLimit < 1 || frameLimit > maxOutboundFrameBytes) {
+      return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
+    }
     const before = refusal(signal, true);
     if (before) return Promise.resolve(before);
     const id = `${prefix}:${++sequence}`;
-    const bytes = encodeEnvelope({ id, method: call.method, params: call.params }, maxFrameBytes);
+    const bytes = encodeEnvelope({ id, method: call.method, params: call.params }, frameLimit);
     const after = refusal(signal, true);
     if (after) return Promise.resolve(after);
     if (!bytes) return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
