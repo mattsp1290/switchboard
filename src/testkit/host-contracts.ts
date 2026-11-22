@@ -273,6 +273,9 @@ async function interrupt(factory: HostConformanceFactory, signal: AbortSignal) {
     release();
     kind(await running, 'complete');
     assert.equal((await adapter.interrupt({ timeoutMs: 20 })).kind, 'terminal-observed');
+    kind(await harness.segment(adapter, subject.prompts.toolCall), 'pending');
+    const held = await adapter.interrupt({ timeoutMs: 100 });
+    assert(['interrupted', 'terminal-observed'].includes(held.kind), 'interrupt follows native-turn lifetime after pending');
     ok(await adapter.close());
     assert.equal(subject.launches().signals, 0, 'the adapter never signals a host-owned process');
   });

@@ -1,14 +1,14 @@
 # Host-facing adapter contract
 
-This contract is the surface a host uses to drive one native engine session. Codex, Claude, and Pi host adapters implement it later. The text adapters and their exports stay as they are. The contract keeps no store, retries nothing, applies no approval policy, and contains no launcher.
+This contract is the surface a host uses to drive one native engine session. Codex, Pi and OpenCode expose this contract; Claude-host currently provides discovery only. The text adapters and their exports stay as they are. The contract keeps no store, retries nothing, makes no approval decision; it passes a host-selected native approval policy through, and contains no launcher.
 
-The host owns the store, retry, approval policy, and launcher. It records intent before the adapter dispatches. An option the host omits keeps that engine's native behaviour. A host-launcher denial is an operation error or `unavailable`, and is never a fallback to another launch, network path, or filesystem path.
+The host owns the store, retry, approval policy, and launcher. It records intent before the adapter dispatches. An option the host omits keeps that engine's native behaviour, except that `./host/codex` retains its existing default `approvalPolicy: 'never'`. Direct approvals require an explicit policy; routes refuse non-never policy, a reviewer or a direct model override. A host-launcher denial is an operation error or `unavailable`, and is never a fallback to another launch, network path, or filesystem path.
 
 ## Operations
 
 `HostAdapterRegistration.open` takes `HostOpenOptions` and an `AbortSignal`. The options are a host spawn function, a host channel with a process-exit attestation, or an in-process declaration; the complete environment and native configuration; `instructions` text; host tool declarations; a provider route; `subagents: 'off'`; the engine built-in tools to leave on; and either a new session or a `SessionReference` plus an optional expected history fingerprint. When `launch` is present the host owns every native process. The adapter starts that process only through the supplied launch and never signals it. When `environment` is present the adapter reads no ambient variable, home directory, or configuration file.
 
-`run` executes one segment from a prompt. `continue` answers the whole pending set. One segment runs at a time. Both call the host's `recordIntent` and only then dispatch, using `createDispatchOperation` in `src/core/dispatch.ts`. The host must durably record the command and acquire admission before `recordIntent` resolves. The adapter does not store that command.
+`run` executes one segment from a prompt and optional PNG/JPEG data-URL images when `capabilities.imageInput` is supported. Unsupported media is refused before intent or dispatch. The shared `parseHostImages` validates canonical base64 and a maximum of 16 images totalling 4,194,304 decoded bytes. Hosts own resizing and storage. `continue` answers every call and approval in the whole pending set. One segment runs at a time. Both call the host's `recordIntent` and only then dispatch, using `createDispatchOperation` in `src/core/dispatch.ts`. The host must durably record the command and acquire admission before `recordIntent` resolves. The adapter does not store that command.
 
 `HostSegmentRequest.onObservation` is an optional per-segment listener: `run` and `continue` each take their own, and one segment is one baseline. The adapter emits `run-started` once admitted and `terminal` with its final result, and a listener exception is swallowed and never changes the result. Observations carry tool argument and result JSON, text, and reasoning payloads, as `HostAdapterEvent` already does, so the host treats them with the same care. `usage` rows are native counts that are never summed and a later row for the same provider and model replaces an earlier one; the scope differs by runtime: `./host/codex` reports the thread-cumulative total (including earlier segments), Pi-host reports the most recent request only, and OpenCode reports the prompt-response usage only, because its usage updates carry no token counts.
 
@@ -20,13 +20,15 @@ A host-signal abort ends the segment with a per-adapter terminal. `./host/codex`
 
 `events` is an `EventObserver`. The adapter publishes ordered facts: text delta, tool-call start, argument delta, tool-call end, tool delivery, usage, and opaque native items. The host owns redaction, receipts, and durable replay.
 
-`interrupt` takes a time bound and returns `terminal-observed`, `interrupted`, or `unconfirmed-within-bound`. `terminal-observed` means the segment's native terminal fact arrived within the bound, or no segment was active. `interrupted` means native acknowledged the interrupt and the terminal fact has not arrived. `unconfirmed-within-bound` means the bound elapsed without that acknowledgement. No result claims that a process stopped, and the call never signals a host-owned process.
+`interrupt` takes a time bound and returns `terminal-observed`, `interrupted`, or `unconfirmed-within-bound`. `terminal-observed` means the native terminal fact arrived within the bound, or no native turn was in flight. `interrupted` means native acknowledged the interrupt and the terminal fact has not arrived. `unconfirmed-within-bound` means the bound elapsed without that acknowledgement. No result claims that a process stopped, and the call never signals a host-owned process.
 
-`capabilities` is fixed for the opened instance. It states the pending-call limit, whether a continuation may be delivered to a session reopened in another process, inspect, fingerprint timing, whether usage is per segment or cumulative, and that tool declarations are `fixed-at-creation`.
+`./host/codex` native configuration accepts `approvalPolicy`, `approvalsReviewer`, `model`, `effort` and opt-in `activity: 'items'`. Model applies to start/resume; effort applies to each new turn. Continuing a held interaction starts no new turn.
+
+`capabilities` is fixed for the opened instance. It states the pending-call limit, whether a continuation may be delivered to a session reopened in another process, image-input limits, models, inspect, fingerprint timing, whether usage is per segment or cumulative, and that tool declarations are `fixed-at-creation`.
 
 ## Segment results
 
-`complete` carries the session, the segment text, and raw native usage. `pending` carries the session, one `HostToolCall` per unanswered host call, and usage. Each call embeds the core tool `PendingInteraction` (its `ToolTarget`) plus the engine's tool name and argument value. The adapter does not re-parse or default those arguments. `continue` takes core `InteractionContinuation` values, one per pending call, covering that set exactly in any order. `parseInteractionContinuation` checks each answer against the stored pending record.
+`complete` carries the session, the segment text, and raw native usage. `pending` carries the session, `calls` (one `HostToolCall` per unanswered host call), `approvals` (native requests and offered choices), and usage. Each call embeds the core tool `PendingInteraction` (its `ToolTarget`) plus the engine's tool name and argument value. The adapter does not re-parse or default those arguments. `continue` takes core `InteractionContinuation` values, one per pending call and approval, covering both sets exactly once in any order. A late new or withdrawn interaction makes an old answer batch invalid; read inspect again. The complete batch is validated before writes and rechecked after intent. A failure after any earlier answer remains outcome-unknown. `parseInteractionContinuation` checks each answer against the stored pending record.
 
 `failed` carries a `HostAdapterError` and a write status taken from `createDispatchOperation`:
 
@@ -98,7 +100,7 @@ What the contract takes from those decisions:
 - D2. Launch is a host spawn, a host channel plus process-exit attestation, or an in-process declaration. Interrupt never signals a host-owned process.
 - D3. In-process launch is how a Pi adapter loads inside a host-owned worker. This package does not implement that adapter, the relay, or worker verification.
 - D4. A host tool call is a pending interaction with native identity. The Codex app-server adapter is a later package.
-- D5. Pause and resume reuse `PendingInteraction` and `InteractionContinuation`. Inspect reads pending calls with no model call. Fresh-process continuation is a capability, not a restore policy.
+- D5. Pause and resume reuse `PendingInteraction` and `InteractionContinuation`. Inspect reads `{ calls, approvals }` with no model call. Fresh-process continuation is a capability, not a restore policy.
 - D6. Interrupt returns one of the three results above and does not claim termination.
 - D7. Events are ordered typed facts, including argument deltas and native identifiers.
 - D8. The host-declared route carries endpoint, protocol, credential form, and a stable principal. `litellm-proxy` remains valid.
@@ -122,3 +124,13 @@ What the contract takes from those decisions:
 ## Left to later packages
 
 The Codex host adapter is exported as `./host/codex`. The Pi host adapter is exported as `./host/pi`. The `./host/opencode` entry does not implement host tools, resume, or live OpenCode qualification. This tree does not add `./host/claude`. It does not change `createAguiProjection`, the AG-UI mapping, or a text adapter. The Claude session adapter and its endpoint rules remain a later package. The Codex adapter does not pass a subscription credential through LiteLLM: a bearer is a host-route whose token stays in the host environment. `test:native-isolated` belongs to a different package and is not part of this tree.
+
+## Codex lifetime facts
+
+A pending segment can leave a native turn held. `interrupt` still sends `turn/interrupt`; an acknowledged reply withdraws the interactions belonging to its captured turn, including after a public timeout. An interrupt rejection may carry bounded numeric-code evidence. No result claims that a process stopped.
+
+`interaction-settled` carries `{ target, settlement }`, namespace `codex-app-server/interaction-settlement`, version 1, with `withdrawn/by`, `expired`, or `lost/cause`. Settlements reach adapter.events between segments. Successful replies keep their delivery events. Public Codex has no approval-expiry timer: `handlerTimeoutMs` defaults to 180000 (range 1..2147483647), after which transport loss produces `lost/handler-timeout`. Hosts set their hold window through that field. The private bridge's existing explicit expiry projects `expired`.
+
+The Codex stream admits four observers and 64 queued events per observer. Overflow disconnects that observer without replay. Close does not drain queued facts or promise settlements for still-held interactions: the host clears its pending UI on close/process exit. RunObservation remains segment-scoped. An approvals-only pending result currently projects a successful segment boundary with no pending tools; HostSegmentResult is authoritative for approval UI. AG-UI approval projection is deferred.
+
+Direct Codex permits 8 MiB inbound frames, 8 MiB image-turn outgoing frames and callbacks up to 16 MiB minus one byte; ordinary outgoing requests and all routed frames remain 1 MiB. Image turns must also fit the ordinary serialized text-envelope budget. The reader allocates 8 MiB per direct connection. The transport observation admission ceiling is 256 × 8 MiB = 2 GiB logical payload; outgoing admission is 201,326,616 bytes. Host observers can retain about 512 MiB logical payload per lag window, up to 2 GiB across four observers, plus object/string overhead; shared references mean this is not an RSS measurement. Direct resume excludes unused turns. Fingerprints stream the opening prefix up to 256 MiB, with an 8 MiB per-line bound, and preserve the existing tuple for small histories.

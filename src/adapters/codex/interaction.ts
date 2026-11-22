@@ -81,7 +81,7 @@ export type CodexSettlement =
    * Native ended the request before any host reply; a JSON-RPC error freed the transport lease, never a decision. `by` is
    * whichever native signal arrived first, so it follows arrival order (not pinned natively).
    */
-  | { readonly kind: 'withdrawn'; readonly by: 'serverRequest/resolved' | 'item/completed' | 'turn/completed';
+  | { readonly kind: 'withdrawn'; readonly by: 'serverRequest/resolved' | 'item/completed' | 'turn/completed' | 'turn/interrupt';
     readonly evidence: 'unqualified' }
   /** The host-selected expiry answered a decision-free error; its native fate is unqualified. */
   | { readonly kind: 'expired'; readonly delivery: NativeDelivery }
@@ -98,6 +98,8 @@ export type CodexInteractionEvent =
     readonly effect: ToolEffect; readonly evidence: CodexEvidence }
   /** The bridge lost its session observer (overflow): native withdrawals for this thread are no longer seen. */
   | { readonly kind: 'blind'; readonly threadId: string }
+  | { readonly kind: 'host-settled'; readonly target: ToolTarget;
+    readonly settlement: Extract<CodexSettlement, { kind: 'withdrawn' | 'lost' }> }
   | { readonly kind: 'host-call'; readonly call: CodexHostCall }
   | { readonly kind: 'host-delivery'; readonly target: ToolTarget; readonly delivery: NativeDelivery };
 export type CodexReplyError = InteractionError
@@ -121,6 +123,7 @@ export interface CodexInteraction {
   /** Single use: the first valid continuation for a live target is the only native reply ever written for it. */
   readonly reply: (options: CodexReplyOptions) => Promise<Outcome<{ readonly nativeChoiceId: string;
     readonly delivery: NativeDelivery }, CodexReplyError>>;
+  readonly withdrawTurn: (threadId: string, turnId: string) => number;
   readonly pending: () => readonly PendingApproval[];
   /** Unanswered host tool calls and `request_user_input` requests. Empty unless those options were set. */
   readonly hostCalls: () => readonly CodexHostCall[];
@@ -154,6 +157,11 @@ const unknown = Object.freeze({ kind: 'unknown' } as const);
 const fail = <E>(error: E) => Object.freeze({ kind: 'error', error: Object.freeze(error) }) as { kind: 'error'; error: E };
 /** The file-change request carries no `availableDecisions` in the 0.169 bindings; its decision enum is this set. */
 const fileChangeDecisions = ['accept', 'acceptForSession', 'decline', 'cancel'] as const;
+const endReasons: readonly (EndReason | 'aborted')[] = ['malformed-frame', 'oversized-frame', 'input-overflow',
+  'invalid-envelope', 'caller-close', 'eof', 'transport-error', 'process-exit', 'listen-error', 'handler-overflow',
+  'duplicate-request', 'handler-error', 'invalid-handler-reply', 'handler-timeout', 'observation-overflow',
+  'observation-error', 'observation-timeout', 'write-error', 'write-timeout', 'aborted'];
+const endReason = (value: unknown): EndReason | 'aborted' => endReasons.find((reason) => reason === value) ?? 'aborted';
 const unanswered = (entry: Entry) => entry.state === 'live' || entry.state === 'reserved';
 
 /**
@@ -261,17 +269,18 @@ function createHostLedger(deps: {
     entry.delivered = true;
     publish({ kind: 'host-delivery', target: entry.call.pending.target, delivery: { kind: 'unknown' } });
   }
-  function loseHost(entry: HostEntry): void {
+  function loseHost(entry: HostEntry, settlement: Extract<CodexSettlement, { kind: 'withdrawn' | 'lost' }>): void {
     if (entry.state === 'replied' || entry.state === 'lost') return;
     entry.state = 'lost';
     hostLive.delete(entry.id);
     rememberHost(entry);
+    publish({ kind: 'host-settled', target: entry.call.pending.target, settlement: Object.freeze(settlement) });
     entry.finish(withdrawnReply);
   }
   function onEvent(threadId: string, event: CodexSessionEvent): void {
     if (event.kind === 'turn-completed') {
       for (const entry of [...hostLive.values()]) {
-        if (entry.threadId === threadId && entry.turnId === event.turnId) loseHost(entry);
+        if (entry.threadId === threadId && entry.turnId === event.turnId) loseHost(entry, { kind: 'withdrawn', by: 'turn/completed', evidence: 'unqualified' });
       }
       return;
     }
@@ -280,7 +289,7 @@ function createHostLedger(deps: {
     if (event.method === 'serverRequest/resolved') {
       const requestId = typeof params.requestId === 'string' || typeof params.requestId === 'number' ? params.requestId : undefined;
       const host = requestId === undefined ? undefined : hostByRequest.get(requestId);
-      if (host && host.threadId === threadId && hostLive.has(host.id)) loseHost(host);
+      if (host && host.threadId === threadId && hostLive.has(host.id)) loseHost(host, { kind: 'withdrawn', by: 'serverRequest/resolved', evidence: 'unqualified' });
       return;
     }
     if (event.method !== 'item/completed' || !record(params.item)) return;
@@ -289,7 +298,7 @@ function createHostLedger(deps: {
     const host = hostByItem.get(hostItemKey(params.turnId, itemId));
     if (!host || host.threadId !== threadId) return;
     deliverHost(host);
-    if (hostLive.has(host.id)) loseHost(host);
+    if (hostLive.has(host.id)) loseHost(host, { kind: 'withdrawn', by: 'item/completed', evidence: 'unqualified' });
   }
   async function take(request: IncomingCall, signal: AbortSignal): Promise<RpcReply> {
     const params = record(request.params) ? request.params : {};
@@ -314,7 +323,7 @@ function createHostLedger(deps: {
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
     const entry: HostEntry = { id, threadId, turnId, requestId: request.id, callId, call, state: 'live', delivered: false, finish };
-    const onAbort = () => loseHost(entry);
+    const onAbort = () => loseHost(entry, { kind: 'lost', reply: 'not-sent', cause: endReason(signal.reason) });
     signal.addEventListener('abort', onAbort, { once: true });
     hostLive.set(id, entry);
     hostByRequest.set(request.id, entry);
@@ -345,6 +354,16 @@ function createHostLedger(deps: {
     return { kind: 'ok', value: Object.freeze({ nativeChoiceId: entry.id, delivery: unknown }) };
   }
   return { get size() { return hostLive.size; }, onEvent, take, reply,
+    withdrawTurn(threadId: string, turnId: string) {
+      let count = 0;
+      for (const entry of [...hostLive.values()]) {
+        if (entry.threadId === threadId && entry.turnId === turnId) {
+          loseHost(entry, { kind: 'withdrawn', by: 'turn/interrupt', evidence: 'unqualified' });
+          count++;
+        }
+      }
+      return count;
+    },
     calls: () => Object.freeze([...hostLive.values()].map((entry) => entry.call)) };
 }
 
@@ -480,7 +499,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       pending, state: 'live', timer: undefined, finish };
     const onAbort = () => {
       if (unanswered(entry)) settle(entry, { kind: 'lost', reply: 'not-sent',
-        cause: typeof signal.reason === 'string' ? signal.reason as EndReason : 'aborted' }, withdrawnReply);
+        cause: endReason(signal.reason) }, withdrawnReply);
     };
     signal.addEventListener('abort', onAbort, { once: true });
     live.set(id, entry);
@@ -544,5 +563,15 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
 
   return { kind: 'ok', value: Object.freeze({ onServerRequest, attach, reply, events: Object.freeze({ subscribe: stream.subscribe }),
     pending: () => Object.freeze([...live.values()].map((entry) => entry.pending)),
+    withdrawTurn: (threadId: string, turnId: string) => {
+      let count = hostLedger.withdrawTurn(threadId, turnId);
+      for (const entry of [...live.values()]) {
+        if (entry.threadId === threadId && entry.turnId === turnId && unanswered(entry)) {
+          withdraw(entry, 'turn/interrupt');
+          count++;
+        }
+      }
+      return count;
+    },
     hostCalls: () => hostLedger.calls() }) };
 }

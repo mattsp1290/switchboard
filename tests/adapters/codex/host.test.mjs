@@ -441,3 +441,239 @@ test('invalid image calls write nothing and never record intent', async () => {
     await opened.value.close();
   } finally { await made.dispose(); }
 });
+
+const tick = async (count = 3) => { for (let i = 0; i < count; i++) await new Promise((resolve) => setImmediate(resolve)); };
+async function openHost(t, native = {}, options = {}) {
+  const made = subject();
+  const signal = AbortSignal.timeout(15000);
+  const opened = await made.registration.open({ launch: made.launch('allow'), tools: [made.tool],
+    environment: { ...made.environment, nativeConfig: { ...made.environment.nativeConfig, ...native } }, ...options }, signal);
+  assert.equal(opened.kind, 'ok', JSON.stringify(opened));
+  const adapter = opened.value;
+  t.after(async () => { await adapter.close(); await made.dispose(); });
+  return { made, signal, adapter, f: made.state.servers[0],
+    run: (prompt = 'approval') => adapter.run({ prompt, signal, hostOperationId: randomUUID(), recordIntent: () => {} }),
+    answer: (answers, recordIntent = () => {}) => adapter.continue({ answers, signal, hostOperationId: randomUUID(), recordIntent }) };
+}
+function approvalTurns(f, { mixed = false, file = false, offered = ['accept', 'cancel'] } = {}) {
+  f.handlers['turn/start'] = (params, id) => {
+    const turnId = randomUUID();
+    const threadId = params.threadId;
+    f.turnIdentity = { threadId, turnId };
+    queueMicrotask(() => f.send({ id, result: { turn: { id: turnId, status: 'inProgress' } } }));
+    f.arm(threadId, turnId, [
+      ...(mixed ? [{ id: 'host-call', frame: { id: 'host-call', method: 'item/tool/call',
+        params: { threadId, turnId, callId: 'tool-item', namespace: 'application', tool: toolName, arguments: { city: 'Paris' } } } }] : []),
+      { id: 'approval-call', frame: { id: 'approval-call', method: file ? 'item/fileChange/requestApproval' : 'item/commandExecution/requestApproval',
+        params: { threadId, turnId, itemId: 'approval-item', reason: 'fixture',
+          ...(file ? { grantRoot: '/fixture' } : { command: 'touch marker', cwd: '/fixture', availableDecisions: offered }) } } },
+    ]);
+    return { deferred: true };
+  };
+}
+const approvalAnswer = (approval, nativeChoiceId = 'accept') => ({ formatVersion: 1, kind: 'approval', target: approval.target, nativeChoiceId });
+const callAnswer = (call) => ({ formatVersion: 1, kind: 'tool', outcome: { target: call.pending.target,
+  result: { kind: 'ok', value: { namespace: 'host', schemaVersion: 1, data: { text: 'done' } } },
+  effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } });
+
+test('direct settings reach start, resume and turns; invalid or routed overrides never spawn', async (t) => {
+  const native = { approvalPolicy: 'on-request', approvalsReviewer: 'user', model: 'selected', effort: 'high' };
+  const ctx = await openHost(t, native);
+  const first = await ctx.run(prompts.text);
+  const start = ctx.f.params[ctx.f.sent.indexOf('thread/start')];
+  assert.equal(start.approvalPolicy, native.approvalPolicy);
+  assert.equal(start.approvalsReviewer, native.approvalsReviewer);
+  assert.equal(start.model, native.model);
+  assert.equal(ctx.f.params[ctx.f.sent.indexOf('turn/start')].effort, 'high');
+  await ctx.adapter.close();
+  const opened = await ctx.made.registration.open({ launch: ctx.made.launch('allow'), tools: [ctx.made.tool],
+    environment: { ...ctx.made.environment, nativeConfig: { ...ctx.made.environment.nativeConfig, ...native } },
+    resume: { session: first.session } }, ctx.signal);
+  assert.equal(opened.kind, 'ok');
+  const f = ctx.made.state.servers.at(-1);
+  assert.equal(f.params[f.sent.indexOf('thread/resume')].model, 'selected');
+  assert.equal(f.params[f.sent.indexOf('thread/resume')].approvalsReviewer, 'user');
+  await opened.value.run({ prompt: prompts.text, signal: ctx.signal, hostOperationId: 'resume-options', recordIntent: () => {} });
+  assert.equal(f.params[f.sent.indexOf('turn/start')].effort, 'high');
+  await opened.value.close();
+  const route = { config: { kind: 'host-route', endpoint: 'http://127.0.0.1:12345', protocol: 'responses',
+    credentialForm: 'none', credentialPurpose: 'host-route', principal: 'fixture', model: 'routed', resolve: async () => ({ kind: 'ok', value: { form: 'none' } }) },
+    scope: { engine: 'codex', account: 'fixture', adapterInstanceId: 'fixture', sessionId: 'fixture' } };
+  for (const [fields, routed] of [[{ approvalPolicy: 'granular' }, false], [{ approvalPolicy: {} }, false],
+    [{ approvalsReviewer: 'unknown' }, false], [{ effort: '' }, false], [{ activity: true }, false],
+    [{ approvalPolicy: 'on-request' }, true], [{ approvalsReviewer: 'user' }, true], [{ model: 'direct' }, true]]) {
+    const before = ctx.made.state.attempts;
+    const refused = await ctx.made.registration.open({ launch: ctx.made.launch('allow'), ...(routed ? { route } : {}),
+      environment: { ...ctx.made.environment, nativeConfig: { ...ctx.made.environment.nativeConfig, ...fields } } }, ctx.signal);
+    assert.equal(refused.error.code, 'invalid-input');
+    assert.equal(ctx.made.state.attempts, before);
+  }
+});
+
+test('approval-only pending is prompt, inspect matches and offered object decisions remain exact', async (t) => {
+  const ctx = await openHost(t);
+  const amendment = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch', 'marker'] } };
+  approvalTurns(ctx.f, { offered: ['accept', amendment, 'cancel'] });
+  const start = Date.now();
+  const result = await ctx.run();
+  assert.equal(result.kind, 'pending');
+  assert(Date.now() - start < 1000);
+  assert.deepEqual(result.calls, []);
+  assert.equal(result.approvals.length, 1);
+  assert.deepEqual((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value,
+    { calls: result.calls, approvals: result.approvals });
+  const pending = result.approvals[0];
+  assert.deepEqual(pending.choices.map((c) => c.nativeChoiceId), ['accept', 'acceptWithExecpolicyAmendment:1', 'cancel']);
+  const before = ctx.f.replies.length;
+  for (const answers of [[], [approvalAnswer(pending), approvalAnswer(pending)], [approvalAnswer(pending, 'decline')],
+    [approvalAnswer({ ...pending, target: { ...pending.target, session: { ...pending.target.session, opaque: 'other' } } })]]) {
+    assert.equal((await ctx.answer(answers, () => assert.fail('invalid answer recorded intent'))).write.kind, 'not-attempted');
+  }
+  assert.equal(ctx.f.replies.length, before);
+  assert.equal((await ctx.answer([approvalAnswer(pending, 'acceptWithExecpolicyAmendment:1')])).kind, 'complete');
+  assert.deepEqual(ctx.f.replies.find((r) => r.id === 'approval-call').result, { decision: amendment });
+  assert.equal((await ctx.answer([approvalAnswer(pending)])).write.kind, 'not-attempted');
+});
+
+test('a mixed pending set requires complete coverage and rechecks it after intent', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f, { mixed: true });
+  const result = await ctx.run();
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.approvals.length, 1);
+  assert.equal((await ctx.answer([callAnswer(result.calls[0])])).write.kind, 'not-attempted');
+  const answers = [callAnswer(result.calls[0]), approvalAnswer(result.approvals[0])];
+  const changed = await ctx.answer(answers, async () => {
+    ctx.f.request('new-approval', 'item/fileChange/requestApproval', { ...ctx.f.turnIdentity, itemId: 'new-item' });
+    await tick();
+  });
+  assert.equal(changed.write.kind, 'not-dispatched');
+  assert.equal(ctx.f.replies.length, 0);
+  await ctx.adapter.interrupt({ timeoutMs: 1000 });
+  await tick();
+  assert.deepEqual((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value, { calls: [], approvals: [] });
+});
+
+for (const mixed of [false, true]) test(`held ${mixed ? 'mixed' : 'approval'} interrupt withdraws between segments`, async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f, { mixed });
+  const events = [];
+  ctx.adapter.events.subscribe((e) => { events.push(e); });
+  const result = await ctx.run();
+  const interrupted = await ctx.adapter.interrupt({ timeoutMs: 1000 });
+  assert(['interrupted', 'terminal-observed'].includes(interrupted.kind));
+  await tick();
+  assert(ctx.f.sent.includes('turn/interrupt'));
+  const settlements = events.filter((e) => e.kind === 'interaction-settled');
+  assert.equal(settlements.length, mixed ? 2 : 1);
+  for (const event of settlements) assert.deepEqual(event.settlement.data, { kind: 'withdrawn', by: 'turn/interrupt' });
+  assert.deepEqual((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value, { calls: [], approvals: [] });
+  assert.equal((await ctx.answer([approvalAnswer(result.approvals[0])])).write.kind, 'not-attempted');
+});
+
+test('held host tool interrupt works without an approval', async (t) => {
+  const ctx = await openHost(t);
+  const result = await ctx.run(prompts.toolCall);
+  assert.equal(result.kind, 'pending');
+  const events = [];
+  ctx.adapter.events.subscribe((e) => { events.push(e); });
+  await ctx.adapter.interrupt({ timeoutMs: 1000 });
+  await tick();
+  assert.equal(events.filter((e) => e.kind === 'interaction-settled').length, 1);
+  assert.deepEqual((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value, { calls: [], approvals: [] });
+});
+
+test('late interrupt acknowledgement settles only its captured turn', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f);
+  const events = [];
+  ctx.adapter.events.subscribe((e) => { events.push(e); });
+  await ctx.run();
+  let interruptId;
+  ctx.f.handlers['turn/interrupt'] = (_, id) => { interruptId = id; return { deferred: true }; };
+  assert.equal((await ctx.adapter.interrupt({ timeoutMs: 5 })).kind, 'unconfirmed-within-bound');
+  assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length, 1);
+  ctx.f.send({ id: interruptId, result: {} });
+  await tick();
+  assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length, 0);
+  const original = events.filter((e) => e.kind === 'interaction-settled');
+  assert.equal(original.length, 1);
+  await ctx.run();
+  assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length, 1);
+  assert.equal(events.filter((e) => e.kind === 'interaction-settled').length, 1);
+  ctx.f.handlers['turn/interrupt'] = () => ({});
+  await ctx.adapter.interrupt({ timeoutMs: 1000 });
+});
+
+for (const cause of ['process-exit', 'eof', 'handler-timeout', 'serverRequest/resolved']) test(`between-segment ${cause} settles exactly once`, async (t) => {
+  const ctx = await openHost(t, cause === 'handler-timeout' ? { handlerTimeoutMs: 60 } : {});
+  approvalTurns(ctx.f);
+  const result = await ctx.run();
+  const events = [];
+  ctx.adapter.events.subscribe((e) => { events.push(e); });
+  if (cause === 'serverRequest/resolved') ctx.f.send({ method: cause, params: { ...ctx.f.turnIdentity, requestId: 'approval-call' } });
+  else if (cause !== 'handler-timeout') ctx.f.sink.ended(cause);
+  else await new Promise((resolve) => setTimeout(resolve, 100));
+  await tick();
+  const settlements = events.filter((e) => e.kind === 'interaction-settled');
+  assert.equal(settlements.length, 1);
+  assert.deepEqual(settlements[0].settlement.data, cause === 'serverRequest/resolved'
+    ? { kind: 'withdrawn', by: cause } : { kind: 'lost', cause });
+  assert.equal((await ctx.answer([approvalAnswer(result.approvals[0])])).write.kind, 'not-attempted');
+});
+
+test('interrupt rejection preserves bounded evidence and no approval decision', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f);
+  await ctx.run();
+  ctx.f.handlers['turn/interrupt'] = () => ({ error: { code: -32001, message: '雪'.repeat(1000), data: { omitted: true } } });
+  const result = await ctx.adapter.interrupt({ timeoutMs: 1000 });
+  assert.equal(result.kind, 'unconfirmed-within-bound');
+  assert.equal(result.evidence.data.code, -32001);
+  assert.equal(result.evidence.data.truncated, true);
+  assert(Buffer.byteLength(result.evidence.data.message) <= 2048);
+  assert(!result.evidence.data.message.endsWith('\ufffd'));
+  assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length, 1);
+  // The execution shares the rejected interrupt for this turn. Finish explicitly for bounded test cleanup.
+  ctx.f.finishTurn(ctx.f.turnIdentity.threadId, ctx.f.turnIdentity.turnId);
+});
+
+test('a batch interrupted after its first reply stays outcome-unknown', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f, { mixed: true });
+  const pending = await ctx.run();
+  const controller = new AbortController();
+  const result = await ctx.adapter.continue({ answers: [callAnswer(pending.calls[0]), approvalAnswer(pending.approvals[0])],
+    signal: controller.signal, hostOperationId: 'partial', recordIntent: () => {},
+    onObservation: (event) => { if (event.kind === 'tool' && event.phase === 'completed') controller.abort(); } });
+  assert.equal(result.write.kind, 'outcome-unknown');
+  await tick();
+  assert.equal(ctx.f.replies.filter((r) => r.result).length, 1);
+  await ctx.adapter.interrupt({ timeoutMs: 1000 });
+});
+
+test('withdrawal during intent preserves a not-dispatched result', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f);
+  const pending = await ctx.run();
+  const result = await ctx.answer([approvalAnswer(pending.approvals[0])], async () => {
+    ctx.f.send({ method: 'serverRequest/resolved', params: { ...ctx.f.turnIdentity, requestId: 'approval-call' } });
+    await tick();
+  });
+  assert.equal(result.write.kind, 'not-dispatched');
+  assert.equal(ctx.f.replies.some((r) => r.result?.decision), false);
+});
+
+test('close-before-loss retires event streams without requiring host pending cleanup events', async (t) => {
+  const ctx = await openHost(t);
+  approvalTurns(ctx.f);
+  const pending = await ctx.run();
+  const hostPending = new Set(pending.approvals.map((a) => a.target.nativeApprovalId));
+  const subscription = ctx.adapter.events.subscribe(() => {});
+  const closing = ctx.adapter.close();
+  ctx.f.finishTurn(ctx.f.turnIdentity.threadId, ctx.f.turnIdentity.turnId);
+  await closing;
+  hostPending.clear();
+  assert.equal(hostPending.size, 0);
+  assert.equal(await subscription.value.ended, 'closed');
+});

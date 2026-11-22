@@ -250,6 +250,34 @@ void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];
 `);
   writeFileSync(join(consumer, 'image-types.json'), JSON.stringify({ ...consumerConfig, files: ['image-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'image-types.json'], consumer);
+  writeFileSync(join(consumer, 'codex-host-types.test.ts'), `
+import type { CodexHostNativeConfig } from '${manifest.name}/host/codex';
+import type { HostAdapter, HostAdapterEvent, HostSegmentResult, InteractionContinuation } from '${manifest.name}';
+const config: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'on-request', approvalsReviewer: 'user', model: 'selected', effort: 'high', activity: 'items' };
+// @ts-expect-error The public host surface does not admit granular policy objects or strings.
+const invalid: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'granular' };
+declare const adapter: HostAdapter;
+declare const result: HostSegmentResult;
+declare const event: HostAdapterEvent;
+if (result.kind === 'pending') {
+  const approval = result.approvals[0];
+  if (approval) {
+    const answer: InteractionContinuation = { formatVersion: 1, kind: 'approval', target: approval.target, nativeChoiceId: approval.choices[0]!.nativeChoiceId };
+    void answer;
+  }
+}
+if (result.kind === 'failed') void result.nativeError?.source;
+if (event.kind === 'interaction-settled') void [event.target, event.settlement];
+if (adapter.capabilities.inspect.kind === 'supported') {
+  const pending = await adapter.capabilities.inspect.api.pending(new AbortController().signal);
+  if (pending.kind === 'ok') void [pending.value.calls, pending.value.approvals];
+}
+const interrupted = await adapter.interrupt({ timeoutMs: 10 });
+if (interrupted.kind === 'unconfirmed-within-bound') void interrupted.evidence;
+void [config, invalid];
+`);
+  writeFileSync(join(consumer, 'codex-host-types.json'), JSON.stringify({ ...consumerConfig, files: ['codex-host-types.test.ts'] }));
+  run(process.execPath, [compiler, '-p', 'codex-host-types.json'], consumer);
   writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';

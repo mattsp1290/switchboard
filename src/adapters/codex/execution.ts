@@ -154,6 +154,11 @@ export interface CodexSessionCloseReport {
   /** False until host-attested process exit: neither the turn terminal nor `thread/unsubscribe` unloads the thread. */
   readonly released: boolean;
 }
+export interface CodexInterruptResult {
+  readonly step: CleanupStep;
+  readonly turnId: string | null;
+  readonly rejection: { readonly code: number; readonly message: string } | null;
+}
 export interface CodexSession {
   readonly reference: SessionReference;
   readonly threadId: string;
@@ -169,7 +174,7 @@ export interface CodexSession {
    * termination is the turn's `completion`. `not-needed`: no active turn, it settled, or no native turn id within
    * `cleanupTimeoutMs`. Never closes the session, releases the writer or resends; unsubscribing is not cancellation.
    */
-  readonly interrupt: () => Promise<CleanupStep>;
+  readonly interrupt: () => Promise<CodexInterruptResult>;
 }
 export type CodexResumeResult = { readonly kind: 'resumed'; readonly session: CodexSession }
   | Exclude<CodexResumePreparation, { readonly kind: 'ready' }>;
@@ -248,7 +253,7 @@ type Turn = {
   readonly done: Promise<CodexTurnCompletion>;
   /** Settles when the native turn id is known or the turn settled without one. */
   readonly identified: Deferred<void>;
-  interrupting: Promise<CleanupStep> | undefined;
+  interrupting: Promise<CodexInterruptResult> | undefined;
 };
 type Session = {
   readonly threadId: string;
@@ -598,7 +603,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       close: () => (session.closing ??= shutdown(session)),
       interrupt: async () => {
         const turn = session.active;
-        return turn ? interrupt(session, turn, AbortSignal.timeout(bounds.cleanupTimeoutMs)) : 'not-needed';
+        return turn ? interrupt(session, turn, AbortSignal.timeout(bounds.cleanupTimeoutMs)) : { step: 'not-needed' as const, turnId: null, rejection: null };
       } });
   }
   async function create(access: Access<CodexStartFeatures>): Promise<Outcome<CodexSession, CodexOpenError>> {
@@ -788,18 +793,20 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     void promise.then(() => { listener[Symbol.dispose](); resolve(); });
   });
   /** `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel). */
-  async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CleanupStep> {
+  async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CodexInterruptResult> {
     const result = await (turn.interrupting ??= until(turn.identified.promise, deadline).then(async () => {
       const { phase } = turn;
       if (phase.kind !== 'identified' || turn.settled || deadline.aborted) {
         // Nothing was written: a still-pending turn may yet be identified, so a later interrupt or close tries again.
         if (!turn.settled && phase.kind !== 'orphaned') turn.interrupting = undefined;
-        return 'not-needed';
+        return { step: 'not-needed' as const, turnId: phase.kind === 'identified' ? phase.id : null, rejection: null };
       }
-      return step(await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline));
+      const reply = await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, deadline);
+      return { step: step(reply), turnId: phase.id,
+        rejection: reply.kind === 'error' ? { code: reply.error.code, message: reply.error.message } : null };
     }));
     // A joined attempt ran on its starter's deadline; if that expired unwritten, retry within this caller's own.
-    const retry = result === 'not-needed' && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
+    const retry = result.step === 'not-needed' && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
     return retry ? interrupt(session, turn, deadline) : result;
   }
   async function shutdown(session: Session): Promise<CodexSessionCloseReport> {
@@ -809,7 +816,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     let interrupted: CleanupStep = 'not-needed';
     const turn = session.active;
     if (turn) {
-      interrupted = await interrupt(session, turn, deadline);
+      interrupted = (await interrupt(session, turn, deadline)).step;
       // An orphaned turn settles only when the transport ends; waiting would only spend the cleanup deadline.
       if (turn.phase.kind !== 'orphaned') await until(turn.done, deadline);
     }

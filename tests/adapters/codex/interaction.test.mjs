@@ -17,6 +17,7 @@ const hook = registerHooks({ resolve(specifier, context, next) {
 } });
 const { createCodexWriters, openCodexExecution } = await import(new URL('adapters/codex/execution.ts', src).href);
 const { codexServerRequestSupport, createCodexInteraction } = await import(new URL('adapters/codex/interaction.ts', src).href);
+const { codexSettlement } = await import(new URL('adapters/codex/settlement.ts', src).href);
 hook.deregister();
 
 const home = '/fixture/codex-home';
@@ -294,7 +295,7 @@ test('interrupt while waiting on approval: the native terminal withdraws it with
   const [session] = ctx.sessions;
   const turn = await turnOn(session);
   const pending = await approval(ctx, session);
-  assert.equal(await session.interrupt(), 'replied');
+  assert.equal((await session.interrupt()).step, 'replied');
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   await settle();
   assert.deepEqual(settledOf(ctx.events), [{ kind: 'withdrawn', by: 'turn/completed', evidence: 'unqualified' }]);
@@ -313,7 +314,7 @@ test('cancel while a tool runs after approval reports the request and the native
   const pending = await approval(ctx, session);
   await reply(ctx, choose(pending, 'accept'));
   ctx.f.notify('item/started', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'inProgress' } });
-  assert.equal(await session.interrupt(), 'replied');
+  assert.equal((await session.interrupt()).step, 'replied');
   ctx.f.notify('item/completed', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'failed' } });
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   await settle();
@@ -367,6 +368,8 @@ test('host-selected expiry answers a decision-free error before the handler dead
   while (settledOf(ctx.events).length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
   await settle();
   assert.deepEqual(settledOf(ctx.events), [{ kind: 'expired', delivery: { kind: 'unknown' } }]);
+  const projected = ctx.events.map(codexSettlement).filter(Boolean);
+  assert.deepEqual(projected.map((event) => event.settlement), [{ namespace: 'codex-app-server/interaction-settlement', schemaVersion: 1, data: { kind: 'expired' } }]);
   assert.deepEqual(ctx.f.replies, [{ id: 'req-1', error: { code: -32000, message: 'Approval expired unanswered', data: null } }]);
   assert.deepEqual(await reply(ctx, choose(pending, 'accept')), refusedError('stale-interaction'));
   ctx.f.complete(session.threadId);
@@ -567,4 +570,25 @@ test('an evicted settled approval answers stale instead of duplicate', async (t)
   assert.deepEqual(await reply(ctx, choose(first, 'decline')), refusedError('stale-interaction'));
   await settle();
   assert.equal(ctx.f.replies.length, 2, 'never a second write for either');
+});
+
+for (const reason of [new Error('untrusted'), { arbitrary: true }, 'unknown-reason']) test('arbitrary abort reasons normalize to aborted for tools and approvals', async (t) => {
+  const ctx = await setup(t, { declaredTools: [{ name: 'lookup', namespace: 'application' }] });
+  const [session] = ctx.sessions;
+  await turnOn(session);
+  const turnId = ctx.f.turns.get(session.threadId);
+  const control = new AbortController();
+  const command = { id: 'direct-approval', method: 'item/commandExecution/requestApproval',
+    params: { threadId: session.threadId, turnId, itemId: 'a', availableDecisions }, raw: {} };
+  const tool = { id: 'direct-tool', method: 'item/tool/call', params: { threadId: session.threadId, turnId,
+    callId: 't', namespace: 'application', tool: 'lookup', arguments: {} }, raw: {} };
+  const held = [ctx.bridge.onServerRequest(command, control.signal), ctx.bridge.onServerRequest(tool, control.signal)];
+  control.abort(reason);
+  await Promise.all(held);
+  await settle();
+  const projected = ctx.events.map(codexSettlement).filter(Boolean);
+  assert.deepEqual(projected.map((event) => event.settlement.data), [{ kind: 'lost', cause: 'aborted' }, { kind: 'lost', cause: 'aborted' }]);
+  control.abort();
+  assert.equal(projected.length, 2);
+  ctx.f.complete(session.threadId);
 });
