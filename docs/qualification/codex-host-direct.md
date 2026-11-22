@@ -69,3 +69,22 @@ Each CodexHostModel has exactly model, displayName, hidden, isDefault and inputM
 These inert tests prove translation and lifecycle behavior, not live login, account catalog entitlement or image understanding. The installed-package fixture checks the public types without importing a native SDK through the root.
 
 Live direct qualification is a separate owner-run gate at the exact pin. Until the script record below lists each mandatory scenario as passed, native command accept/cancel/held interrupt and the valid 4 MiB image journey are **not covered** by this document. Optional file/catalog scenarios are separately labelled. A branch and passing fixtures do not establish main-merge or consumer cutover acceptance.
+
+### Native record — 2026-11-22
+
+Codex executable SHA-256: `739cda86e15d30a6e2b40cf8dcbbfb988aaf48b305b27065573bb8e9fd41d002`, reported `codex-cli 0.169.0`. Direct ChatGPT login used a temporary dedicated home; credentials and disposable workspaces were removed after the run. Production Codex source: `0d46f32`.
+
+| Scenario | Result | Evidence |
+| --- | --- | --- |
+| Command accept | Passed | One actual approval, native completed command activity, marker present |
+| Command cancel | Passed | One actual approval, turn ended, marker absent |
+| Held approval interrupt | Passed | Native acknowledged interrupt, local bridge withdrawal, inspect empty, marker absent |
+| Valid 4 MiB PNG | Passed | Complete result, then another text turn completed on the same connection |
+| Native file-change | Not covered | Set QUALIFY_FILE_CHANGE=1; no tool/sandbox widening is allowed |
+| Account model list | Not covered | Set QUALIFY_MODEL_LIST=1 |
+
+The interrupt's settlement came from local withdrawTurn after acknowledgement. The record does not claim that native resolved the held approval before that withdrawal. File-change accept/cancel remains fixture evidence.
+
+Redacted run artifact: `/tmp/switchboard-host-parity.vK0GGm/native-direct-attempt2.json`. The first launcher attempt used a noncanonical macOS temporary-home path and failed before dispatch; the script now canonicalizes the dedicated home. No production fix was needed for that attempt.
+
+Rerun after build with `CODEX_HOME=/absolute/dedicated/chatgpt-home SWITCHBOARD_QUALIFY_CODEX_HOST=1 npm run qualify:codex-host-direct`. The script refuses the default home, verifies the exact binary version, writes only statuses/counts and synthetic scenario labels, and leaves credentials out of its report. Its report path can be set with SWITCHBOARD_CODEX_HOST_REPORT.
