@@ -237,7 +237,7 @@ function confinedRun(stage, entry, machine) {
   });
 }
 
-const describe = (run) => [`  exit ${run.code}${run.signal ? ` signal ${run.signal}` : ''}, ${run.lines} trace lines, ${run.launches} launches, ${run.refused} refused execs, ${run.ms} ms`,
+const describe = (run) => [`  exit ${run.code}${run.signal ? ` signal ${run.signal}` : ''}, ${run.lines} trace lines, ${run.launches} launches, ${run.refused} refused execs, ${run.terminalDiagnostics} terminal diagnostics, ${run.ms} ms`,
   ...run.violations.slice(0, 20).map((v) => `  ${v.kind}: ${v.detail}`), ...(run.violations.length > 20 ? [`  ... ${run.violations.length - 20} more`] : [])].join('\n');
 
 async function main() {
@@ -262,7 +262,7 @@ async function main() {
       for (const entry of SUITES) {
         const run = await confinedRun(stage, entry, machine);
         const passed = run.ok && run.code === 0 && run.tests.fail === 0 && run.tests.pass > 0;
-        console.log(`isolated-native: ${passed ? 'ok' : 'FAIL'} ${entry}: ${run.tests.pass} passed, ${run.tests.fail} failed; ${run.lines} trace lines, ${run.launches} launches, ${run.violations.length} violations, ${run.ms} ms`);
+        console.log(`isolated-native: ${passed ? 'ok' : 'FAIL'} ${entry}: ${run.tests.pass} passed, ${run.tests.fail} failed; ${run.lines} trace lines, ${run.launches} launches, ${run.terminalDiagnostics} terminal diagnostics, ${run.violations.length} violations, ${run.ms} ms`);
         if (!passed) failures.push(`${entry}\n${describe(run)}\n  output tail:\n${run.stdout.slice(-4000)}`);
       }
     }

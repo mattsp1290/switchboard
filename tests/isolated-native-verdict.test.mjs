@@ -140,3 +140,44 @@ test('execve arguments keep escaped quotes and reject abbreviated arrays', () =>
   assert.equal(execArguments('execve("/a", ["/a", ...], 0x1) = 0'), null);
   assert.equal(execArguments('execve("/a", 0x1234, 0x1) = 0'), null);
 });
+
+for (const diagnostic of ['???()                             = ?', '???( <unfinished ...>']) {
+  test(`strace register-read failure requires the same task's immediate terminal record: ${diagnostic}`, () => {
+    const result = judge('2 openat(AT_FDCWD</stage>, "/stage/a", O_RDONLY) = 3</stage/a>',
+      `2 ${diagnostic}`, '3 +++ exited with 0 +++', '2 +++ killed by SIGKILL +++');
+    assert.deepEqual(result.violations, []);
+    assert.equal(result.terminalDiagnostics, 1);
+  });
+  test(`an unreadable task that continues or lacks its terminal record fails: ${diagnostic}`, () => {
+    assert.deepEqual(judge(`2 ${diagnostic}`).kinds, ['trace']);
+    assert.deepEqual(judge(`2 ${diagnostic}`, '2 getpid() = 2', '2 +++ exited with 0 +++').kinds, ['trace']);
+    assert.deepEqual(judge(`2 ${diagnostic}`, '2 --- SIGTERM {si_signo=SIGTERM} ---', '2 +++ killed by SIGTERM +++').kinds, ['trace']);
+    assert.deepEqual(judge(`2 ${diagnostic}`, '2 +++ superseded by execve in pid 3 +++', '2 +++ exited with 0 +++').kinds, ['trace']);
+    for (const extra of ['getpid() = 2', '<... getpid resumed>) = 2', '+++ exited with 0 +++']) {
+      assert.deepEqual(judge(`2 ${diagnostic}`, '2 +++ killed by SIGKILL +++', `2 ${extra}`).kinds, ['trace']);
+    }
+    assert.deepEqual(judge(`2 ${diagnostic}`, '3 +++ superseded by execve in pid 2 +++',
+      '3 +++ exited with 0 +++', '2 +++ killed by SIGKILL +++').kinds, ['trace']);
+  });
+}
+
+test('terminal diagnostics cannot hide forbidden activity or arbitrary unreadable syscalls', () => {
+  for (const body of ['???(123) = ?', '???() = 0', '???() = ? trailing', '???( <unavailable>) = ?', '???()\t= ?', '???()\u00a0= ?']) {
+    assert.deepEqual(judge(`2 ${body}`, '2 +++ killed by SIGKILL +++').kinds, ['trace'], body);
+  }
+  for (const [kind, call] of [
+    ['network', '2 connect(3, {sa_family=AF_INET}, 16) = -1 EPERM (Operation not permitted)'],
+    ['decoy', '2 openat(AT_FDCWD, "/home/switchboard-decoy/.netrc", O_RDONLY) = 3'],
+    ['launch', '2 execve("/bin/true", ["/bin/true"], 0x1 /* 3 vars */) = 0'],
+  ]) {
+    const result = judge(call, '2 ???() = ?', '2 +++ killed by SIGKILL +++');
+    assert(result.kinds.includes(kind));
+  }
+  assert.deepEqual(judge('1 ???() = ?', '1 getpid() = 1').kinds, ['trace']);
+  assert(judge('2 execve("/bin/true", ["/bin/true"], 0x1 /* 3 vars */ <unfinished ...>',
+    '2 ???() = ?', '2 +++ killed by SIGKILL +++').kinds.includes('launch'));
+  assert(judge('2 io_uring_setup(32, {flags=0} <unfinished ...>',
+    '2 ???() = ?', '2 +++ killed by SIGKILL +++').kinds.includes('io_uring'));
+  assert.deepEqual(judge('2 ???() = ?', '2 +++ exited with 9 +++').violations, []);
+  assert.deepEqual(judge('2 +++ exited with 0 +++', '2 ???() = ?').kinds, ['trace']);
+});

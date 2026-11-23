@@ -20,6 +20,11 @@ const NODE_OPTIONS = new Set(['--test-reporter=tap', '--input-type=module']);
 const LINE = /^(\d+) +(.*)$/;
 const CALL = /^([a-z0-9_]+)\(/;
 const RESUMED = /^<\.\.\. ([a-z0-9_]+) resumed>/;
+// strace 6.1 emits these when register inspection loses a task to exit_group or SIGKILL.
+// Accept the diagnostic only if that task's next record confirms death; never resume it.
+// https://github.com/strace/strace/blob/v6.1/src/strace.c (dispatch_event, TE_SYSCALL_STOP)
+const TERMINAL_DIAGNOSTIC = /^\?\?\?\((?:\) += \?| <unfinished \.\.\.>)$/;
+const TERMINAL = /^\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+( \(core dumped\))?) \+\+\+$/;
 const STRING = /"((?:[^"\\]|\\.)*)"(\.\.\.)?/y;
 const MAX_VIOLATIONS = 200;
 // The errno is only the syscall result at the end of the line. An argument may contain the same text.
@@ -66,11 +71,13 @@ export function createVerdict(policy) {
   let lines = 0;
   let launches = 0;
   let refused = 0;
+  let terminalDiagnostics = 0;
   let pendingIo = 0;
   let top = null;
   const seen = new Set();
   /** @type {Map<string, string>} */
   const ended = new Map();
+  const dying = new Set();
   /** @type {Map<string, { problem: string | null, sawRefusal: boolean }>} unfinished execve per pid */
   const pending = new Map();
   const add = (kind, detail) => { if (violations.length < MAX_VIOLATIONS) violations.push({ kind, detail: detail.slice(0, 300) }); };
@@ -101,8 +108,18 @@ export function createVerdict(policy) {
     const [, pid, rest] = match;
     top ??= pid;
     seen.add(pid);
+    if (ended.has(pid)) add('trace', `task ${pid} has records after its terminal record: ${rest}`);
     if (rest.includes(policy.decoy)) add('decoy', rest);
     if (lines === 1 && !rest.startsWith('execve(')) add('trace', `first record is not the entry execve: ${rest}`);
+    if (dying.has(pid)) {
+      dying.delete(pid);
+      if (!TERMINAL.test(rest)) add('trace', `task ${pid} continued after unreadable registers: ${rest}`);
+    }
+    if (TERMINAL_DIAGNOSTIC.test(rest)) {
+      terminalDiagnostics++;
+      dying.add(pid);
+      return;
+    }
     if (rest.startsWith('+++ ')) {
       // A thread's execve replaces its leader: the thread's record ends, the leader keeps the pid and the result.
       const superseded = /^\+\+\+ superseded by execve in pid (\d+) \+\+\+$/.exec(rest);
@@ -113,7 +130,7 @@ export function createVerdict(policy) {
         if (pending.has(thread)) { pending.set(pid, pending.get(thread)); pending.delete(thread); }
         return;
       }
-      if (!/^\+\+\+ (exited with \d+|killed by SIG[A-Z0-9]+( \(core dumped\))?) \+\+\+$/.test(rest)) {
+      if (!TERMINAL.test(rest)) {
         add('trace', `unknown process end: ${rest}`);
       }
       ended.set(pid, rest);
@@ -136,11 +153,12 @@ export function createVerdict(policy) {
     else if (name === 'io_uring_setup' && !refusedErrno(rest)) add('io_uring', rest);
   }
 
-  /** @returns {{ ok: boolean, violations: Violation[], kinds: ViolationKind[], lines: number, launches: number, refused: number }} */
+  /** @returns {{ ok: boolean, violations: Violation[], kinds: ViolationKind[], lines: number, launches: number, refused: number, terminalDiagnostics: number }} */
   function finish() {
     if (top === null) add('trace', 'empty trace');
     else if (ended.get(top) !== '+++ exited with 0 +++') add('trace', `entry process ended with: ${ended.get(top) ?? 'no record'}`);
     for (const pid of seen) if (!ended.has(pid)) add('trace', `process ${pid} has no end record`);
+    for (const pid of dying) add('trace', `task ${pid} has no terminal record after unreadable registers`);
     if (pendingIo > 0) add('io_uring', 'io_uring_setup result not recorded');
     for (const entry of pending.values()) {
       if (entry.sawRefusal) continue;
@@ -149,7 +167,7 @@ export function createVerdict(policy) {
     }
     pending.clear();
     const kinds = [...new Set(violations.map((violation) => violation.kind))].sort();
-    return { ok: violations.length === 0, violations, kinds, lines, launches, refused };
+    return { ok: violations.length === 0, violations, kinds, lines, launches, refused, terminalDiagnostics };
   }
 
   return { line, finish };
