@@ -87,10 +87,28 @@ The missing SDK behavior is an explicit empty custom-subagent override during
 resume that does not fall back to stored definitions. A revised candidate needs
 that behavior and a fresh control audit against its exact SDK artifact.
 
-This audit does not authorize an SDK upgrade, dependence on private SDK fields,
-removal of resume, transcript or metadata rewriting, or weaker acceptance
-criteria. The pinned SDK and unchanged resume contract prevent further candidate
-implementation under the current plan.
+The user subsequently authorized SDK upgrades and prohibited SDK modifications.
+A direct public npm registry check on November 22, 2026 returned `latest: 1.4.2`.
+The complete published version list contained no newer release or prerelease.
+The `next` tag pointed to the older `1.1.0-beta.0`. There is no published upgrade
+to test as a replacement for the failing SDK.
+
+The registry check used the pinned npm toolchain:
+
+```sh
+npm view @cursor/sdk dist-tags versions time.modified --json --registry=https://registry.npmjs.org --prefer-online
+npm view @cursor/sdk@latest version dist.integrity dist.tarball --json --registry=https://registry.npmjs.org --prefer-online
+```
+
+The version-list response is saved as `published-sdk-versions.json` in the local
+evidence directory. The installed lockfile and audited SDK source hashes still
+match the original probe. The public `AgentOptions` declaration has `agents`
+but no `customSubagents` clearing override.
+
+The upgrade authorization does not permit SDK patching, dependence on private
+SDK fields, removal of resume, transcript or metadata rewriting, or weaker
+acceptance criteria. Further implementation requires a published SDK with the
+missing behavior, or an explicit revision of the contract.
 
 The remaining control audit, runtime boundary, lifecycle changes, package tests,
 candidate artifact, and Crew qualification gates have not passed. There is no
