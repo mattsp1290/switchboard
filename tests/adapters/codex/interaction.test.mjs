@@ -577,7 +577,7 @@ for (const reason of [new Error('untrusted'), { arbitrary: true }, 'unknown-reas
     params: { threadId: session.threadId, turnId, itemId: 'a', availableDecisions }, raw: {} };
   const tool = { id: 'direct-tool', method: 'item/tool/call', params: { threadId: session.threadId, turnId,
     callId: 't', namespace: 'application', tool: 'lookup', arguments: {} }, raw: {} };
-  const held = [ctx.bridge.onServerRequest(command, control.signal, { replyAllowed() {}, watchNotification: () => () => {} }), ctx.bridge.onServerRequest(tool, control.signal, { replyAllowed() {}, watchNotification: () => () => {} })];
+  const held = [ctx.bridge.onServerRequest(command, control.signal, { replyAllowed() {}, fault() {}, watchNotification: () => () => {} }), ctx.bridge.onServerRequest(tool, control.signal, { replyAllowed() {}, fault() {}, watchNotification: () => () => {} })];
   control.abort(reason);
   await Promise.all(held);
   await settle();
@@ -594,7 +594,111 @@ for(const method of ['item/fileChange/requestApproval','item/tool/call']) test(`
  const bridge=made.value;assert.equal(bridge.attach({...session,matchesTurn:()=>gate.promise,intake(listener){listeners.push(listener);return {kind:'ok',value(){}};}}).kind,'ok');
  const params={threadId:session.threadId,turnId:'preack-turn',itemId:'item',callId:'call',tool:'lookup',namespace:'application',arguments:{}};
  const request={id:'preack',method,params,raw:{id:'preack',method,params}};
- const reply=bridge.onServerRequest(request,access.signal,{replyAllowed(){},watchNotification(fn){watcher=fn;return ()=>{watcher=undefined;};}});
+ const reply=bridge.onServerRequest(request,access.signal,{replyAllowed(){},fault(){},watchNotification(fn){watcher=fn;return ()=>{watcher=undefined;};}});
  gate.resolve(true);queueMicrotask(()=>{const params={threadId:session.threadId,turnId:'preack-turn',requestId:'preack'};watcher?.({kind:'notification',method:'serverRequest/resolved',params,raw:{}});for(const listener of listeners)listener.notification?.('serverRequest/resolved',params);});
  const result=await reply;assert.equal(result.kind,'error');assert.equal(result.error.code,-32000);assert.deepEqual(bridge.pending(),[]);assert.deepEqual(bridge.hostCalls(),[]);
+});
+
+test('prepared approval entry and projection follow the actual writer invocation', async t => {
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);let observedWrites=-1;let replies=0;
+ ctx.bridge.project(event=>{if(event.kind==='settled'&&event.settlement.kind==='replied'){observedWrites=ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length;ctx.f.lose();}});
+ const prepared=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(prepared.kind,'ok');assert.equal(prepared.value.commit(access.signal,()=>{replies++;},ctx.execution.flushIntake).kind,'ok');
+ assert.equal((await prepared.value.entry).kind,'ok');await settle();assert.equal(observedWrites,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);assert.equal(prepared.value.entered(),true);assert.equal(replies,1);
+});
+
+test('an abort inside the writer cannot erase a prepared approval entry that already happened', async t => {
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const control=new AbortController();const write=ctx.f.channel.write;
+ ctx.f.channel.write=bytes=>{const result=write(bytes);const frame=JSON.parse(Buffer.from(bytes));if(Object.hasOwn(frame,'result'))control.abort();return result;};
+ const prepared=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(prepared.kind,'ok');assert.equal(prepared.value.commit(control.signal,()=>{},ctx.execution.flushIntake).kind,'ok');
+ assert.equal((await prepared.value.entry).kind,'ok');await settle();assert.equal(prepared.value.entered(),true);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);
+});
+
+test('a projection failure cannot strand refused batch entry or written waiters',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const first=await approval(ctx,session,'first');
+ const held=Promise.withResolvers();const write=ctx.f.channel.write;let blocked=false;ctx.f.channel.write=bytes=>{const result=write(bytes);if(!blocked&&JSON.parse(Buffer.from(bytes)).method==='thread/start'){blocked=true;return held.promise;}return result;};
+ assert.equal((await ctx.execution.create(access)).kind,'ok');
+ ctx.bridge.project(event=>{if(event.kind==='settled'&&event.target.nativeApprovalId===first.target.nativeApprovalId&&event.settlement.kind==='lost')throw new Error('project failed');});
+ const prepared=ctx.bridge.prepareBatch([choose(first,'decline')]);assert.equal(prepared.kind,'ok');assert.equal(prepared.value.commit(access.signal,()=>{},ctx.execution.flushIntake).kind,'ok');await approval(ctx,session,'second');held.resolve();
+ const bounded=promise=>Promise.race([promise,new Promise(resolve=>setTimeout(()=>resolve('timeout'),100))]);
+ const [entry,written]=await Promise.all([bounded(prepared.value.entry),bounded(prepared.value.written)]);assert.equal(entry.kind,'error');assert.equal(written.kind,'error');await settle();assert.equal(ctx.f.replies.some(frame=>frame.id==='first'&&Object.hasOwn(frame,'result')),false);
+});
+test('a single approval reply publishes its settlement after actual writer invocation',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);let observed=-1;
+ ctx.bridge.project(event=>{if(event.kind==='settled'&&event.settlement.kind==='replied'){observed=ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length;ctx.f.lose();}});
+ assert.equal((await reply(ctx,choose(pending,'decline'))).kind,'ok');await settle();assert.equal(observed,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);
+});
+
+async function holdReplyWriter(ctx) {
+ const held=Promise.withResolvers();const write=ctx.f.channel.write;let armed=true;
+ ctx.f.channel.write=bytes=>{const result=write(bytes);if(armed&&JSON.parse(Buffer.from(bytes)).method==='thread/start'){armed=false;return held.promise;}return result;};
+ assert.equal((await ctx.execution.create(access)).kind,'ok');return ()=>held.resolve();
+}
+
+for (const aborted of [false,true]) test(`repeating a batch commit inside its writer cannot retract entry (aborted: ${aborted})`,async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const prepared=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(prepared.kind,'ok');
+ const write=ctx.f.channel.write;let duplicate;let replies=0;ctx.f.channel.write=bytes=>{const result=write(bytes);if(Object.hasOwn(JSON.parse(Buffer.from(bytes)),'result'))duplicate=prepared.value.commit(aborted?AbortSignal.abort():access.signal,()=>assert.fail('duplicate reply callback'),ctx.execution.flushIntake);return result;};
+ assert.equal(prepared.value.commit(access.signal,()=>{replies++;},ctx.execution.flushIntake).kind,'ok');assert.equal((await prepared.value.entry).kind,'ok');assert.equal((await prepared.value.written).kind,'ok');await settle();assert.equal(duplicate.kind,'error');assert.equal(prepared.value.entered(),true);assert.equal(replies,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);
+});
+
+test('a stale overlapping prepared batch cannot discard another batch reservation',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const first=ctx.bridge.prepareBatch([choose(pending,'decline')]);const second=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(first.kind,'ok');assert.equal(second.kind,'ok');const release=await holdReplyWriter(ctx);
+ first.value.commit(access.signal,()=>{},ctx.execution.flushIntake);assert.equal(second.value.commit(access.signal,()=>{},ctx.execution.flushIntake).kind,'error');release();assert.equal((await first.value.entry).kind,'ok');assert.equal((await first.value.written).kind,'ok');assert.equal((await second.value.entry).kind,'error');await settle();assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);
+});
+
+test('an old prepared batch cannot retract a single reply from inside its writer',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const old=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(old.kind,'ok');const write=ctx.f.channel.write;let refused;
+ ctx.f.channel.write=bytes=>{const result=write(bytes);if(Object.hasOwn(JSON.parse(Buffer.from(bytes)),'result'))refused=old.value.commit(access.signal,()=>{},ctx.execution.flushIntake);return result;};
+ assert.equal((await reply(ctx,choose(pending,'decline'))).kind,'ok');await settle();assert.equal(refused.kind,'error');assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);
+});
+
+test('a replied projector error preserves all actual batch entry facts',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);let replies=0;
+ ctx.bridge.project(event=>{if(event.kind==='settled'&&event.settlement.kind==='replied')throw new Error('projection failed');});
+ const prepared=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(prepared.kind,'ok');prepared.value.commit(access.signal,()=>{replies++;},ctx.execution.flushIntake);assert.equal((await prepared.value.entry).kind,'ok');assert.equal((await prepared.value.written).kind,'ok');await settle();assert.equal(replies,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);assert.equal((await ctx.execution.close()).transport.reason,'handler-error');
+});
+
+for(const kind of ['approval','tool'])test(`teardown contains a throwing ${kind} loss projector`,async t=>{
+ const ctx=await setup(t,{declaredTools:[{name:'lookup',namespace:'application'}]});const session=ctx.sessions[0];await turnOn(session);
+ if(kind==='approval')await approval(ctx,session);else{ctx.f.request('tool-loss','item/tool/call',{threadId:session.threadId,turnId:ctx.f.turns.get(session.threadId),callId:'call',namespace:'application',tool:'lookup',arguments:{}});await settle();assert.equal(ctx.bridge.hostCalls().length,1);}
+ ctx.bridge.project(event=>{if((event.kind==='settled'||event.kind==='host-settled')&&event.settlement.kind==='lost')throw new Error('loss projection failed');});
+ ctx.f.lose();await settle();assert.equal(ctx.bridge.pending().length,0);assert.equal(ctx.bridge.hostCalls().length,0);assert.equal((await ctx.execution.close()).transport.reason,'eof');
+});
+
+test('refused gate cleanup projects after the decision-free writer invocation',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const first=await approval(ctx,session,'first');const release=await holdReplyWriter(ctx);let observed=-1;
+ ctx.bridge.project(event=>{if(event.kind==='settled'&&event.target.nativeApprovalId===first.target.nativeApprovalId&&event.settlement.kind==='lost'){observed=ctx.f.replies.filter(frame=>frame.id==='first'&&Object.hasOwn(frame,'error')).length;ctx.f.lose();}});
+ const prepared=ctx.bridge.prepareBatch([choose(first,'decline')]);assert.equal(prepared.kind,'ok');prepared.value.commit(access.signal,()=>{},ctx.execution.flushIntake);await approval(ctx,session,'second');release();assert.equal((await prepared.value.entry).kind,'error');await settle();assert.equal(observed,1);assert.equal(ctx.f.replies.some(frame=>frame.id==='first'&&Object.hasOwn(frame,'result')),false);
+});
+
+test('a thrown reply callback faults the owner without erasing writer facts',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const prepared=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(prepared.kind,'ok');prepared.value.commit(access.signal,()=>{throw new Error('reply observer failed');},ctx.execution.flushIntake);assert.equal((await prepared.value.written).kind,'ok');await settle();assert.equal((await ctx.execution.close()).transport.reason,'handler-error');assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);
+});
+
+test('caller abort after recording cannot strand an unstaged single reply reservation',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const control=new AbortController();
+ const result=await ctx.bridge.reply({value:choose(pending,'decline'),signal:control.signal,recordIntent(){queueMicrotask(()=>queueMicrotask(()=>control.abort()));}});assert.equal(result.kind,'ok');await settle();assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);assert.equal(ctx.bridge.pending().length,0);ctx.f.complete(session.threadId);
+});
+
+for(const kind of ['approval','tool'])test(`initial ${kind} projector failure retires the failed handler authority`,async t=>{
+ const ctx=await setup(t,{declaredTools:[{name:'lookup',namespace:'application'}]});const session=ctx.sessions[0];await turnOn(session);
+ ctx.bridge.project(event=>{if(event.kind===(kind==='approval'?'pending':'host-call'))throw new Error('initial projection failed');});
+ if(kind==='approval')ctx.f.request('initial-fail','item/commandExecution/requestApproval',{threadId:session.threadId,turnId:ctx.f.turns.get(session.threadId),itemId:'initial',availableDecisions});
+ else ctx.f.request('initial-fail','item/tool/call',{threadId:session.threadId,turnId:ctx.f.turns.get(session.threadId),callId:'initial',namespace:'application',tool:'lookup',arguments:{}});
+ await settle();assert.equal((await ctx.execution.close()).transport.reason,'handler-error');assert.equal(ctx.bridge.pending().length,0);assert.equal(ctx.bridge.hostCalls().length,0);assert.equal(ctx.f.replies.some(frame=>Object.hasOwn(frame,'result')),false);
+});
+
+for(const kind of ['missing','throwing'])test(`a ${kind} catch on a valid writer promise cannot erase entry`,async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const write=ctx.f.channel.write;let replies=0;
+ ctx.f.channel.write=bytes=>{const value=write(bytes);if(Object.hasOwn(JSON.parse(Buffer.from(bytes)),'result')){const promise=Promise.resolve();Object.defineProperty(promise,'catch',kind==='missing'?{value:undefined}:{get(){throw new Error('not part of PromiseLike');}});return promise;}return value;};
+ const prepared=ctx.bridge.prepareBatch([choose(pending,'decline')]);assert.equal(prepared.kind,'ok');prepared.value.commit(access.signal,()=>{replies++;},ctx.execution.flushIntake);assert.equal((await prepared.value.entry).kind,'ok');assert.equal((await prepared.value.written).kind,'ok');await settle();assert.equal(replies,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);ctx.f.complete(session.threadId);
+});
+
+test('throwing second batch intake hook refuses every staged positive reply',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const first=await approval(ctx,session,'first');const second=await approval(ctx,session,'second');const prepared=ctx.bridge.prepareBatch([choose(first,'decline'),choose(second,'decline')]);assert.equal(prepared.kind,'ok');let calls=0;let result;
+ assert.doesNotThrow(()=>{result=prepared.value.commit(access.signal,()=>{},()=>{ctx.execution.flushIntake();if(++calls===2)throw new Error('intake hook failed');});});assert.equal(result.kind,'error');const outcomes=[];prepared.value.entry.then(x=>outcomes.push(x));prepared.value.written.then(x=>outcomes.push(x));await settle();assert.equal(outcomes.length,2);assert.ok(outcomes.every(x=>x.kind==='error'));assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,0);assert.equal((await ctx.execution.close()).transport.reason,'handler-error');assert.equal(ctx.bridge.pending().length,0);
+});
+
+test('caller abort after durable intent cannot retract a queued single reply',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const release=await holdReplyWriter(ctx);const control=new AbortController();let records=0;
+ const result=ctx.bridge.reply({value:choose(pending,'decline'),signal:control.signal,recordIntent(){records++;}});await settle();assert.equal(records,1);control.abort();release();assert.equal((await result).kind,'ok');await settle();assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'error')).length,0);ctx.f.complete(session.threadId);
 });

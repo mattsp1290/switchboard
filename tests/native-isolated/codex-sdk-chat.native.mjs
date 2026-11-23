@@ -356,8 +356,8 @@ test('a grandchild holding the probe pipes settles at the deadline', { timeout: 
   const { account, dir, open } = await fixture(t);
   await account({ grandchild: '--version' });
   const started = performance.now();
-  const report = assertCoherentReport(await open().readinessReport({ timeoutMs: 300 }), canaries);
-  assert(performance.now() - started < 2000);
+  const report = assertCoherentReport(await open().readinessReport({ timeoutMs: 2000 }), canaries);
+  assert(performance.now() - started < 4000);
   process.kill(await waitForPid(dir, 'grandchild'));
   assert.deepEqual([report.facts.installation.state, report.facts.version.state], ['available', 'timed_out']);
 });

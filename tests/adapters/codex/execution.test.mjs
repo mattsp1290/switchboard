@@ -1243,3 +1243,44 @@ test('close reuses an in-flight interrupt and never sends a second turn/interrup
   assert.deepEqual(await closing, { interrupt: 'replied', unsubscribe: 'replied', released: false });
   assert.equal(f.sent.filter((method) => method === 'turn/interrupt').length, 1);
 });
+
+test('channel exit attestation survives EOF selected before ordered intake', async t => {
+ const writers=real.createCodexWriters(4);const f=appServer(t,world());const execution=await open(t,real,f,writers);const created=await execution.create(access);assert.equal(created.kind,'ok');assert.equal(writers.held(),1);
+ assert.equal(created.value.intake({notification(){f.exit();}}).kind,'ok');
+ f.notify('fixture/exit',{threadId:created.value.threadId});f.sink.ended('eof');await settle();
+ assert.equal((await execution.close()).transport.reason,'eof');assert.equal(execution.processExited(),true);assert.equal(writers.held(),0);
+});
+
+test('a closing notification after a start reply cannot admit a new session', async t => {
+ const writers=real.createCodexWriters(4);const f=appServer(t,world());const execution=await open(t,real,f,writers);const first=await execution.create(access);assert.equal(first.kind,'ok');assert.equal(first.value.intake({notification(){f.sink.ended('eof');}}).kind,'ok');
+ const read=f.sink.data;let armed=true;f.sink.data=bytes=>{const frame=JSON.parse(Buffer.from(bytes).toString());if(armed&&frame.result?.thread){armed=false;read(Buffer.concat([Buffer.from(bytes),Buffer.from(JSON.stringify({method:'fixture/close',params:{threadId:first.value.threadId}})+'\n')]));}else read(bytes);};
+ const second=await execution.create(access);assert.equal(second.kind,'error');assert.equal(second.error.code,'closed');assert.equal(writers.held(),1);assert.equal((await execution.close()).transport.reason,'eof');
+});
+
+test('a wire fault notification after a start reply cannot admit a new session', async t => {
+ const writers=real.createCodexWriters(4);const f=appServer(t,world());const execution=await open(t,real,f,writers);const first=await execution.create(access);assert.equal(first.kind,'ok');assert.equal(first.value.intake({notification(){f.sink.data(Buffer.from('{}\n'));}}).kind,'ok');
+ const read=f.sink.data;let armed=true;f.sink.data=bytes=>{const frame=JSON.parse(Buffer.from(bytes).toString());if(armed&&frame.result?.thread){armed=false;read(Buffer.concat([Buffer.from(bytes),Buffer.from(JSON.stringify({method:'fixture/close',params:{threadId:first.value.threadId}})+'\n')]));}else read(bytes);};
+ const second=await execution.create(access);assert.equal(second.kind,'error');assert.equal(second.error.code,'closed');assert.equal(writers.held(),1);assert.equal((await execution.close()).transport.reason,'invalid-envelope');
+});
+
+for(const method of ['thread/start','thread/resume'])test(`nested microtask EOF cannot admit ${method}`,async t=>{
+ const id=randomUUID();const writers=real.createCodexWriters(4);const f=appServer(t,world(id));const execution=await open(t,real,f,writers);const read=f.sink.data;const write=f.channel.write;let target;
+ f.channel.write=bytes=>{const frame=JSON.parse(Buffer.from(bytes));if(frame.method===method)target=frame.id;return write(bytes);};
+ f.sink.data=bytes=>{const frame=JSON.parse(Buffer.from(bytes));read(bytes);if(frame.id===target)queueMicrotask(()=>queueMicrotask(()=>f.sink.ended('eof')));};
+ const result=method==='thread/start'?await execution.create(access):await execution.resume({...access,binding,reference:reference(id)});assert.equal(result.kind,'error');assert.equal(result.error.code,'closed');assert.equal(writers.held(),Number(method==='thread/resume'));f.exit();await settle();assert.equal(writers.held(),0);assert.equal((await execution.close()).transport.reason,'eof');
+});
+
+for(const hook of ['hostOperationId','publish','maxFrameBytes','iterator'])test(`turn admission rechecks shutdown after ${hook} caller getter`,async t=>{
+ const f=appServer(t,world());const execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);assert.equal(created.kind,'ok');let intents=0;
+ const request={hostOperationId:'reentrant',input:[...input],signal:new AbortController().signal,recordIntent(){intents++;}};
+ if(hook==='publish'){request.lifecycle=Object.defineProperty({},'publish',{get(){f.sink.ended('eof');return ()=>{};}});}
+ else if(hook==='iterator'){Object.defineProperty(request.input,Symbol.iterator,{get(){f.sink.ended('eof');return Array.prototype[Symbol.iterator];}});}
+ else Object.defineProperty(request,hook,{get(){f.sink.ended('eof');return hook==='hostOperationId'?'reentrant':undefined;}});
+ const result=created.value.turn(request);assert.equal(result.kind,'error');assert.equal(result.error.code,'closed');await settle();assert.equal(intents,0);assert.equal(f.sent.filter(method=>method==='turn/start').length,0);
+});
+
+test('a caller getter cannot replace a turn already claimed by its reentrant call',async t=>{
+ const f=appServer(t,world());const execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);assert.equal(created.kind,'ok');let inner;let outerIntents=0;
+ const request={get hostOperationId(){inner=created.value.turn({hostOperationId:'inner',input,signal:new AbortController().signal,recordIntent(){}});return 'outer';},input,signal:new AbortController().signal,recordIntent(){outerIntents++;}};
+ const outer=created.value.turn(request);assert.equal(inner.kind,'ok');assert.equal(outer.kind,'error');assert.equal(outer.error.code,'busy');await inner.value.completion;assert.equal(outerIntents,0);assert.equal(f.sent.filter(method=>method==='turn/start').length,1);
+});

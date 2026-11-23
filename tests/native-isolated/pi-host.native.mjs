@@ -357,3 +357,106 @@ test('a continuation cannot reissue the tool call ID whose result it is consumin
     } finally { await fresh.close(); }
   } finally { await host.close(); }
 });
+
+test('an uncertain continuation requires reopening from the last exported state', async t => {
+  const { AgentSession } = await import('@earendil-works/pi-coding-agent');
+  const original = AgentSession.prototype.waitForIdle;
+  let fail = false;
+  t.mock.method(AgentSession.prototype, 'waitForIdle', async function (...args) {
+    if (fail) { fail = false; throw new Error('failed idle observation'); }
+    return original.apply(this, args);
+  });
+  const requests = [];
+  const host = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }],
+    stream: async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: {} };
+      else yield { kind: 'text', text: 'unexported uncertain response' };
+    } });
+  try {
+    const paused = await host.adapter.run(run('tool'));
+    const answer = { formatVersion: 1, kind: 'tool', outcome: { target: paused.calls[0].pending.target,
+      result: { kind: 'ok', value: { namespace: 'fixture', schemaVersion: 1, data: 'staged answer' } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } };
+    fail = true;
+    assert.equal((await host.adapter.continue({ hostOperationId: 'failed-idle', signal: openSignal(), recordIntent() {}, answers: [answer] })).kind, 'failed');
+    const state = host.adapter.state();
+    assert.equal(state.turns.find(turn => turn.role === 'tool').pending, true);
+    assert.equal(JSON.stringify(state).includes('unexported uncertain response'), false);
+    for (const operation of ['run', 'continue']) {
+      const input = { ...run('refused'), answers: [answer], recordIntent() { assert.fail('uncertain session cannot record another intent'); } };
+      assert.equal((await host.adapter[operation](input)).write.kind, 'not-attempted');
+    }
+    assert.equal(requests.length, 2);
+    assert.equal(host.states.length, 1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(host.events.some(e => e.kind === 'tool-delivery'), false);
+    await host.close();
+    const fresh = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }], state,
+      stream: async function* (request) {
+        assert.equal(JSON.stringify(request).includes('unexported uncertain response'), false);
+        yield { kind: 'text', text: 'recovered' };
+      } });
+    try {
+      const recovered = await fresh.adapter.continue({ hostOperationId: 'fresh-recovery', signal: openSignal(), recordIntent() {}, answers: [answer] });
+      assert.equal(recovered.kind, 'complete');
+      assert.equal(recovered.text, 'recovered');
+      assert.equal(JSON.stringify(fresh.adapter.state()).includes('unexported uncertain response'), false);
+    } finally { await fresh.close(); }
+  } finally { await host.close(); }
+});
+
+test('a staging enumeration failure requires a fresh adapter without exporting partial changes', async t => {
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const original = SessionManager.prototype.getEntries;
+  let fail = false;
+  t.mock.method(SessionManager.prototype, 'getEntries', function (...args) {
+    if (fail) { fail = false; throw new Error('staging read failed'); }
+    return original.apply(this, args);
+  });
+  let requests = 0;
+  const host = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }],
+    stream: async function* () { requests++; yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: {} }; } });
+  try {
+    const paused = await host.adapter.run(run('tool'));
+    const answer = { formatVersion: 1, kind: 'tool', outcome: { target: paused.calls[0].pending.target,
+      result: { kind: 'ok', value: { namespace: 'fixture', schemaVersion: 1, data: 'answer' } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } };
+    fail = true;
+    assert.equal((await host.adapter.continue({ hostOperationId: 'failed-enumeration', signal: openSignal(), recordIntent() {}, answers: [answer] })).kind, 'failed');
+    assert.equal(host.adapter.state().turns.find(turn => turn.role === 'tool').pending, true);
+    const next = await host.adapter.run(run('refused', () => assert.fail('cannot record after uncertain staging')));
+    assert.equal(next.write.kind, 'not-attempted');
+    assert.equal(requests, 1);
+    assert.equal(host.states.length, 1);
+  } finally { await host.close(); }
+});
+
+test('a failed write to a frozen staging record still settles and restores earlier writes', async t => {
+  const { SessionManager } = await import('@earendil-works/pi-coding-agent');
+  const original = SessionManager.prototype.getEntries;
+  let freeze = false;
+  let writable;
+  t.mock.method(SessionManager.prototype, 'getEntries', function (...args) {
+    const entries = original.apply(this, args);
+    if (!freeze) return entries;
+    freeze = false;
+    return entries.map(entry => {
+      if (entry.type !== 'message' || entry.message.role !== 'toolResult') return entry;
+      writable = entry.message;
+      return { ...entry, message: Object.freeze({ ...entry.message }) };
+    });
+  });
+  const host = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }],
+    stream: async function* () { yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: {} }; } });
+  try {
+    const paused = await host.adapter.run(run('tool'));
+    const answer = { formatVersion: 1, kind: 'tool', outcome: { target: paused.calls[0].pending.target,
+      result: { kind: 'ok', value: { namespace: 'fixture', schemaVersion: 1, data: 'answer' } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } };
+    freeze = true;
+    const result = await host.adapter.continue({ hostOperationId: 'frozen-staging', signal: openSignal(), recordIntent() {}, answers: [answer] });
+    assert.equal(result.kind, 'failed');
+    assert.equal(host.adapter.state().turns.find(turn => turn.role === 'tool').pending, true);
+    assert.equal(writable.details.pending, true);
+    assert.equal((await host.adapter.interrupt({ timeoutMs: 100 })).kind, 'terminal-observed');
+    assert.equal((await host.adapter.run(run('refused', () => assert.fail('cannot record after failed staging')))).write.kind, 'not-attempted');
+  } finally { await host.close(); }
+});

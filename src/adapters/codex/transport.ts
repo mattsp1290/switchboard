@@ -56,8 +56,12 @@ export interface TransportBounds {
   readonly writeTimeoutMs: number;
 }
 export interface IncomingRequestIntake {
-  /** One trusted intake attached to the bounded handler lease until its reply enters the writer. */
-  readonly replyAllowed: (predicate: () => boolean, refusal: RpcError) => void;
+  /**
+   * One trusted intake attached to the bounded handler lease until its reply enters the writer.
+   * `entered` runs after writer invocation; ordered intake and teardown wait until it returns.
+   */
+  readonly replyAllowed: (predicate: () => boolean, refusal: RpcError, entered?: () => void) => void;
+  readonly fault: () => void;
   readonly watchNotification: (listener: (notification: Extract<Observation, { readonly kind: 'notification' }>) => void) => () => void;
 }
 export interface TransportOptions {
@@ -72,12 +76,16 @@ export interface TransportOptions {
 export interface CodexTransport {
   /** Apply already parsed requests and lifecycle notifications in wire order before a reply batch commits. */
   readonly flushIntake: () => void;
+  /** Synchronous admission state; closure observers may run in a later microtask. */
+  readonly acceptingRequests: () => boolean;
   /** Host attestation, not an inferred EOF. */
   readonly processExited: () => void;
   readonly request: (call: Call, signal: AbortSignal, bounds?: RequestBounds) => Promise<Exchange>;
   readonly notify: (call: Call, signal: AbortSignal) => Promise<SendOutcome>;
   readonly close: () => Promise<CloseReport>;
   readonly ended: Promise<CloseReport>;
+  /** Resolves only on explicit host/channel process-exit attestation, independently of the first end reason. */
+  readonly processExit: Promise<void>;
 }
 type Wait<T> = {
   phase: 'queued' | 'entered' | 'settled';
@@ -92,7 +100,7 @@ type HandlerLease = {
   readonly request: IncomingCall;
   intake: Parameters<IncomingRequestIntake['watchNotification']>[0] | undefined;
   readonly controller: AbortController;
-  gate: { readonly allowed: () => boolean; readonly refusal: RpcError } | undefined;
+  gate: { readonly allowed: () => boolean; readonly refusal: RpcError; readonly entered: (() => void) | undefined } | undefined;
   resultReply: boolean;
   phase: 'scheduled' | 'callback' | 'reply';
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -100,7 +108,7 @@ type HandlerLease = {
 type WriteEntry = { readonly bytes: Uint8Array; readonly owner: Caller | { readonly kind: 'reply'; readonly handler: HandlerLease } };
 type Registration = { readonly kind: 'installing' } | { readonly kind: 'attached'; readonly detach: () => void }
   | { readonly kind: 'detached'; readonly failed: boolean };
-type Phase = { readonly kind: 'open' } | { readonly kind: 'ending'; readonly reason: EndReason } | { readonly kind: 'closed'; readonly reason: EndReason;
+type Phase = { readonly kind: 'open' } | { readonly kind: 'ending'; readonly reason: EndReason; readonly drainRequests: boolean } | { readonly kind: 'closed'; readonly reason: EndReason;
   readonly unsettled: CloseReport['unsettled']; readonly discarded: CloseReport['discarded'] };
 
 export function openCodexTransport(options: TransportOptions): CodexTransport {
@@ -127,6 +135,8 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     | { readonly kind: 'reply'; readonly owner: Extract<Caller, { kind: 'request' }>; readonly envelope: ReplyEnvelope } | Extract<Observation, { readonly kind: 'notification' }>)[] = [];
   let intakeScheduled = false;
   let flushingIntake = false;
+  let enteringWriter = false;
+  let deferredFinish: (() => void) | undefined;
   const prefix = randomUUID();
   const writerController = new AbortController();
   const observerController = new AbortController();
@@ -143,6 +153,8 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   let diagnostics: Uint8Array = new Uint8Array();
   let settleReport: (report: CloseReport) => void;
   const ended = new Promise<CloseReport>((resolve) => { settleReport = resolve; });
+  let attestExit: () => void;
+  const processExit = new Promise<void>((resolve) => { attestExit = resolve; });
   const reader = createWireReader({ maxFrameBytes: maxInboundFrameBytes, maxChunkBytes, onEnvelope: route, onFault: fault });
   const isClosed = () => phase.kind === 'closed';
 
@@ -164,15 +176,41 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     if (index >= 0) queue.splice(index, 1);
     owner.wait.settle({ kind: owner.wait.phase === 'entered' ? 'uncertain' : 'not-sent', reason });
   }
+  function beginEnd(reason: EndReason, drainRequests = false): void {
+    if (phase.kind === 'open') phase = { kind: 'ending', reason, drainRequests };
+    else if (phase.kind === 'ending' && !drainRequests) phase = { ...phase, drainRequests: false };
+  }
+  function nativeEnded(reason: Parameters<ChannelSink['ended']>[0]): void {
+    if (reason === 'process-exit') attestExit();
+    if (reason === 'eof') reader.end();
+    beginEnd(reason, reason === 'eof' || reason === 'process-exit');
+    flushIntake();
+    finish(reason);
+  }
   function fault(reason: EndReason): void {
-    if (phase.kind !== 'open') return;
-    phase = { kind: 'ending', reason };
+    if (phase.kind === 'closed') return;
+    beginEnd(reason);
     reader.close();
     // Preserve already parsed native evidence without invoking callbacks inside the reader.
-    queueMicrotask(() => { flushIntake(); finish(reason); });
+    if (flushingIntake || enteringWriter) finish(reason);
+    else queueMicrotask(() => finish(reason));
+  }
+  function finishWhenSafe(): void {
+    if (flushingIntake || enteringWriter) return;
+    const pending = deferredFinish;
+    deferredFinish = undefined;
+    pending?.();
   }
   function finish(reason: EndReason): void {
     if (phase.kind === 'closed') return;
+    beginEnd(reason, reason === 'eof' || reason === 'process-exit');
+    // Teardown cannot invalidate replies while their ordered intake callbacks are active.
+    if (flushingIntake || enteringWriter) {
+      deferredFinish = () => finish(reason);
+      return;
+    }
+    flushIntake();
+    if (isClosed()) return;
     if (phase.kind === 'ending') reason = phase.reason;
     phase = { kind: 'closed', reason, unsettled: Object.freeze({
       handlers: [...handlers.values()].filter((handler) => handler.phase === 'callback').length,
@@ -227,7 +265,12 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     return undefined;
   }
   function request(call: Call, signal: AbortSignal, requestBounds?: RequestBounds): Promise<Exchange> {
-    const frameLimit = requestBounds?.maxFrameBytes ?? maxFrameBytes;
+    let frameLimit: number;
+    let onReply: RequestBounds['onReply'];
+    try {
+      frameLimit = requestBounds?.maxFrameBytes ?? maxFrameBytes;
+      onReply = requestBounds?.onReply;
+    } catch { return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' }); }
     if (!Number.isSafeInteger(frameLimit) || frameLimit < 1 || frameLimit > maxOutboundFrameBytes) {
       return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
     }
@@ -239,7 +282,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     if (after) return Promise.resolve(after);
     if (!bytes) return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
     const { wait, promise } = makeWait<Exchange>(signal, () => failWait(owner, 'aborted'));
-    const owner: Extract<Caller, { kind: 'request' }> = { kind: 'request', id, wait, onReply: requestBounds?.onReply, replyQueued: false };
+    const owner: Extract<Caller, { kind: 'request' }> = { kind: 'request', id, wait, onReply, replyQueued: false };
     pending.set(id, owner);
     queue.push({ bytes, owner });
     schedulePump();
@@ -268,18 +311,30 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   }
   async function pump(): Promise<void> {
     flushIntake();
+    if (phase.kind !== 'open' || queue.length === 0) return;
+    let write: BorrowedChannel['write'];
+    try { write = channel.write; }
+    catch { finish('write-error'); return; }
+    if (typeof write !== 'function') { finish('write-error'); return; }
+    flushIntake();
     if (phase.kind !== 'open') return;
     const entry = queue.shift();
     if (!entry) return;
     const owner = entry.owner;
     let bytes = entry.bytes;
+    let replyEntered: (() => void) | undefined;
     if (owner.kind === 'reply') {
       const handler = owner.handler;
-      if (handler.resultReply && handler.gate && !handler.gate.allowed()) {
-        const replacement = encodeEnvelope({ id: handler.id, error: handler.gate.refusal }, maxFrameBytes);
-        if (!replacement) { finish('invalid-handler-reply'); return; }
-        bytes = replacement;
-      }
+      try {
+        if (handler.resultReply && handler.gate) {
+          if (handler.gate.allowed()) replyEntered = handler.gate.entered;
+          else {
+            const replacement = encodeEnvelope({ id: handler.id, error: handler.gate.refusal }, maxFrameBytes);
+            if (!replacement) { finish('invalid-handler-reply'); return; }
+            bytes = replacement;
+          }
+        }
+      } catch { finish('handler-error'); return; }
       clearTimeout(handler.timer);
       handler.intake = undefined;
       handler.gate = undefined;
@@ -289,12 +344,30 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       schedulePump();
       return;
     }
+    if (phase.kind !== 'open') return;
     active = entry;
     if (owner.kind !== 'reply') owner.wait.phase = 'entered';
     writeTimer = setTimeout(() => finish('write-timeout'), writeTimeoutMs);
     let failed = false;
     try {
-      await channel.write(bytes, writerController.signal);
+      enteringWriter = true;
+      let writing: PromiseLike<void> | undefined;
+      let writeFailure: { cause: unknown } | undefined;
+      try {
+        try { writing = Reflect.apply(write, channel, [bytes, writerController.signal]); }
+        catch (error) {
+          active = undefined;
+          clearTimeout(writeTimer);
+          fault('write-error');
+          writeFailure = { cause: error };
+        }
+        try { replyEntered?.(); } catch { finish('handler-error'); }
+      } finally {
+        enteringWriter = false;
+        finishWhenSafe();
+      }
+      if (writeFailure) throw writeFailure.cause;
+      await writing;
       if (owner.kind === 'notify') owner.wait.settle({ kind: 'written' });
     } catch { failed = true; }
     finally {
@@ -314,13 +387,15 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     handler.phase = 'callback';
     handler.timer = setTimeout(() => finish('handler-timeout'), handlerTimeoutMs);
     let reply: RpcReply;
-    try { reply = await onRequest(request, handler.controller.signal, { replyAllowed: (predicate, refusal) => { handler.gate = { allowed: predicate, refusal }; }, watchNotification: (listener) => {
+    try { reply = await onRequest(request, handler.controller.signal, { replyAllowed: (predicate, refusal, entered) => { handler.gate = { allowed: predicate, refusal, entered }; }, fault: () => finish('handler-error'), watchNotification: (listener) => {
       handler.intake = listener;
       return () => { if (handler.intake === listener) handler.intake = undefined; };
     } }); }
     catch {
       clearTimeout(handler.timer);
-      handlers.delete(handler.id);
+      handler.phase = 'reply';
+      if (isClosed()) { handlers.delete(handler.id); return; }
+      // Finalization must still abort this failed handler and retire its application authority.
       finish('handler-error');
       return;
     }
@@ -376,26 +451,31 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     queueMicrotask(flushIntake);
   }
   function flushIntake(): void {
-    if (flushingIntake) return;
+    if (flushingIntake || enteringWriter) return;
     intakeScheduled = false;
     flushingIntake = true;
     try {
       while (!isClosed() && intakeQueue.length) {
         const next = intakeQueue.shift();
         if (!next) break;
-        if (next.kind === 'request') { if (phase.kind === 'open') void runHandler(next.handler.request, next.handler); continue; }
+        if (next.kind === 'request') {
+          if (phase.kind === 'open' || (phase.kind === 'ending' && phase.drainRequests)) void runHandler(next.handler.request, next.handler);
+          continue;
+        }
         if (next.kind === 'reply') {
           if (pending.get(next.owner.id) !== next.owner || next.owner.wait.phase !== 'entered') continue;
-          next.owner.onReply?.(next.envelope);
+          try { next.owner.onReply?.(next.envelope); }
+          catch { beginEnd('observation-error'); finish('observation-error'); }
           pending.delete(next.owner.id);
           next.owner.wait.settle({ kind: 'reply', envelope: next.envelope });
           continue;
         }
-        for (const handler of handlers.values()) handler.intake?.(next);
-        onNotification?.(next);
+        try {
+          for (const handler of handlers.values()) handler.intake?.(next);
+          onNotification?.(next);
+        } catch { beginEnd('observation-error'); finish('observation-error'); }
       }
-    } catch { finish('observation-error'); }
-    finally { flushingIntake = false; }
+    } finally { flushingIntake = false; finishWhenSafe(); }
   }
   events.subscribe(async (observation) => {
     if (phase.kind !== 'open') return;
@@ -415,11 +495,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
         const kept = diagnostics.subarray(Math.max(0, diagnostics.length + tail.length - maxDiagnosticBytes));
         diagnostics = Buffer.concat([kept, tail]);
       },
-      ended: (reason) => {
-        if (reason === 'eof') reader.end();
-        flushIntake();
-        finish(reason);
-      },
+      ended: nativeEnded,
     });
     registration = { kind: 'attached', detach };
   } catch {
@@ -427,8 +503,8 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     finish('listen-error');
   }
   report();
-  return { request, notify, ended, flushIntake, processExited: () => { flushIntake(); finish('process-exit'); }, close: () => {
-    if (phase.kind === 'open') phase = { kind: 'ending', reason: 'caller-close' };
+  return { request, notify, ended, processExit, flushIntake, acceptingRequests: () => phase.kind === 'open', processExited: () => nativeEnded('process-exit'), close: () => {
+    beginEnd('caller-close');
     flushIntake();
     finish('caller-close');
     return ended;

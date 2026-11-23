@@ -579,6 +579,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (session) for (const intake of session.intakes) intake.notification?.(method, params);
       observe(notification);
     }, onObservation: (observation) => { if (observation.kind !== 'notification') observe(observation); } });
+  const stopped = () => closed || !transport.acceptingRequests();
   void transport.ended.then((report) => {
     stopAdmission();
     for (const session of sessions) {
@@ -594,10 +595,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     }
     sessions.clear();
     byThread.clear();
-    // A host channel signals `process-exit` only after the process exited (boundaries: Private Codex transport).
-    if (report.reason === 'process-exit') exit();
     executionEvents.close();
   });
+  void transport.processExit.then(exit);
   void Promise.resolve(captured.processExit).then(exit, () => {});
 
   async function request(method: string, params: unknown, wait: AbortSignal, maxFrameBytes?: number,
@@ -631,7 +631,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     ...(route ? { route } : {}) });
 
   function admit(signalled: AbortSignal): CodexOpenError['code'] | undefined {
-    if (closed) return 'closed';
+    if (stopped()) return 'closed';
     if (signalled.aborted) return 'cancelled';
     return sessions.size + pendingOpens >= bounds.maxSessions ? 'capacity' : undefined;
   }
@@ -644,7 +644,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     byThread.set(threadId, session);
     return Object.freeze({ reference, threadId, origin, native,
       intake: (listener: CodexSessionIntake) => {
-        if (closed || session.state !== 'open') return { kind: 'error' as const, error: { code: 'closed' as const } };
+        if (stopped() || session.state !== 'open') return { kind: 'error' as const, error: { code: 'closed' as const } };
         if (session.intakes.size >= bounds.maxObservers) return { kind: 'error' as const, error: { code: 'capacity' as const } };
         session.intakes.add(listener);
         return { kind: 'ok' as const, value: () => { session.intakes.delete(listener); } };
@@ -684,9 +684,9 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     try {
       // The pg51 gate: private index precondition and the live native requester become the binding.
       const bound = await bindCodexRequester({ scope, bounds: access.bounds, signal: wait, nativeFormat: 'codex-thread/paginated' });
-      if (bound.kind === 'error') return closed ? fail('closed') : bound;
+      if (bound.kind === 'error') return stopped() ? fail('closed') : bound;
       const reply = await request('thread/start', params, wait);
-      if (reply.kind === 'not-sent') return fail(closed ? 'closed' : 'cancelled');
+      if (reply.kind === 'not-sent') return fail(stopped() ? 'closed' : 'cancelled');
       if (reply.kind === 'uncertain') return fail('outcome-unknown');
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
       // A thread on another provider than the bound requester's (routed or direct) runs off it: never a session.
@@ -701,10 +701,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (escaped) return fail('native-failure', escaped);
       const reference: SessionReference = Object.freeze({ kind: 'session', formatVersion: 1, binding: bound.value.binding,
         opaque: thread.id });
+      // Start-only IDs acquire no writer after transport admission has stopped.
+      if (stopped()) return fail('closed');
       const lease = acquire(writers, reference);
       if (typeof lease === 'string') return fail(lease === 'busy' ? 'native-failure' : 'capacity');
-      // Close-during-open: a reply after close started never yields a session. Start-only IDs hold no writer.
-      if (closed) { release(lease); return fail('closed'); }
       return { kind: 'ok', value: attach(thread.id, reference, lease, 'created', reply.kind === 'result' ? reply.value : null) };
     } finally { pendingOpens--; }
   }
@@ -741,21 +741,21 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     try {
       const prepared = await codexSessions.prepareResume({ scope, binding: reference.binding, bounds: access.bounds,
         signal: wait, reference });
-      if (prepared.kind === 'error') return closed ? fail('closed') : prepared;
+      if (prepared.kind === 'error') return stopped() ? fail('closed') : prepared;
       if (prepared.value.kind !== 'ready') return { kind: 'ok', value: prepared.value };
       const { threadId, provider } = prepared.value;
       const reply = await request('thread/resume', { ...params, threadId }, wait);
-      if (reply.kind === 'not-sent') return fail(closed ? 'closed' : 'cancelled');
+      if (reply.kind === 'not-sent') return fail(stopped() ? 'closed' : 'cancelled');
       if (reply.kind === 'error') return fail('native-failure');
       // Unrejected entry: this app-server may now hold the thread loaded, so the reservation follows its exit.
       held = true;
       const value = reply.kind === 'result' ? reply.value : undefined;
       const thread = record(value) && record(value.thread) ? value.thread : undefined;
       const escaped = unconfined(value, 'resumed');
-      const refused = reply.kind === 'uncertain' ? (closed ? 'closed' : 'outcome-unknown')
+      const refused = reply.kind === 'uncertain' ? (stopped() ? 'closed' : 'outcome-unknown')
         : thread?.id !== threadId ? 'identity-mismatch'
           // A thread native resumed on another provider than the requester's runs off it; it never becomes a session.
-          : thread.modelProvider !== provider || offModel(value) || escaped ? 'native-failure' : closed ? 'closed' : undefined;
+          : thread.modelProvider !== provider || offModel(value) || escaped ? 'native-failure' : stopped() ? 'closed' : undefined;
       if (refused) {
         keep(lease);
         return fail(refused, refused !== 'native-failure' || thread?.modelProvider !== provider ? undefined
@@ -770,17 +770,18 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
 
   function startTurn(session: Session, reference: SessionReference, options: CodexTurnOptions): ReturnType<CodexSession['turn']> {
-    if (session.state !== 'open' || closed) return { kind: 'error', error: Object.freeze({ code: 'closed' }) };
+    if (session.state !== 'open' || stopped()) return { kind: 'error', error: Object.freeze({ code: 'closed' }) };
     if (session.active) return { kind: 'error', error: Object.freeze({ code: 'busy' }) };
     let handle: DispatchHandle<CodexTurnResult>;
     const turn = newTurn();
     try {
-      const { hostOperationId, input, params: extra, features, signal: hostSignal, recordIntent, lifecycle } = options;
+      const { hostOperationId, input, params: extra, features, signal: hostSignal, recordIntent, lifecycle, maxFrameBytes } = options;
       const raw = passthrough(extra, ['threadId', 'input']);
       if (!Array.isArray(input) || !raw || !(hostSignal instanceof AbortSignal)) return invalid;
       const resolved = resolveCodexFeatures('turn/start', features, raw, experimentalApi);
       if (resolved.kind === 'error') return resolved;
       const params = resolved.value;
+      const capturedInput = [...input];
       const blocked = constrainRoute('turn/start', params);
       if (blocked) return blocked;
       const identity = { hostOperationId, target: { kind: 'session', reference } } as const;
@@ -789,8 +790,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         // Host or session abort prevents entry (core checks it just before this call). Once entered, only the
         // acknowledgement deadline bounds the wait: the caller's signal never turns a written turn/start uncertain.
         dispatchNative: (canonical) => dispatch(session, turn, canonical,
-          { ...params, threadId: session.threadId, input: [...input] }, options.maxFrameBytes) });
+          { ...params, threadId: session.threadId, input: capturedInput }, maxFrameBytes) });
     } catch { return invalid; }
+    if (session.state !== 'open' || stopped()) return { kind: 'error', error: Object.freeze({ code: 'closed' }) };
+    if (session.active) return { kind: 'error', error: Object.freeze({ code: 'busy' }) };
     session.active = turn;
     void handle.run().then((snapshot) => {
       if (snapshot.observation.kind === 'not-dispatched') conclude(session, turn, { kind: 'not-dispatched' });

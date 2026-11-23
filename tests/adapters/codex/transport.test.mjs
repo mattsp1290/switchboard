@@ -50,6 +50,7 @@ function fixture(t, options = {}) {
       } catch (error) { f.activeWrites--; throw error; }
     },
   };
+  f.channel = channel;
   f.transport = openCodexTransport({ channel, bounds: { ...bounds, ...options.bounds },
     onRequest(request, deliverySignal, intake) {
       assert.equal(f.depth, 0, 'handler-outside-reader');
@@ -643,4 +644,91 @@ test('close preserves a parsed reply without starting queued server callbacks', 
   assert.equal((await pending).envelope.raw.result, 'known reply');
   assert.equal(f.requests.length, 0);
   assert.equal(report.discarded.requests, 1);
+});
+
+for (const throws of [false, true]) for (const ending of ['close', 'eof', 'process-exit', 'malformed']) for (const hook of ['reply', 'notification']) test(`parsed replies survive ${ending} from a closing ${hook} hook (throws: ${throws})`, async t => {
+  const close = current => {
+    void current.transport.close();
+    if (ending === 'eof') current.sink.ended('eof');
+    if (ending === 'process-exit') current.transport.processExited();
+    if (throws) throw new Error('closing hook failed');
+  };
+  const f = fixture(t, hook === 'notification' ? { notification(_, current) { close(current); } } : {});
+  const first = f.transport.request({ method: 'first' }, signal(), hook === 'reply'
+    ? { onReply() { close(f); } } : undefined);
+  const second = f.transport.request({ method: 'second' }, signal());
+  await checkpoint();
+  f.bytes(Buffer.concat([
+    ...(hook === 'notification' ? [line({ method: 'closing' })] : []),
+    ...f.writes.map(sent => line({ id: sent.id, result: sent.method })),
+    line({ id: 'queued-server-call', method: 'approval' }),
+    ...(ending === 'malformed' ? [Buffer.from('invalid\n')] : []),
+  ]));
+  assert.equal((await first).kind, 'reply');
+  assert.equal((await second).kind, 'reply');
+  assert.equal((await f.transport.ended).reason, ending === 'malformed' ? 'malformed-frame' : 'caller-close');
+  assert.equal(f.requests.length, 0);
+});
+
+for(const stop of ['process-exit','eof'])test(`natural ${stop} precedes a reentrant caller close`,async t=>{
+ const f=fixture(t);const one=f.transport.request({method:'one'},signal(),{onReply(){void f.transport.close();}});await checkpoint();f.input({id:f.writes[0].id,result:{}});f.sink.ended(stop);assert.equal((await one).kind,'reply');assert.equal((await f.transport.ended).reason,stop);
+});
+test('a throwing closing hook preserves later parsed replies',async t=>{
+ const f=fixture(t,{notification(_,current){void current.transport.close();throw new Error('hook failed');}});const pending=f.transport.request({method:'one'},signal());await checkpoint();f.bytes(Buffer.concat([line({method:'notice'}),line({id:f.writes[0].id,result:{}})]));assert.equal((await pending).kind,'reply');assert.equal((await f.transport.ended).reason,'caller-close');
+});
+
+test('a synchronous handler fault during natural EOF refuses later server callbacks', async t => {
+ const f=fixture(t,{request(){throw new Error('handler failed');}});const reply=f.transport.request({method:'caller'},signal());await checkpoint();f.bytes(Buffer.concat([line({id:'first',method:'approval'}),line({id:'second',method:'approval'}),line({id:f.writes[0].id,result:{accepted:true}})]));f.sink.ended('eof');assert.equal((await reply).kind,'reply');assert.equal((await f.transport.ended).reason,'eof');assert.equal(f.requests.length,1);assert.equal((await f.transport.ended).discarded.requests,1);
+});
+
+for (const trigger of ['handler-error', 'invalid-handler-reply', 'observation-error']) test(`parsed replies survive queued ${trigger} teardown`, async t => {
+ const held = gate();
+ const order = [];
+ const f = fixture(t, trigger === 'observation-error' ? { observation: () => held.promise } : { request: () => held.promise });
+ const requested = f.transport.request({ method: 'query' }, signal(), { onReply() { order.push('reply'); } });
+ await checkpoint();
+ f.input(trigger === 'observation-error' ? { method: 'notice' } : { id: 'held-server-call', method: 'approval' });
+ await checkpoint();
+ if (trigger === 'invalid-handler-reply') held.resolve({ kind: 'invalid' });
+ else held.reject(new Error('callback failed'));
+ f.bytes(Buffer.concat([line({ id: f.writes[0].id, result: { accepted: true } }), line({ id: 'never-called', method: 'approval' })]));
+ const outcome = await requested;
+ assert.equal(outcome.kind, 'reply');
+ assert.deepEqual(outcome.envelope.raw.result, { accepted: true });
+ assert.deepEqual(order, ['reply']);
+ assert.equal((await f.transport.ended).reason, trigger);
+ assert.equal(f.requests.length, trigger === 'observation-error' ? 0 : 1);
+});
+
+test('a server reply gate cannot enter the writer after closing the transport', async t => {
+ const f=fixture(t,{request(_request,_signal,current,intake){intake.replyAllowed(()=>{void current.transport.close();return true;},{code:-1,message:'refused',data:null});return {kind:'result',value:{accepted:true}};}});
+ f.input({id:'gated',method:'approval'});await f.transport.ended;await checkpoint();assert.equal(f.writes.length,0);assert.equal((await f.transport.ended).unsettled.write,false);
+});
+
+test('EOF cannot attest process exit and a later explicit attestation remains observable', async t => {
+ const f=fixture(t);let exited=false;void f.transport.processExit.then(()=>{exited=true;});
+ f.sink.ended('eof');assert.equal((await f.transport.ended).reason,'eof');await checkpoint();assert.equal(exited,false);
+ f.transport.processExited();await f.transport.processExit;assert.equal(exited,true);assert.equal((await f.transport.ended).reason,'eof');
+});
+
+test('a throwing reply gate drains parsed receipts and refuses later callbacks', async t => {
+ const f=fixture(t,{bounds:{handlerTimeoutMs:20},request(request,_signal,current,intake){if(request.id==='gated')intake.replyAllowed(()=>{current.bytes(Buffer.concat([line({id:current.writes[0].id,result:{accepted:true}}),line({id:'never-called',method:'approval'})]));throw new Error('gate failed');},{code:-1,message:'refused',data:null});return {kind:'result',value:{}};}});
+ const requested=f.transport.request({method:'query'},signal());await checkpoint();f.input({id:'gated',method:'approval'});assert.equal((await requested).kind,'reply');assert.equal((await f.transport.ended).reason,'handler-error');assert.equal(f.requests.length,1);
+});
+
+test('a synchronous writer failure revokes request admission before queued intake',async t=>{
+ const f=fixture(t,{write(current){current.bytes(Buffer.concat([line({id:current.writes.at(-1).id,result:{accepted:true}}),line({id:'never-called',method:'approval'})]));throw new Error('write failed');},request(_r,_s,current){void current.transport.close();return {kind:'result',value:{}};}});
+ const outcome=await f.transport.request({method:'query'},signal());assert.equal(outcome.kind,'reply');assert.deepEqual(outcome.envelope.raw.result,{accepted:true});assert.equal((await f.transport.ended).reason,'write-error');assert.equal(f.requests.length,0);
+});
+
+for(const kind of ['eof','throw'])for(const operation of ['reply','notify'])test(`${kind} writer lookup never invokes or attests ${operation}`,async t=>{
+ let entered=0;const f=fixture(t,{request(_r,_s,_f,intake){intake.replyAllowed(()=>true,{code:-1,message:'refused',data:null},()=>{entered++;});return {kind:'result',value:{}};}});const original=f.channel.write;
+ Object.defineProperty(f.channel,'write',{configurable:true,get(){if(kind==='eof')f.sink.ended('eof');else throw new Error('lookup failed');return original;}});
+ let result;if(operation==='reply')f.input({id:'lookup',method:'approval'});else result=await f.transport.notify({method:'query'},signal());
+ assert.equal((await f.transport.ended).reason,kind==='eof'?'eof':'write-error');await checkpoint();assert.equal(f.writes.length,0);assert.equal(entered,0);if(result)assert.equal(result.kind,'not-sent');
+});
+
+for (const kind of ['close', 'eof', 'abort', 'throw']) test(`request hook getter ${kind} cannot strand admission`, async t => {
+ const f=fixture(t);const control=new AbortController();const requestBounds={get onReply(){if(kind==='close')void f.transport.close();else if(kind==='eof')f.sink.ended('eof');else if(kind==='abort')control.abort();else throw new Error('hook getter');return undefined;}};
+ let request;assert.doesNotThrow(()=>{request=f.transport.request({method:'never-write'},control.signal,requestBounds);});const values=track(request);await checkpoint();assert.deepEqual(values,[{kind:'not-sent',reason:kind==='throw'?'invalid-outgoing':kind==='abort'?'aborted':'closed'}]);assert.equal(f.writes.length,0);control.abort();
 });

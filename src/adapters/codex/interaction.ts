@@ -111,8 +111,9 @@ export type CodexReplyError = InteractionError
 export interface CodexReplyOptions {
   readonly value: unknown;
   /**
-   * Host durability before the single native write. A throw or abort returns the approval to pending with nothing
-   * written; once it resolves the reply is written once, and a crash after that leaves the intent as evidence.
+   * Host durability before the single native write. A throw or abort during recording returns the approval to pending
+   * with nothing written. After recording succeeds, caller cancellation cannot retract the queued reply; native
+   * withdrawal or transport loss can still prevent entry. A crash leaves the durable intent as evidence.
    */
   readonly recordIntent: (intent: { readonly target: ApprovalTarget | ToolTarget; readonly nativeChoiceId: string },
     signal: AbortSignal) => void | PromiseLike<void>;
@@ -138,14 +139,65 @@ interface PreparedReply {
   readonly isLive: () => boolean;
   readonly nativeLive: () => boolean;
   readonly signal: AbortSignal;
-  readonly beforeWrite: (gate: () => boolean, withheld: () => void) => void;
+  readonly beforeWrite: (callbacks: Parameters<Admission['beforeWrite']>[0]) => void;
   readonly record: (intent: CodexReplyOptions['recordIntent'], signal: AbortSignal) => ReturnType<typeof recordChoice>;
   readonly commit: () => boolean;
-  readonly stage: () => boolean;
+  readonly stage: (expected?: 'live' | 'reserved') => boolean;
   readonly staged: () => boolean;
   readonly discard: () => void;
   readonly release: () => void;
+  readonly fault: () => void;
 }
+function preparedState(input: {
+  readonly entry: Readonly<Pick<Entry, 'state' | 'finish'>>;
+  readonly admission: Admission;
+  readonly reserve: () => void;
+  readonly owns: () => boolean;
+  readonly reply: RpcReply;
+  readonly onDiscard: () => void;
+  readonly onCommit: () => void;
+  readonly onRecord: PreparedReply['record'];
+}): Pick<PreparedReply, 'isLive' | 'staged' | 'stage' | 'discard' | 'commit' | 'beforeWrite' | 'release' | 'fault' | 'record'> {
+  const { entry, admission, reserve, owns, reply, onDiscard, onCommit, onRecord } = input;
+  let reservation: 'none' | 'recorded' | 'staged' = 'none';
+  let release = () => {};
+  return {
+    isLive: () => reservation === 'none' && entry.state === 'live' && owns(),
+    staged: () => reservation === 'staged' && entry.state === 'reserved' && owns(),
+    stage: (expected = 'live') => {
+      if (reservation !== (expected === 'live' ? 'none' : 'recorded') || entry.state !== expected || !owns()) return false;
+      reserve(); reservation = 'staged'; entry.finish(reply); return true;
+    },
+    discard: () => {
+      if (reservation !== 'none' && entry.state === 'reserved' && owns()) {
+        reservation = 'none'; onDiscard();
+      }
+    },
+    commit: () => {
+      if (reservation !== 'staged' || entry.state !== 'reserved' || !owns()) return false;
+      reservation = 'none'; onCommit(); return true;
+    },
+    beforeWrite(callbacks) { release(); release = admission.beforeWrite(callbacks); },
+    release() { release(); release = () => {}; },
+    fault: admission.fault,
+    async record(intent, signal) {
+      const result = await onRecord(intent, signal);
+      if (result === 'ok') {
+        if (entry.state !== 'reserved' || !owns()) return 'stale-interaction';
+        reservation = 'recorded';
+      }
+      return result;
+    },
+  };
+}
+
+function discardPrepared(entries: readonly PreparedReply[]): void {
+  for (const entry of entries) {
+    try { entry.discard(); } catch { /* refusal is already settled; reclaim the remaining peers */ }
+    finally { entry.release(); }
+  }
+}
+
 export interface CodexInteraction {
   /** One trusted host projection; public diagnostic observers remain independently bounded. */
   readonly project: (listener: (event: CodexInteractionEvent) => void) => () => void;
@@ -159,7 +211,6 @@ export interface CodexInteraction {
   /** Single use: the first valid continuation for a live target is the only native reply ever written for it. */
   readonly reply: (options: CodexReplyOptions) => Promise<Outcome<{ readonly nativeChoiceId: string;
     readonly delivery: NativeDelivery }, CodexReplyError>>;
-  readonly withdrawTurn: (threadId: string, turnId: string) => number;
   readonly pending: () => readonly PendingApproval[];
   /** Unanswered host tool calls and `request_user_input` requests. Empty unless those options were set. */
   readonly hostCalls: () => readonly CodexHostCall[];
@@ -314,15 +365,14 @@ async function recordChoice(entry: { state: string }, target: ApprovalTarget | T
 }
 
 type Admission = { readonly matched: boolean | Promise<boolean>; readonly withdrawn: () => boolean; readonly stop: () => void;
-  readonly live: () => boolean; readonly beforeWrite: (gate: () => boolean, withheld: () => void) => void; readonly clear: () => void; readonly retire: () => void };
+  readonly live: () => boolean; readonly beforeWrite: (callbacks: { readonly allowed: () => boolean; readonly entered: () => void; readonly withheld: () => void }) => () => void; readonly retire: () => void; readonly fault: () => void };
 /** Preserve primitive native identity and a withdrawal guard through queued writer admission. */
 function matchesLiveTurn(attached: Attached, request: IncomingCall, turnId: string, signal: AbortSignal,
 intake: IncomingRequestIntake): Admission {
   const params = record(request.params) ? request.params : {};
   const { threadId, itemId, callId } = params;
   const requestId = request.id;
-  let gate: (() => boolean) | undefined;
-  let withheld: (() => void) | undefined;
+  let callbacks: Parameters<Admission['beforeWrite']>[0] | undefined;
   let withdrawn = false;
   const stop = intake.watchNotification(({ method, params: raw }) => {
     if (!record(raw) || raw.threadId !== threadId) return;
@@ -333,14 +383,14 @@ intake: IncomingRequestIntake): Admission {
       && raw.item.id === (itemId ?? callId)) withdrawn = true;
   });
   const live = () => !withdrawn && attached.session.matchesTurn(turnId, signal) === true;
-  intake.replyAllowed(() => gate ? gate() : live(), withdrawnReply.error);
+  intake.replyAllowed(() => callbacks ? callbacks.allowed() : live(), withdrawnReply.error, () => callbacks?.entered());
   const matched = attached.session.matchesTurn(turnId, signal);
-  return { matched, withdrawn: () => withdrawn, stop, live, beforeWrite: (value, lost) => { gate = value; withheld = lost; }, clear: () => { gate = undefined; withheld = undefined; }, retire: () => { withdrawn = true; const lost = withheld; gate = undefined; withheld = undefined; lost?.(); } };
+  return { matched, withdrawn: () => withdrawn, stop, live, beforeWrite: (value) => { callbacks = value; return () => { if (callbacks === value) callbacks = undefined; }; }, retire: () => { withdrawn = true; const lost = callbacks?.withheld; callbacks = undefined; lost?.(); }, fault: intake.fault };
 }
 
 /** Tool requests use a separate ledger because their reply bodies and settlement identities differ from approvals. */
 function createHostLedger(deps: {
-  readonly publish: (event: CodexInteractionEvent) => void;
+  readonly publish: (event: CodexInteractionEvent, onError?: () => void) => void;
   readonly threads: Map<string, Attached>;
   readonly declared: Set<string>;
   readonly maxSettled: number;
@@ -374,7 +424,7 @@ function createHostLedger(deps: {
   function deliverHost(entry: HostEntry): void {
     if (entry.delivered) return;
     entry.delivered = true;
-    publish({ kind: 'host-delivery', target: entry.call.pending.target, delivery: { kind: 'unknown' } });
+    publish({ kind: 'host-delivery', target: entry.call.pending.target, delivery: { kind: 'unknown' } }, entry.admission.fault);
   }
   function loseHost(entry: HostEntry, settlement: Extract<CodexSettlement, { kind: 'withdrawn' | 'lost' }>): void {
     if (entry.state === 'replied' || entry.state === 'lost') return;
@@ -382,9 +432,9 @@ function createHostLedger(deps: {
     entry.cleanup();
     hostLive.delete(entry.id);
     rememberHost(entry);
-    publish({ kind: 'host-settled', target: entry.call.pending.target, settlement: Object.freeze(settlement) });
     entry.finish(withdrawnReply);
     entry.admission.retire();
+    publish({ kind: 'host-settled', target: entry.call.pending.target, settlement: Object.freeze(settlement) }, entry.admission.fault);
   }
   function onEvent(threadId: string, event: CodexSessionEvent): void {
     if (event.kind === 'turn-completed') {
@@ -457,34 +507,26 @@ function createHostLedger(deps: {
     if (!replyValue) return fail({ code: 'invalid-input' });
     return { kind: 'ok', value: {
       key: `tool:${entry.id}`, requestId: entry.requestId, answer: parsed.value, call: entry.call,
-      nativeChoiceId: entry.id, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal, beforeWrite: entry.admission.beforeWrite,
-      isLive: () => entry.state === 'live' && hostLive.get(entry.id) === entry,
-      staged: () => entry.state === 'reserved' && hostLive.get(entry.id) === entry,
-      stage: () => { if (entry.state !== 'live' || hostLive.get(entry.id) !== entry) return false; entry.state = 'reserved'; entry.finish(replyValue); return true; },
-      discard: () => { if (entry.state === 'reserved') loseHost(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }); },
-      release: entry.admission.clear,
-      record: (intent, signal) => recordChoice(entry, entry.call.pending.target, entry.id, intent, signal),
-      commit: () => {
-        if ((entry.state !== 'live' && entry.state !== 'reserved') || hostLive.get(entry.id) !== entry) return false;
-        entry.state = 'replied';
-        entry.cleanup();
-        hostLive.delete(entry.id);
-        rememberHost(entry);
-        entry.finish(replyValue);
-        return true;
-      },
+      nativeChoiceId: entry.id, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal,
+      ...preparedState({ entry, admission: entry.admission, reserve: () => { entry.state = 'reserved'; },
+        owns: () => hostLive.get(entry.id) === entry, reply: replyValue,
+        onRecord: (intent, signal) => recordChoice(entry, entry.call.pending.target, entry.id, intent, signal),
+        onDiscard: () => loseHost(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }), onCommit: () => {
+          entry.state = 'replied';
+          entry.cleanup();
+          hostLive.delete(entry.id);
+          rememberHost(entry);
+          entry.finish(replyValue);
+        } }),
     } };
   }
   return { get size() { return hostLive.size; }, onEvent, take, prepare,
     withdrawTurn(threadId: string, turnId: string) {
-      let count = 0;
       for (const entry of [...hostLive.values()]) {
         if (entry.threadId === threadId && entry.turnId === turnId) {
           loseHost(entry, { kind: 'withdrawn', by: 'turn/interrupt', evidence: 'unqualified' });
-          count++;
         }
       }
-      return count;
     },
     calls: () => Object.freeze([...hostLive.values()].map((entry) => entry.call)) };
 }
@@ -526,10 +568,11 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (projector) throw new Error('Interaction projector already attached');
     projector = listener; return () => { if (projector === listener) projector = undefined; };
   };
-  const publish = (event: CodexInteractionEvent) => {
+  const publish = (event: CodexInteractionEvent, onError?: () => void) => {
     const fact = Object.freeze(event);
-    projector?.(fact);
-    queueMicrotask(() => { stream.publish(fact); });
+    try { projector?.(fact); }
+    catch (error) { if (onError) onError(); else throw error; }
+    finally { queueMicrotask(() => { stream.publish(fact); }); }
   };
   const threads = new Map<string, Attached>();
   /** Authority-owned pending state, keyed by the native approval identity; at most `maxPending` entries. */
@@ -552,9 +595,9 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       if (settled.size <= maxSettled) break;
       settled.delete(oldest);
     }
-    publish({ kind: 'settled', target: entry.pending.target, settlement: Object.freeze(settlement) });
     entry.finish(reply);
     if (settlement.kind !== 'replied') entry.admission.retire();
+    publish({ kind: 'settled', target: entry.pending.target, settlement: Object.freeze(settlement) }, entry.admission.fault);
   }
   const withdraw = (entry: Entry, by: Extract<CodexSettlement, { kind: 'withdrawn' }>['by']) =>
     settle(entry, { kind: 'withdrawn', by, evidence: 'unqualified' }, withdrawnReply);
@@ -690,18 +733,12 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     const replyValue: RpcReply = { kind: 'result', value: { decision: structuredClone(entry.decisions.get(nativeChoiceId)) } };
     return { kind: 'ok', value: {
       key: `approval:${entry.id}`, requestId: entry.requestId, answer: parsed.value, call: undefined,
-      nativeChoiceId, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal, beforeWrite: entry.admission.beforeWrite,
-      isLive: () => entry.state === 'live' && live.get(entry.id) === entry,
-      staged: () => entry.state === 'reserved' && live.get(entry.id) === entry,
-      stage: () => { if (entry.state !== 'live' || live.get(entry.id) !== entry) return false; entry.state = 'reserved'; entry.finish(replyValue); return true; },
-      discard: () => { if (entry.state === 'reserved') settle(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }, withdrawnReply); },
-      release: entry.admission.clear,
-      record: (intent, signal) => recordChoice(entry, entry.pending.target, nativeChoiceId, intent, signal),
-      commit: () => {
-        if (!unanswered(entry) || live.get(entry.id) !== entry) return false;
-        settle(entry, { kind: 'replied', nativeChoiceId, delivery: unknown }, replyValue);
-        return true;
-      },
+      nativeChoiceId, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal,
+      ...preparedState({ entry, admission: entry.admission, reserve: () => { entry.state = 'reserved'; },
+        owns: () => live.get(entry.id) === entry, reply: replyValue,
+        onRecord: (intent, signal) => recordChoice(entry, entry.pending.target, nativeChoiceId, intent, signal),
+        onDiscard: () => settle(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }, withdrawnReply),
+        onCommit: () => settle(entry, { kind: 'replied', nativeChoiceId, delivery: unknown }, replyValue) }),
     } };
   }
   function checkedReply(value: unknown): Outcome<PreparedReply, CodexReplyError> {
@@ -737,44 +774,49 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
       const refuseEntry = (code: 'aborted' | 'stale-interaction', afterIntake = false) => {
         if (finished) return;
         finished = true; blocked = code; abort?.[Symbol.dispose]();
-        const release = () => { for (const entry of entries) { entry.discard(); entry.release(); } entries.length = 0; };
-        // Native turn/item retirement must finish classifying all peers before batch-only losses are applied.
-        if (afterIntake) queueMicrotask(release); else release();
         if (!entered) admit(fail({ code }));
         written(fail({ code }));
+        const release = () => { discardPrepared(entries); entries.length = 0; };
+        // Native turn/item retirement must finish classifying all peers before batch-only losses are applied.
+        if (afterIntake) queueMicrotask(release); else release();
       };
       return { kind: 'ok', value: Object.freeze({ entry: admission, written: completion, entered: () => entered, commit(signal, onReply, beforeReply) {
         let replies = 0;
         const refused = (code: 'aborted' | 'stale-interaction') => { refuseEntry(code); return fail({ code, replies }); };
-        if (signal.aborted) return refused('aborted');
-        if (used || entries.length !== live.size + hostLedger.size || entries.some((entry) => !entry.isLive())) return refused('stale-interaction');
+        if (used) return fail({ code: 'stale-interaction', replies });
         used = true;
+        if (signal.aborted) return refused('aborted');
+        if (entries.length !== live.size + hostLedger.size || entries.some((entry) => !entry.isLive())) return refused('stale-interaction');
         const lifetime = AbortSignal.any([signal, ...entries.map((entry) => entry.signal)]);
-        abort = addAbortListener(lifetime, () => refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction', !signal.aborted));
-        for (const entry of entries) entry.beforeWrite(() => {
-          if (blocked) return false;
-          if (!entered) {
-            if (lifetime.aborted || capacityRefused || live.size + hostLedger.size !== entries.length || entries.some((member) => !member.staged() || !member.nativeLive())) {
-              refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction'); return false;
-            }
-            entered = true; admit({ kind: 'ok', value: undefined });
-          }
-          if (!entry.nativeLive() || lifetime.aborted) { refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction'); return false; }
-          if (!entry.commit()) { refuseEntry('stale-interaction'); return false; }
-          entry.release();
-          // The channel write runs synchronously after this gate; external observers run afterward.
-          queueMicrotask(() => onReply(entry.answer, entry.call));
-          remaining--;
-          if (remaining === 0) { finished = true; abort?.[Symbol.dispose](); entries.length = 0; written({ kind: 'ok', value: undefined }); }
-          return true;
-        }, () => refuseEntry('stale-interaction', true));
+        abort = addAbortListener(lifetime, () => queueMicrotask(() => refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction', !signal.aborted)));
         for (const entry of entries) {
-          beforeReply();
+          try { beforeReply(); }
+          catch { const result = refused('stale-interaction'); entry.fault(); return result; }
           if (capacityRefused) return refused('stale-interaction');
           if (signal.aborted) return refused('aborted');
           if (!entry.stage()) return refused('stale-interaction');
           replies++;
         }
+        for (const entry of entries) entry.beforeWrite({ allowed: () => {
+          if (blocked) return false;
+          if (!entered) {
+            if (lifetime.aborted || capacityRefused || live.size + hostLedger.size !== entries.length || entries.some((member) => !member.staged() || !member.nativeLive())) {
+              const code = signal.aborted ? 'aborted' : 'stale-interaction';
+              queueMicrotask(() => refuseEntry(code)); return false;
+            }
+          }
+          if (!entry.nativeLive() || lifetime.aborted) { const code = signal.aborted ? 'aborted' : 'stale-interaction';
+              queueMicrotask(() => refuseEntry(code)); return false; }
+          return true;
+        }, entered: () => {
+          if (!entered) { entered = true; admit({ kind: 'ok', value: undefined }); }
+          if (!entry.commit()) { refuseEntry('stale-interaction'); return; }
+          entry.release();
+          // The transport invoked the writer before publishing these entry and reply facts.
+          queueMicrotask(() => { try { onReply(entry.answer, entry.call); } catch { entry.fault(); } });
+          remaining--;
+          if (remaining === 0) { finished = true; abort?.[Symbol.dispose](); entries.length = 0; written({ kind: 'ok', value: undefined }); }
+        }, withheld: () => refuseEntry('stale-interaction', true) });
         return { kind: 'ok', value: { replies } };
       } } satisfies CodexPreparedBatch) };
     } catch { return fail({ code: 'invalid-input' }); }
@@ -791,24 +833,48 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     if (prepared.kind === 'error') return prepared;
     const recorded = await prepared.value.record(recordIntent, signal);
     if (recorded !== 'ok') return fail({ code: recorded });
-    if (!prepared.value.commit()) return fail({ code: 'stale-interaction' });
-    return { kind: 'ok', value: Object.freeze({ nativeChoiceId: prepared.value.nativeChoiceId, delivery: unknown }) };
+    const entry = prepared.value;
+    const lifetime = entry.signal;
+    return new Promise((resolve) => {
+      let completed = false;
+      let abort: ReturnType<typeof addAbortListener> | undefined;
+      const refuse = (code: 'aborted' | 'stale-interaction') => {
+        if (completed) return;
+        completed = true; abort?.[Symbol.dispose]();
+        resolve(fail({ code }));
+        discardPrepared([entry]);
+      };
+      entry.beforeWrite({
+        allowed: () => {
+          if (lifetime.aborted || !entry.staged() || !entry.nativeLive()) {
+            queueMicrotask(() => refuse('stale-interaction')); return false;
+          }
+          return true;
+        },
+        entered: () => {
+          completed = true; abort?.[Symbol.dispose]();
+          resolve({ kind: 'ok', value: Object.freeze({ nativeChoiceId: entry.nativeChoiceId, delivery: unknown }) });
+          try { entry.commit(); } finally { entry.release(); }
+        },
+        withheld: () => refuse('stale-interaction'),
+      });
+      abort = addAbortListener(lifetime, () => queueMicrotask(() => refuse('stale-interaction')));
+      if (lifetime.aborted) refuse('stale-interaction');
+      else if (!entry.stage('reserved')) refuse('stale-interaction');
+    });
   }
 
-  function withdrawTurn(threadId: string, turnId: string): number {
-      let count = hostLedger.withdrawTurn(threadId, turnId);
+  function withdrawTurn(threadId: string, turnId: string): void {
+      hostLedger.withdrawTurn(threadId, turnId);
       for (const entry of [...live.values()]) {
         if (entry.threadId === threadId && entry.turnId === turnId && unanswered(entry)) {
           withdraw(entry, 'turn/interrupt');
-          count++;
         }
       }
-      return count;
     }
 
   return { kind: 'ok', value: Object.freeze({ onServerRequest, attach, reply, prepareBatch, project, events: Object.freeze({ subscribe: stream.subscribe }),
     beginTurn: () => { capacityRefused = false; }, capacityRefused: () => capacityRefused,
     pending: () => Object.freeze([...live.values()].map((entry) => entry.pending)),
-    withdrawTurn,
     hostCalls: () => hostLedger.calls() }) };
 }

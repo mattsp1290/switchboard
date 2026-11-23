@@ -125,6 +125,8 @@ What the contract takes from those decisions:
 
 The Codex host adapter is exported as `./host/codex`. The Pi host adapter is exported as `./host/pi`. The `./host/opencode` entry does not implement host tools, resume, or live OpenCode qualification. This tree does not add `./host/claude`. AG-UI approval projection remains deferred. The existing Claude, Cursor and Pi text runtimes now accept images; their execution APIs remain separate from HostAdapter. The Codex adapter does not pass a subscription credential through LiteLLM: a bearer is a host-route whose token stays in the host environment. `npm run test:native-isolated` qualifies these installed runtime entry points in confined containers.
 
+The Pi host adapter preserves the last exported state when a continuation fails during native staging or execution before export. Further segments on that adapter are refused; close it and open a fresh adapter from the last exported state before continuing. This prevents unexported native history from an uncertain continuation reaching a later provider request.
+
 ## Codex lifetime facts
 
 A pending segment can leave a native turn held. `interrupt` still sends `turn/interrupt`; an acknowledged reply withdraws the interactions belonging to its captured turn, including after a public timeout. An interrupt rejection may carry bounded numeric-code evidence. No result claims that a process stopped. After host-attested process exit, no native turn remains in flight; this does not establish the prior turn outcome.

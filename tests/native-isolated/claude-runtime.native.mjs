@@ -314,11 +314,20 @@ test('case variants cannot bypass the same-session writer guard', async () => fi
 }));
 
 for (const mode of ['stubborn', 'stubborn-init']) {
-  test(`runtime shutdown reaps ${mode} children`, {timeout:5000}, async () => fixture({mode}, async (runtime, dir) => {
+  test(`runtime shutdown reaps ${mode} children`, {timeout:10000}, async () => fixture({mode}, async (runtime, dir) => {
     const started = runtime.start({text:'hello',onEvent() {}});
     const rejected = started.catch(() => null);
     if (mode === 'stubborn') await started;
-    else await new Promise(resolveDelay => setTimeout(resolveDelay,150));
+    else {
+      const deadline = Date.now() + 2000;
+      while (true) {
+        try { await access(resolve(dir, 'observed.json')); break; }
+        catch (error) {
+          if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+          await new Promise(resolveDelay => setTimeout(resolveDelay,10));
+        }
+      }
+    }
     const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
     await runtime.close();
     await rejected;

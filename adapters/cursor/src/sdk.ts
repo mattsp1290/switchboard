@@ -117,9 +117,11 @@ export function cursorTextPolicy(): CursorPolicy {
 }
 
 // Pick requires each control name to exist in the actual locked SDK declarations.
-type TextLocal = Required<Pick<Local, 'cwd' | 'store' | 'settingSources' | 'sandboxOptions' | 'enableAgentRetries'
-  | 'fs' | 'reportedWorkspacePath' | 'customTools' | 'hostMcpBridgeUrls' | 'dirs' | 'autoReview'>>;
-type TextLaunch = Required<Pick<CreateOptions, 'apiKey' | 'model' | 'tools' | 'mcpServers' | 'agents'>> & { local: TextLocal };
+const textLocalControls = ['cwd', 'store', 'settingSources', 'sandboxOptions', 'enableAgentRetries',
+  'fs', 'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'] as const;
+const textLaunchControls = ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local'] as const;
+type TextLocal = Required<Pick<Local, typeof textLocalControls[number]>>;
+type TextLaunch = Required<Pick<CreateOptions, Exclude<typeof textLaunchControls[number], 'local'>>> & { local: TextLocal };
 
 function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -133,12 +135,11 @@ function emptyMap(value: unknown): boolean {
 export function assertCursorTextLaunch(value: unknown, options: CursorRuntimeOptions,
   tree: ReturnType<typeof native.emptyFs>, store: InstanceType<typeof native.JsonlLocalAgentStore>): void {
   try {
-    if (!exactKeys(value, ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local']) || value.apiKey !== options.apiKey
+    if (!exactKeys(value, textLaunchControls) || value.apiKey !== options.apiKey
       || !exactKeys(value.model, ['id']) || value.model.id !== options.model || !emptyArray(value.tools)
       || !emptyMap(value.mcpServers) || !emptyMap(value.agents)) return unsupported();
     const local = value.local;
-    if (!exactKeys(local, ['cwd', 'store', 'settingSources', 'sandboxOptions', 'enableAgentRetries', 'fs',
-      'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'])
+    if (!exactKeys(local, textLocalControls)
       || local.cwd !== options.cwd || local.store !== store || local.fs !== tree || local.reportedWorkspacePath !== '/'
       || !emptyArray(local.settingSources) || !emptyArray(local.hostMcpBridgeUrls) || !emptyArray(local.dirs)
       || !emptyMap(local.customTools) || local.enableAgentRetries !== false || local.autoReview !== false

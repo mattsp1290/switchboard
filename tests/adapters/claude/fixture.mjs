@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import readline from 'node:readline';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 const config = JSON.parse(readFileSync('fixture.json', 'utf8'));
-writeFileSync('observed.json', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
 if (config.mode === 'stubborn' || config.mode === 'stubborn-init' || config.mode?.endsWith('-hold')) {
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
 }
+writeFileSync('observed.json.tmp', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
+renameSync('observed.json.tmp', 'observed.json');
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const id = config.id ?? '12345678-1234-1234-1234-123456789abc';
 function requestedModel(argv) {

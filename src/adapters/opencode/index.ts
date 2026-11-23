@@ -1,3 +1,4 @@
+import { callerModelId } from '../../core/model-input.js';
 import { hostImagesRequested } from '../../core/image-input.js';
 import { isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -71,14 +72,7 @@ const identity: AdapterIdentity<'opencode'> = Object.freeze({
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-function plain(value: unknown, limit: number): value is string {
-  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > limit || /\p{Cs}/u.test(value)) return false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || (code >= 127 && code <= 159)) return false;
-  }
-  return true;
-}
+
 function identifier(value: unknown, limit: number): value is string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > limit) return false;
   for (let index = 0; index < value.length; index += 1) {
@@ -363,7 +357,7 @@ export const opencodeHostAdapter: HostAdapterRegistration<OpenCodeHostOpenOption
     } catch {
       return fail({ code: 'invalid-input', message: 'OpenCode requires a complete host environment and native config' });
     }
-    if (!plain(model, 256)) return fail({ code: 'invalid-input', message: 'model must be a caller-supplied id' });
+    if (!callerModelId(model)) return fail({ code: 'invalid-input', message: 'model must be a caller-supplied id' });
     const native = nativeOf(environment?.nativeConfig);
     const variables = variablesOf(environment?.variables);
     if (!environment || !native || !variables) {

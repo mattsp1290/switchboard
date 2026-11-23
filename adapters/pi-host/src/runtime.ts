@@ -333,7 +333,16 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     directory = await mkdtemp(join(admitted.tempRoot, 'pi-host-'));
     const names = new Set(admitted.tools.map((tool) => tool.name));
     const answered = new Set<string>();
-    let continuedIds: readonly string[] = [];
+    let continuation: {
+      readonly results: ReadonlyMap<string, { readonly text: string; readonly isError: boolean }>;
+      readonly targets: readonly HostToolCall['pending']['target'][];
+      readonly undo: () => void;
+    } | undefined;
+    function clearContinuation(rollback: boolean): void {
+      const staged = continuation;
+      continuation = undefined;
+      if (rollback) staged?.undo();
+    }
     const executed: string[] = [];
     const note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined } = { refusal: undefined };
     let segmentNumber = admitted.state === undefined ? 1
@@ -377,7 +386,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (row !== undefined) emitObservation(listener, { kind: 'usage', rows: [row] });
       },
     });
-    const provider = hostProvider(load, names, (id) => answered.has(id) || continuedIds.includes(id), () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
+    const provider = hostProvider(load, names, (id) => answered.has(id) || (continuation?.results.has(id) ?? false), () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
     const credentials = new InMemoryCredentialStore();
     const models = await ModelRuntime.create({
       credentials, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
@@ -437,20 +446,18 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       : structuredClone(admitted.state);
     let seen = session.messages.length;
     let pending: readonly HostToolCall[] = pendingCalls(current, sessionReference);
+    let requiresReopen = false;
     let running = false;
     let closed = false;
     let stopping: (() => void) | undefined;
     let stopped: Promise<void> | undefined;
     let agentRun: Promise<void> | undefined;
-    let undoContinuation = () => {};
-    let continuedResults: ReadonlyMap<string, { readonly text: string; readonly isError: boolean }> = new Map();
-    const deliveries: { readonly target: { readonly kind: 'tool'; readonly session: SessionReference; readonly nativeToolCallId: string } }[] = [];
     const reference = () => sessionReference;
     function exportState(): PiHostSessionState | undefined {
       const fresh = turnsFrom(session.messages.slice(seen).filter((message): message is Message =>
         message.role === 'system' || message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult'), segmentNumber);
       const next = { formatVersion: 1 as const, sessionId: session.sessionId, turns: [...current.turns.map((turn) => {
-        const result = turn.role === 'tool' && turn.toolCallId ? continuedResults.get(turn.toolCallId) : undefined;
+        const result = turn.role === 'tool' && turn.toolCallId ? continuation?.results.get(turn.toolCallId) : undefined;
         return result ? { ...turn, text: result.text, pending: false } : turn;
       }), ...fresh] };
       if (!validatePiHostSessionState(next)) return undefined;
@@ -486,10 +493,9 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       const exported = exportState();
       if (exported === undefined) return { kind: 'model-failed', error: { code: 'native-failure', message: 'The exported session state does not match the published schema.' } };
       pending = calls;
-      for (const id of continuedIds) answered.add(id);
-      for (const delivery of deliveries) publish({ kind: 'tool-delivery', target: delivery.target, delivery: { kind: 'unknown' } });
-      continuedIds = []; continuedResults = new Map(); deliveries.length = 0;
-      undoContinuation = () => {};
+      for (const id of continuation?.results.keys() ?? []) answered.add(id);
+      for (const target of continuation?.targets ?? []) publish({ kind: 'tool-delivery', target, delivery: { kind: 'unknown' } });
+      clearContinuation(false);
       options.onState?.(exported);
       if (calls.length > 0) return { kind: 'pending', calls, approvals: [], usage };
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
@@ -503,6 +509,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
       }
       if (closed) return { kind: 'failed', error: { code: 'closed', message: 'The Pi host adapter is closed.' }, write: { kind: 'not-attempted' } };
+      if (requiresReopen) return { kind: 'failed', error: { code: 'native-failure', message: 'Reopen from the last exported state after an uncertain continuation.' }, write: { kind: 'not-attempted' } };
       if (running) return { kind: 'failed', error: { code: 'busy', message: 'A segment is already running.' }, write: { kind: 'not-attempted' } };
       running = true;
       observer = onObservation;
@@ -527,15 +534,9 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
               const assistant = session.messages.findLast((message) => message.role === 'assistant');
               const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
               if (aborted) {
-                undoContinuation();
-                continuedIds = []; continuedResults = new Map();
-                deliveries.length = 0;
                 return { kind: 'outcome-unknown' };
               }
               const result = await finish(hostSignal);
-              if (result.kind === 'model-failed') {
-                undoContinuation(); continuedIds = []; continuedResults = new Map(); deliveries.length = 0;
-              }
               return { kind: 'conclusive', evidence, result };
             },
           });
@@ -565,6 +566,8 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (started) observe(segmentTerminal(result));
         return result;
       } finally {
+        if (continuation) requiresReopen = true;
+        clearContinuation(true);
         observer = undefined;
         hostSignal.removeEventListener('abort', stopping);
         stopping = undefined;
@@ -641,48 +644,39 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
         }
         return dispatch(input, async () => {
-          const prior = new Map<string, { content: Message['content']; isError: boolean; details: unknown }>();
-          const applyReplacement = (message: Message) => {
-            if (message.role !== 'toolResult' || !replacements.has(message.toolCallId)) return;
-            if (!prior.has(message.toolCallId)) {
-              prior.set(message.toolCallId, { content: message.content, isError: message.isError, details: message.details });
+          const prior: { readonly message: Extract<Message, { role: 'toolResult' }>;
+            readonly content: Extract<Message, { role: 'toolResult' }>['content']; readonly isError: boolean; readonly details: Extract<Message, { role: 'toolResult' }>['details'] }[] = [];
+          const undo: (() => void)[] = [];
+          const restore = () => {
+            for (let index = undo.length - 1; index >= 0; index--) {
+              try { undo[index]?.(); } catch { /* the failed segment requires reopening; finish the remaining undo operations */ }
             }
+          };
+          continuation = { results: replacements, targets: [...expected.values()].map(call => call.pending.target), undo: restore };
+          const messages = [...session.messages, ...manager.getEntries().flatMap(entry => entry.type === 'message' ? [entry.message] : [])];
+          for (const message of messages) {
+            if (message.role === 'toolResult' && replacements.has(message.toolCallId)) {
+              prior.push({ message, content: message.content, isError: message.isError, details: message.details });
+            }
+          }
+          for (const saved of prior) {
+            const { message } = saved;
             const replacement = replacements.get(message.toolCallId);
             message.content = [{ type: 'text', text: replacement?.text ?? '' }];
+            undo.push(() => { message.content = saved.content; });
             message.isError = replacement?.isError ?? false;
+            undo.push(() => { message.isError = saved.isError; });
             message.details = { pending: false };
-          };
-          const restore = () => {
-            for (const [id, saved] of prior) {
-              for (const message of session.messages) {
-                if (message.role === 'toolResult' && message.toolCallId === id) Object.assign(message, saved);
-              }
-              for (const entry of manager.getEntries()) {
-                if (entry.type === 'message' && entry.message.role === 'toolResult' && entry.message.toolCallId === id) {
-                  Object.assign(entry.message, saved);
-                }
-              }
-            }
-          };
-          for (const message of session.messages) {
-            if (message.role === 'toolResult') applyReplacement(message);
+            undo.push(() => {
+              if (saved.details === undefined) delete message.details;
+              else message.details = saved.details;
+            });
           }
-          for (const entry of manager.getEntries()) {
-            if (entry.type === 'message' && entry.message.role === 'toolResult') applyReplacement(entry.message);
-          }
-          undoContinuation = restore;
           for (const o of observedAnswers) observe(o);
-          continuedIds = [...replacements.keys()];
-          continuedResults = replacements;
-          for (const call of expected.values()) deliveries.push({ target: call.pending.target });
           try {
             agentRun = session.agent.continue();
             await agentRun;
             await session.waitForIdle();
-          } catch (error) {
-            restore();
-            undoContinuation = () => {};
-            throw error;
           } finally {
             agentRun = undefined;
           }

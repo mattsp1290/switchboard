@@ -76,7 +76,6 @@ try {
   assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
   assert(!existsSync(join(consumer, 'node_modules/@cursor/sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
-  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/index.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
   const publicDeclarations = new Set();
   function checkCursorDeclaration(path) {
     if (publicDeclarations.has(path)) return;
@@ -89,7 +88,6 @@ try {
     }
   }
   checkCursorDeclaration(join(installed, 'dist/cursor/index.d.ts'));
-  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/config.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
   for (const name of ['index.d.ts', 'index.js']) {
     const source = readFileSync(join(installed, 'dist/cursor', name), 'utf8');
     assert.doesNotMatch(source, /export\s*\{[^}]*\bsdk\b/);

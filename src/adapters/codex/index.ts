@@ -616,8 +616,6 @@ async function openAdapter(ready: {
       case 'aborted':
         return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, accepted ? { kind: 'accepted', evidence: accepted } : { kind: 'outcome-unknown' }, errors.current()),
           failedAs: 'outcome-unknown' };
-      case 'wait':
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       default: {
         const leftover: never = choice;
         void leftover;
@@ -905,7 +903,7 @@ async function collectSettleChoice(input: {
   readonly pending: () => HostPendingSet;
   readonly turnFinished: () => boolean;
   readonly capacityRefused: () => boolean;
-}): Promise<{ readonly choice: SettleChoice; readonly pending: HostPendingSet }> {
+}): Promise<{ readonly choice: Exclude<SettleChoice, 'wait'>; readonly pending: HostPendingSet }> {
   return new Promise((resolve) => {
     let quietTimer: ReturnType<typeof setTimeout> | undefined;
     let done = false;

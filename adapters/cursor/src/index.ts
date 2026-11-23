@@ -263,11 +263,12 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
       return Promise.reject(failure());
     }
     let trackedId = requested;
-    let sendState: 'idle' | 'pending' | 'returned' | 'rejected' | 'drained' = 'idle';
-    let uncertainSend = false;
+    // Fulfillment alone does not release a timed-out send; its late run must drain.
+    let sendUndrained = false;
+    let sendOwnsWriter = false;
     if (requested !== undefined) writers.add(requested);
     const release = (): void => {
-      if (uncertainSend && (sendState === 'pending' || sendState === 'returned')) return;
+      if (sendOwnsWriter && sendUndrained) return;
       if (trackedId === undefined) return;
       writers.delete(trackedId);
       trackedId = undefined;
@@ -314,9 +315,9 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
         const nativeSend = agent.send(message);
-        sendState = 'pending';
-        void nativeSend.then(() => { sendState = 'returned'; }, () => { sendState = 'rejected'; release(); });
-        const sending = limitAdmission(nativeSend, (late) => ownLateRun(late, () => { sendState = 'drained'; release(); }));
+        sendUndrained = true;
+        void nativeSend.then(undefined, () => { sendUndrained = false; release(); });
+        const sending = limitAdmission(nativeSend, (late) => ownLateRun(late, () => { sendUndrained = false; release(); }));
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
@@ -334,7 +335,7 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch (error) {
-        if (!admitted && (sendState === 'pending' || sendState === 'returned')) uncertainSend = true;
+        if (!admitted && sendUndrained) sendOwnsWriter = true;
         release();
         if (admitted) {
           emitObservation(onObservation, { kind: 'terminal', outcome: 'failed' });
