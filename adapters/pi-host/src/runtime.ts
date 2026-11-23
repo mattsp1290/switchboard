@@ -132,7 +132,7 @@ interface Collected {
   readonly failure?: 'mixed' | 'limit' | 'arguments' | 'duplicate';
 }
 
-function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<string>, answered: ReadonlySet<string>): Collected {
+function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<string>, answered: (id: string) => boolean): Collected {
   let text = '';
   let usage: Collected['usage'];
   const calls: Collected['calls'][number][] = [];
@@ -145,7 +145,7 @@ function collectEvents(events: readonly PiHostModelEvent[], names: ReadonlySet<s
       if (argumentsValue === undefined || !identifier(event.id, 1024) || !identifier(event.name, 256)) {
         return { text, calls: [], usage, failure: 'arguments' };
       }
-      if (ids.has(event.id) || answered.has(event.id)) return { text, calls: [], usage, failure: 'duplicate' };
+      if (ids.has(event.id) || answered(event.id)) return { text, calls: [], usage, failure: 'duplicate' };
       ids.add(event.id);
       calls.push({ id: event.id, name: event.name, arguments: argumentsValue });
     }
@@ -199,7 +199,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
-function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: ReadonlySet<string>, makeSink: () => Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
+function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: (id: string) => boolean, makeSink: () => Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
   const model: Model<string> = {
     id: modelId, name: 'host', api: providerId, provider: providerId, baseUrl: 'http://127.0.0.1:9', reasoning: false,
     input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
@@ -333,6 +333,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     directory = await mkdtemp(join(admitted.tempRoot, 'pi-host-'));
     const names = new Set(admitted.tools.map((tool) => tool.name));
     const answered = new Set<string>();
+    let continuedIds: readonly string[] = [];
     const executed: string[] = [];
     const note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined } = { refusal: undefined };
     let segmentNumber = admitted.state === undefined ? 1
@@ -376,7 +377,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (row !== undefined) emitObservation(listener, { kind: 'usage', rows: [row] });
       },
     });
-    const provider = hostProvider(load, names, answered, () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
+    const provider = hostProvider(load, names, (id) => answered.has(id) || continuedIds.includes(id), () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
     const credentials = new InMemoryCredentialStore();
     const models = await ModelRuntime.create({
       credentials, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
@@ -442,7 +443,6 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     let stopped: Promise<void> | undefined;
     let agentRun: Promise<void> | undefined;
     let undoContinuation = () => {};
-    let continuedIds: readonly string[] = [];
     let continuedResults: ReadonlyMap<string, { readonly text: string; readonly isError: boolean }> = new Map();
     const deliveries: { readonly target: { readonly kind: 'tool'; readonly session: SessionReference; readonly nativeToolCallId: string } }[] = [];
     const reference = () => sessionReference;

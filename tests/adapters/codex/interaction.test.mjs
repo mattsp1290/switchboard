@@ -296,7 +296,7 @@ test('interrupt while waiting on approval: the native terminal withdraws it with
   const [session] = ctx.sessions;
   const turn = await turnOn(session);
   const pending = await approval(ctx, session);
-  assert.equal((await session.interrupt()).step, 'uncertain', 'the fixture sends the native terminal before its RPC reply; terminal retirement aborts the unanswered exchange');
+  assert.equal((await session.interrupt()).step, 'replied', 'both native terminal and RPC reply are parsed before intake; terminal retirement cannot erase the reply');
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   await settle();
   assert.deepEqual(settledOf(ctx.events), [{ kind: 'withdrawn', by: 'turn/completed', evidence: 'unqualified' }]);
@@ -315,7 +315,7 @@ test('cancel while a tool runs after approval reports the request and the native
   const pending = await approval(ctx, session);
   await reply(ctx, choose(pending, 'accept'));
   ctx.f.notify('item/started', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'inProgress' } });
-  assert.equal((await session.interrupt()).step, 'uncertain', 'the fixture sends the native terminal before its RPC reply; terminal retirement aborts the unanswered exchange');
+  assert.equal((await session.interrupt()).step, 'replied', 'both native terminal and RPC reply are parsed before intake; terminal retirement cannot erase the reply');
   ctx.f.notify('item/completed', { threadId: session.threadId, turnId, item: { id: 'item-req-1', type: 'commandExecution', status: 'failed' } });
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   await settle();

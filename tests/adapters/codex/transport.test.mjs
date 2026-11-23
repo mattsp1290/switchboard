@@ -619,3 +619,28 @@ test('an unanswered reply queued behind a writer retains its handler deadline',a
  const held=gate();const f=fixture(t,{bounds:{handlerTimeoutMs:10,writeTimeoutMs:1000},write:()=>held.promise});const outstanding=f.transport.notify({method:'block'},signal());await checkpoint();
  f.input({id:'held-request',method:'question'});await checkpoint();assert.equal(f.writes.length,1);assert.equal((await f.transport.ended).reason,'handler-timeout');held.resolve();await outstanding;assert.equal(f.writes.length,1);
 });
+
+for (const stop of ['abort', 'close']) test(`parsed reply survives same-stack ${stop}`, async t => {
+  const f = fixture(t), controller = new AbortController();
+  let acknowledged = false;
+  const pending = f.transport.request({ method: 'turn/start' }, controller.signal, { onReply() { acknowledged = true; } });
+  await checkpoint();
+  f.input({ id: f.writes[0].id, result: { accepted: true } });
+  if (stop === 'abort') controller.abort(); else f.transport.close();
+  const outcome = await pending;
+  assert.equal(outcome.kind, 'reply', JSON.stringify(outcome));
+  assert.equal(acknowledged, true);
+  assert.deepEqual(outcome.envelope.raw.result, { accepted: true });
+});
+
+test('close preserves a parsed reply without starting queued server callbacks', async t => {
+  const f = fixture(t);
+  const pending = f.transport.request({ method: 'read' }, signal());
+  await checkpoint();
+  f.input({ id: 'queued-server-call', method: 'approval' });
+  f.input({ id: f.writes[0].id, result: 'known reply' });
+  const report = await f.transport.close();
+  assert.equal((await pending).envelope.raw.result, 'known reply');
+  assert.equal(f.requests.length, 0);
+  assert.equal(report.discarded.requests, 1);
+});

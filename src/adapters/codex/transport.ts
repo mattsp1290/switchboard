@@ -158,6 +158,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   }
   function failWait(owner: Caller, reason: 'closed' | 'aborted'): void {
     if (owner.wait.phase === 'settled') return;
+    if (reason === 'aborted' && owner.kind === 'request' && owner.replyQueued) return;
     if (owner.kind === 'request') pending.delete(owner.id);
     const index = queue.findIndex((entry) => entry.owner === owner);
     if (index >= 0) queue.splice(index, 1);
@@ -427,6 +428,8 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   }
   report();
   return { request, notify, ended, flushIntake, processExited: () => { flushIntake(); finish('process-exit'); }, close: () => {
+    if (phase.kind === 'open') phase = { kind: 'ending', reason: 'caller-close' };
+    flushIntake();
     finish('caller-close');
     return ended;
   } };

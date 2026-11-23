@@ -325,3 +325,35 @@ test('a throwing Pi-host store callback cannot reoffer an answered target',async
   const duplicate=await host.adapter.continue({hostOperationId:'duplicate-after-store-failure',signal:openSignal(),recordIntent(){assert.fail('an answered target cannot record another intent');},answers:[answer]});assert.equal(duplicate.write.kind,'not-attempted');assert.equal(requests,2);
  }finally{await host.close();}
 });
+
+test('a continuation cannot reissue the tool call ID whose result it is consuming', async () => {
+  let requests = 0;
+  const host = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }],
+    stream: async function* () {
+      if (++requests <= 2) yield { kind: 'tool-call', id: 'call-1', name: 'lookup', arguments: {} };
+      else yield { kind: 'text', text: 'recovered' };
+    } });
+  try {
+    const paused = await host.adapter.run(run('tool'));
+    const answer = { formatVersion: 1, kind: 'tool', outcome: { target: paused.calls[0].pending.target,
+      result: { kind: 'ok', value: { namespace: 'fixture', schemaVersion: 1, data: 'answer' } },
+      effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } };
+    const published = host.events.filter(e => e.kind === 'tool-call-start').length;
+    const duplicate = await host.adapter.continue({ hostOperationId: 'reused-call', signal: openSignal(), recordIntent() {}, answers: [answer] });
+    assert.equal(duplicate.kind, 'failed', JSON.stringify(duplicate));
+    assert.equal(duplicate.error.code, 'invalid-input');
+    assert.equal(host.events.filter(e => e.kind === 'tool-call-start').length, published);
+    const state = host.adapter.state();
+    assert.equal(state.turns.find(turn => turn.role === 'tool').pending, true);
+    await host.close();
+    const fresh = await open({ tools: [{ name: 'lookup', description: 'Lookup', inputSchema: { type: 'object' } }], state,
+      stream: async function* () { yield { kind: 'text', text: 'recovered' }; } });
+    try {
+      const pending = await fresh.adapter.capabilities.inspect.api.pending(openSignal());
+      assert.equal(pending.value.calls[0].pending.target.nativeToolCallId, 'call-1');
+      const recovered = await fresh.adapter.continue({ hostOperationId: 'recover-call', signal: openSignal(), recordIntent() {}, answers: [answer] });
+      assert.equal(recovered.kind, 'complete', JSON.stringify(recovered));
+      assert.equal(recovered.text, 'recovered');
+    } finally { await fresh.close(); }
+  } finally { await host.close(); }
+});

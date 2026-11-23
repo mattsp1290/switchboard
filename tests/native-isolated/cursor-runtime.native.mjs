@@ -1049,3 +1049,79 @@ serial('malformed native export namespaces import lazily and reach the fixed sup
     }
   } finally { restore(); await place.remove(); }
 });
+
+serial('text refuses assistant tool-use blocks before publishing mixed-frame text', async () => {
+  const place = await workspace();
+  const frame = { type: 'assistant', message: { content: [
+    { type: 'text', text: 'must not publish' }, { type: 'tool_use', id: 'tool-1', name: 'shell', input: {} },
+  ] } };
+  try {
+    for (const factory of [createCursorRuntime, createCursorTextRuntime]) {
+      const fake = install([[frame]]), events = [];
+      const runtime = factory(options(place.cwd, place.session));
+      const turn = await runtime.start({ text: 'hello', onEvent: e => events.push(e) });
+      if (factory === createCursorTextRuntime) {
+        assert.equal(await turn.finished, 'failed');
+        assert.deepEqual(events, [{ kind: 'ended', outcome: 'failed' }]);
+        assert.deepEqual(fake.cancels, ['cancel']);
+      } else {
+        assert.equal(await turn.finished, 'completed');
+        assert.equal(events[0].text, 'must not publish');
+      }
+      await runtime.close(); restore();
+    }
+  } finally { restore(); await place.remove(); }
+});
+
+for (const factory of [createCursorRuntime, createCursorTextRuntime])
+serial(`timed-out send retains its writer until late cancellation (${factory.name})`, async t => {
+  const place = await workspace(), fake = install([[], [assistant('fresh')]]), sending = gate();
+  fake.state.holdSend = sending.promise;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = factory(options(place.cwd, place.session));
+  try {
+    const pending = runtime.start({ text: 'late', agentId: 'owned-session', onEvent() {} });
+    const refused = assert.rejects(pending);
+    for (let n = 0; n < 15 && fake.sends === 0; n++) await Promise.resolve();
+    assert.equal(fake.sends, 1);
+    t.mock.timers.tick(30000); await refused;
+    const overlap = runtime.start({ text: 'overlap', agentId: 'owned-session', onEvent() {} });
+    const blocked = assert.rejects(overlap);
+    for (let n = 0; n < 15; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await blocked;
+    assert.equal(fake.resumed.length, 1, 'an unresolved native send must keep its writer');
+    sending.open();
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(fake.cancels.length, 1, 'late cancellation must run before runtime.close');
+    fake.state.holdSend = undefined;
+    const recovered = await runtime.start({ text: 'fresh', agentId: 'owned-session', onEvent() {} });
+    assert.equal(await recovered.finished, 'completed');
+  } finally { sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('a failed late cancellation keeps the writer and close retries the drain', async t => {
+  const place = await workspace(), fake = install([[], [assistant('fresh')]]), sending = gate();
+  fake.state.holdSend = sending.promise;
+  fake.state.cancelError = new Error('private cancellation failure');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const pending = runtime.start({ text: 'late', agentId: 'retry-owned', onEvent() {} });
+    const refused = assert.rejects(pending);
+    for (let n = 0; n < 15 && fake.sends === 0; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await refused; sending.open();
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(fake.cancels.length, 1);
+    await assert.rejects(runtime.start({ text: 'overlap', agentId: 'retry-owned', onEvent() {} }));
+    assert.equal(fake.resumed.length, 1);
+    await assert.rejects(runtime.close(), { message: 'Cursor operation failed.' });
+    fake.state.cancelError = undefined;
+    await runtime.close();
+    fake.state.holdSend = undefined;
+    const next = createCursorTextRuntime(options(place.cwd, place.session));
+    try {
+      const turn = await next.start({ text: 'fresh', agentId: 'retry-owned', onEvent() {} });
+      assert.equal(await turn.finished, 'completed');
+    } finally { await next.close(); }
+  } finally { fake.state.cancelError = undefined; sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});

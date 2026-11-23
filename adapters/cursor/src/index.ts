@@ -150,9 +150,8 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
   const bindings = policy.kind === 'text' ? policy.support : sdk;
   const active = new Set<Promise<void>>();
   const opened: AgentHandle[] = [];
-  const lateRuns: RunHandle[] = [];
+  const lateRuns = new Set<() => Promise<void>>();
   const disposals = new Map<AgentHandle, Promise<void>>();
-  let drained = false;
   const cancellers = new Set<() => Promise<void>>();
   let closed = false;
   let closing: Promise<void> | undefined;
@@ -179,15 +178,25 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
     });
   }
 
-  function ownLateRun(late: RunHandle): void {
-    if (drained) {
-      void (async () => {
-        try { if (late.supports('cancel')) await late.cancel(); }
-        catch { /* this run is not queued for a later close */ }
-      })();
-      return;
-    }
-    lateRuns.push(late);
+  function ownLateRun(late: RunHandle, onDrained: () => void): void {
+    let pending: Promise<void> | undefined;
+    const drain = (): Promise<void> => {
+      if (!pending) pending = (async () => {
+        if (late.supports('cancel')) await late.cancel();
+        const { status } = await late.wait();
+        if (status !== 'finished' && status !== 'cancelled' && status !== 'error') throw failure();
+        lateRuns.delete(drain);
+        onDrained();
+      })().catch((error: unknown) => { pending = undefined; throw error; });
+      return pending;
+    };
+    lateRuns.add(drain);
+    const owner = closing;
+    void drain().catch(() => {
+      void owner?.then(() => {
+        if (closing === owner && lateRuns.has(drain)) closing = undefined;
+      }, () => { /* close() permits retry when its own drain failed */ });
+    });
   }
 
   async function observe(signal?: AbortSignal): Promise<CursorReadinessReport> {
@@ -254,8 +263,11 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
       return Promise.reject(failure());
     }
     let trackedId = requested;
+    let sendState: 'idle' | 'pending' | 'returned' | 'rejected' | 'drained' = 'idle';
+    let uncertainSend = false;
     if (requested !== undefined) writers.add(requested);
     const release = (): void => {
+      if (uncertainSend && (sendState === 'pending' || sendState === 'returned')) return;
       if (trackedId === undefined) return;
       writers.delete(trackedId);
       trackedId = undefined;
@@ -301,7 +313,10 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
           writers.add(agent.agentId);
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
-        const sending = limitAdmission(agent.send(message), ownLateRun);
+        const nativeSend = agent.send(message);
+        sendState = 'pending';
+        void nativeSend.then(() => { sendState = 'returned'; }, () => { sendState = 'rejected'; release(); });
+        const sending = limitAdmission(nativeSend, (late) => ownLateRun(late, () => { sendState = 'drained'; release(); }));
         abandonAdmission = sending.abandon;
         run = await sending.promise;
         admitted = true;
@@ -319,6 +334,7 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch (error) {
+        if (!admitted && (sendState === 'pending' || sendState === 'returned')) uncertainSend = true;
         release();
         if (admitted) {
           emitObservation(onObservation, { kind: 'terminal', outcome: 'failed' });
@@ -336,11 +352,10 @@ function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorP
     const stops = [...cancellers];
     for (const stop of stops) { try { await stop(); } catch { /* the turn records the cancel failure */ } }
     await Promise.allSettled([...active]);
-    drained = true;
-    const runs = lateRuns.splice(0);
+    const runs = [...lateRuns];
     let cancelFailed = false;
-    for (const late of runs) {
-      try { if (late.supports('cancel')) await late.cancel(); }
+    for (const drain of runs) {
+      try { await drain(); }
       catch { cancelFailed = true; }
     }
     let disposalFailed = false;
@@ -463,6 +478,7 @@ function publish(message: unknown, state: PublishState, onEvent: (event: CursorE
   if (policy === 'text' && (message.type === 'tool_call' || message.type === 'task')) return 'bad-tool';
   if (message.type === 'assistant') {
     const content = isRecord(message.message) && Array.isArray(message.message.content) ? message.message.content : [];
+    if (policy === 'text' && content.some(block => isRecord(block) && block.type === 'tool_use')) return 'bad-tool';
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') continue;
       if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';
