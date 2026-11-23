@@ -8,6 +8,17 @@ export interface CursorRuntimeOptions {
   readonly model: string;
 }
 
+/** Fixed refusal details, including the stack, never include native or caller data. */
+export class CursorTextPolicyUnsupportedError extends Error {
+  readonly code = 'cursor_policy_unsupported';
+  constructor() {
+    super('Cursor text policy is unsupported.');
+    this.name = 'CursorTextPolicyUnsupportedError';
+    this.stack = 'CursorTextPolicyUnsupportedError: Cursor text policy is unsupported.';
+    Object.freeze(this);
+  }
+}
+
 export interface CursorLocalOptions {
   readonly cwd: string;
   readonly settingSources: ['project'];

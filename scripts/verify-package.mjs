@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
 import { verifyObservability } from './verify-observability.mjs';
@@ -77,7 +77,18 @@ try {
   assert(!existsSync(join(consumer, 'node_modules/@cursor/sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
   assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/index.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
-  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/sdk.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
+  const publicDeclarations = new Set();
+  function checkCursorDeclaration(path) {
+    if (publicDeclarations.has(path)) return;
+    publicDeclarations.add(path);
+    assert(!path.endsWith('/cursor/sdk.d.ts'), 'Public Cursor types cannot depend on the private SDK boundary.');
+    const declaration = readFileSync(path, 'utf8');
+    assert.doesNotMatch(declaration, /@cursor\/sdk|@anysphere/);
+    for (const match of declaration.matchAll(/(?:from\s*|import\s*\()(['"])(\.[^'"]+)\1/g)) {
+      checkCursorDeclaration(resolve(dirname(path), match[2].replace(/\.js$/, '.d.ts')));
+    }
+  }
+  checkCursorDeclaration(join(installed, 'dist/cursor/index.d.ts'));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/config.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
   for (const name of ['index.d.ts', 'index.js']) {
     const source = readFileSync(join(installed, 'dist/cursor', name), 'utf8');
@@ -292,6 +303,21 @@ const interrupted = await adapter.interrupt({ timeoutMs: 10 });
 if (interrupted.kind === 'unconfirmed-within-bound') void interrupted.evidence;
 void [config, invalid];
 `);
+  checkConsumer('cursor-text', `
+import { createCursorTextRuntime, CursorTextPolicyUnsupportedError } from '${manifest.name}/cursor';
+import type { CursorRuntime, CursorRuntimeOptions } from '${manifest.name}/cursor';
+const options: CursorRuntimeOptions = { cwd: '/work', sessionDirectory: '/private/text', apiKey: 'key', model: 'caller-model' };
+const runtime: CursorRuntime = createCursorTextRuntime(options);
+const code: 'cursor_policy_unsupported' = new CursorTextPolicyUnsupportedError().code;
+// @ts-expect-error Caller cannot enable tools.
+createCursorTextRuntime({ ...options, tools: ['shell'] });
+// @ts-expect-error Caller cannot select a sandbox policy.
+createCursorTextRuntime({ ...options, sandboxOptions: { enabled: true } });
+// @ts-expect-error Caller cannot choose a runtime policy.
+createCursorTextRuntime({ ...options, policy: 'generic' });
+void [runtime, code];
+`);
+  verifyCursorControlTypes(temporary, compiler);
   checkConsumer('cursor-media', `
 import type { CursorRuntime, CursorRequest, CursorModel } from '${manifest.name}/cursor';
 declare const runtime: CursorRuntime;
@@ -710,4 +736,59 @@ try {
   console.log(`Verified ${manifest.name}@${manifest.version} with ${process.version} on ${process.platform}.`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
+}
+
+/** Compile the real boundary against cloned declarations, never against a handwritten SDK stand-in. */
+function verifyCursorControlTypes(temporary, compiler) {
+  const clone = join(temporary, 'cursor-sdk-declarations');
+  const source = join(root, 'node_modules/@cursor/sdk/dist/esm');
+  cpSync(source, clone, { recursive: true, filter: path => !/\.(?:js|map)$/.test(path) });
+  writeFileSync(join(clone, 'package.json'), JSON.stringify({ type: 'module' }));
+  const config = join(temporary, 'cursor-control-types.json');
+  writeFileSync(config, JSON.stringify({ compilerOptions: {
+    target: 'ES2022', lib: ['ES2024'], module: 'NodeNext', moduleResolution: 'NodeNext',
+    strict: true, noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true, verbatimModuleSyntax: true,
+    skipLibCheck: true, noEmit: true, types: ['node'], typeRoots: [join(root, 'node_modules/@types')],
+    paths: { '@cursor/sdk': [join(clone, 'index.d.ts')], '#switchboard': [join(root, 'dist/index.d.ts')] },
+  }, files: [join(root, 'adapters/cursor/src/sdk.ts')] }));
+  const compile = extra => spawnSync(process.execPath, [compiler, '-p', config, '--pretty', 'false', ...extra],
+    { encoding: 'utf8', maxBuffer: 16 << 20 });
+  const baseline = compile([]);
+  assert.equal(baseline.status, 0, `Cursor declaration fixture baseline must compile: ${baseline.stdout}${baseline.stderr}`);
+  const resolved = compile(['--listFilesOnly', '--traceResolution']);
+  assert.equal(resolved.status, 0, resolved.stdout + resolved.stderr);
+  const optionsPath = join(clone, 'options.d.ts');
+  assert(resolved.stdout.includes(optionsPath), 'The cloned options declaration must participate.');
+  assert(!resolved.stdout.includes(join(source, 'options.d.ts')), 'Installed SDK options cannot participate.');
+  const imports = [...resolved.stdout.matchAll(/Module name '@cursor\/sdk' was successfully resolved to '([^']+)'/g)];
+  assert(imports.length > 0, 'Compiler must report actual SDK resolution.');
+  for (const match of imports) assert.equal(match[1], join(clone, 'index.d.ts'));
+  const files = resolved.stdout.split('\n').filter(line => line.startsWith('/') && line.endsWith('.d.ts'));
+  assert(files.includes(optionsPath), 'The mutated options file must be in the actual compiler source-file list.');
+  assert(files.every(path => !path.includes('/@cursor/sdk/') || path.startsWith(clone + sep)), 'No installed SDK declarations may participate.');
+  const original = readFileSync(optionsPath, 'utf8');
+  const controls = {
+    AgentOptions: ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local'],
+    LocalAgentOptions: ['cwd', 'store', 'settingSources', 'sandboxOptions', 'enableAgentRetries', 'fs',
+      'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'],
+  };
+  for (const [name, fields] of Object.entries(controls)) for (const field of fields) {
+    const start = original.indexOf(`export interface ${name} {`);
+    assert(start >= 0);
+    const next = original.indexOf('\nexport ', start + 1);
+    const end = next < 0 ? original.length : next;
+    const section = original.slice(start, end);
+    const property = new RegExp(`^    ${field}\\?:[^;]+;\\r?\\n`, 'm');
+    assert(property.test(section), `Exactly located ${name}.${field}`);
+    const changed = section.replace(property, '');
+    writeFileSync(optionsPath, original.slice(0, start) + changed + original.slice(end));
+    const result = compile([]), output = result.stdout + result.stderr;
+    assert.notEqual(result.status, 0, `Removing ${name}.${field} must fail the real boundary.`);
+    assert.doesNotMatch(output, /TS(?:2307|2688|6053|5012|5083):/, 'Setup errors cannot prove a control omission.');
+    const diagnostics = output.split('\n').filter(line => /sdk\.ts\(\d+,\d+\): error TS/.test(line));
+    assert(diagnostics.some(line => line.includes(`'${field}'`) || line.includes(`"${field}"`)),
+      `A boundary diagnostic must name removed ${field}: ${output}`);
+    writeFileSync(optionsPath, original);
+  }
+  console.log('PASS Cursor control omission: cloned SDK baseline and all 17 required fields');
 }

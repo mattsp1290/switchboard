@@ -212,11 +212,56 @@ const cursor = createCursorRuntime({
 });
 ```
 
-The sandbox is always on. The runtime loads project settings from the working directory and does not retry a run. The sandbox confines shell execution. It does not confine `webSearch`, `webFetch`, or MCP. A per-user `~/.cursor/sandbox.json` or a project `.cursor/sandbox.json` can change the shell policy the SDK applies after sandboxing is enabled, and this adapter does not read or override those files.
+For `createCursorRuntime`, the sandbox is always on. The runtime loads project settings from the working directory and does not retry a run. The sandbox confines shell execution. It does not confine `webSearch`, `webFetch`, or MCP. A per-user `~/.cursor/sandbox.json` or a project `.cursor/sandbox.json` can change the shell policy the SDK applies after sandboxing is enabled, and this adapter does not read or override those files.
 
 Call `start({ text, agentId?, onEvent })`. `start` resolves when the SDK accepts the send, and the turn's `agentId` is the SDK agent id. `finished` resolves to `completed`, `failed`, or `interrupted`. The callback receives accumulated assistant text snapshots (`{ kind: 'text', text }`), tool envelopes (`{ kind: 'tool', callId, name, status }` where `status` is `running`, `completed`, or `error`), and one `{ kind: 'ended', outcome }`. Tool arguments and results are not callback fields. `@cursor/sdk@1.4.2` sometimes sends a call id as two tokens separated by one newline; the event reports those tokens joined by `:`. Each runtime allows 32 simultaneous turns.
 
 `start` rejection before send returns is `Cursor operation failed.` and emits no `ended`. After send returns, `start` stays resolved even when the turn later fails, so hosts should treat that failure as uncertain and avoid automatic retries. `close()` disposes the agents this runtime opened. It does not delete the session directory or files the agent wrote.
+
+### Cursor fixed text runtime
+
+`createCursorTextRuntime(options: CursorRuntimeOptions): CursorRuntime` uses the same
+four inputs and lifecycle as the generic factory, with a fixed text policy:
+
+```js
+import { createCursorTextRuntime } from '@operatorworks/switchboard/cursor';
+
+const runtime = createCursorTextRuntime({
+	cwd: '/private/conversation',
+	sessionDirectory: '/private/text-sessions',
+	apiKey: process.env.CURSOR_API_KEY,
+	model: 'grok-4.7',
+});
+```
+
+Create and resume explicitly disable tools, settings, MCP, custom tools and
+subagent configuration, sandbox setup and retries, and supply a retained empty
+virtual filesystem. No caller-selectable control bag exists. Images are
+unsupported and reject before admission. Unexpected tool or task events fail
+without publishing tool payloads. Text uses the existing snapshot and terminal
+callback behavior. Catalog listing retains the explicit key and remains
+sessionless. Readiness still reports local paths only and cannot report ready.
+
+The supported control tuple is SDK `1.4.2`, `cursor-text-v1`, Node `>=24.22.3 <25`.
+Unsupported identity, exports, Node or launch controls produce the exported
+`CursorTextPolicyUnsupportedError`, with code `cursor_policy_unsupported` and
+fixed public fields including the stack. A refusal occurs before SDK
+create/resume/send and emits no run-started observation. Ordinary input and SDK
+failures keep the generic error behavior. No generic fallback occurs.
+
+The host must keep a private store and use durable ownership records to reject
+generic, imported, wrong-policy and unowned IDs before calling `start` with an
+`agentId`. Only sessions created under the same text contract may resume.
+Switchboard does not authenticate that provenance or scrub stored transcripts.
+SDK 1.4.2 can restore subagent definitions from foreign sessions despite an
+empty agents map. Empty tools do not prove absence of model context.
+
+Close and completion do not prove helper termination, erasure or OS confinement.
+Provider transport and SDK host access remain distinct from model tools. See the
+[control audit and consumer qualification gates](qualification/cursor-text-runtime.md).
+Crew must pass ownership, persisted-resume/context and hardened-deployment
+qualification before adoption. The local adapter checks alone do not qualify a
+production architecture.
 
 ### Provider readiness reports
 

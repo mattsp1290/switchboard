@@ -1,7 +1,7 @@
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
-import { sdk } from './sdk.js';
+import { callerAgentId, CursorTextPolicyUnsupportedError, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
+import { buildCursorLaunchOptions, cursorTextPolicy, sdk, type CursorPolicy } from './sdk.js';
 import type { CursorMessage } from './sdk.js';
 import { createCursorModels } from './models.js';
 import type { CursorModelsApi } from './models.js';
@@ -10,6 +10,7 @@ import { hostImageLimits, parseHostImages, createToolTracker, emitObservation, e
 import type { Capability, HostImageInput, HostImageInputApi, RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
+export { CursorTextPolicyUnsupportedError } from './config.js';
 
 export type CursorOutcome = 'completed' | 'failed' | 'interrupted';
 export type CursorToolStatus = 'running' | 'completed' | 'error';
@@ -133,9 +134,20 @@ type AgentHandle = Awaited<ReturnType<typeof sdk.create>>;
 type RunHandle = Awaited<ReturnType<AgentHandle['send']>>;
 
 export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime {
+  return createCursorRuntimeForPolicy(input, 'generic');
+}
+
+/** Resume only host-owned sessions created under this text contract. */
+export function createCursorTextRuntime(input: CursorRuntimeOptions): CursorRuntime {
+  return createCursorRuntimeForPolicy(input, 'text');
+}
+
+function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorPolicy['kind']): CursorRuntime {
   const read = readCursorOptions(input);
   if (!read) throw failure();
   const options: CursorRuntimeOptions = read;
+  const policy: CursorPolicy = kind === 'text' ? cursorTextPolicy() : { kind: 'generic' };
+  const bindings = policy.kind === 'text' ? policy.support : sdk;
   const active = new Set<Promise<void>>();
   const opened: AgentHandle[] = [];
   const lateRuns: RunHandle[] = [];
@@ -144,7 +156,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   const cancellers = new Set<() => Promise<void>>();
   let closed = false;
   let closing: Promise<void> | undefined;
-  const catalog = createCursorModels(() => sdk.listModels({ apiKey: options.apiKey }));
+  const catalog = createCursorModels(() => bindings.listModels({ apiKey: options.apiKey }));
 
   function dispose(agent: AgentHandle): Promise<void> {
     const existing = disposals.get(agent);
@@ -155,17 +167,6 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     });
     disposals.set(agent, pending);
     return pending;
-  }
-
-  function localOptions() {
-    const fields = cursorLocalOptions(options.cwd, options.sessionDirectory);
-    return {
-      cwd: fields.cwd,
-      settingSources: fields.settingSources,
-      sandboxOptions: fields.sandboxOptions,
-      enableAgentRetries: fields.enableAgentRetries,
-      store: new sdk.Store(fields.storeDirectory),
-    };
   }
 
   function ownLateAgent(late: AgentHandle): void {
@@ -245,7 +246,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     let images: ReturnType<typeof parseHostImages>;
     try { const value = request.images; images = parseHostImages(value === undefined ? [] : value); }
     catch { return Promise.reject(failure()); }
-    if (images.kind === 'error') return Promise.reject(failure());
+    if (images.kind === 'error' || (policy.kind === 'text' && images.value.length > 0)) return Promise.reject(failure());
     const message: CursorMessage = images.value.length === 0 ? text : { text,
       images: images.value.map((image) => ({ data: image.base64, mimeType: image.mediaType })) };
     if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
@@ -286,11 +287,10 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
       };
       cancellers.add(cancelActive);
       try {
-        const local = localOptions();
-        const model = { id: options.model };
+        const launch = buildCursorLaunchOptions(options, policy);
         const opening = requested === undefined
-          ? limitAdmission(sdk.create({ apiKey: options.apiKey, model, local }), ownLateAgent)
-          : limitAdmission(sdk.resume(requested, { apiKey: options.apiKey, model, local }), ownLateAgent);
+          ? limitAdmission(bindings.create(launch), ownLateAgent)
+          : limitAdmission(bindings.resume(requested, launch), ownLateAgent);
         abandonAdmission = opening.abandon;
         const launched = await opening.promise;
         agent = launched;
@@ -313,18 +313,18 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         };
         admission.resolve(turn);
         if (closed) await cancelActive();
-        const outcome = await consume(run, onEvent, faults, onObservation);
+        const outcome = await consume(run, onEvent, faults, onObservation, policy.kind);
         release();
         emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[outcome] });
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
-      } catch {
+      } catch (error) {
         release();
         if (admitted) {
           emitObservation(onObservation, { kind: 'terminal', outcome: 'failed' });
           try { onEvent({ kind: 'ended', outcome: 'failed' }); } catch { /* discarded */ }
           done.resolve('failed');
-        } else admission.reject(failure());
+        } else admission.reject(error instanceof CursorTextPolicyUnsupportedError ? error : failure());
         if (agent !== undefined) void dispose(agent).catch(() => { /* uncached; shutdown retries */ });
       } finally {
         cancellers.delete(cancelActive);
@@ -352,7 +352,8 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   }
 
   return {
-    imageInput: { kind: 'supported', api: hostImageLimits }, models: { kind: 'supported', api: catalog.api },
+    imageInput: policy.kind === 'text' ? { kind: 'unsupported', reason: 'Cursor text runtime accepts text only.' }
+      : { kind: 'supported', api: hostImageLimits }, models: { kind: 'supported', api: catalog.api },
     checkReady, readinessReport, start, close() {
       closed = true;
       catalog.close();
@@ -369,7 +370,7 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
 async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
-  onObservation: RunObservationListener | undefined,
+  onObservation: RunObservationListener | undefined, policy: CursorPolicy['kind'],
 ): Promise<CursorOutcome> {
   const state: PublishState = { text: '', sent: '', reasoningStep: 0, reasoningOpen: false, trackTool: createToolTracker() };
   let step: Step = 'next';
@@ -377,7 +378,7 @@ async function consume(
   let streamFailed = false;
   try {
     for await (const message of run.stream()) {
-      try { step = publish(message, state, onEvent, onObservation); }
+      try { step = publish(message, state, onEvent, onObservation, policy); }
       catch { callback = true; break; }
       if (step !== 'next') break;
     }
@@ -457,8 +458,9 @@ function endReasoning(state: PublishState): void {
  * The listener sees the same accumulated text as a snapshot. Thinking messages are chunks, so they are observed as deltas.
  */
 function publish(message: unknown, state: PublishState, onEvent: (event: CursorEvent) => void,
-  onObservation: RunObservationListener | undefined): Step {
+  onObservation: RunObservationListener | undefined, policy: CursorPolicy['kind']): Step {
   if (!isRecord(message) || typeof message.type !== 'string') return 'next';
+  if (policy === 'text' && (message.type === 'tool_call' || message.type === 'task')) return 'bad-tool';
   if (message.type === 'assistant') {
     const content = isRecord(message.message) && Array.isArray(message.message.content) ? message.message.content : [];
     for (const block of content) {

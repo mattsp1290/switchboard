@@ -52,12 +52,12 @@ Everything is a subpath export of one package. Import only what you need.
 | `/pi` | `createPiRuntime`: text-only Pi SDK sessions on OpenCode Go (caller supplies the model id) | `@earendil-works/pi-ai@1.5.2`, `@earendil-works/pi-coding-agent@1.5.2` |
 | `/codex` | `createCodexRuntime`: text chat over a ChatGPT subscription via the Codex CLI | `@openai/codex-sdk@0.169.0` (and Codex CLI 0.169.0 on `PATH`) |
 | `/claude` | `createClaudeRuntime`: text-only Claude Agent SDK runtime | `@anthropic-ai/claude-agent-sdk@0.3.323` |
-| `/cursor` | `createCursorRuntime`: a local Cursor coding agent | `@cursor/sdk@1.4.2` |
+| `/cursor` | `createCursorRuntime`: a local Cursor coding agent; `createCursorTextRuntime`: fixed text-only policy | `@cursor/sdk@1.4.2` |
 | `/host/pi`, `/host/codex`, `/host/opencode` | Host-adapter entries. For example, `/host/opencode` drives one local `opencode acp` process that your host spawns | see [host adapter contract](docs/architecture/host-adapter-contract.md) |
 
 Every engine runtime also exposes `readinessReport()`, which records installation, version, authentication, and workspace as four separate facts, and marks a fact `unsupported` when the adapter has no way to observe it. The result is a `ready`, `blocked`, or `unverified` verdict with a fixed-text remediation code. Only Codex can reach `ready`; Claude, Cursor, and Pi cannot observe everything `ready` requires, so they report only `blocked` or `unverified`. It never installs, signs in, or calls a model.
 
-Tool access differs per engine: Pi and Claude run text-only with tools disabled, Codex disables shell and web search but other native tools may remain available, and Cursor runs a sandboxed coding agent whose sandbox confines shell but not `webSearch`, `webFetch`, or MCP. The exact disabled tools, sandbox behavior, and caveats for each engine are in the [reference](docs/reference.md) and the [qualification notes](docs/qualification/).
+Tool access differs per engine: Pi and Claude run text-only with tools disabled, Codex disables shell and web search but other native tools may remain available, and the generic Cursor factory runs a sandboxed coding agent whose sandbox confines shell but not `webSearch`, `webFetch`, or MCP. The dedicated Cursor text factory disables tools and ambient settings before launch, uses an empty virtual filesystem, and disables sandbox setup and retries. Its host must admit only owned text-created sessions for resume; it does not sanitize generic sessions. The exact disabled tools, sandbox behavior, and caveats for each engine are in the [reference](docs/reference.md) and the [qualification notes](docs/qualification/).
 
 ## Quick start
 

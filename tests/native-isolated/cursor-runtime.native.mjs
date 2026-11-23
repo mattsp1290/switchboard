@@ -1,25 +1,23 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { CursorAgentError, JsonlLocalAgentStore } from '@cursor/sdk';
-import { createCursorRuntime } from '@operatorworks/switchboard/cursor';
+import { CursorAgentError, JsonlLocalAgentStore, emptyFs, createAgentPlatform, createInMemoryRunEventNotifier } from '@cursor/sdk';
+import { createCursorRuntime, createCursorTextRuntime, CursorTextPolicyUnsupportedError } from '@operatorworks/switchboard/cursor';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
 // The SDK seam is internal to the packed entry, so it is loaded by file URL past the exports map.
-const { sdk } = await import(new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor')).href);
+const { sdk, assertCursorTextLaunch, assertCursorTextSupport, buildCursorLaunchOptions, cursorTextPolicy } = await import(new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor')).href);
 assert.equal(sdk.Store, JsonlLocalAgentStore);
-const original = { create: sdk.create, resume: sdk.resume, Store: sdk.Store, listModels: sdk.listModels };
+const original = Object.fromEntries(Object.keys(sdk).map(key => [key, sdk[key]]));
 
 const caller = 'caller-model';
 const key = 'fixture-key-never-log';
 
 function restore() {
-  sdk.create = original.create;
-  sdk.resume = original.resume;
-  sdk.Store = original.Store;
-  sdk.listModels = original.listModels;
+  Object.assign(sdk, original);
 }
 
 async function workspace() {
@@ -72,7 +70,8 @@ function install(scripted) {
   function agent(id) {
     return {
       agentId: id,
-      async send(message) {
+      async send(message, ...overrides) {
+        assert.deepEqual(overrides, [], 'No per-send overrides');
         state.messages.push(structuredClone(message));
         sends += 1;
         if (state.holdSend) await state.holdSend;
@@ -325,7 +324,7 @@ serial('a non-object start rejects with the generic error', async () => {
   } finally { restore(); await place.remove(); }
 });
 
-serial('a rejected dispose is tried again on the next close', async () => {
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) serial(`a rejected dispose is tried again on the next close (${factory.name})`, async () => {
   const place = await workspace();
   const fake = install([[assistant('Hi')]]);
   let attempts = 0;
@@ -339,7 +338,7 @@ serial('a rejected dispose is tried again on the next close', async () => {
     return handle;
   };
   try {
-    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const runtime = factory(options(place.cwd, place.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     assert.equal(await turn.finished, 'completed');
     await assert.rejects(runtime.close(), (error) => {
@@ -353,7 +352,7 @@ serial('a rejected dispose is tried again on the next close', async () => {
   } finally { restore(); await place.remove(); }
 });
 
-serial('a throwing callback fails the turn and leaves disposal to close', async () => {
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) serial(`a throwing callback fails the turn and leaves disposal to close (${factory.name})`, async () => {
   const place = await workspace();
   install([[assistant('Hi')]]);
   let disposed = 0;
@@ -364,7 +363,7 @@ serial('a throwing callback fails the turn and leaves disposal to close', async 
     return handle;
   };
   try {
-    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const runtime = factory(options(place.cwd, place.session));
     const events = [];
     const turn = await runtime.start({
       text: 'Hello',
@@ -452,13 +451,13 @@ function gate() {
   return { promise, open };
 }
 
-serial('admission, cancellation, and malformed tool ids settle on the public boundary', async () => {
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) serial(`admission, cancellation, and malformed tool ids settle on the public boundary (${factory.name})`, async () => {
   const held = await workspace();
   const creating = install([]);
   const created = gate();
   creating.state.holdCreate = created.promise;
   try {
-    const runtime = createCursorRuntime(options(held.cwd, held.session));
+    const runtime = factory(options(held.cwd, held.session));
     const events = [];
     const pending = runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     assert.equal(creating.created.length, 1);
@@ -481,7 +480,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   slowSend.state.holdSend = sent.promise;
   slowSend.state.holdDispose = disposed.promise;
   try {
-    const runtime = createCursorRuntime(options(sending.cwd, sending.session));
+    const runtime = factory(options(sending.cwd, sending.session));
     const events = [];
     const pending = runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     for (let attempt = 0; attempt < 10 && slowSend.sends === 0; attempt += 1) await Promise.resolve();
@@ -512,7 +511,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   cancelWait.state.holdWait = waited.promise;
   cancelWait.state.waitStatus = 'cancelled';
   try {
-    const runtime = createCursorRuntime(options(interrupted.cwd, interrupted.session));
+    const runtime = factory(options(interrupted.cwd, interrupted.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     const aborting = turn.abort();
     waited.open();
@@ -528,7 +527,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   failingCancel.state.cancelError = new Error('cancel secret');
   failingCancel.state.waitStatus = 'finished';
   try {
-    const runtime = createCursorRuntime(options(thrownCancel.cwd, thrownCancel.session));
+    const runtime = factory(options(thrownCancel.cwd, thrownCancel.session));
     const events = [];
     const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     const aborting = turn.abort();
@@ -546,7 +545,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   excused.state.cancelError = new Error('cancel secret');
   excused.state.waitStatus = 'cancelled';
   try {
-    const runtime = createCursorRuntime(options(cancelledThrow.cwd, cancelledThrow.session));
+    const runtime = factory(options(cancelledThrow.cwd, cancelledThrow.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     const aborting = turn.abort();
     excusedWait.open();
@@ -561,7 +560,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   callbackFake.state.holdStream = stream.promise;
   callbackFake.state.waitStatus = 'cancelled';
   try {
-    const runtime = createCursorRuntime(options(callbackPlace.cwd, callbackPlace.session));
+    const runtime = factory(options(callbackPlace.cwd, callbackPlace.session));
     const events = [];
     const turn = await runtime.start({
       text: 'Hello',
@@ -585,7 +584,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   const followPlace = await workspace();
   install([[assistant('Hi')], [assistant('Next')]]);
   try {
-    const runtime = createCursorRuntime(options(followPlace.cwd, followPlace.session));
+    const runtime = factory(options(followPlace.cwd, followPlace.session));
     let second;
     const turn = await runtime.start({
       text: 'Hello',
@@ -604,7 +603,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
     const place = await workspace();
     install([[{ type: 'tool_call', status: 'completed', name: 'edit', call_id: callId }]]);
     try {
-      const runtime = createCursorRuntime(options(place.cwd, place.session));
+      const runtime = factory(options(place.cwd, place.session));
       const events = [];
       const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
       assert.equal(await turn.finished, 'failed');
@@ -617,7 +616,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   const overflowPlace = await workspace();
   install([[assistant(`${'x'.repeat(SNAPSHOT_BYTES)}y`)]]);
   try {
-    const runtime = createCursorRuntime(options(overflowPlace.cwd, overflowPlace.session));
+    const runtime = factory(options(overflowPlace.cwd, overflowPlace.session));
     const events = [];
     const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     assert.equal(await turn.finished, 'failed');
@@ -787,4 +786,266 @@ serial('Cursor catalog startup consumes its deadline and proxy arrays cannot hid
   }
   const growing=[{get id(){growing.push({id:'late',displayName:'Late'});return'first';},displayName:'First'}];sdk.listModels=async()=>growing;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
  }finally{t.mock.timers.reset();await runtime.close();restore();await place.remove();}
+});
+
+const textLocalKeys = ['cwd', 'store', 'settingSources', 'sandboxOptions', 'enableAgentRetries', 'fs',
+  'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'];
+const textTopKeys = ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local'];
+function policyError(error) {
+  assert.ok(error instanceof CursorTextPolicyUnsupportedError);
+  assert.equal(error.code, 'cursor_policy_unsupported');
+  assert.equal(error.message, 'Cursor text policy is unsupported.');
+  assert.equal(error.name, 'CursorTextPolicyUnsupportedError');
+  assert.equal(error.stack, 'CursorTextPolicyUnsupportedError: Cursor text policy is unsupported.');
+  assert.equal(error.cause, undefined);
+  assert.ok(Object.isFrozen(error));
+  return true;
+}
+
+serial('text create and resume receive every fixed control and ignore JavaScript extras', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('Hello'), assistant(' world')], [assistant('Again')]]);
+  let trees = 0;
+  sdk.emptyFs = () => { trees++; return original.emptyFs(); };
+  try {
+    const runtime = createCursorTextRuntime(options(place.cwd, place.session, {
+      tools: ['shell'], policy: 'generic', sandboxOptions: { enabled: true }, cloud: {},
+    }));
+    assert.equal(runtime.imageInput.kind, 'unsupported');
+    const events = [];
+    const turn = await runtime.start({ text: 'hello', onEvent: e => events.push(e) });
+    assert.equal(await turn.finished, 'completed');
+    assert.deepEqual(events, [{ kind: 'text', text: 'Hello' }, { kind: 'text', text: 'Hello world' }, { kind: 'ended', outcome: 'completed' }]);
+    const resumed = await runtime.start({ text: 'again', agentId: turn.agentId, images: [], onEvent() {} });
+    assert.equal(await resumed.finished, 'completed');
+    assert.equal(trees, 1);
+    const created = fake.created[0], follow = fake.resumed[0][1];
+    for (const launch of [created, follow]) {
+      assert.deepEqual(Object.keys(launch).sort(), [...textTopKeys].sort());
+      assert.deepEqual(Object.keys(launch.local).sort(), [...textLocalKeys].sort());
+      assert.equal(launch.apiKey, key);
+      assert.deepEqual(launch.model, { id: caller });
+      assert.deepEqual(launch.tools, []); assert.deepEqual(launch.mcpServers, {}); assert.deepEqual(launch.agents, {});
+      assert.equal(launch.local.cwd, place.cwd); assert.equal(launch.local.store.dir, place.session);
+      assert.ok(launch.local.store instanceof fake.Store);
+      assert.deepEqual(launch.local.settingSources, []); assert.deepEqual(launch.local.sandboxOptions, { enabled: false });
+      assert.equal(launch.local.enableAgentRetries, false); assert.equal(launch.local.autoReview, false);
+      assert.deepEqual(launch.local.customTools, {}); assert.deepEqual(launch.local.hostMcpBridgeUrls, []);
+      assert.deepEqual(launch.local.dirs, []); assert.equal(launch.local.reportedWorkspacePath, '/');
+    }
+    assert.equal(created.local.fs, follow.local.fs);
+    assert.deepEqual(fake.roots, [place.session, place.session]);
+    assert.deepEqual(fake.state.messages, ['hello', 'again']);
+    const tree = created.local.fs;
+    assert.deepEqual(await Array.fromAsync(tree.list()), []);
+    await assert.rejects(tree.read('/canary'));
+    await assert.rejects(tree.write('/canary', 'no'));
+    await assert.rejects(tree.delete('/canary'));
+    await runtime.close();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text tools and tasks fail before any tool publication or payload observation', async () => {
+  const place = await workspace();
+  try {
+    for (const forbidden of [tool('running', 'args', 'private'), { type: 'tool_call' },
+      { type: 'task', agent_id: 'child', run_id: 'run', text: 'private' }]) {
+      const fake = install([[forbidden]]), events = [], observed = [];
+      const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+      const turn = await runtime.start({ text: 'hello', onEvent: e => events.push(e), onObservation: e => observed.push(e) });
+      assert.equal(await turn.finished, 'failed');
+      assert.deepEqual(events, [{ kind: 'ended', outcome: 'failed' }]);
+      assert.equal(observed.some(e => e.kind === 'tool'), false);
+      assert.equal(JSON.stringify(observed).includes('private'), false);
+      assert.deepEqual(fake.cancels, ['cancel']);
+      await runtime.close(); restore();
+    }
+    const fake = install([]), runtime = createCursorTextRuntime(options(place.cwd, place.session));
+    await assert.rejects(runtime.start({ text: 'image', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} }));
+    assert.equal(fake.created.length, 0); assert.equal(fake.roots.length, 0);
+    await runtime.close();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('support verifies real and synthetic owning manifests, Node tuples, exports and construction', async () => {
+  const place = await workspace();
+  const entry = join(place.root, 'sdk/dist/esm/index.js'), owner = join(place.root, 'sdk/package.json');
+  const refuse = () => assert.throws(() => createCursorTextRuntime(options(place.cwd, place.session)), policyError);
+  try {
+    assert.equal(assertCursorTextSupport().identity.version, '1.4.2');
+    await mkdir(join(place.root, 'sdk/dist/esm'), { recursive: true }); await writeFile(entry, '');
+    sdk.resolveEntry = () => pathToFileURL(entry).href;
+    await writeFile(owner, JSON.stringify({ name: '@cursor/sdk', version: '1.4.2' }));
+    await writeFile(join(place.root, 'sdk/dist/package.json'), '{}');
+    await createCursorTextRuntime(options(place.cwd, place.session)).close();
+    for (const contents of ['{', 'null', '[]', '{"name":"other","version":"1.4.2"}', '{"name":"@cursor/sdk","version":"1.4.3"}']) {
+      await writeFile(owner, contents); refuse();
+    }
+    await rm(owner); refuse();
+    await writeFile(owner, '{"name":"@cursor/sdk","version":"1.4.2"}');
+    await writeFile(join(place.root, 'sdk/dist/package.json'), '{"name":"foreign"}'); refuse();
+    await rm(join(place.root, 'sdk/dist/package.json'));
+    const canonical = sdk.canonicalPath;
+    sdk.canonicalPath = path => path === join(place.root, 'sdk') ? place.cwd : canonical(path); refuse();
+    sdk.canonicalPath = canonical;
+    sdk.readManifest = () => { throw Object.assign(new Error('private path'), { code: 'EACCES' }); }; refuse();
+    restore();
+    for (const version of ['24.9.0', '24.22.2', '25.0.0', '26.0.0', '24.22.3-beta', '24.22', '-24.22.3', 'bad']) {
+      sdk.nodeVersion = () => version; refuse();
+    }
+    for (const version of ['24.22.3', '24.22.10', '24.23.0']) {
+      sdk.nodeVersion = () => version; await createCursorTextRuntime(options(place.cwd, place.session)).close();
+    }
+    restore();
+    for (const member of ['create', 'resume', 'Store', 'emptyFs', 'listModels']) {
+      for (const bad of [undefined, null, {}, 1]) { sdk[member] = bad; refuse(); }
+      sdk[member] = original[member];
+    }
+    sdk.Store = () => {}; refuse(); restore();
+    sdk.emptyFs = () => { throw new Error('private'); }; refuse();
+    sdk.emptyFs = () => ({}); refuse();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text captures checked bindings and per-start refusal precedes Store, admission and observations', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('ok')], [assistant('ok')]]);
+  let version = '24.22.3'; sdk.nodeVersion = () => version;
+  sdk.listModels = async () => [];
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  for (const member of ['create', 'resume', 'Store', 'emptyFs', 'listModels']) sdk[member] = () => { throw new Error('replacement reached'); };
+  try {
+    const signal = new AbortController().signal;
+    assert.equal((await runtime.models.api.list(signal)).kind, 'ok');
+    const turn = await runtime.start({ text: 'hi', onEvent() {} }); assert.equal(await turn.finished, 'completed');
+    const next = await runtime.start({ text: 'again', agentId: turn.agentId, onEvent() {} }); assert.equal(await next.finished, 'completed');
+    const observed = [], events = [];
+    version = '25.0.0';
+    for (const agentId of [undefined, turn.agentId]) {
+      await assert.rejects(runtime.start({ text: 'refuse', agentId, onEvent: e => events.push(e), onObservation: e => observed.push(e) }), policyError);
+    }
+    assert.deepEqual(events, []); assert.deepEqual(observed, []); assert.equal(fake.roots.length, 2);
+    version = '24.22.3';
+    for (let n = 0; n < 40; n++) {
+      version = '25.0.0'; await assert.rejects(runtime.start({ text: 'no', agentId: turn.agentId, onEvent() {} }), policyError);
+    }
+    version = '24.22.3';
+    const recovered = await runtime.start({ text: 'retry', agentId: turn.agentId, onEvent() {} });
+    assert.equal(await recovered.finished, 'completed');
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('the production text launch guard refuses each missing, changed and added control', async () => {
+  const place = await workspace(); install([]);
+  try {
+    const opts = options(place.cwd, place.session), policy = cursorTextPolicy();
+    const launch = buildCursorLaunchOptions(opts, policy), tree = policy.tree, store = launch.local.store;
+    const guard = value => assertCursorTextLaunch(value, opts, tree, store);
+    guard(launch);
+    const mutations = {
+      apiKey: 'other', model: { id: 'other' }, tools: ['shell'], mcpServers: { foreign: {} }, agents: { foreign: {} }, local: {},
+      cwd: '/other', store: {}, settingSources: ['project'], sandboxOptions: { enabled: true }, enableAgentRetries: true,
+      fs: emptyFs(), reportedWorkspacePath: '/other', customTools: { foreign: {} }, hostMcpBridgeUrls: ['http://localhost'], dirs: ['/other'], autoReview: true,
+    };
+    for (const [keys, atLocal] of [[textTopKeys, false], [textLocalKeys, true]]) for (const field of keys) {
+      const candidate = { ...launch, local: { ...launch.local } }, target = atLocal ? candidate.local : candidate;
+      delete target[field]; assert.throws(() => guard(candidate), policyError, `missing ${field}`);
+      target[field] = mutations[field]; assert.throws(() => guard(candidate), policyError, `changed ${field}`);
+    }
+    for (const [field, value] of Object.entries({ cloud: {}, disallowedTools: [], systemPrompt: 'override', hooks: {}, policy: 'generic' })) {
+      assert.throws(() => guard({ ...launch, [field]: value }), policyError);
+    }
+    for (const field of ['subagentInherit', 'resourceProviderOptions', 'hooks', 'plugins']) {
+      assert.throws(() => guard({ ...launch, local: { ...launch.local, [field]: {} } }), policyError);
+    }
+    const support = assertCursorTextSupport();
+    assert.throws(() => buildCursorLaunchOptions(opts, { kind: 'text', tree, support: { ...support, contract: 'other' } }), policyError);
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text admission deadline, late ownership and cross-policy writer contention use one lifecycle', async t => {
+  const place = await workspace(), fake = install([[assistant('ok')]]);
+  const held = gate(); fake.state.holdCreate = held.promise;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const pending = runtime.start({ text: 'hi', onEvent() {} }); const rejected = assert.rejects(pending);
+    t.mock.timers.tick(30000); await rejected; held.open();
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+    assert.deepEqual(fake.state.disposals, ['agent-1']);
+    fake.state.holdCreate = undefined;
+    const waiting = gate(); fake.state.holdWait = waiting.promise;
+    const turn = await runtime.start({ text: 'hi', onEvent() {} });
+    const generic = createCursorRuntime(options(place.cwd, place.session));
+    await assert.rejects(generic.start({ text: 'conflict', agentId: turn.agentId, onEvent() {} }));
+    waiting.open(); await turn.finished; await generic.close();
+  } finally { held.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('real SDK persists text-only state and reopens it with no restored subagent definitions', async () => {
+  const place = await workspace();
+  try {
+    restore();
+    const opts = options(place.cwd, place.session);
+    const policy = cursorTextPolicy();
+    const launch = buildCursorLaunchOptions(opts, policy);
+    const { model, apiKey, ...offline } = launch;
+    void model; void apiKey; // Avoid catalog/provider IO. This test never calls send or acquires an executor.
+    const platform = await createAgentPlatform({ localStore: launch.local.store, workspaceRef: place.cwd,
+      scopedWorkspaceRef: place.cwd, eventNotifier: createInMemoryRunEventNotifier() });
+    const agent = await platform.createAgent(offline);
+    const saved = await launch.local.store.agents.get({ agentId: agent.agentId });
+    assert.equal(saved.sdkMetadata.customSubagents, undefined);
+    // Save valid empty protobuf state through the real checkpoint store, then reopen from disk.
+    await platform.checkpointStore.saveCheckpoint(agent.agentId, { toBinary: () => new Uint8Array() });
+    const owned = new Map([[agent.agentId, 'cursor-text-v1']]);
+    for (let n = 0; n < 2; n++) {
+      const again = buildCursorLaunchOptions(opts, policy);
+      const { model: ignoredModel, apiKey: ignoredKey, ...resuming } = again;
+      void ignoredModel; void ignoredKey;
+      const fresh = await createAgentPlatform({ localStore: again.local.store, workspaceRef: place.cwd,
+        scopedWorkspaceRef: place.cwd, eventNotifier: createInMemoryRunEventNotifier() });
+      assert.notEqual(fresh, platform);
+      const row = await again.local.store.agents.get({ agentId: agent.agentId });
+      assert.ok(row.latestCheckpoint);
+      assert.ok(await fresh.checkpointStore.loadLatest(agent.agentId));
+      // Example host admission boundary: the adapter itself cannot prove ownership.
+      const resumeOwned = id => {
+        if (owned.get(id) !== 'cursor-text-v1') throw new Error('unowned session');
+        return fresh.resumeAgent(id, resuming);
+      };
+      for (const foreign of ['generic-session', 'imported-session', 'unknown-session']) {
+        assert.throws(() => resumeOwned(foreign), /unowned session/);
+      }
+      const resumed = await resumeOwned(agent.agentId);
+      assert.equal(resumed.options.customSubagents, undefined);
+      assert.deepEqual(resumed.options.allowedProtoTools, []);
+      assert.deepEqual(resumed.options.mcpServers, {});
+      assert.deepEqual(resumed.options.local.settingSources, []);
+      assert.equal(resumed.options.local.fs, policy.tree);
+      assert.equal(row.sdkMetadata.customSubagents, undefined);
+    }
+  } finally { restore(); await place.remove(); }
+});
+
+serial('malformed native export namespaces import lazily and reach the fixed support refusal', async () => {
+  const place = await workspace();
+  try {
+    const sdkUrl = new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor'));
+    const configUrl = new URL('config.js', sdkUrl);
+    const boundary = await readFile(sdkUrl, 'utf8');
+    for (const [n, namespace] of [
+      'export const Agent = undefined; export const Cursor = undefined;',
+      'export const Agent = {}; export const Cursor = {models:{}};',
+      'export const Agent = {create:1,resume:null}; export const Cursor = {models:{list:1}};',
+    ].entries()) {
+      const stub = join(place.root, `native-${n}.mjs`), module = join(place.root, `boundary-${n}.mjs`);
+      await writeFile(stub, namespace + ' export const JsonlLocalAgentStore = undefined; export const emptyFs = undefined;');
+      await writeFile(module, boundary.replace("'@cursor/sdk'", JSON.stringify(pathToFileURL(stub).href))
+        .replace("'./config.js'", JSON.stringify(configUrl.href)));
+      const loaded = await import(pathToFileURL(module).href);
+      loaded.sdk.resolveEntry = original.resolveEntry;
+      assert.throws(() => loaded.assertCursorTextSupport(), policyError);
+    }
+  } finally { restore(); await place.remove(); }
 });

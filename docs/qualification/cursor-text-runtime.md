@@ -1,116 +1,137 @@
-# Cursor text runtime control audit
+# Cursor text runtime qualification
 
-Status: candidate stopped at WP1. `createCursorTextRuntime` is not implemented or qualified.
+`createCursorTextRuntime(options: CursorRuntimeOptions): CursorRuntime` is exported
+from `@operatorworks/switchboard/cursor`. The candidate control contract is
+`cursor-text-v1`, with `@cursor/sdk` exactly `1.4.2` and Node `>=24.22.3 <25`.
+Build and test tools are Node `24.22.3` and npm `11.19.1`. This is an upstream
+adapter candidate. Crew's deployment, provider-context and ownership audit must
+pass before merge or adoption. No Linux architecture is qualified for production
+by the adapter tests alone.
 
-The [implementation plan](../../.agents/plans/cursor-tool-free-text/01-sdk-contract.md)
-requires explicit empty registries to override restored state. Its stop condition is:
-"If restored tools, registries, settings or host context override explicit controls, stop the candidate."
+## Resume requires host ownership
 
-## Missing control in SDK 1.4.2
+The user approved this boundary on November 23, 2026. Hosts must keep text
+sessions in private, policy-specific stores and use durable ownership records
+to admit only IDs created under the same text contract. Generic, imported,
+wrong-policy and unowned sessions must be rejected before calling Switchboard.
+Crew owns that check, including recovery after a process restart. If its existing
+records cannot enforce ownership, adoption remains blocked until it adds the
+check. Separate directories alone do not authenticate an ID or prevent imports.
 
-The installed `@cursor/sdk@1.4.2` cannot clear stored custom subagents on resume
-through the planned `agents: {}` field. The SDK's bundled
-`src/agent/subagent-conversion.ts` returns `undefined` for an empty agents map.
-`CursorAgentPlatform.resumeAgent` then uses a nullish fallback to stored
-`metadata.customSubagents`. The resumed handle carries those definitions in
-`options.customSubagents`. `getExecutor()` forwards them through `Ar(options)`
-to `platform.acquireLocalExecutor()`.
+Switchboard does not inspect SDK-owned metadata, authenticate provenance, rewrite
+transcripts, migrate sessions, or silently retry with a new identity. Native
+resume remains available for admitted text-created sessions. Same-policy state
+must not reintroduce execution controls or ambient model context.
 
-The relevant installed source is `node_modules/@cursor/sdk/dist/esm/index.js`.
-Its SHA-256 is
-`bbaa5f9f0856701126a285b7cc5b418cf4a8eefa01164513e431b0a2d1b7d1d1`.
-The source is minified. These searchable anchors identify the two decisions:
+SDK 1.4.2 converts `agents: {}` to `undefined` and falls back to stored custom
+subagents during resume. This was confirmed offline with a generic-created
+sentinel session. The tools allowlist stayed empty. That probe proved retained
+definitions, not execution or provider receipt. SDK request-context construction
+can use subagent definitions independently of the tools header. Consequently,
+cross-policy conversion is unsupported; empty tools alone is not a context
+isolation guarantee. SDK modifications are prohibited. Upgrades are permitted,
+but the public registry's newest release at the recovery check was still 1.4.2.
 
-```js
-const r = Object.entries(t);
-if (0 === r.length) return;
-```
+The original probe and log remain at
+`/tmp/switchboard-cursor-text-audit.HLYRj5/`. They describe the pre-amendment gate,
+not the acceptance criteria for the current candidate.
 
-```js
-i = (0, Br.DB)(n.agents) ?? function(t) {
-	const r = t[zr]; // zr = "customSubagents"
-	// Valid stored definitions are returned here.
-}(e.metadata)
-```
+## Fixed controls and source audit
 
-This is a registry precedence failure. It does not establish that a subagent
-executes when `tools: []` is present. The empty tools allowlist and empty
-subagent registry are separate requirements in this plan.
+The generic factory retains its existing project-settings and sandbox policy.
+The text factory builds one complete options object for both create and resume:
 
-The plan also requires an experiment with a generic-created session, even
-though hosts must provide only same-contract sessions during normal text
-resume. That host precondition does not waive the experiment's stop condition.
+| Location | Controls |
+|---|---|
+| Top level | Validated `apiKey`, exact caller `model.id`, `tools: []`, `mcpServers: {}`, `agents: {}` |
+| Local | Validated `cwd`, new `JsonlLocalAgentStore(sessionDirectory)`, `settingSources: []`, `sandboxOptions: { enabled: false }`, `enableAgentRetries: false` |
+| Local | One retained `emptyFs()` tree per runtime, `reportedWorkspacePath: '/'`, `customTools: {}`, `hostMcpBridgeUrls: []`, `dirs: []`, `autoReview: false` |
 
-## Offline evidence
+No cloud, prompt, inheritance, resource-provider, plugin, hook or send overrides
+are accepted. JavaScript caller extras are discarded by the four-field input
+copy. Text images are refused before admission. Tool and task stream messages
+fail the turn before publishing tool callbacks or observations. This defensive
+refusal cannot undo an operation and does not replace launch controls.
 
-The experiment used a scratch copy of source commit
-`cccb75a4531cab627a892995d8c2bc9946a78025`, with an audit case appended to
-`tests/native-isolated/cursor-runtime.native.mjs`. Production source and the
-installed SDK were unchanged. Host build tools were Node `24.22.3` and npm
-`11.19.1`.
+Installed declarations in `dist/esm/options.d.ts` place top-level tools at line
+625, local at 682, MCP at 684 and agents at 685. Local controls are cwd 218,
+dirs 225, autoReview 231, store 240, settingSources 247, sandboxOptions 248,
+customTools 259, retries 273, bridges 298, reported workspace 331 and fs 361.
+The package verifier compiles the real private boundary against cloned SDK
+declarations and removes each required field in isolation. Public declarations
+remain independent of the optional SDK.
 
-The case called the real SDK's `CursorAgentPlatform.createAgent` with one
-sentinel subagent and an in-memory store, then called `resumeAgent` with the
-planned empty registries, `tools: []`, and an `emptyFs()` tree. It inspected
-the real resumed handle's internal resolved options. Those options contained
-the persisted sentinel under `customSubagents`, retained an empty
-`allowedProtoTools`, and retained the supplied tree. The input agents map
-remained empty. No `send`, executor acquisition, inference, or checkpoint IO
-was attempted. This is a narrow registry-precedence probe, not a full saved
-conversation or deployment qualification.
+The SDK implementation in `dist/esm/index.js` maps tools to allowed proto tools
+and reapplies them on resume. Explicit empty tools remain an empty allowlist.
+It forwards settings, sandbox, bridges, MCP and subagents to executor creation.
+`dist/esm/977.js` uses the virtual-tree resource provider to suppress the host
+shell, hooks, project MCP, host git context and skill discovery. Its `YW` helper
+uses virtual rules only when project sources are enabled; this contract leaves
+them disabled. Virtual-tree session MCP and custom callback registries are empty.
+The SDK mounts a fresh in-memory `/tmp` for each run, separate from host temp
+files. Restored subagents remain the documented cross-policy limitation above.
 
-Command in the scratch checkout:
+These control decisions are bundled in the owning SDK package. No additional
+package identity is treated as a runtime control authority. Native platform
+assets and the complete locked transitive closure remain mandatory qualification
+inputs; changing them invalidates qualification reuse. Runtime identity checks
+do not attest arbitrary transitive bytes or backend behavior.
 
-```sh
-PATH=/Users/punk1290/.nvm/versions/node/v24.22.3/bin:$PATH npm run test:native-isolated
-```
+## Host access inventory
 
-The runner built the package successfully and ran its pinned Linux aarch64
-container with network disabled, a read-only root, and synthetic decoys.
-All three isolation controls were rejected as expected. The Cursor suite,
-including the audit case, passed 19 tests with zero trace violations.
-Codex and both Pi suites also passed. The overall command exited 1 because
-the unchanged Claude suite failed `runtime shutdown reaps stubborn-init children`
-with `ENOENT` for its fixture's `observed.json`. That suite also reported one
-trace violation. This run is not a passing repository gate.
+This inventory distinguishes host activity from model-visible context. Static
+inspection is not a deployment trace.
 
-Local evidence is preserved at
-`/tmp/switchboard-cursor-text-audit.HLYRj5/`: `probe-fragment.mjs`,
-`sdk-source-excerpts.json`, `source-hashes.json`, `native-audit.log`, and
-the scratch checkout. The original plan's `research/verify-plan.py` passed
-its source and dependency hash checks. The full implementation gate sequence
-was not run because this control audit stopped the candidate.
+| Host surface | Access and control | Deployment evidence still required from Crew |
+|---|---|---|
+| Authentication | Explicit API key is supplied for launch and catalog. SDK default auth is `~/.cursor/sdk/auth.json`; the adapter never invokes login. | Verify no ambient credential source wins or is exposed during actual execution. Do not mount user credentials. |
+| SDK state | Default session state is `{project}/sdk-agent-store/{sha256(workspaceRef)}`; explicit store replaces that selection. Global executor initialization may still consult other SDK state. | Trace actual state paths and required writes with a read-only root. No extra writable consumer volume is authorized. |
+| Session store | Read and write JSONL agent/run/event/checkpoint records under the explicit private root. | Private writable mount, durable policy ownership, exact erasure inventory and cross-process write coordination. |
+| Host temporary files | SDK infrastructure can use OS temporary files. Virtual `/tmp` is separately in-memory and per-run. | Trace host paths and lifetimes; provide only existing private temp storage. |
+| Physical cwd and git | Readable private cwd remains needed. Executor initialization can discover physical workspace/git information. Virtual resources suppress host git/workspace context in model requests. | Trace physical access and inspect serialized request context with outside-cwd canaries and seeded files. |
+| Native helpers | SDK platform assets can be resolved during initialization. Sandbox is disabled before launch; tools are absent. | Inventory actual helpers and descendants on the target architecture. No privileges or relaxed hardening are authorized. |
+| Provider transport | SDK model/catalog and inference calls need provider network transport. Disabling model tools does not disable this transport. | Qualify destination policy and serialized contents under the unchanged hardened deployment. |
 
-## Recovery boundary
+No deployment requirement is inferred as passed from imports, fake SDK calls,
+completion, cancellation or close. A required undisablable source in a valid
+text session stops the candidate. Unknown helper termination and erasure
+inventory remain unknown.
 
-The missing SDK behavior is an explicit empty custom-subagent override during
-resume that does not fall back to stored definitions. A revised candidate needs
-that behavior and a fresh control audit against its exact SDK artifact.
+## Local verification and external gates
 
-The user subsequently authorized SDK upgrades and prohibited SDK modifications.
-A direct public npm registry check on November 22, 2026 returned `latest: 1.4.2`.
-The complete published version list contained no newer release or prerelease.
-The `next` tag pointed to the older `1.1.0-beta.0`. There is no published upgrade
-to test as a replacement for the failing SDK.
+The isolated suite captures actual create arguments and resume's second argument,
+checks every fixed key/value and omission, exercises real `emptyFs`, checks
+manifest identity and Node boundaries, swaps captured bindings, and runs shared
+admission/cancellation/disposal cases through both policies. Ordinary tests never
+import the native SDK.
 
-The registry check used the pinned npm toolchain:
+The real SDK test creates a text session, saves a synthetic empty protobuf
+checkpoint through the SDK's real store, and reopens it through fresh store and
+platform instances. Repeated resumes retain empty registries and the supplied
+controls. This proves disk persistence/reopen behavior without inference. The
+ownership harness is an example boundary, not evidence that Crew implements it.
+It is not a real provider transcript, OS process restart, or live context audit.
 
-```sh
-npm view @cursor/sdk dist-tags versions time.modified --json --registry=https://registry.npmjs.org --prefer-online
-npm view @cursor/sdk@latest version dist.integrity dist.tarball --json --registry=https://registry.npmjs.org --prefer-online
-```
+Required local commands, in order, are `npm ci`, `npm run build`, `npm run lint`,
+`npm run check`, `npm test`, `npm run test:native-isolated`, and
+`npm run verify:package`. The package verifier includes the no-peer public
+consumer and 17 independent declaration-control omission checks.
 
-The version-list response is saved as `published-sdk-versions.json` in the local
-evidence directory. The installed lockfile and audited SDK source hashes still
-match the original probe. The public `AgentOptions` declaration has `agents`
-but no `customSubagents` clearing override.
+Before merge/adoption, Crew must demonstrate durable host rejection of foreign
+IDs, process restart and same-policy resume with real saved state, serialized
+model context without seeded definitions, and feasibility under its existing
+hardened container. After pinning, Crew's full deterministic/live matrices,
+replay/recovery/privacy/erasure and actual architecture checks block release.
+The qualification reuse key includes payload hashes, resolved SDK dependency
+closure and integrity, Node version, image digest and architecture. Any changed
+member requires a fresh candidate audit. This branch does not modify Crew or
+its vendor pin and does not claim those external gates have passed.
 
-The upgrade authorization does not permit SDK patching, dependence on private
-SDK fields, removal of resume, transcript or metadata rewriting, or weaker
-acceptance criteria. Further implementation requires a published SDK with the
-missing behavior, or an explicit revision of the contract.
 
-The remaining control audit, runtime boundary, lifecycle changes, package tests,
-candidate artifact, and Crew qualification gates have not passed. There is no
-delivery commit, merged feature, or qualified package. The review gauntlet has
-not started because the implementation prerequisite failed.
+Crew source inspection at `984d0462502904a834bfb27447989ded53a11c60` found that
+`src/service/cursor-turn.ts` exposes a start input with text and an event listener,
+and its call supplies no agent ID. Its current one-turn path therefore does not
+invoke native resume. It still imports the older generic factory from its vendor
+pin. This is inspection evidence only; adopting this candidate and qualifying
+its private cwd, storage and ownership remain Crew work. Any future resume path
+must enforce the ownership boundary above.

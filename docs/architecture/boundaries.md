@@ -473,3 +473,27 @@ Reasoning spans and messages have independent lifecycles in the single bounded a
 Opaque encrypted observations open and close nothing. Their attribution records the producer independently of target ownership.
 Unknown target identities consume capacity without establishing target existence. Later actual openers establish their own ownership.
 The host supplies authorized reasoning facts and owns publication, persistence and native qualification. All six native routes remain unqualified.
+
+
+### Cursor fixed text policy
+
+The `./cursor` entry exports both `createCursorRuntime` and
+`createCursorTextRuntime`. One lifecycle owns admission, writers, cancellation,
+late handles and retryable disposal. The policy is selected before launch.
+The private SDK boundary derives control types from the optional peer, validates
+its owning package and exports, captures bindings per text runtime and builds
+the complete create/resume object. Public declarations never depend on that
+boundary. Generic launch behavior remains unchanged.
+
+Text policy uses empty tools/settings/registries and a read-only empty virtual
+tree, with sandbox setup and retries disabled. Its event policy refuses tool
+and task messages before publication. No send overrides, caller policy flags,
+provenance database or SDK-owned metadata transformation is added.
+
+The host owns private-root routing and durable admission of same-contract
+text-created sessions. It must refuse generic/imported/unowned IDs before SDK
+resume. The adapter does not sanitize foreign state. SDK 1.4.2 restores foreign
+subagent metadata despite an empty map, so support does not include cross-policy
+conversion. Model context, host SDK accesses and provider transport require
+separate consumer qualification. See the
+[control audit](../qualification/cursor-text-runtime.md).
