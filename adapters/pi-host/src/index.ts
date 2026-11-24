@@ -1,5 +1,5 @@
 import type { HostAdapterError, Outcome } from '#switchboard';
-import { piHostIdentity } from './contract.js';
+import { capturePiHostOptions, piHostIdentity } from './contract.js';
 import type { PiHostAdapter, PiHostOpenOptions } from './contract.js';
 
 export { isPiHostSystemEntry, piHostIdentity, piHostLimits, piHostSessionStateSchema, validatePiHostSessionState } from './contract.js';
@@ -15,7 +15,11 @@ export type {
 export const piHostAdapter = Object.freeze({
   identity: piHostIdentity,
   open: async (options: PiHostOpenOptions, signal: AbortSignal): Promise<Outcome<PiHostAdapter, HostAdapterError>> => {
-    const { openPiHostSession } = await import('./runtime.js');
-    return openPiHostSession(options, signal);
+    const captured = capturePiHostOptions(options, signal);
+    if (captured.kind === 'error') return captured;
+    try {
+      const { openPiHostSession } = await import('./runtime.js');
+      return await openPiHostSession(captured.value, signal);
+    } catch { return { kind: 'error', error: { code: 'native-failure', message: 'The Pi host session could not be opened.' } }; }
   },
 });

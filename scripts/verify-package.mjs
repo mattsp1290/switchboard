@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyTestkit, testkitInvalidCases } from './verify-testkit.mjs';
 import { verifyObservability } from './verify-observability.mjs';
@@ -11,6 +11,7 @@ import { assertInstalledForkCore, coreArtifact } from './support/agui-fork.mjs';
 import { assertCoreIsolation } from '../spikes/native-compiler/support/package.mjs';
 import { compilerLibraryRoots, nodeDeclarationRoots } from '../spikes/native-compiler/support/compiler.mjs';
 
+const nativeSdkDeclarations = /\/@(?:openai|anthropic-ai|earendil-works|cursor)\//;
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -36,6 +37,7 @@ try {
     'README.md',
     ...buildFiles,
     'docs/architecture/boundaries.md',
+    'docs/qualification/cursor-text-runtime.md',
     'licenses/codex-APACHE-2.0.txt',
     'licenses/codex-NOTICE.txt',
     'THIRD_PARTY_NOTICES.md',
@@ -75,9 +77,18 @@ try {
   assert(!existsSync(join(consumer, 'node_modules/@anthropic-ai/claude-agent-sdk')));
   assert(!existsSync(join(consumer, 'node_modules/@cursor/sdk')));
   assert.doesNotMatch(readFileSync(join(installed, 'dist/claude/index.d.ts'), 'utf8'), /@anthropic-ai/);
-  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/index.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
-  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/sdk.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
-  assert.doesNotMatch(readFileSync(join(installed, 'dist/cursor/config.d.ts'), 'utf8'), /@cursor\/sdk|@anysphere/);
+  const publicDeclarations = new Set();
+  function checkCursorDeclaration(path) {
+    if (publicDeclarations.has(path)) return;
+    publicDeclarations.add(path);
+    assert(!path.endsWith('/cursor/sdk.d.ts'), 'Public Cursor types cannot depend on the private SDK boundary.');
+    const declaration = readFileSync(path, 'utf8');
+    assert.doesNotMatch(declaration, /@cursor\/sdk|@anysphere/);
+    for (const match of declaration.matchAll(/(?:from\s*|import\s*\()(['"])(\.[^'"]+)\1/g)) {
+      checkCursorDeclaration(resolve(dirname(path), match[2].replace(/\.js$/, '.d.ts')));
+    }
+  }
+  checkCursorDeclaration(join(installed, 'dist/cursor/index.d.ts'));
   for (const name of ['index.d.ts', 'index.js']) {
     const source = readFileSync(join(installed, 'dist/cursor', name), 'utf8');
     assert.doesNotMatch(source, /export\s*\{[^}]*\bsdk\b/);
@@ -105,7 +116,7 @@ try {
         `dist/${directory}/${file} does not name the AG-UI or OpenTelemetry peers.`);
     }
   }
-  writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal } from '${manifest.name}/pi';
+  writeFileSync(join(consumer, 'pi-types.test.ts'), `import type { PiRuntime, PiRuntimeOptions, PiEvent, PiTerminal, PiPromptInput } from '${manifest.name}/pi';
 const options: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3' };
 const flash: PiRuntimeOptions = { cwd: '/fixture', sessionDirectory: '/fixture/sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
 // @ts-expect-error Property 'model' is missing.
@@ -114,6 +125,9 @@ declare const runtime: PiRuntime;
 const session = await runtime.open();
 const accepted = await session.prompt('hello', (event: PiEvent) => { if (event.kind === 'text') event.text.toUpperCase(); });
 const terminal: PiTerminal = await accepted.finished;
+const input: PiPromptInput = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }] };
+void session.prompt(input, () => {});
+if (session.imageInput.kind === 'supported') void session.imageInput.api.mediaTypes;
 void [options, flash, missingModel, terminal];
 `);
   assert(!existsSync(join(consumer, 'node_modules/@ag-ui/core')), 'Core consumer has no SDK installed.');
@@ -236,7 +250,100 @@ void [options, missingModel];
 `);
   writeFileSync(join(consumer, 'opencode-types.json'), JSON.stringify({ ...consumerConfig, files: ['opencode-types.test.ts'] }));
   run(process.execPath, [compiler, '-p', 'opencode-types.json'], consumer);
-  writeFileSync(join(consumer, 'readiness-types.test.ts'), `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
+  function checkConsumer(name, source) {
+    writeFileSync(join(consumer, `${name}-types.test.ts`), source);
+    writeFileSync(join(consumer, `${name}-types.json`), JSON.stringify({ ...consumerConfig, files: [`${name}-types.test.ts`] }));
+    const files = run(process.execPath, [compiler, '-p', `${name}-types.json`, '--listFilesOnly'], consumer);
+    assert(!nativeSdkDeclarations.test(files), `${name} declarations remain independent of native SDK declarations.`);
+    run(process.execPath, [compiler, '-p', `${name}-types.json`], consumer);
+  }
+  checkConsumer('pi-host', `
+import type { PiHostOpenOptions, PiHostSessionState } from '${manifest.name}/host/pi';
+const snapshots: PiHostSessionState[] = [];
+const collect: PiHostOpenOptions['onState'] = state => snapshots.push(state);
+const persist: PiHostOpenOptions['onState'] = async state => snapshots.push(state);
+void [collect, persist];
+`);
+  checkConsumer('image', `
+import { parseHostImages, hostImageLimits } from '${manifest.name}';
+import type { HostImageInput, HostImageInputApi, HostPendingSet, HostRunInput } from '${manifest.name}';
+const image: HostImageInput = { mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' };
+const api: HostImageInputApi = hostImageLimits;
+declare const request: HostRunInput;
+const withImages: HostRunInput = { ...request, images: [image] };
+const parsed = parseHostImages(withImages.images, api);
+const invalid = parseHostImages(null, api);
+declare const pending: HostPendingSet;
+void [parsed, invalid, pending.calls, pending.approvals, api.maxImages];
+`);
+  checkConsumer('codex-host', `
+import { codexHostAdapter } from '${manifest.name}/host/codex';
+import type { CodexHostNativeConfig, CodexHostModel } from '${manifest.name}/host/codex';
+import type { HostAdapter, HostAdapterEvent, HostSegmentResult, InteractionContinuation } from '${manifest.name}';
+const config: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'on-request', approvalsReviewer: 'user', model: 'selected', effort: 'high', activity: 'items' };
+// @ts-expect-error The public host surface does not admit granular policy objects or strings.
+const invalid: CodexHostNativeConfig = { home: '/home', cwd: '/work', approvalPolicy: 'granular' };
+declare const adapter: HostAdapter;
+if (adapter.capabilities.imageInput.kind === 'supported') void adapter.capabilities.imageInput.api.maxBytes;
+void codexHostAdapter;
+declare const result: HostSegmentResult;
+declare const event: HostAdapterEvent;
+if (result.kind === 'pending') {
+  const approval = result.approvals[0];
+  if (approval) {
+    const answer: InteractionContinuation = { formatVersion: 1, kind: 'approval', target: approval.target, nativeChoiceId: approval.choices[0]!.nativeChoiceId };
+    void answer;
+  }
+}
+if (result.kind === 'failed') void result.nativeError?.source;
+if (event.kind === 'interaction-settled') void [event.target, event.settlement];
+if (adapter.capabilities.inspect.kind === 'supported') {
+  const pending = await adapter.capabilities.inspect.api.pending(new AbortController().signal);
+  if (pending.kind === 'ok') void [pending.value.calls, pending.value.approvals];
+}
+if (adapter.capabilities.models.kind === 'supported') {
+  const catalog = await adapter.capabilities.models.api.list(new AbortController().signal);
+  if (catalog.kind === 'ok') { const model: CodexHostModel | undefined = catalog.value[0]; void model?.inputModalities; }
+}
+const interrupted = await adapter.interrupt({ timeoutMs: 10 });
+if (interrupted.kind === 'unconfirmed-within-bound') void interrupted.evidence;
+void [config, invalid];
+`);
+  checkConsumer('cursor-text', `
+import { createCursorTextRuntime, CursorTextPolicyUnsupportedError } from '${manifest.name}/cursor';
+import type { CursorRuntime, CursorRuntimeOptions } from '${manifest.name}/cursor';
+const options: CursorRuntimeOptions = { cwd: '/work', sessionDirectory: '/private/text', apiKey: 'key', model: 'caller-model' };
+const runtime: CursorRuntime = createCursorTextRuntime(options);
+const code: 'cursor_policy_unsupported' = new CursorTextPolicyUnsupportedError().code;
+// @ts-expect-error Caller cannot enable tools.
+createCursorTextRuntime({ ...options, tools: ['shell'] });
+// @ts-expect-error Caller cannot select a sandbox policy.
+createCursorTextRuntime({ ...options, sandboxOptions: { enabled: true } });
+// @ts-expect-error Caller cannot choose a runtime policy.
+createCursorTextRuntime({ ...options, policy: 'generic' });
+void [runtime, code];
+`);
+  verifyCursorControlTypes(temporary, compiler);
+  checkConsumer('cursor-media', `
+import type { CursorRuntime, CursorRequest, CursorModel } from '${manifest.name}/cursor';
+declare const runtime: CursorRuntime;
+const request: CursorRequest = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} };
+const nativeModel: CursorModel = { id: 'native', displayName: 'Native' };
+if (runtime.imageInput.kind === 'supported') void runtime.imageInput.api.maxBytes;
+if (runtime.models.kind === 'supported') {
+  const result = await runtime.models.api.list(new AbortController().signal);
+  if (result.kind === 'ok') void result.value[0]?.aliases;
+}
+void [request, nativeModel];
+`);
+  checkConsumer('claude-media', `
+import type { ClaudeRuntime, ClaudeRequest } from '${manifest.name}/claude';
+declare const runtime: ClaudeRuntime;
+const request: ClaudeRequest = { text: 'describe', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} };
+if (runtime.imageInput.kind === 'supported') void runtime.imageInput.api.maxImages;
+void request;
+`);
+  checkConsumer('readiness', `import type { ReadinessRemediationCode, ReadinessReport, ReadinessSource } from '${manifest.name}';
 import type { CodexReadinessReport, CodexRuntime, CodexRuntimeOptions } from '${manifest.name}/codex';
 import type { ClaudeReadinessReport, ClaudeRuntime, ClaudeRuntimeOptions } from '${manifest.name}/claude';
 import type { PiReadinessReport, PiRuntime } from '${manifest.name}/pi';
@@ -295,70 +402,8 @@ const codexOnly: CodexReadinessReport = wide;
 wide.verdict = 'ready';
 void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, cursorReady, cursorBlocked, cursorReport, codexOnly, claudeOptions, codexOptions, cursorOptions, missingClaude, missingCodex, missingCursor];
 `);
-  writeFileSync(join(consumer, 'readiness-types.json'), JSON.stringify({ ...consumerConfig, files: ['readiness-types.test.ts'] }));
-  const readinessTypes = run(process.execPath, [compiler, '-p', 'readiness-types.json', '--listFilesOnly'], consumer);
-  assert(!/\/@(?:openai|anthropic-ai|earendil-works|cursor)\//.test(readinessTypes), 'Readiness declarations are usable without native SDK declarations.');
-  run(process.execPath, [compiler, '-p', 'readiness-types.json'], consumer);
 
-  // These two consumers execute the packed adapters, which load the Pi and Codex SDKs.
-  // The ordinary test preloads the tripwire and must not. `npm run verify:package` does not, and runs them.
-  function verifyPackagedNativeRuntimes() {
-    const piConsumer = join(temporary, 'pi');
-    mkdirSync(piConsumer);
-    writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-    process.stdout.write(runNpm([
-      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-      `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
-      `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
-    ], piConsumer));
-    writeFileSync(join(piConsumer, 'runtime.mjs'), `
-import assert from 'node:assert/strict';
-const pi = await import('${manifest.name}/pi');
-assert.equal(typeof pi.createPiRuntime, 'function');
-globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
-const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
-await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
-const runtime = await pi.createPiRuntime(options);
-try {
-  const session = await runtime.open();
-  assert.equal(typeof session.id, 'string');
-  assert.match(session.sessionFile, /\\.jsonl$/);
-} finally { await runtime.close(); }
-`);
-    run(process.execPath, ['runtime.mjs'], piConsumer);
-
-    const codexConsumer = join(temporary, 'codex');
-    mkdirSync(codexConsumer);
-    writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-    process.stdout.write(runNpm([
-      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-      `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
-    ], codexConsumer));
-    const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
-    writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
-    writeFileSync(join(codexConsumer, 'runtime.mjs'), `
-import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
-import { createCodexRuntime } from '${manifest.name}/codex';
-const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'caller-selected-model',
-  codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
-try {
-  assert.equal((await runtime.readinessReport()).verdict, 'ready');
-  const turn = await runtime.start({ text: 'packaged', onEvent() {} });
-  assert.equal(turn.threadId, '${fixtureId}');
-  assert.equal((await turn.finished).outcome, 'completed');
-  const { args } = JSON.parse(readFileSync('args.json', 'utf8'));
-  assert.equal(args[args.indexOf('--model') + 1], 'caller-selected-model');
-} finally { await runtime.close(); }
-`);
-    run(process.execPath, ['runtime.mjs'], codexConsumer);
-  }
-
-  if (process.execArgv.some((arg) => arg.includes('native-sdk-tripwire'))) {
-    console.log('Skipping packaged Pi and Codex runtime consumers while the native SDK tripwire is loaded.');
-  } else {
-    verifyPackagedNativeRuntimes();
-  }
+  // Packed native runtime behavior is verified only by test:native-isolated.
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });
@@ -639,4 +684,71 @@ try {
   console.log(`Verified ${manifest.name}@${manifest.version} with ${process.version} on ${process.platform}.`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
+}
+
+/** Compile the real boundary against cloned declarations, never against a handwritten SDK stand-in. */
+function verifyCursorControlTypes(temporary, compiler) {
+  const clone = join(temporary, 'cursor-sdk-declarations');
+  const source = join(root, 'node_modules/@cursor/sdk/dist/esm');
+  cpSync(source, clone, { recursive: true, filter: path => !/\.(?:js|map)$/.test(path) });
+  writeFileSync(join(clone, 'package.json'), JSON.stringify({ type: 'module' }));
+  const config = join(temporary, 'cursor-control-types.json');
+  writeFileSync(config, JSON.stringify({ compilerOptions: {
+    target: 'ES2022', lib: ['ES2024'], module: 'NodeNext', moduleResolution: 'NodeNext',
+    strict: true, noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true, verbatimModuleSyntax: true,
+    skipLibCheck: true, noEmit: true, types: ['node'], typeRoots: [join(root, 'node_modules/@types')],
+    paths: { '@cursor/sdk': [join(clone, 'index.d.ts')], '#switchboard': [join(root, 'dist/index.d.ts')] },
+  }, files: [join(root, 'adapters/cursor/src/sdk.ts')] }));
+  const compile = extra => spawnSync(process.execPath, [compiler, '-p', config, '--pretty', 'false', ...extra],
+    { encoding: 'utf8', maxBuffer: 16 << 20 });
+  const baseline = compile([]);
+  assert.equal(baseline.status, 0, `Cursor declaration fixture baseline must compile: ${baseline.stdout}${baseline.stderr}`);
+  const resolved = compile(['--listFilesOnly', '--traceResolution']);
+  assert.equal(resolved.status, 0, resolved.stdout + resolved.stderr);
+  const optionsPath = join(clone, 'options.d.ts');
+  assert(resolved.stdout.includes(optionsPath), 'The cloned options declaration must participate.');
+  assert(!resolved.stdout.includes(join(source, 'options.d.ts')), 'Installed SDK options cannot participate.');
+  const imports = [...resolved.stdout.matchAll(/Module name '@cursor\/sdk' was successfully resolved to '([^']+)'/g)];
+  assert(imports.length > 0, 'Compiler must report actual SDK resolution.');
+  for (const match of imports) assert.equal(match[1], join(clone, 'index.d.ts'));
+  const files = resolved.stdout.split('\n').filter(line => line.startsWith('/') && line.endsWith('.d.ts'));
+  assert(files.includes(optionsPath), 'The mutated options file must be in the actual compiler source-file list.');
+  assert(files.every(path => !path.includes('/@cursor/sdk/') || path.startsWith(clone + sep)), 'No installed SDK declarations may participate.');
+  const original = readFileSync(optionsPath, 'utf8');
+  const controls = {
+    AgentOptions: ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local'],
+    LocalAgentOptions: ['cwd', 'store', 'settingSources', 'sandboxOptions', 'enableAgentRetries', 'fs',
+      'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'],
+  };
+  for (const [name, fields] of Object.entries(controls)) for (const field of fields) {
+    const start = original.indexOf(`export interface ${name} {`);
+    assert(start >= 0);
+    const next = original.indexOf('\nexport ', start + 1);
+    const end = next < 0 ? original.length : next;
+    const section = original.slice(start, end);
+    const property = new RegExp(`^    ${field}\\?:[^;]+;\\r?\\n`, 'm');
+    assert(property.test(section), `Exactly located ${name}.${field}`);
+    const changed = section.replace(property, '');
+    writeFileSync(optionsPath, original.slice(0, start) + changed + original.slice(end));
+    const result = compile([]), output = result.stdout + result.stderr;
+    assert.notEqual(result.status, 0, `Removing ${name}.${field} must fail the real boundary.`);
+    assert.doesNotMatch(output, /TS(?:2307|2688|6053|5012|5083):/, 'Setup errors cannot prove a control omission.');
+    const diagnostics = output.split('\n').filter(line => /sdk\.ts\(\d+,\d+\): error TS/.test(line));
+    assert(diagnostics.some(line => line.includes(`'${field}'`) || line.includes(`"${field}"`)),
+      `A boundary diagnostic must name removed ${field}: ${output}`);
+    writeFileSync(optionsPath, original);
+  }
+  const stubsPath = join(clone, 'stubs.d.ts');
+  assert(files.includes(stubsPath), 'The cloned resume declaration must participate.');
+  const stubs = readFileSync(stubsPath, 'utf8');
+  const resumeSignature = 'options?: Partial<AgentOptions>';
+  assert(stubs.includes(resumeSignature));
+  writeFileSync(stubsPath, stubs.replace(resumeSignature, "options?: Omit<Partial<AgentOptions>, 'tools'>"));
+  try {
+    const result = compile([]), output = result.stdout + result.stderr;
+    assert.notEqual(result.status, 0, 'A resume-only loss of tools must fail the real boundary.');
+    assert.doesNotMatch(output, /TS(?:2307|2688|6053|5012|5083):/);
+    assert(output.split('\n').some(line => /sdk\.ts\(\d+,\d+\): error TS/.test(line) && (line.includes("'tools'") || line.includes('"tools"'))), output);
+  } finally { writeFileSync(stubsPath, stubs); }
+  console.log('PASS Cursor control omission: cloned SDK baseline, 17 required fields and resume-only tools');
 }

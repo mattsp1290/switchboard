@@ -71,7 +71,7 @@ test('a resumed successful io_uring_setup is a violation', () => {
   assert.deepEqual(result.kinds, ['io_uring']);
 });
 
-test('a refused execve resume stays pending until a later success', () => {
+test('a refused execve is final and an extra resume fails closed', () => {
   const refused = judge(
     '5 execve("/bin/sh", ["/bin/sh"], 0x6 /* 3 vars */ <unfinished ...>',
     '5 <... execve resumed>) = -1 ENOENT (No such file or directory)',
@@ -84,9 +84,9 @@ test('a refused execve resume stays pending until a later success', () => {
     '5 <... execve resumed>) = -1 ENOENT (No such file or directory)',
     '5 <... execve resumed>) = 0',
     '5 +++ exited with 0 +++');
-  assert.deepEqual(accepted.kinds, ['launch']);
+  assert.deepEqual(accepted.kinds, ['trace']);
   assert.equal(accepted.refused, 1);
-  assert.equal(accepted.launches, 2);
+  assert.equal(accepted.launches, 1);
 });
 
 test('an unfinished execve whose result is never recorded counts as a launch', () => {
@@ -139,4 +139,117 @@ test('execve arguments keep escaped quotes and reject abbreviated arrays', () =>
   assert.deepEqual(execArguments('execve("/a", ["/a", "x=\\"y\\""], 0x1 /* 1 var */) = 0'), { file: '/a', argv: ['/a', 'x=\\"y\\"'] });
   assert.equal(execArguments('execve("/a", ["/a", ...], 0x1) = 0'), null);
   assert.equal(execArguments('execve("/a", 0x1234, 0x1) = 0'), null);
+});
+
+for (const diagnostic of ['???()                             = ?', '???( <unfinished ...>']) {
+  test(`strace register-read failure requires the same task's immediate terminal record: ${diagnostic}`, () => {
+    const result = judge('2 openat(AT_FDCWD</stage>, "/stage/a", O_RDONLY) = 3</stage/a>',
+      `2 ${diagnostic}`, '3 +++ exited with 0 +++', '2 +++ killed by SIGKILL +++');
+    assert.deepEqual(result.violations, []);
+    assert.equal(result.terminalDiagnostics, 1);
+  });
+  test(`an unreadable task that continues or lacks its terminal record fails: ${diagnostic}`, () => {
+    assert.deepEqual(judge(`2 ${diagnostic}`).kinds, ['trace']);
+    assert.deepEqual(judge(`2 ${diagnostic}`, '2 getpid() = 2', '2 +++ exited with 0 +++').kinds, ['trace']);
+    assert.deepEqual(judge(`2 ${diagnostic}`, '2 --- SIGTERM {si_signo=SIGTERM} ---', '2 +++ killed by SIGTERM +++').kinds, ['trace']);
+    assert.deepEqual(judge(`2 ${diagnostic}`, '2 +++ superseded by execve in pid 3 +++', '2 +++ exited with 0 +++').kinds, ['trace']);
+    for (const extra of ['getpid() = 2', '<... getpid resumed>) = 2', '+++ exited with 0 +++']) {
+      assert.deepEqual(judge(`2 ${diagnostic}`, '2 +++ killed by SIGKILL +++', `2 ${extra}`).kinds, ['trace']);
+    }
+    assert.deepEqual(judge(`2 ${diagnostic}`, '3 +++ superseded by execve in pid 2 +++',
+      '3 +++ exited with 0 +++', '2 +++ killed by SIGKILL +++').kinds, ['trace']);
+  });
+}
+
+test('terminal diagnostics cannot hide forbidden activity or arbitrary unreadable syscalls', () => {
+  for (const body of ['???(123) = ?', '???() = 0', '???() = ? trailing', '???( <unavailable>) = ?', '???()\t= ?', '???()\u00a0= ?']) {
+    assert.deepEqual(judge(`2 ${body}`, '2 +++ killed by SIGKILL +++').kinds, ['trace'], body);
+  }
+  for (const [kind, call] of [
+    ['network', '2 connect(3, {sa_family=AF_INET}, 16) = -1 EPERM (Operation not permitted)'],
+    ['decoy', '2 openat(AT_FDCWD, "/home/switchboard-decoy/.netrc", O_RDONLY) = 3'],
+    ['launch', '2 execve("/bin/true", ["/bin/true"], 0x1 /* 3 vars */) = 0'],
+  ]) {
+    const result = judge(call, '2 ???() = ?', '2 +++ killed by SIGKILL +++');
+    assert(result.kinds.includes(kind));
+  }
+  assert.deepEqual(judge('1 ???() = ?', '1 getpid() = 1').kinds, ['trace']);
+  assert(judge('2 execve("/bin/true", ["/bin/true"], 0x1 /* 3 vars */ <unfinished ...>',
+    '2 ???() = ?', '2 +++ killed by SIGKILL +++').kinds.includes('launch'));
+  assert(judge('2 io_uring_setup(32, {flags=0} <unfinished ...>',
+    '2 ???() = ?', '2 +++ killed by SIGKILL +++').kinds.includes('io_uring'));
+  assert.deepEqual(judge('2 ???() = ?', '2 +++ exited with 9 +++').violations, []);
+  assert.deepEqual(judge('2 +++ exited with 0 +++', '2 ???() = ?').kinds, ['trace']);
+});
+
+test('supersession cannot revive an ended thread', () => {
+ assert.equal(judge('2 +++ killed by SIGKILL +++', '3 +++ superseded by execve in pid 2 +++', '3 +++ exited with 0 +++').ok, false);
+});
+test('an io_uring resume cannot discharge another task pending call', () => {
+ assert.equal(judge('2 io_uring_setup(32, {flags=0} <unfinished ...>', '2 +++ killed by SIGKILL +++', '3 <... io_uring_setup resumed>) = -1 EPERM (Operation not permitted)', '3 +++ exited with 0 +++').ok, false);
+});
+test('register loss cannot resolve an unfinished exec', () => {
+ assert.equal(judge('2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x2 /* 3 vars */ <unfinished ...>', '2 ???() = ?', '2 +++ killed by SIGKILL +++').ok, false);
+});
+
+test('named and resumed unavailable-register diagnostics fail closed',()=>{
+ for(const lines of [
+  ['2 openat(AT_FDCWD, "/stage/file", O_RDONLY) = ? <unavailable>','2 +++ killed by SIGKILL +++'],
+  ['2 openat(AT_FDCWD, "/stage/file", O_RDONLY <unfinished ...>','2 <... openat resumed>) = ? <unavailable>','2 +++ killed by SIGKILL +++'],
+ ])assert.equal(judge(...lines).ok,false);
+});
+
+test('supersession preserves the old leader exec and io_uring evidence',()=>{
+ const thread='3 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x3 /* 3 vars */ <unfinished ...>';
+ const replacement=['2 +++ superseded by execve in pid 3 +++','2 <... execve resumed>) = 0'];
+ const forbidden=judge('2 execve("/bin/sh", ["/bin/sh"], 0x2 /* 3 vars */ <unfinished ...>',thread,...replacement,'2 +++ exited with 0 +++');assert(forbidden.violations.some(v=>v.kind==='launch'));
+ const counted=judge('2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x2 /* 3 vars */ <unfinished ...>',thread,...replacement,'2 +++ exited with 0 +++');assert.equal(counted.launches,3);
+ const io=judge('2 io_uring_setup(32, {flags=0} <unfinished ...>',thread,...replacement,'2 io_uring_setup(32, {flags=0} <unfinished ...>','2 <... io_uring_setup resumed>) = -1 EPERM (Operation not permitted)','2 +++ exited with 0 +++');assert(io.violations.some(v=>v.kind==='io_uring'));
+});
+test('the trusted bootstrap exception admits only the first exact raw-pointer exec',()=>{
+ const raw='1 execve(0x1000, 0x2000, 0x3000) = 0';const run=lines=>{const verdict=createVerdict({...policy,trustedBootstrap:true});for(const line of lines)verdict.line(line);return verdict.finish();};assert.equal(run([raw,end]).violations.length,0);assert(run([raw,'2 execve(0x4000, 0x5000, 0x6000) = 0','2 +++ exited with 0 +++',end]).violations.some(v=>v.kind==='trace'));assert(run([raw.replace('= 0','= -1 EIO (Input/output error)'),end]).violations.some(v=>v.kind==='trace'));
+});
+
+test('unknown exec resumes and split network destinations fail closed',()=>{
+ const orphan=judge('2 <... execve resumed>) = 0','2 +++ exited with 0 +++');assert(orphan.violations.some(v=>v.kind==='trace'));
+ const split=judge('2 sendmmsg(4<socket:[1]>, <unfinished ...>','2 <... sendmmsg resumed>[{msg_hdr={msg_name={sa_family=AF_INET, sin_port=htons(443)}}}], 1, 0) = 1','2 +++ exited with 0 +++');assert(split.violations.some(v=>v.kind==='network'));
+ const changed=judge('3 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x3 /* 3 vars */ <pid changed to 2 ...>','2 +++ superseded by execve in pid 3 +++','2 <... execve resumed>) = 0','2 +++ exited with 0 +++');assert.deepEqual(changed.violations,[]);assert.equal(changed.launches,2);
+});
+test('raw bootstrap exec needs the explicit trusted gate and a completed exact result',()=>{
+ for(const trustedBootstrap of [undefined,false]){const verdict=createVerdict({...policy,trustedBootstrap});verdict.line('1 execve(0x1000, 0x2000, 0x3000) = 0');verdict.line(end);assert.deepEqual(verdict.finish().kinds,['trace']);}
+ const verdict=createVerdict({...policy,trustedBootstrap:true});verdict.line('1 execve(0x1000, 0x2000, 0x3000 <unfinished ...>');verdict.line(end);assert.deepEqual(verdict.finish().kinds,['trace']);
+});
+
+
+test('complete exec identity requires environment and result syntax', () => {
+  for (const suffix of ['', ', 0x1', ', 0x1 /* 3 vars */', ', 0x1 /* 3 vars */) = ?', ', 0x1 /* 3 vars */) = 0 trailing']) {
+    const result = judge('2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"]' + suffix, '2 +++ exited with 0 +++');
+    assert(result.kinds.includes('trace'));
+  }
+});
+test('supersession requires the replacing exec and its actual destination', () => {
+  assert(judge('2 +++ superseded by execve in pid 3 +++', '2 +++ exited with 0 +++').kinds.includes('trace'));
+  assert(judge('3 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x3 /* 3 vars */ <pid changed to 4 ...>', '2 +++ superseded by execve in pid 3 +++', '2 <... execve resumed>) = 0', '2 +++ exited with 0 +++').kinds.includes('trace'));
+});
+
+
+test('known exec exit-stop markers require the next same-task kill', () => {
+  for (const records of [
+    ['2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x2 /* 3 vars */) = ?'],
+    ['2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x2 /* 3 vars */ <unfinished ...>', '2 <... execve resumed>) = ?'],
+  ]) {
+    const killed = judge(...records, '2 +++ killed by SIGKILL +++'); assert.equal(killed.ok, true); assert.equal(killed.launches, 2);
+    assert.equal(judge(...records, '2 getpid() = 2', '2 +++ killed by SIGKILL +++').ok, false);
+    assert.equal(judge(...records, '2 +++ exited with 0 +++').ok, false);
+  }
+});
+test('duplicate unresolved exec cannot erase an earlier forbidden launch', () => {
+  const first = '2 execve("/bin/sh", ["/bin/sh"], 0x2 /* 3 vars */ <unfinished ...>';
+  for (const second of ['2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x2 /* 3 vars */) = 0', '2 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x2 /* 3 vars */ <unfinished ...>']) {
+    const result = judge(first, second, '2 +++ exited with 0 +++'); assert.equal(result.ok, false); assert(result.kinds.includes('launch'));
+  }
+});
+test('successful supersession cannot later become a refused exec', () => {
+  const result = judge('3 execve("/usr/local/bin/node", ["node", "/stage/fixture.mjs"], 0x3 /* 3 vars */ <pid changed to 2 ...>', '2 +++ superseded by execve in pid 3 +++', '2 <... execve resumed>) = -1 ENOENT (No such file or directory)', '2 +++ exited with 0 +++');
+  assert.equal(result.ok, false); assert(result.kinds.includes('trace'));
 });

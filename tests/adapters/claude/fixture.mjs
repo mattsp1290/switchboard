@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import readline from 'node:readline';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 const config = JSON.parse(readFileSync('fixture.json', 'utf8'));
-writeFileSync('observed.json', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
 if (config.mode === 'stubborn' || config.mode === 'stubborn-init' || config.mode?.endsWith('-hold')) {
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
 }
+writeFileSync('observed.json.tmp', JSON.stringify({ args: process.argv, env: process.env, pid: process.pid }));
+renameSync('observed.json.tmp', 'observed.json');
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const id = config.id ?? '12345678-1234-1234-1234-123456789abc';
 function requestedModel(argv) {
@@ -20,10 +21,18 @@ function frameModel(field) {
 let sent = false;
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const frame = JSON.parse(line);
+  if (config.mode === 'images' && frame.type === 'user') {
+    writeFileSync('user-frame.json', JSON.stringify(frame));
+    send({ type: 'assistant', session_id: id, parent_tool_use_id: null,
+      message: { id: 'image-result', model: frameModel('assistantModel'), content: [{ type: 'text', text: 'image received' }] } });
+    send({ type: 'result', subtype: 'success', is_error: false, session_id: id });
+    continue;
+  }
   if (frame.type !== 'control_request' || sent) continue;
   sent = true;
   send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response: {} } });
   send({type:'system',subtype:'init',session_id:id,model:frameModel('initModel'),apiKeySource:'ANTHROPIC_API_KEY',tools:[],mcp_servers:[]});
+  if (config.mode === 'images') continue;
   if (config.mode === 'init-only' || config.mode === 'stubborn-init') continue;
   if (config.mode === 'missing') { send({type:'result',subtype:'error_during_execution',is_error:true,session_id:id}); continue; }
   if (config.mode === 'stream-rich') {

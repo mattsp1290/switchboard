@@ -580,7 +580,7 @@ test('a routed execution binds create and resume to the route principal, turns, 
     { kind: 'error', error: { code: 'binding-mismatch' } });
   // A route that the app-server does not report, or an invalid route, never binds.
   const unrouted = await open(t, real, appServer(t, w, { account: routed.account }), writers, { route });
-  assert.deepEqual(await unrouted.create(access), { kind: 'error', error: { code: 'inaccessible' } });
+  assert.deepEqual(await unrouted.create(access), { kind: 'error', error: { code: 'inaccessible', beforeEntry: true } });
   const bad = await real.openCodexExecution({ channel: appServer(t, w).channel, transport, bounds, home, writers, initialize: {},
     onServerRequest: () => ({}), signal: new AbortController().signal, processExit: new Promise(() => {}),
     route: { ...route, endpoint: 'http://127.0.0.1:4000' } });
@@ -754,7 +754,7 @@ test('late cleanup from generation A cannot release or close replacement B', asy
   f.sink.ended('process-exit');
   await settle();
   assert.equal(writers.held(), 1, 'B keeps its reservation');
-  assert.deepEqual(await a.resume({ ...access, binding, reference: reference(id) }), { kind: 'error', error: { code: 'closed' } });
+  assert.deepEqual(await a.resume({ ...access, binding, reference: reference(id) }), { kind: 'error', error: { code: 'closed', beforeEntry: true } });
   const turn = await turnOn(replacement);
   assert.equal((await turn.completion).kind, 'terminal', 'B transport still open');
   assert.equal(g.detached, 0);
@@ -1096,8 +1096,8 @@ test('session and execution close are idempotent shared cleanups and reject new 
   assert.equal(execution.close(), done);
   assert.deepEqual((await done).retained, 2, 'closed sessions stay loaded until process exit');
   assert.equal(writers.held(), 2);
-  assert.deepEqual(await execution.create(access), { kind: 'error', error: { code: 'closed' } });
-  assert.deepEqual(await execution.resume({ ...access, binding, reference: reference(first) }), { kind: 'error', error: { code: 'closed' } });
+  assert.deepEqual(await execution.create(access), { kind: 'error', error: { code: 'closed', beforeEntry: true } });
+  assert.deepEqual(await execution.resume({ ...access, binding, reference: reference(first) }), { kind: 'error', error: { code: 'closed', beforeEntry: true } });
   assert.equal(f.sent.filter((method) => method === 'thread/unsubscribe').length, 2, 'each session cleaned once');
   assert.equal(f.detached, 1);
 });
@@ -1109,7 +1109,7 @@ test('maxSessions and writer capacity bound opens without leaking reservations',
   const f = appServer(t, w);
   const one = await open(t, real, f, writers, { bounds: { ...bounds, maxSessions: 1 } });
   const kept = await resumed(one, ids[0]);
-  assert.deepEqual(await one.resume({ ...access, binding, reference: reference(ids[1]) }), { kind: 'error', error: { code: 'capacity' } });
+  assert.deepEqual(await one.resume({ ...access, binding, reference: reference(ids[1]) }), { kind: 'error', error: { code: 'capacity', beforeEntry: true } });
   assert.equal(writers.held(), 1, 'a capacity refusal on the execution leaks no reservation');
   const two = await open(t, real, appServer(t, w), writers);
   await resumed(two, ids[1]);
@@ -1164,7 +1164,7 @@ test('interrupt cancels a streaming turn without closing the session, releasing 
   const f = appServer(t, w, { turn: streaming });
   const execution = await open(t, real, f, writers);
   const session = await resumed(execution, id);
-  assert.equal(await session.interrupt(), 'not-needed', 'no active turn');
+  assert.equal((await session.interrupt()).step, 'not-needed', 'no active turn');
   const events = collect(session.events);
   const turn = await turnOn(session);
   await turn.run();
@@ -1174,10 +1174,10 @@ test('interrupt cancels a streaming turn without closing the session, releasing 
   await settle();
   assert.equal(f.sent.includes('turn/interrupt'), false, 'observer detach is not cancellation');
   const [first, second] = await Promise.all([session.interrupt(), session.interrupt()]);
-  assert.deepEqual([first, second], ['replied', 'replied']);
+  assert.deepEqual([first.step, second.step], ['replied', 'replied']);
   assert.equal((await turn.completion).terminal.status, 'interrupted');
   assert.ok(events.some((event) => event.kind === 'text-delta'));
-  assert.equal(await session.interrupt(), 'not-needed', 'after the terminal');
+  assert.equal((await session.interrupt()).step, 'not-needed', 'after the terminal');
   assert.equal(writers.held(), 1);
   const next = await turnOn(session, 'after');
   await next.run();
@@ -1195,7 +1195,7 @@ test('an interrupt that expires before the turn is identified does not stop clos
   const turn = await turnOn(session);
   const running = turn.run();
   while (!f.sent.includes('turn/start')) await settle();
-  assert.equal(await session.interrupt(), 'not-needed', 'deadline spent before the turn had a native id');
+  assert.equal((await session.interrupt()).step, 'not-needed', 'deadline spent before the turn had a native id');
   assert.equal(f.sent.includes('turn/interrupt'), false);
   acknowledged.open();
   await running;
@@ -1218,7 +1218,7 @@ test('close that joins a waiting interrupt keeps its own deadline for a turn ide
   const interrupting = session.interrupt();
   await delay(200);
   const closing = session.close();
-  assert.equal(await interrupting, 'not-needed', 'the earlier deadline ran out before the turn had a native id');
+  assert.equal((await interrupting).step, 'not-needed', 'the earlier deadline ran out before the turn had a native id');
   await delay(50);
   acknowledged.open();
   await running;
@@ -1239,7 +1239,165 @@ test('close reuses an in-flight interrupt and never sends a second turn/interrup
   while (!f.sent.includes('turn/interrupt')) await settle();
   const closing = session.close();
   gated.open();
-  assert.equal(await interrupting, 'replied');
+  assert.equal((await interrupting).step, 'replied');
   assert.deepEqual(await closing, { interrupt: 'replied', unsubscribe: 'replied', released: false });
   assert.equal(f.sent.filter((method) => method === 'turn/interrupt').length, 1);
+});
+
+test('channel exit attestation survives EOF selected before ordered intake', async t => {
+ const writers=real.createCodexWriters(4);const f=appServer(t,world());const execution=await open(t,real,f,writers);const created=await execution.create(access);assert.equal(created.kind,'ok');assert.equal(writers.held(),1);
+ assert.equal(created.value.intake({notification(){f.exit();}}).kind,'ok');
+ f.notify('fixture/exit',{threadId:created.value.threadId});f.sink.ended('eof');await settle();
+ assert.equal((await execution.close()).transport.reason,'eof');assert.equal(execution.processExited(),true);assert.equal(writers.held(),0);
+});
+
+test('a closing notification after a start reply cannot admit a new session', async t => {
+ const writers=real.createCodexWriters(4);const f=appServer(t,world());const execution=await open(t,real,f,writers);const first=await execution.create(access);assert.equal(first.kind,'ok');assert.equal(first.value.intake({notification(){f.sink.ended('eof');}}).kind,'ok');
+ const read=f.sink.data;let armed=true;f.sink.data=bytes=>{const frame=JSON.parse(Buffer.from(bytes).toString());if(armed&&frame.result?.thread){armed=false;read(Buffer.concat([Buffer.from(bytes),Buffer.from(JSON.stringify({method:'fixture/close',params:{threadId:first.value.threadId}})+'\n')]));}else read(bytes);};
+ const second=await execution.create(access);assert.equal(second.kind,'error');assert.equal(second.error.code,'closed');assert.equal(writers.held(),1);assert.equal((await execution.close()).transport.reason,'eof');
+});
+
+test('a wire fault notification after a start reply cannot admit a new session', async t => {
+ const writers=real.createCodexWriters(4);const f=appServer(t,world());const execution=await open(t,real,f,writers);const first=await execution.create(access);assert.equal(first.kind,'ok');assert.equal(first.value.intake({notification(){f.sink.data(Buffer.from('{}\n'));}}).kind,'ok');
+ const read=f.sink.data;let armed=true;f.sink.data=bytes=>{const frame=JSON.parse(Buffer.from(bytes).toString());if(armed&&frame.result?.thread){armed=false;read(Buffer.concat([Buffer.from(bytes),Buffer.from(JSON.stringify({method:'fixture/close',params:{threadId:first.value.threadId}})+'\n')]));}else read(bytes);};
+ const second=await execution.create(access);assert.equal(second.kind,'error');assert.equal(second.error.code,'closed');assert.equal(writers.held(),1);assert.equal((await execution.close()).transport.reason,'invalid-envelope');
+});
+
+for(const method of ['thread/start','thread/resume'])test(`nested microtask EOF cannot admit ${method}`,async t=>{
+ const id=randomUUID();const writers=real.createCodexWriters(4);const f=appServer(t,world(id));const execution=await open(t,real,f,writers);const read=f.sink.data;const write=f.channel.write;let target;
+ f.channel.write=bytes=>{const frame=JSON.parse(Buffer.from(bytes));if(frame.method===method)target=frame.id;return write(bytes);};
+ f.sink.data=bytes=>{const frame=JSON.parse(Buffer.from(bytes));read(bytes);if(frame.id===target)queueMicrotask(()=>queueMicrotask(()=>f.sink.ended('eof')));};
+ const result=method==='thread/start'?await execution.create(access):await execution.resume({...access,binding,reference:reference(id)});assert.equal(result.kind,'error');assert.equal(result.error.code,'closed');assert.equal(writers.held(),Number(method==='thread/resume'));f.exit();await settle();assert.equal(writers.held(),0);assert.equal((await execution.close()).transport.reason,'eof');
+});
+
+for(const hook of ['hostOperationId','publish','maxFrameBytes','iterator'])test(`turn admission rechecks shutdown after ${hook} caller getter`,async t=>{
+ const f=appServer(t,world());const execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);assert.equal(created.kind,'ok');let intents=0;
+ const request={hostOperationId:'reentrant',input:[...input],signal:new AbortController().signal,recordIntent(){intents++;}};
+ if(hook==='publish'){request.lifecycle=Object.defineProperty({},'publish',{get(){f.sink.ended('eof');return ()=>{};}});}
+ else if(hook==='iterator'){Object.defineProperty(request.input,Symbol.iterator,{get(){f.sink.ended('eof');return Array.prototype[Symbol.iterator];}});}
+ else Object.defineProperty(request,hook,{get(){f.sink.ended('eof');return hook==='hostOperationId'?'reentrant':undefined;}});
+ const result=created.value.turn(request);assert.equal(result.kind,'error');assert.equal(result.error.code,'closed');await settle();assert.equal(intents,0);assert.equal(f.sent.filter(method=>method==='turn/start').length,0);
+});
+
+test('a caller getter cannot replace a turn already claimed by its reentrant call',async t=>{
+ const f=appServer(t,world());const execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);assert.equal(created.kind,'ok');let inner;let outerIntents=0;
+ const request={get hostOperationId(){inner=created.value.turn({hostOperationId:'inner',input,signal:new AbortController().signal,recordIntent(){}});return 'outer';},input,signal:new AbortController().signal,recordIntent(){outerIntents++;}};
+ const outer=created.value.turn(request);assert.equal(inner.kind,'ok');assert.equal(outer.kind,'error');assert.equal(outer.error.code,'busy');await inner.value.completion;assert.equal(outerIntents,0);assert.equal(f.sent.filter(method=>method==='turn/start').length,1);
+});
+
+test('parsed terminal survives a throwing intake projection', async t => {
+ const w=world(),f=appServer(t,w,{turn:hold});const execution=await open(t,real,f,real.createCodexWriters(4));const {value:session}=await execution.create(access);
+ const turn=await turnOn(session);await turn.run();
+ session.intake({turnEvent(event){if(event.kind==='turn-completed')throw new Error('projection');}});
+ f.complete(session.threadId,w.threads.get(session.threadId).writer.turnId);
+ assert.equal((await turn.completion).kind,'terminal');
+});
+test('joined interrupt respects the joining close deadline', async t => {
+ const id=randomUUID(),w=world(id),f=appServer(t,w,{turn:hold});const execution=await open(t,real,f,real.createCodexWriters(4),{bounds:{...bounds,cleanupTimeoutMs:30}});const session=await resumed(execution,id);
+ const turn=await turnOn(session);await turn.run();const held=f.hold('turn/interrupt');const first=session.interrupt({signal:new AbortController().signal});
+ while(!f.sent.includes('turn/interrupt'))await settle();
+ let timedOut=false;const closing=session.close();const result=await Promise.race([closing,new Promise(resolve=>setTimeout(()=>{timedOut=true;resolve();},150))]);
+ held.open();await first;await closing;
+ assert.equal(timedOut,false,'close must honor its independent bound');assert.equal(result.interrupt,'uncertain');assert.equal(f.sent.filter(x=>x==='turn/interrupt').length,1);
+});
+
+for (const fault of ['notification','turn-accepted','text-delta']) test(`parsed facts survive ${fault} intake failure`,async t=>{
+ const w=world(),f=appServer(t,w,{turn:hold}),execution=await open(t,real,f,real.createCodexWriters(4)),{value:session}=await execution.create(access);
+ const held=f.hold('turn/start'),turn=await turnOn(session),running=turn.run();while(!f.sent.includes('turn/start'))await settle();const requestId=f.last.id,turnId=randomUUID();
+ session.intake(fault==='notification'?{notification(method){if(method==='turn/completed')throw new Error('projection');}}:{turnEvent(event){if(event.kind===fault)throw new Error('projection');}});
+ if(fault==='notification'){f.sink.data(Buffer.from(JSON.stringify({id:requestId,result:{turn:{id:turnId,status:'inProgress'}}})+'\n'));held.open('drop');await running;}
+ f.notify('item/agentMessage/delta',{threadId:session.threadId,turnId,itemId:'early',delta:'kept'});f.notify('turn/completed',{threadId:session.threadId,turn:{id:turnId,status:'completed',error:null}});await settle();
+ if(fault!=='notification'){f.sink.data(Buffer.from(JSON.stringify({id:requestId,result:{turn:{id:turnId,status:'inProgress'}}})+'\n'));held.open('drop');await running;}assert.equal((await turn.completion).kind,'terminal');
+});
+for (const kind of ['result','error','abort-first']) test(`interrupt preserves ${kind} evidence in the cancellation stack`,async t=>{
+ const id=randomUUID(),w=world(id),f=appServer(t,w,{turn:hold}),execution=await open(t,real,f,real.createCodexWriters(4)),session=await resumed(execution,id),turn=await turnOn(session);await turn.run();const held=f.hold('turn/interrupt'),control=new AbortController(),waiting=session.interrupt({signal:control.signal});while(!f.sent.includes('turn/interrupt'))await settle();const requestId=f.last.id;
+ if(kind==='abort-first')control.abort();f.sink.data(Buffer.from(JSON.stringify(kind==='error'?{id:requestId,error:{code:-32001,message:'preserved rejection'}}:{id:requestId,result:{}})+'\n'));if(kind!=='abort-first')control.abort();held.open('drop');const result=await waiting;f.complete(id,w.threads.get(id).writer.turnId,'interrupted');
+ assert.equal(result.step,kind==='error'?'rejected':kind==='result'?'replied':'uncertain');if(kind==='error')assert.deepEqual(result.rejection,{code:-32001,message:'preserved rejection'});
+});
+
+test('a closed session cannot match new interactions on an unresolved native turn',async t=>{
+ const w=world(),f=appServer(t,w,{turn:hold}),execution=await open(t,real,f,real.createCodexWriters(4),{bounds:{...bounds,cleanupTimeoutMs:20}});const created=await execution.create(access);assert.equal(created.kind,'ok');const session=created.value;const turn=await turnOn(session);await turn.run();const turnId=w.threads.get(session.threadId).writer.turnId;const held=f.hold('turn/interrupt');await session.close();assert.equal(await session.matchesTurn(turnId,access.signal),false);held.open();f.exit();await turn.completion;
+});
+
+test('session close installs its shared promise before intent abort callbacks',async t=>{
+ const w=world(),f=appServer(t,w),execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);assert.equal(created.kind,'ok');const session=created.value;let nested;let captured=false;const intent=gate();const started=session.turn({hostOperationId:'reentrant-close',input,signal:access.signal,recordIntent(_identity,signal){captured=true;signal.addEventListener('abort',()=>{nested=session.close();intent.open();},{once:true});return intent.promise;}});assert.equal(started.kind,'ok');const running=started.value.run();while(!captured)await settle();const closed=session.close();assert.equal(closed,nested);await closed;await running;assert.equal(f.sent.filter(method=>method==='thread/unsubscribe').length,1);
+});
+test('already-aborted interrupt never claims uncertain native entry',async t=>{
+ const w=world(),f=appServer(t,w,{turn:hold}),execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);const turn=await turnOn(created.value);await turn.run();const interrupted=await created.value.interrupt({signal:AbortSignal.abort()});assert.equal(interrupted.step,'not-needed');assert.equal(f.sent.includes('turn/interrupt'),false);f.complete(created.value.threadId,w.threads.get(created.value.threadId).writer.turnId);await turn.completion;
+});
+test('queued turn does not spend its early budget before writer invocation',async t=>{
+ const w=world(),f=appServer(t,w),execution=await open(t,real,f,real.createCodexWriters(4),{bounds:{...bounds,maxEarlyNotifications:1}});const created=await execution.create(access);const session=created.value;const write=f.channel.write.bind(f.channel);const held=gate();f.channel.write=bytes=>{const frame=JSON.parse(Buffer.from(bytes));const result=write(bytes);return frame.method==='model/list'?held.promise:result;};await execution.scope.request({method:'model/list'},access.signal);const events=[];session.events.subscribe(event=>events.push(event));const started=session.turn({hostOperationId:'queued-budget',input,signal:access.signal,recordIntent(){}});const running=started.value.run();await settle();for(let n=0;n<2;n++)f.notify('item/agentMessage/delta',{threadId:session.threadId,turnId:'older-than-previous',itemId:'old',delta:'old'});await settle();held.open();await running;assert.equal((await started.value.completion).kind,'terminal');assert.equal(events.some(event=>event.kind==='early-overflow'),false);
+});
+
+test('execution close installs its shared promise before stopping owned sessions',async t=>{
+ const w=world(),f=appServer(t,w),execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);const session=created.value;let nested;let captured=false;const intent=gate();const started=session.turn({hostOperationId:'reentrant-all-close',input,signal:access.signal,recordIntent(_identity,signal){captured=true;signal.addEventListener('abort',()=>{nested=execution.close();intent.open();},{once:true});return intent.promise;}});const running=started.value.run();while(!captured)await settle();const closed=execution.close();assert.equal(closed,nested);await closed;await running;assert.equal(f.sent.filter(method=>method==='thread/unsubscribe').length,1);
+});
+
+
+test('completion consumers cannot rewrite a native rejection before snapshot capture',async t=>{
+ const w=world(),f=appServer(t,w),execution=await open(t,real,f,real.createCodexWriters(4));const created=await execution.create(access);const held=f.hold('turn/start');let id;const write=f.channel.write.bind(f.channel);f.channel.write=bytes=>{const frame=JSON.parse(Buffer.from(bytes));if(frame.method==='turn/start')id=frame.id;return write(bytes);};const turn=await turnOn(created.value);let mutable;turn.completion.then(completion=>{if(completion.kind==='rejected')mutable=Reflect.set(completion.error,'code',999);});const running=turn.run();while(!id)await settle();f.sink.data(Buffer.from(JSON.stringify({id,error:{code:42,message:'native rejection'}})+'\n'));held.open('drop');const snapshot=await running;assert.equal(mutable,false);assert.equal(snapshot.observation.result.error.code,42);
+});
+
+
+test('same-stack interrupt cancellation before writer entry is known non-dispatch', async t => {
+  const w = world(), f = appServer(t, w, { turn: hold });
+  const execution = await open(t, real, f, real.createCodexWriters(4));
+  const { value: session } = await execution.create(access);
+  const turn = await turnOn(session); await turn.run();
+  const control = new AbortController();
+  const interrupted = session.interrupt({ signal: control.signal }); control.abort();
+  assert.equal((await interrupted).step, 'not-needed');
+  assert.equal(f.sent.includes('turn/interrupt'), false);
+  f.complete(session.threadId, w.threads.get(session.threadId).writer.turnId); await turn.completion;
+});
+test('interrupt result mutation cannot change the native fact seen by close', async t => {
+  const w = world(), f = appServer(t, w, { turn: hold });
+  const execution = await open(t, real, f, real.createCodexWriters(4));
+  const { value: session } = await execution.create(access);
+  const turn = await turnOn(session); await turn.run();
+  const held = f.hold('turn/interrupt');
+  const waiting = session.interrupt({ signal: access.signal });
+  while (!f.sent.includes('turn/interrupt')) await settle();
+  f.sink.data(Buffer.from(JSON.stringify({ id: f.last.id, result: {} }) + '\n')); held.open('drop');
+  const result = await waiting;
+  assert.equal(result.step, 'replied');
+  assert.throws(() => { result.step = 'rejected'; }, TypeError);
+  const closing = session.close();
+  f.complete(session.threadId, w.threads.get(session.threadId).writer.turnId, 'interrupted');
+  assert.equal((await closing).interrupt, 'replied');
+});
+test('oversized model is a definite native refusal before thread creation', async t => {
+  const f = appServer(t, world()); const execution = await open(t, real, f, real.createCodexWriters(4));
+  const result = await execution.create({ ...access, features: { model: 'x'.repeat(70000) } });
+  assert.equal(result.kind, 'error'); assert.equal(result.error.code, 'native-refused');
+  assert.equal(result.error.reason, 'invalid-outgoing'); assert.equal(f.sent.includes('thread/start'), false);
+});
+
+
+test('queued acknowledgement deadline retains its local refusal cause', async t => {
+  const f = appServer(t, world()); const execution = await open(t, real, f, real.createCodexWriters(4), { bounds: { ...bounds, acknowledgementTimeoutMs: 20 } });
+  const { value: session } = await execution.create(access); const held = gate(); const write = f.channel.write.bind(f.channel);
+  f.channel.write = bytes => { const frame = JSON.parse(Buffer.from(bytes)); const result = write(bytes); return frame.method === 'model/list' ? held.promise : result; };
+  await execution.scope.request({ method: 'model/list' }, access.signal);
+  try {
+    const turn = await turnOn(session); await turn.run(); const completion = await turn.completion;
+    assert.equal(completion.kind, 'not-sent'); assert.equal(completion.reason, 'acknowledgement-timeout'); assert.equal(f.sent.includes('turn/start'), false);
+  } finally { held.open(); }
+});
+test('queued thread start closed before entry preserves closed outcome', async t => {
+  const f = appServer(t, world()); const execution = await open(t, real, f, real.createCodexWriters(4));
+  const held = gate(); const write = f.channel.write.bind(f.channel);
+  f.channel.write = bytes => { const frame = JSON.parse(Buffer.from(bytes)); const result = write(bytes); return frame.method === 'account/read' ? held.promise : result; };
+  const opening = execution.create(access); while (!f.sent.includes('account/read')) await settle(); await settle();
+  const closing = execution.close(); held.open();
+  assert.equal((await opening).error.code, 'closed'); await closing;
+});
+test('invalid native turn identity never publishes qualified acceptance', async t => {
+  const f = appServer(t, world(), { turn: hold }); const execution = await open(t, real, f, real.createCodexWriters(4));
+  const { value: session } = await execution.create(access); const events = collect(session.events);
+  const held = f.hold('turn/start'); const turn = await turnOn(session); const running = turn.run();
+  while (!f.sent.includes('turn/start')) await settle();
+  f.sink.data(Buffer.from(JSON.stringify({ id: f.last.id, result: { turn: { id: ' ', status: 'inProgress' } } }) + '\n')); held.open('drop');
+  await running; await settle();
+  assert.equal(events.some(event => event.kind === 'turn-accepted'), false); assert.equal(await session.matchesTurn(' ', access.signal), false); f.exit(); await turn.completion;
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createClaudeRuntime } from '@operatorworks/switchboard/claude';
@@ -314,11 +314,20 @@ test('case variants cannot bypass the same-session writer guard', async () => fi
 }));
 
 for (const mode of ['stubborn', 'stubborn-init']) {
-  test(`runtime shutdown reaps ${mode} children`, {timeout:5000}, async () => fixture({mode}, async (runtime, dir) => {
+  test(`runtime shutdown reaps ${mode} children`, {timeout:10000}, async () => fixture({mode}, async (runtime, dir) => {
     const started = runtime.start({text:'hello',onEvent() {}});
     const rejected = started.catch(() => null);
     if (mode === 'stubborn') await started;
-    else await new Promise(resolveDelay => setTimeout(resolveDelay,150));
+    else {
+      const deadline = Date.now() + 2000;
+      while (true) {
+        try { await access(resolve(dir, 'observed.json')); break; }
+        catch (error) {
+          if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+          await new Promise(resolveDelay => setTimeout(resolveDelay,10));
+        }
+      }
+    }
     const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
     await runtime.close();
     await rejected;
@@ -375,4 +384,49 @@ test('Claude readiness honours a pre-aborted signal and reports a closed runtime
   const closed = assertCoherentReport(await runtime.readinessReport());
   assert.deepEqual([closed.checked, closed.facts.workspace.state, closed.remediation.code], [[], 'not_checked', 'runtime_closed']);
   await assert.rejects(runtime.checkReady(), /Claude operation failed/);
+}));
+
+test('structured image prompts cross the real SDK user-frame boundary on create and resume', { timeout: 10000 }, async () => fixture({ mode: 'images' }, async (runtime, dir) => {
+  assert.equal(runtime.imageInput.kind, 'supported');
+  const base64 = Buffer.alloc(4194304, 3).toString('base64');
+  const images = [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${base64}` }];
+  const starting = runtime.start({ text: 'Describe', images, onEvent() {} });
+  images[0].dataUrl = 'mutated';
+  const first = await starting;
+  assert.equal((await first.finished).outcome, 'completed');
+  let user = JSON.parse(await readFile(resolve(dir, 'user-frame.json'), 'utf8'));
+  assert.equal(user.type, 'user');
+  assert.equal(user.parent_tool_use_id, null);
+  assert.deepEqual(user.message, { role: 'user', content: [{ type: 'text', text: 'Describe' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } }] });
+  const second = await runtime.start({ text: 'Resume image', threadId: first.threadId,
+    images: [{ mediaType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,YQ==' }], onEvent() {} });
+  assert.equal(second.threadId, first.threadId);
+  assert.equal((await second.finished).outcome, 'completed');
+  user = JSON.parse(await readFile(resolve(dir, 'user-frame.json'), 'utf8'));
+  assert.deepEqual(user.message.content, [{ type: 'text', text: 'Resume image' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'YQ==' } }]);
+  const observed = JSON.parse(await readFile(resolve(dir, 'observed.json'), 'utf8'));
+  assert(observed.args.includes(`--resume=${first.threadId}`));
+  assert(observed.args.includes('--tools=') || observed.args.includes('--tools'));
+  assert(observed.args.some((arg) => arg.includes('dontAsk')));
+  assert(!observed.args.includes('--no-session-persistence'));
+  assert.equal(observed.env.ANTHROPIC_API_KEY, 'fixture-key');
+}));
+
+test('invalid Claude images reject before any child process launches', async () => fixture({ mode: 'images' }, async (runtime, dir) => {
+  for (const images of [null, {}, [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR==' }],
+    [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` }],
+    [{ mediaType: 'image/png', dataUrl: 'data:image/jpeg;base64,YQ==' }]]) {
+    await assert.rejects(runtime.start({ text: 'invalid', images, onEvent() {} }), /Claude operation failed/);
+  }
+  await assert.rejects(access(resolve(dir, 'observed.json')));
+}));
+
+test('Claude image getters cannot reserve the same writer twice', { timeout: 10000 }, async () => fixture({}, async (runtime) => {
+  let inner;
+  const outer = runtime.start({ text: 'outer', threadId: id, onEvent() {}, get images() {
+    inner = runtime.start({ text: 'inner', threadId: id, onEvent() {} }); return [];
+  } });
+  await assert.rejects(outer, /Claude operation failed/); await (await inner).finished;
 }));

@@ -1741,3 +1741,20 @@ test('usage_update carries no token counts and never yields a usage row; the pro
     assert.deepEqual(seen.rows.slice(-2).map((row) => row.kind), ['usage', 'terminal']);
   });
 });
+
+test('OpenCode refuses unsupported or malformed images before intent or an ACP write', async () => {
+  const { agent, opened, signal } = await openReady();
+  assert.equal(opened.kind, 'ok');
+  const adapter = opened.value;
+  try {
+    assert.equal(adapter.capabilities.imageInput.kind, 'unsupported');
+    const before = agent.state.requests.length;
+    for (const images of [[{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], null, {}]) {
+      const result = await adapter.run({ prompt: 'image', images, signal, hostOperationId: 'unsupported-image',
+        recordIntent: () => assert.fail('unsupported media must not record intent') });
+      assert.equal(result.error.code, 'unsupported');
+      assert.equal(result.write.kind, 'not-attempted');
+    }
+    assert.equal(agent.state.requests.length, before);
+  } finally { await adapter.close(); }
+});

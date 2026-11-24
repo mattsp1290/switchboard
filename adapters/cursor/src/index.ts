@@ -1,11 +1,16 @@
 import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { callerAgentId, cursorLocalOptions, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
-import { sdk } from './sdk.js';
-import { createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
-import type { RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
+import { callerAgentId, CursorTextPolicyUnsupportedError, readCursorOptions, textWithoutControls, type CursorRuntimeOptions } from './config.js';
+import { buildCursorLaunchOptions, cursorTextPolicy, sdk, type CursorPolicy } from './sdk.js';
+import type { CursorMessage } from './sdk.js';
+import { createCursorModels } from './models.js';
+import type { CursorModelsApi } from './models.js';
+export type { CursorModel, CursorModelsApi, CursorModelsError } from './models.js';
+import { hostImageLimits, parseHostImages, createToolTracker, emitObservation, emitRunStarted, isOptionalObservationListener, jsonString, normalizedUsageFromCounts, runtimeOutcome } from '#switchboard';
+import type { Capability, HostImageInput, HostImageInputApi, RunObservationListener, RunObservationUsage, ToolTracker } from '#switchboard';
 
 export type { CursorRuntimeOptions } from './config.js';
+export { CursorTextPolicyUnsupportedError } from './config.js';
 
 export type CursorOutcome = 'completed' | 'failed' | 'interrupted';
 export type CursorToolStatus = 'running' | 'completed' | 'error';
@@ -19,6 +24,7 @@ export interface CursorTurn {
   abort(): Promise<void>;
 }
 export interface CursorRequest {
+  readonly images?: readonly HostImageInput[];
   readonly text: string;
   readonly agentId?: string;
   readonly onEvent: (event: CursorEvent) => void;
@@ -44,6 +50,8 @@ export type CursorReadinessReport = {
   | { readonly verdict: 'unverified';
     readonly remediation: { readonly code: 'retry_check' | 'check_cancelled' | 'runtime_closed' | 'check_unavailable'; readonly message: string } });
 export interface CursorRuntime {
+  readonly imageInput: Capability<HostImageInputApi>;
+  readonly models: Capability<CursorModelsApi>;
   checkReady(): Promise<void>;
   readinessReport(options?: { readonly signal?: AbortSignal }): Promise<CursorReadinessReport>;
   start(request: CursorRequest): Promise<CursorTurn>;
@@ -53,7 +61,7 @@ export interface CursorRuntime {
 const failure = () => new Error('Cursor operation failed.');
 const ADMISSION_MS = 30_000;
 
-function limitAdmission<T>(promise: Promise<T>, onLate: (value: T) => void): { promise: Promise<T>; abandon(): void } {
+function limitAdmission<T>(promise: Promise<T>, onLate: (value: T) => void, deadline: number): { promise: Promise<T>; abandon(): void } {
   let settled = false;
   let timer: ReturnType<typeof setTimeout>;
   let giveUp = (): void => {};
@@ -64,8 +72,9 @@ function limitAdmission<T>(promise: Promise<T>, onLate: (value: T) => void): { p
       clearTimeout(timer);
       reject(failure());
     };
-    timer = setTimeout(giveUp, ADMISSION_MS);
+    timer = setTimeout(giveUp, Math.max(0, deadline - performance.now()));
     promise.then((value) => {
+      if (performance.now() >= deadline) giveUp();
       if (settled) { onLate(value); return; }
       settled = true;
       clearTimeout(timer);
@@ -122,30 +131,35 @@ function workspaceErrno(error: unknown): 'inaccessible' | 'unknown' {
 
 type Step = 'next' | 'request' | 'bad-tool' | 'overflow';
 
-interface AgentHandle {
-  readonly agentId: string;
-  send(message: string): Promise<RunHandle>;
-  [Symbol.asyncDispose](): Promise<void>;
-}
-interface RunHandle {
-  supports(operation: 'cancel'): boolean;
-  stream(): AsyncIterable<unknown>;
-  wait(): Promise<{ status: string }>;
-  cancel(): Promise<void>;
-}
+type AgentHandle = Awaited<ReturnType<typeof sdk.create>>;
+type RunHandle = Awaited<ReturnType<AgentHandle['send']>>;
 
 export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime {
+  return createCursorRuntimeForPolicy(input, 'generic');
+}
+
+/** Resume only host-owned sessions created under this text contract. */
+export function createCursorTextRuntime(input: CursorRuntimeOptions): CursorRuntime {
+  return createCursorRuntimeForPolicy(input, 'text');
+}
+
+function createCursorRuntimeForPolicy(input: CursorRuntimeOptions, kind: CursorPolicy['kind']): CursorRuntime {
   const read = readCursorOptions(input);
   if (!read) throw failure();
   const options: CursorRuntimeOptions = read;
+  const policy: CursorPolicy = kind === 'text' ? cursorTextPolicy() : { kind: 'generic' };
+  const bindings = policy.kind === 'text' ? policy.support : sdk;
   const active = new Set<Promise<void>>();
+  const slots = new Set<symbol>();
+  const sendingAgents = new Set<AgentHandle>();
   const opened: AgentHandle[] = [];
-  const lateRuns: RunHandle[] = [];
+  const lateRuns = new Set<() => Promise<void>>();
   const disposals = new Map<AgentHandle, Promise<void>>();
-  let drained = false;
   const cancellers = new Set<() => Promise<void>>();
   let closed = false;
-  let closing: Promise<void> | undefined;
+  let cleanupEpoch = 0;
+  let closing: { readonly epoch: number; readonly promise: Promise<void> } | undefined;
+  const catalog = createCursorModels(() => bindings.listModels({ apiKey: options.apiKey }));
 
   function dispose(agent: AgentHandle): Promise<void> {
     const existing = disposals.get(agent);
@@ -158,36 +172,29 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
     return pending;
   }
 
-  function localOptions() {
-    const fields = cursorLocalOptions(options.cwd, options.sessionDirectory);
-    return {
-      cwd: fields.cwd,
-      settingSources: fields.settingSources,
-      sandboxOptions: fields.sandboxOptions,
-      enableAgentRetries: fields.enableAgentRetries,
-      store: new sdk.Store(fields.storeDirectory),
-    };
-  }
-
   function ownLateAgent(late: AgentHandle): void {
     if (!opened.includes(late)) opened.push(late);
-    const owner = closing;
-    void dispose(late).catch(() => {
-      void owner?.then(() => {
-        if (closing === owner && !disposals.has(late)) closing = undefined;
-      }, () => { /* close() clears closing when shutdown rejects */ });
-    });
+    cleanupEpoch += 1;
+    void dispose(late).catch(() => { /* uncached; a later close retries */ });
   }
 
-  function ownLateRun(late: RunHandle): void {
-    if (drained) {
-      void (async () => {
-        try { if (late.supports('cancel')) await late.cancel(); }
-        catch { /* this run is not queued for a later close */ }
-      })();
-      return;
-    }
-    lateRuns.push(late);
+  function ownLateRun(late: RunHandle, agent: AgentHandle, onDrained: () => void): void {
+    let pending: Promise<void> | undefined;
+    const drain = (): Promise<void> => {
+      if (!pending) pending = (async () => {
+        if (late.supports('cancel')) await late.cancel();
+        const { status } = await late.wait();
+        if (status !== 'finished' && status !== 'cancelled' && status !== 'error') throw failure();
+        await dispose(agent);
+        sendingAgents.delete(agent);
+        lateRuns.delete(drain);
+        onDrained();
+      })().catch((error: unknown) => { pending = undefined; throw error; });
+      return pending;
+    };
+    lateRuns.add(drain);
+    cleanupEpoch += 1;
+    void drain().catch(() => { /* retained; a later close retries */ });
   }
 
   async function observe(signal?: AbortSignal): Promise<CursorReadinessReport> {
@@ -235,21 +242,42 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
   }
 
   function readinessReport(readiness?: { readonly signal?: AbortSignal }): Promise<CursorReadinessReport> {
-    const signal = readiness?.signal;
-    if (signal !== undefined && !(signal instanceof AbortSignal)) return Promise.reject(failure());
-    return observe(signal);
+    try {
+      const signal = readiness?.signal;
+      if (signal !== undefined && !(signal instanceof AbortSignal)) return Promise.reject(failure());
+      return observe(signal === undefined ? undefined : AbortSignal.any([signal]));
+    } catch { return Promise.reject(failure()); }
   }
 
   function start(request: CursorRequest): Promise<CursorTurn> {
     if (request === null || typeof request !== 'object') return Promise.reject(failure());
-    const { text, agentId: requested, onEvent, onObservation } = request;
-    if (closed || active.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
+    let captured: Pick<CursorRequest, 'text' | 'agentId' | 'onEvent' | 'onObservation'>;
+    let images: ReturnType<typeof parseHostImages>;
+    try {
+      const { text, agentId, onEvent, onObservation, images: value } = request;
+      captured = { text, onEvent, ...(agentId === undefined ? {} : { agentId }), ...(onObservation === undefined ? {} : { onObservation }) };
+      images = parseHostImages(value === undefined ? [] : value);
+    }
+    catch { return Promise.reject(failure()); }
+    const { text, agentId: requested, onEvent, onObservation } = captured;
+    if (images.kind === 'error' || (policy.kind === 'text' && images.value.length > 0)) return Promise.reject(failure());
+    const message: CursorMessage = images.value.length === 0 ? text : { text,
+      images: images.value.map((image) => ({ data: image.base64, mimeType: image.mediaType })) };
+    if (closed || slots.size >= 32 || typeof text !== 'string' || text.length === 0 || Buffer.byteLength(text) > TEXT_LIMIT
       || typeof onEvent !== 'function' || !isOptionalObservationListener(onObservation) || (requested !== undefined && (!callerAgentId(requested) || writers.has(requested)))) {
       return Promise.reject(failure());
     }
+    const slot = Symbol();
+    slots.add(slot);
     let trackedId = requested;
+    // Fulfillment alone does not release a timed-out send; its late run must drain.
+    let openingUndrained = false;
+    let sendUndrained = false;
+    let sendOwnsWriter = false;
     if (requested !== undefined) writers.add(requested);
     const release = (): void => {
+      if (sendOwnsWriter && (openingUndrained || sendUndrained)) return;
+      slots.delete(slot);
       if (trackedId === undefined) return;
       writers.delete(trackedId);
       trackedId = undefined;
@@ -269,23 +297,33 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
       let agent: AgentHandle | undefined;
       const faults = { cancel: false, external: false };
       let run: RunHandle | undefined;
-      let cancelStarted = false;
+      let cancelling: Promise<void> | undefined;
+      let completed = false;
+      let policyRefusal: CursorTextPolicyUnsupportedError | undefined;
       let abandonAdmission = (): void => {};
-      const cancelActive = async (): Promise<void> => {
+      const cancelActive = (): Promise<void> => {
         if (!admitted) abandonAdmission();
-        if (cancelStarted || !run?.supports('cancel')) return;
+        if (cancelling) return cancelling;
+        if (completed || !run?.supports('cancel')) return Promise.resolve();
         faults.external = true;
-        cancelStarted = true;
-        try { await run.cancel(); }
-        catch { faults.cancel = true; }
+        const current = run;
+        cancelling = Promise.resolve().then(() => current.cancel()).catch(() => { faults.cancel = true; });
+        return cancelling;
       };
       cancellers.add(cancelActive);
       try {
-        const local = localOptions();
-        const model = { id: options.model };
-        const opening = requested === undefined
-          ? limitAdmission(sdk.create({ apiKey: options.apiKey, model, local }), ownLateAgent)
-          : limitAdmission(sdk.resume(requested, { apiKey: options.apiKey, model, local }), ownLateAgent);
+        let launch: ReturnType<typeof buildCursorLaunchOptions>;
+        try { launch = buildCursorLaunchOptions(options, policy); }
+        catch (error) {
+          if (policy.kind === 'text' && error instanceof CursorTextPolicyUnsupportedError) policyRefusal = new CursorTextPolicyUnsupportedError();
+          throw failure();
+        }
+        const openDeadline = performance.now() + ADMISSION_MS;
+        const nativeOpen = requested === undefined ? bindings.create(launch) : bindings.resume(requested, launch);
+        openingUndrained = true;
+        const openSettled = () => { openingUndrained = false; if (sendOwnsWriter) release(); };
+        void nativeOpen.then(openSettled, openSettled);
+        const opening = limitAdmission(nativeOpen, ownLateAgent, openDeadline);
         abandonAdmission = opening.abandon;
         const launched = await opening.promise;
         agent = launched;
@@ -296,9 +334,27 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
           writers.add(agent.agentId);
           trackedId = agent.agentId;
         } else if (agent.agentId !== requested) throw failure();
-        const sending = limitAdmission(agent.send(text), ownLateRun);
+        sendingAgents.add(launched);
+        let nativeSend: Promise<RunHandle>;
+        const sendDeadline = performance.now() + ADMISSION_MS;
+        try { nativeSend = agent.send(message); }
+        catch (error) { sendingAgents.delete(launched); throw error; }
+        sendUndrained = true;
+        void nativeSend.then(undefined, () => {
+          sendingAgents.delete(launched);
+          sendUndrained = false;
+          release();
+          if (sendOwnsWriter) ownLateAgent(launched);
+        });
+        const sending = limitAdmission(nativeSend, (late) => ownLateRun(late, launched, () => { sendUndrained = false; release(); }), sendDeadline);
         abandonAdmission = sending.abandon;
-        run = await sending.promise;
+        const sent = await sending.promise;
+        if (closed) {
+          ownLateRun(sent, launched, () => { sendUndrained = false; release(); });
+          throw failure();
+        }
+        run = sent;
+        sendingAgents.delete(launched);
         admitted = true;
         emitRunStarted(onObservation);
         const turn: CursorTurn = {
@@ -308,19 +364,25 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
         };
         admission.resolve(turn);
         if (closed) await cancelActive();
-        const outcome = await consume(run, onEvent, faults, onObservation);
+        let outcome = await consume(run, onEvent, faults, onObservation, policy.kind);
+        completed = true;
+        await cancelling;
+        if (faults.cancel && outcome !== 'interrupted') outcome = 'failed';
         release();
         emitObservation(onObservation, { kind: 'terminal', outcome: runtimeOutcome[outcome] });
         try { onEvent({ kind: 'ended', outcome }); } catch { /* callback text is discarded */ }
         done.resolve(outcome);
       } catch {
+        completed = true;
+        await cancelling;
+        if (!admitted && (openingUndrained || sendUndrained)) sendOwnsWriter = true;
         release();
         if (admitted) {
           emitObservation(onObservation, { kind: 'terminal', outcome: 'failed' });
           try { onEvent({ kind: 'ended', outcome: 'failed' }); } catch { /* discarded */ }
           done.resolve('failed');
-        } else admission.reject(failure());
-        if (agent !== undefined) void dispose(agent).catch(() => { /* uncached; shutdown retries */ });
+        } else admission.reject(policyRefusal ?? failure());
+        if (agent !== undefined && !sendUndrained) void dispose(agent).catch(() => { /* uncached; shutdown retries */ });
       } finally {
         cancellers.delete(cancelActive);
       }
@@ -329,40 +391,55 @@ export function createCursorRuntime(input: CursorRuntimeOptions): CursorRuntime 
 
   async function shutdown(): Promise<void> {
     const stops = [...cancellers];
-    for (const stop of stops) { try { await stop(); } catch { /* the turn records the cancel failure */ } }
+    await Promise.allSettled(stops.map(async stop => { await stop(); }));
     await Promise.allSettled([...active]);
-    drained = true;
-    const runs = lateRuns.splice(0);
     let cancelFailed = false;
-    for (const late of runs) {
-      try { if (late.supports('cancel')) await late.cancel(); }
-      catch { cancelFailed = true; }
+    const attempted = new Set<() => Promise<void>>();
+    async function drainKnownRuns(): Promise<void> {
+      for (const drain of lateRuns) {
+        if (attempted.has(drain)) continue;
+        attempted.add(drain);
+        try { await drain(); } catch { cancelFailed = true; }
+      }
     }
     let disposalFailed = false;
-    for (const agent of opened) {
-      try { await dispose(agent); }
-      catch { disposalFailed = true; }
-    }
+    let observedEpoch: number;
+    do {
+      observedEpoch = cleanupEpoch;
+      await drainKnownRuns();
+      for (const agent of opened) {
+        if (sendingAgents.has(agent)) continue;
+        try { await dispose(agent); }
+        catch { disposalFailed = true; }
+      }
+      await drainKnownRuns();
+    } while (observedEpoch !== cleanupEpoch);
     if (disposalFailed || cancelFailed) throw failure();
   }
 
   return {
+    imageInput: policy.kind === 'text' ? { kind: 'unsupported', reason: 'Cursor text runtime accepts text only.' }
+      : { kind: 'supported', api: hostImageLimits }, models: { kind: 'supported', api: catalog.api },
     checkReady, readinessReport, start, close() {
       closed = true;
-      if (!closing) {
-        closing = shutdown().then(() => undefined, (error: unknown) => {
-          closing = undefined;
-          throw error;
-        });
-      }
-      return closing;
+      catalog.close();
+      const epoch = cleanupEpoch;
+      if (closing?.epoch === epoch) return closing.promise;
+      const previous = closing?.promise;
+      const work = previous ? previous.then(shutdown, shutdown) : shutdown();
+      const promise = work.catch((error: unknown) => {
+        if (closing?.promise === promise) closing = undefined;
+        throw error;
+      });
+      closing = { epoch, promise };
+      return promise;
     },
   };
 }
 
 async function consume(
   run: RunHandle, onEvent: (event: CursorEvent) => void, faults: { cancel: boolean; external: boolean },
-  onObservation: RunObservationListener | undefined,
+  onObservation: RunObservationListener | undefined, policy: CursorPolicy['kind'],
 ): Promise<CursorOutcome> {
   const state: PublishState = { text: '', sent: '', reasoningStep: 0, reasoningOpen: false, trackTool: createToolTracker() };
   let step: Step = 'next';
@@ -370,11 +447,11 @@ async function consume(
   let streamFailed = false;
   try {
     for await (const message of run.stream()) {
-      try { step = publish(message, state, onEvent, onObservation); }
+      try { step = publish(message, state, onEvent, onObservation, policy); }
       catch { callback = true; break; }
       if (step !== 'next') break;
     }
-  } catch { if (!faults.external) streamFailed = true; }
+  } catch { streamFailed = true; }
   if (callback || step === 'request' || step === 'bad-tool' || step === 'overflow') {
     try { if (run.supports('cancel')) await run.cancel(); }
     catch { faults.cancel = true; }
@@ -395,7 +472,7 @@ function turnOutcome(input: {
   waited: string;
 }): CursorOutcome {
   const forced = input.step === 'request' || input.step === 'bad-tool' || input.step === 'overflow'
-    || input.streamFailed || input.waitFailed || (input.faults.cancel && input.waited !== 'cancelled');
+    || (input.streamFailed && !(input.faults.external && input.waited === 'cancelled')) || input.waitFailed || (input.faults.cancel && input.waited !== 'cancelled');
   let outcome: CursorOutcome = forced ? 'failed'
     : input.waited === 'finished' ? 'completed'
     : input.waited === 'cancelled' ? 'interrupted'
@@ -450,10 +527,12 @@ function endReasoning(state: PublishState): void {
  * The listener sees the same accumulated text as a snapshot. Thinking messages are chunks, so they are observed as deltas.
  */
 function publish(message: unknown, state: PublishState, onEvent: (event: CursorEvent) => void,
-  onObservation: RunObservationListener | undefined): Step {
+  onObservation: RunObservationListener | undefined, policy: CursorPolicy['kind']): Step {
   if (!isRecord(message) || typeof message.type !== 'string') return 'next';
+  if (policy === 'text' && (message.type === 'tool_call' || message.type === 'task')) return 'bad-tool';
   if (message.type === 'assistant') {
     const content = isRecord(message.message) && Array.isArray(message.message.content) ? message.message.content : [];
+    if (policy === 'text' && content.some(block => isRecord(block) && block.type === 'tool_use')) return 'bad-tool';
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') continue;
       if (Buffer.byteLength(state.text) + Buffer.byteLength(block.text) > SNAPSHOT_LIMIT) return 'overflow';

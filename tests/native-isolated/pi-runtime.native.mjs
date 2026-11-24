@@ -1,3 +1,4 @@
+import { qualificationImage } from '../../scripts/support/qualification-image.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, writeFile, symlink } from 'node:fs/promises';
@@ -5,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import test from 'node:test';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
-import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
+import { AgentSession, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { createPiRuntime } from '@operatorworks/switchboard/pi';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
@@ -217,6 +218,7 @@ test('native admission resolves before the streamed answer and Stop drains owner
     await requestStarted.promise;
     assert.equal(await partial.promise, 'partial');
     await assert.rejects(session.prompt('Overlap', () => {}), /busy/);
+    await assert.rejects(session.prompt(' ', () => {}), /busy/);
     await session.abort();
     assert.equal((await accepted.finished).outcome, 'interrupted');
     await session.close();
@@ -271,6 +273,7 @@ test('runtime closes sessions and enforces its limit', { timeout: 10_000 }, asyn
     await current.close();
     await assert.rejects(current.open(), /closed/);
     await assert.rejects(sessions[0].prompt('Closed', () => {}), /closed/);
+    await assert.rejects(sessions[0].prompt(' ', () => {}), /closed/);
   });
 });
 
@@ -572,4 +575,109 @@ test('Pi readiness reports its directories but never installation, version or au
     assert.deepEqual([closed.checked, closed.facts.workspace.state, closed.remediation.code], [[], 'not_checked', 'runtime_closed']);
     assert.equal(requests.length, 0);
   });
+});
+
+function imageModel(t) {
+  const original = ModelRuntime.prototype.getModel;
+  t.mock.method(ModelRuntime.prototype, 'getModel', function(provider, id) {
+    const native = original.call(this, provider, id === 'fixture-image' ? 'glm-5.3' : id);
+    return id === 'fixture-image' && native ? { ...native, id, input: ['text', 'image'] } : native;
+  });
+}
+
+test('Pi transports exact 4 MiB image bytes and preserves them through native history and reopen', { timeout: 10000 }, async (t) => {
+  imageModel(t);
+  await fixture(async ({ runtime, directory, requests }) => {
+    const current = await runtime({ model: 'fixture-image' });
+    const session = await current.open();
+    assert.equal(session.imageInput.kind, 'supported');
+    const base64 = qualificationImage().toString('base64');
+    const images = [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${base64}` }];
+    const started = session.prompt({ text: 'Describe', images }, () => {});
+    images[0].dataUrl = 'mutated';
+    assert.equal((await (await started).finished).outcome, 'completed');
+    const user = requests[0].messages.find((m) => m.role === 'user');
+    assert.deepEqual(user.content, [{ type: 'text', text: 'Describe' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } }]);
+    const saved = JSON.parse((await readFile(join(directory, 'sessions', session.sessionFile), 'utf8')).split('\n').find((line) => line.includes('"role":"user"')));
+    assert.deepEqual(saved.message.content, [{ type: 'text', text: 'Describe' }, { type: 'image', data: base64, mimeType: 'image/png' }]);
+    const file = session.sessionFile; await current.close();
+    const second = await runtime({ model: 'fixture-image' });
+    const resumed = await second.open({ sessionFile: file });
+    assert.equal(resumed.imageInput.kind, 'supported');
+    await prompt(resumed, { text: 'Follow up', images: [{ mediaType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,YQ==' }] });
+    assert.deepEqual(requests[1].messages.find((m) => m.role === 'user').content, user.content);
+    assert.equal(requests[1].messages.filter((m) => m.role === 'user').at(-1).content[1].image_url.url, 'data:image/jpeg;base64,YQ==');
+  });
+});
+
+test('Pi refuses images for the real text-only model before provider dispatch or history append', { timeout: 10000 }, async () => {
+  await fixture(async ({ runtime, directory, requests }) => {
+    const current = await runtime(); const session = await current.open();
+    assert.equal(session.imageInput.kind, 'unavailable');
+    assert.throws(() => { session.imageInput.kind = 'supported'; }, TypeError);
+    await prompt(session, 'legacy text');
+    const path = join(directory, 'sessions', session.sessionFile);
+    const before = await readFile(path, 'utf8');
+    const image = { mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' };
+    for (const images of [[image], null, {}, [{ ...image, dataUrl: 'data:image/png;base64,YR==' }],
+      [{ ...image, dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` }]]) {
+      await assert.rejects(session.prompt({ text: 'invalid', images }, () => {}), /Pi operation failed/);
+    }
+    assert.equal(requests.length, 1);
+    assert.equal(await readFile(path, 'utf8'), before);
+    assert.equal((await prompt(session, { text: 'empty', images: [] })).terminal.outcome, 'completed');
+  });
+});
+
+test('disabling Pi image resize preserves text-only requests and observable settings', { timeout: 10000 }, async (t) => {
+  await fixture(async ({ runtime, requests, directory }) => {
+    const original = SettingsManager.inMemory;
+    const settings = [];
+    const observed = t.mock.method(SettingsManager, 'inMemory', function(options) {
+      const manager = original.call(this, options); settings.push(manager.getImageAutoResize()); return manager;
+    });
+    const one = await runtime(); const first = await one.open();
+    await prompt(first, 'same text'); await one.close();
+    const firstHistory = JSON.parse((await readFile(join(directory, 'sessions', first.sessionFile), 'utf8')).split('\n').find((line) => line.includes('"role":"user"'))).message.content;
+    observed.mock.restore();
+    t.mock.method(SettingsManager, 'inMemory', function(options) {
+      const { images: _images, ...legacy } = options;
+      const manager = original.call(this, legacy); settings.push(manager.getImageAutoResize()); return manager;
+    });
+    const two = await runtime(); const second = await two.open(); await prompt(second, 'same text');
+    assert.deepEqual(requests[0], requests[1]);
+    const secondHistory = JSON.parse((await readFile(join(directory, 'sessions', second.sessionFile), 'utf8')).split('\n').find((line) => line.includes('"role":"user"'))).message.content;
+    assert.deepEqual(firstHistory, secondHistory);
+    assert.deepEqual(settings, [false, true]);
+  });
+});
+
+test('Pi validates malformed and over-limit media for an image-capable model before persistence', { timeout: 10000 }, async (t) => {
+  imageModel(t);
+  await fixture(async ({ runtime, directory, requests }) => {
+    const current = await runtime({ model: 'fixture-image' }); const session = await current.open();
+    await prompt(session, 'initial');
+    const path = join(directory, 'sessions', session.sessionFile); const before = await readFile(path, 'utf8');
+    for (const images of [null, {}, [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR=\n' }],
+      [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` }]]) {
+      await assert.rejects(session.prompt({ text: 'refuse', images }, () => {}), /Pi operation failed/);
+    }
+    assert.equal(requests.length, 1); assert.equal(await readFile(path, 'utf8'), before);
+  });
+});
+
+test('Pi reserves a writer after caller image getters finish', { timeout: 10000 }, async (t) => {
+  imageModel(t);
+  await fixture(async ({ runtime }) => {
+    const current = await runtime({ model: 'fixture-image' }); const session = await current.open();
+    let inner;
+    const outer = session.prompt({ text: 'outer', get images() { inner = session.prompt('inner', () => {}); return []; } }, () => {});
+    await assert.rejects(outer, /busy/); await (await inner).finished;
+  });
+});
+
+
+test('text-only Pi resume never sends historical images to its provider', {timeout:10000}, async t=>{
+ imageModel(t);await fixture(async({runtime,requests})=>{const first=await runtime({model:'fixture-image'});const session=await first.open();await prompt(session,{text:'Image',images:[{mediaType:'image/png',dataUrl:'data:image/png;base64,YQ=='}]});const file=session.sessionFile;await first.close();const second=await runtime();const resumed=await second.open({sessionFile:file});assert.equal(resumed.imageInput.kind,'unavailable');await prompt(resumed,'Text only');assert.equal(JSON.stringify(requests.at(-1).messages).includes('image_url'),false);});
 });

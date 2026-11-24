@@ -1,24 +1,23 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { CursorAgentError, JsonlLocalAgentStore } from '@cursor/sdk';
-import { createCursorRuntime } from '@operatorworks/switchboard/cursor';
+import { CursorAgentError, JsonlLocalAgentStore, emptyFs, createAgentPlatform, createInMemoryRunEventNotifier } from '@cursor/sdk';
+import { createCursorRuntime, createCursorTextRuntime, CursorTextPolicyUnsupportedError } from '@operatorworks/switchboard/cursor';
 import { assertCoherentReport } from '../adapters/readiness-oracle.mjs';
 
 // The SDK seam is internal to the packed entry, so it is loaded by file URL past the exports map.
-const { sdk } = await import(new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor')).href);
+const { sdk, assertCursorTextLaunch, assertCursorTextSupport, buildCursorLaunchOptions, cursorTextPolicy } = await import(new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor')).href);
 assert.equal(sdk.Store, JsonlLocalAgentStore);
-const original = { create: sdk.create, resume: sdk.resume, Store: sdk.Store };
+const original = Object.fromEntries(Object.keys(sdk).map(key => [key, sdk[key]]));
 
 const caller = 'caller-model';
 const key = 'fixture-key-never-log';
 
 function restore() {
-  sdk.create = original.create;
-  sdk.resume = original.resume;
-  sdk.Store = original.Store;
+  Object.assign(sdk, original);
 }
 
 async function workspace() {
@@ -46,9 +45,9 @@ function serial(name, fn) {
   const previous = chain;
   let gate = () => {};
   chain = new Promise(resolve => { gate = resolve; });
-  test(name, async () => {
+  test(name, async (t) => {
     await previous;
-    try { await fn(); }
+    try { await fn(t); }
     finally { gate(); }
   });
 }
@@ -61,6 +60,7 @@ function install(scripted) {
   let sends = 0;
   const state = {
     createError: undefined, resumeError: undefined, sendError: undefined, scripts: scripted,
+    messages: [],
     waitStatus: 'finished', cancelError: undefined, holdCreate: undefined, holdSend: undefined,
     holdStream: undefined, holdWait: undefined, holdDispose: undefined, disposals: [],
   };
@@ -70,7 +70,9 @@ function install(scripted) {
   function agent(id) {
     return {
       agentId: id,
-      async send() {
+      async send(message, ...overrides) {
+        assert.deepEqual(overrides, [], 'No per-send overrides');
+        state.messages.push(structuredClone(message));
         sends += 1;
         if (state.holdSend) await state.holdSend;
         if (state.sendError) throw state.sendError;
@@ -95,6 +97,7 @@ function install(scripted) {
           },
           async cancel() {
             cancels.push('cancel');
+            if (state.holdCancel) await state.holdCancel;
             if (state.cancelError) throw state.cancelError;
           },
         };
@@ -322,7 +325,7 @@ serial('a non-object start rejects with the generic error', async () => {
   } finally { restore(); await place.remove(); }
 });
 
-serial('a rejected dispose is tried again on the next close', async () => {
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) serial(`a rejected dispose is tried again on the next close (${factory.name})`, async () => {
   const place = await workspace();
   const fake = install([[assistant('Hi')]]);
   let attempts = 0;
@@ -336,7 +339,7 @@ serial('a rejected dispose is tried again on the next close', async () => {
     return handle;
   };
   try {
-    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const runtime = factory(options(place.cwd, place.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     assert.equal(await turn.finished, 'completed');
     await assert.rejects(runtime.close(), (error) => {
@@ -350,7 +353,7 @@ serial('a rejected dispose is tried again on the next close', async () => {
   } finally { restore(); await place.remove(); }
 });
 
-serial('a throwing callback fails the turn and leaves disposal to close', async () => {
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) serial(`a throwing callback fails the turn and leaves disposal to close (${factory.name})`, async () => {
   const place = await workspace();
   install([[assistant('Hi')]]);
   let disposed = 0;
@@ -361,7 +364,7 @@ serial('a throwing callback fails the turn and leaves disposal to close', async 
     return handle;
   };
   try {
-    const runtime = createCursorRuntime(options(place.cwd, place.session));
+    const runtime = factory(options(place.cwd, place.session));
     const events = [];
     const turn = await runtime.start({
       text: 'Hello',
@@ -449,13 +452,13 @@ function gate() {
   return { promise, open };
 }
 
-serial('admission, cancellation, and malformed tool ids settle on the public boundary', async () => {
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) serial(`admission, cancellation, and malformed tool ids settle on the public boundary (${factory.name})`, async () => {
   const held = await workspace();
   const creating = install([]);
   const created = gate();
   creating.state.holdCreate = created.promise;
   try {
-    const runtime = createCursorRuntime(options(held.cwd, held.session));
+    const runtime = factory(options(held.cwd, held.session));
     const events = [];
     const pending = runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     assert.equal(creating.created.length, 1);
@@ -478,7 +481,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   slowSend.state.holdSend = sent.promise;
   slowSend.state.holdDispose = disposed.promise;
   try {
-    const runtime = createCursorRuntime(options(sending.cwd, sending.session));
+    const runtime = factory(options(sending.cwd, sending.session));
     const events = [];
     const pending = runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     for (let attempt = 0; attempt < 10 && slowSend.sends === 0; attempt += 1) await Promise.resolve();
@@ -509,7 +512,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   cancelWait.state.holdWait = waited.promise;
   cancelWait.state.waitStatus = 'cancelled';
   try {
-    const runtime = createCursorRuntime(options(interrupted.cwd, interrupted.session));
+    const runtime = factory(options(interrupted.cwd, interrupted.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     const aborting = turn.abort();
     waited.open();
@@ -525,7 +528,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   failingCancel.state.cancelError = new Error('cancel secret');
   failingCancel.state.waitStatus = 'finished';
   try {
-    const runtime = createCursorRuntime(options(thrownCancel.cwd, thrownCancel.session));
+    const runtime = factory(options(thrownCancel.cwd, thrownCancel.session));
     const events = [];
     const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     const aborting = turn.abort();
@@ -543,7 +546,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   excused.state.cancelError = new Error('cancel secret');
   excused.state.waitStatus = 'cancelled';
   try {
-    const runtime = createCursorRuntime(options(cancelledThrow.cwd, cancelledThrow.session));
+    const runtime = factory(options(cancelledThrow.cwd, cancelledThrow.session));
     const turn = await runtime.start({ text: 'Hello', onEvent() {} });
     const aborting = turn.abort();
     excusedWait.open();
@@ -558,7 +561,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   callbackFake.state.holdStream = stream.promise;
   callbackFake.state.waitStatus = 'cancelled';
   try {
-    const runtime = createCursorRuntime(options(callbackPlace.cwd, callbackPlace.session));
+    const runtime = factory(options(callbackPlace.cwd, callbackPlace.session));
     const events = [];
     const turn = await runtime.start({
       text: 'Hello',
@@ -582,7 +585,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   const followPlace = await workspace();
   install([[assistant('Hi')], [assistant('Next')]]);
   try {
-    const runtime = createCursorRuntime(options(followPlace.cwd, followPlace.session));
+    const runtime = factory(options(followPlace.cwd, followPlace.session));
     let second;
     const turn = await runtime.start({
       text: 'Hello',
@@ -601,7 +604,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
     const place = await workspace();
     install([[{ type: 'tool_call', status: 'completed', name: 'edit', call_id: callId }]]);
     try {
-      const runtime = createCursorRuntime(options(place.cwd, place.session));
+      const runtime = factory(options(place.cwd, place.session));
       const events = [];
       const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
       assert.equal(await turn.finished, 'failed');
@@ -614,7 +617,7 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
   const overflowPlace = await workspace();
   install([[assistant(`${'x'.repeat(SNAPSHOT_BYTES)}y`)]]);
   try {
-    const runtime = createCursorRuntime(options(overflowPlace.cwd, overflowPlace.session));
+    const runtime = factory(options(overflowPlace.cwd, overflowPlace.session));
     const events = [];
     const turn = await runtime.start({ text: 'Hello', onEvent: event => events.push(event) });
     assert.equal(await turn.finished, 'failed');
@@ -624,3 +627,656 @@ serial('admission, cancellation, and malformed tool ids settle on the public bou
 });
 
 const SNAPSHOT_BYTES = 4 * 1024 * 1024;
+
+serial('Cursor image sends preserve exact bytes on create and resume and refuse invalid input before admission', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('one')], [assistant('two')], [assistant('three')]]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  try {
+    assert.equal(runtime.imageInput.kind, 'supported');
+    const first = await runtime.start({ text: 'legacy', onEvent() {} }); await first.finished;
+    const images = [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194304, 1).toString('base64')}` }];
+    const expected = images[0].dataUrl.split(',')[1];
+    const second = runtime.start({ text: 'image', images, onEvent() {} });
+    images[0].dataUrl = 'mutated';
+    await (await second).finished;
+    const jpeg = { mediaType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,YQ==' };
+    await (await runtime.start({ text: 'resume image', agentId: first.agentId, images: [jpeg], onEvent() {} })).finished;
+    assert.deepEqual(fake.state.messages, ['legacy', { text: 'image', images: [{ data: expected, mimeType: 'image/png' }] },
+      { text: 'resume image', images: [{ data: 'YQ==', mimeType: 'image/jpeg' }] }]);
+    const before = fake.created.length + fake.resumed.length;
+    for (const invalid of [null, {}, [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YR==' }],
+      [{ mediaType: 'image/png', dataUrl: `data:image/png;base64,${Buffer.alloc(4194305).toString('base64')}` }]]) {
+      await assert.rejects(runtime.start({ text: 'invalid', images: invalid, agentId: first.agentId, onEvent() {} }), /Cursor operation failed/);
+    }
+    assert.equal(fake.created.length + fake.resumed.length, before);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor catalogs use each explicit key, remain sessionless and copy only native metadata', async () => {
+  const place = await workspace();
+  const fake = install([]);
+  const one = createCursorRuntime(options(place.cwd, place.session));
+  const two = createCursorRuntime(options(place.cwd, place.session, { apiKey: 'second-explicit-key' }));
+  const calls = [];
+  let returned = [];
+  sdk.listModels = async (options) => { calls.push(options); return returned; };
+  const signal = new AbortController().signal;
+  try {
+    assert.equal((await one.models.api.list(Object.create(AbortSignal.prototype))).error.code, 'invalid-input');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(await one.models.api.list(signal), { kind: 'ok', value: [] });
+    returned = [{ id: 'native', displayName: 'Native', description: 'description', aliases: ['alias'], parameters: ['omit'], variants: ['omit'] }];
+    const result = await two.models.api.list(signal);
+    returned[0].aliases.push('mutation');
+    assert.deepEqual(result.value, [{ id: 'native', displayName: 'Native', description: 'description', aliases: ['alias'] }]);
+    assert.equal(Object.hasOwn(result.value[0], 'hidden'), false);
+    assert.equal(Object.hasOwn(result.value[0], 'inputModalities'), false);
+    assert.deepEqual(calls, [{ apiKey: key }, { apiKey: 'second-explicit-key' }]);
+    assert.deepEqual([fake.created.length, fake.resumed.length, fake.roots.length], [0, 0, 0]);
+    for (const invalid of [null, {}, [{}], [{ get id() { throw new Error('untrusted catalog'); } }], Array(1001).fill({ id: 'x', displayName: 'X' }),
+      [{ id: 'x'.repeat(257), displayName: 'X' }], [{ id: 'x', displayName: '雪'.repeat(342) }],
+      [{ id: 'x', displayName: 'X', description: 'x'.repeat(4097) }],
+      [{ id: 'x', displayName: 'X', aliases: new Array(1) }], [{ id: 'x', displayName: 'X', aliases: Array(65).fill('a') }], [{ id: 'x', displayName: 'X', aliases: ['a'.repeat(257)] }]]) {
+      returned = invalid;
+      assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+    }
+    const changesLength = (entries) => {
+      let reads = 0;
+      return new Proxy(entries, { get(target, key) { return key === 'length' ? (++reads === 1 ? 1 : target.length) : Reflect.get(target, key); } });
+    };
+    for (const invalid of [changesLength(Array(1001).fill({ id: 'native', displayName: 'Native' })),
+      [{ id: 'native', displayName: 'Native', aliases: changesLength(Array(65).fill('alias')) }],
+      [{ id: ' native ', displayName: 'Native' }], [{ id: '', displayName: 'Native' }]]) {
+      returned = invalid; assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+    }
+    sdk.listModels = async () => { throw new Error('must not escape'); };
+    assert.equal((await one.models.api.list(signal)).error.code, 'native-failure');
+  } finally { await one.close(); await two.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor catalog timeout and abort detach the waiter while retaining one upstream lease', async (t) => {
+  const place = await workspace();
+  install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  const signal = new AbortController().signal;
+  let calls = 0;
+  let held = Promise.withResolvers();
+  sdk.listModels = () => { calls++; return held.promise; };
+  try {
+    assert.equal((await runtime.models.api.list(AbortSignal.abort())).error.code, 'closed');
+    assert.equal(calls, 0);
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const waiting = runtime.models.api.list(signal);
+    t.mock.timers.tick(30000);
+    assert.equal((await waiting).error.code, 'unavailable');
+    assert.equal((await runtime.models.api.list(signal)).error.code, 'busy');
+    held.resolve([{ id: 'late', displayName: 'Late' }]);
+    await Promise.resolve(); await Promise.resolve();
+    held = Promise.withResolvers();
+    const control = new AbortController();
+    control.signal.addEventListener('abort', (event) => event.stopImmediatePropagation());
+    const aborted = runtime.models.api.list(control.signal);
+    control.abort();
+    assert.equal((await aborted).error.code, 'closed');
+    assert.equal((await runtime.models.api.list(signal)).error.code, 'busy');
+    await runtime.close();
+    assert.equal((await runtime.models.api.list(signal)).error.code, 'closed');
+    held.reject(new Error('late failure is observed'));
+    await Promise.resolve();
+  } finally { t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('closing Cursor settles an active catalog waiter without waiting for its uncancellable upstream', async () => {
+  const place = await workspace(); install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  const held = Promise.withResolvers(); sdk.listModels = () => held.promise;
+  try {
+    const waiting = runtime.models.api.list(new AbortController().signal);
+    await runtime.close();
+    assert.equal((await waiting).error.code, 'closed');
+    held.resolve([{ malformed: true }]);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor image getters cannot reserve the same writer twice', async () => {
+  const place = await workspace(); const fake = install([]);
+  const runtime = createCursorRuntime(options(place.cwd, place.session));
+  try {
+    const first = await runtime.start({ text: 'first', onEvent() {} }); await first.finished;
+    let inner;
+    const outer = runtime.start({ text: 'outer', agentId: first.agentId, onEvent() {}, get images() {
+      inner = runtime.start({ text: 'inner', agentId: first.agentId, onEvent() {} }); return [];
+    } });
+    await assert.rejects(outer, /Cursor operation failed/); await (await inner).finished;
+    assert.equal(fake.resumed.length, 1);
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('Cursor discards fulfilled and rejected SDK results after the monotonic deadline even before timers run', async (t) => {
+ const place=await workspace();install([]);let now=0;t.mock.method(performance,'now',()=>now);
+ const runtime=createCursorRuntime(options(place.cwd,place.session));const signal=new AbortController().signal;
+ try {
+  for(const reject of [false,true]){const held=Promise.withResolvers();sdk.listModels=()=>held.promise;
+   const waiting=runtime.models.api.list(signal);now+=30001;
+   if(reject)held.reject(new Error('late'));else held.resolve([{id:'late',displayName:'Late'}]);
+   assert.equal((await waiting).error.code,'unavailable');
+  }
+  const held=Promise.withResolvers();sdk.listModels=()=>held.promise;
+  const parsing=runtime.models.api.list(signal);
+  held.resolve([{get id(){now+=30001;return 'late-validation';},displayName:'Late'}]);
+  assert.equal((await parsing).error.code,'unavailable');
+  const throwing=Promise.withResolvers();sdk.listModels=()=>throwing.promise;
+  const lateThrow=runtime.models.api.list(signal);throwing.resolve([{get id(){now+=30001;throw new Error('late validation');},displayName:'Late'}]);
+  assert.equal((await lateThrow).error.code,'unavailable');
+  sdk.listModels=()=>{now+=30001;throw new Error('late synchronous SDK');};
+  assert.equal((await runtime.models.api.list(signal)).error.code,'unavailable');
+  sdk.listModels=async()=>[];assert.deepEqual((await runtime.models.api.list(signal)).value,[]);
+ }finally{await runtime.close();restore();await place.remove();}
+});
+
+serial('Cursor catalog startup consumes its deadline and proxy arrays cannot hide entries',async(t)=>{
+ const place=await workspace();install([]);let now=0;t.mock.method(performance,'now',()=>now);t.mock.timers.enable({apis:['setTimeout']});
+ const runtime=createCursorRuntime(options(place.cwd,place.session));const signal=new AbortController().signal;const held=Promise.withResolvers();
+ try{
+  sdk.listModels=()=>{now+=5000;return held.promise;};let result;const pending=runtime.models.api.list(signal).then(v=>{result=v;});
+  t.mock.timers.tick(24999);await Promise.resolve();assert.equal(result,undefined);t.mock.timers.tick(1);await pending;assert.equal(result.error.code,'unavailable');
+  assert.equal((await runtime.models.api.list(signal)).error.code,'busy');held.resolve([]);await Promise.resolve();await Promise.resolve();
+  for(const value of [new Proxy([{id:'hidden',displayName:'Hidden'}],{get(target,key){return key==='length'?0:Reflect.get(target,key);}}),[{id:'ok',displayName:'OK',aliases:new Proxy(['hidden'],{get(target,key){return key==='length'?0:Reflect.get(target,key);}})}]]){
+   sdk.listModels=async()=>value;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
+  }
+  const growing=[{get id(){growing.push({id:'late',displayName:'Late'});return'first';},displayName:'First'}];sdk.listModels=async()=>growing;assert.equal((await runtime.models.api.list(signal)).error.code,'native-failure');
+ }finally{t.mock.timers.reset();await runtime.close();restore();await place.remove();}
+});
+
+const textLocalKeys = ['cwd', 'store', 'settingSources', 'sandboxOptions', 'enableAgentRetries', 'fs',
+  'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'];
+const textTopKeys = ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local'];
+function policyError(error) {
+  assert.ok(error instanceof CursorTextPolicyUnsupportedError);
+  assert.equal(error.code, 'cursor_policy_unsupported');
+  assert.equal(error.message, 'Cursor text policy is unsupported.');
+  assert.equal(error.name, 'CursorTextPolicyUnsupportedError');
+  assert.equal(error.stack, 'CursorTextPolicyUnsupportedError: Cursor text policy is unsupported.');
+  assert.equal(error.cause, undefined);
+  assert.ok(Object.isFrozen(error));
+  return true;
+}
+
+serial('text create and resume receive every fixed control and ignore JavaScript extras', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('Hello'), assistant(' world')], [assistant('Again')]]);
+  let trees = 0;
+  sdk.emptyFs = () => { trees++; return original.emptyFs(); };
+  try {
+    const runtime = createCursorTextRuntime(options(place.cwd, place.session, {
+      tools: ['shell'], policy: 'generic', sandboxOptions: { enabled: true }, cloud: {},
+    }));
+    assert.equal(runtime.imageInput.kind, 'unsupported');
+    const events = [];
+    const turn = await runtime.start({ text: 'hello', onEvent: e => events.push(e) });
+    assert.equal(await turn.finished, 'completed');
+    assert.deepEqual(events, [{ kind: 'text', text: 'Hello' }, { kind: 'text', text: 'Hello world' }, { kind: 'ended', outcome: 'completed' }]);
+    const resumed = await runtime.start({ text: 'again', agentId: turn.agentId, images: [], onEvent() {} });
+    assert.equal(await resumed.finished, 'completed');
+    assert.equal(trees, 1);
+    const created = fake.created[0], follow = fake.resumed[0][1];
+    for (const launch of [created, follow]) {
+      assert.deepEqual(Object.keys(launch).sort(), [...textTopKeys].sort());
+      assert.deepEqual(Object.keys(launch.local).sort(), [...textLocalKeys].sort());
+      assert.equal(launch.apiKey, key);
+      assert.deepEqual(launch.model, { id: caller });
+      assert.deepEqual(launch.tools, []); assert.deepEqual(launch.mcpServers, {}); assert.deepEqual(launch.agents, {});
+      assert.equal(launch.local.cwd, place.cwd); assert.equal(launch.local.store.dir, place.session);
+      assert.ok(launch.local.store instanceof fake.Store);
+      assert.deepEqual(launch.local.settingSources, []); assert.deepEqual(launch.local.sandboxOptions, { enabled: false });
+      assert.equal(launch.local.enableAgentRetries, false); assert.equal(launch.local.autoReview, false);
+      assert.deepEqual(launch.local.customTools, {}); assert.deepEqual(launch.local.hostMcpBridgeUrls, []);
+      assert.deepEqual(launch.local.dirs, []); assert.equal(launch.local.reportedWorkspacePath, '/');
+    }
+    assert.equal(created.local.fs, follow.local.fs);
+    assert.deepEqual(fake.roots, [place.session, place.session]);
+    assert.deepEqual(fake.state.messages, ['hello', 'again']);
+    const tree = created.local.fs;
+    assert.deepEqual(await Array.fromAsync(tree.list()), []);
+    await assert.rejects(tree.read('/canary'));
+    await assert.rejects(tree.write('/canary', 'no'));
+    await assert.rejects(tree.delete('/canary'));
+    await runtime.close();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text tools and tasks fail before any tool publication or payload observation', async () => {
+  const place = await workspace();
+  try {
+    for (const forbidden of [tool('running', 'args', 'private'), { type: 'tool_call' },
+      { type: 'task', agent_id: 'child', run_id: 'run', text: 'private' }]) {
+      const fake = install([[forbidden]]), events = [], observed = [];
+      const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+      const turn = await runtime.start({ text: 'hello', onEvent: e => events.push(e), onObservation: e => observed.push(e) });
+      assert.equal(await turn.finished, 'failed');
+      assert.deepEqual(events, [{ kind: 'ended', outcome: 'failed' }]);
+      assert.equal(observed.some(e => e.kind === 'tool'), false);
+      assert.equal(JSON.stringify(observed).includes('private'), false);
+      assert.deepEqual(fake.cancels, ['cancel']);
+      await runtime.close(); restore();
+    }
+    const fake = install([]), runtime = createCursorTextRuntime(options(place.cwd, place.session));
+    await assert.rejects(runtime.start({ text: 'image', images: [{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], onEvent() {} }));
+    assert.equal(fake.created.length, 0); assert.equal(fake.roots.length, 0);
+    await runtime.close();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('support verifies real and synthetic owning manifests, Node tuples, exports and construction', async () => {
+  const place = await workspace();
+  const entry = join(place.root, 'sdk/dist/esm/index.js'), owner = join(place.root, 'sdk/package.json');
+  const refuse = () => assert.throws(() => createCursorTextRuntime(options(place.cwd, place.session)), policyError);
+  try {
+    assert.equal(assertCursorTextSupport().identity.version, '1.4.2');
+    await mkdir(join(place.root, 'sdk/dist/esm'), { recursive: true }); await writeFile(entry, '');
+    sdk.resolveEntry = () => pathToFileURL(entry).href;
+    await writeFile(owner, JSON.stringify({ name: '@cursor/sdk', version: '1.4.2' }));
+    await writeFile(join(place.root, 'sdk/dist/package.json'), '{}');
+    await createCursorTextRuntime(options(place.cwd, place.session)).close();
+    for (const contents of ['{', 'null', '[]', '{"name":"other","version":"1.4.2"}', '{"name":"@cursor/sdk","version":"1.4.3"}']) {
+      await writeFile(owner, contents); refuse();
+    }
+    await rm(owner); refuse();
+    await writeFile(owner, '{"name":"@cursor/sdk","version":"1.4.2"}');
+    await writeFile(join(place.root, 'sdk/dist/package.json'), '{"name":"foreign"}'); refuse();
+    await rm(join(place.root, 'sdk/dist/package.json'));
+    const canonical = sdk.canonicalPath;
+    sdk.canonicalPath = path => path === join(place.root, 'sdk') ? place.cwd : canonical(path); refuse();
+    sdk.canonicalPath = canonical;
+    sdk.readManifest = () => { throw Object.assign(new Error('private path'), { code: 'EACCES' }); }; refuse();
+    restore();
+    for (const version of ['24.9.0', '24.22.2', '25.0.0', '26.0.0', '24.22.3-beta', '24.22', '-24.22.3', 'bad']) {
+      sdk.nodeVersion = () => version; refuse();
+    }
+    for (const version of ['24.22.3', '24.22.10', '24.23.0']) {
+      sdk.nodeVersion = () => version; await createCursorTextRuntime(options(place.cwd, place.session)).close();
+    }
+    restore();
+    for (const member of ['create', 'resume', 'Store', 'emptyFs', 'listModels']) {
+      for (const bad of [undefined, null, {}, 1]) { sdk[member] = bad; refuse(); }
+      sdk[member] = original[member];
+    }
+    sdk.Store = () => {}; refuse(); restore();
+    sdk.emptyFs = () => { throw new Error('private'); }; refuse();
+    sdk.emptyFs = () => ({}); refuse();
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text captures checked bindings and per-start refusal precedes Store, admission and observations', async () => {
+  const place = await workspace();
+  const fake = install([[assistant('ok')], [assistant('ok')]]);
+  let version = '24.22.3'; sdk.nodeVersion = () => version;
+  sdk.listModels = async () => [];
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  for (const member of ['create', 'resume', 'Store', 'emptyFs', 'listModels']) sdk[member] = () => { throw new Error('replacement reached'); };
+  try {
+    const signal = new AbortController().signal;
+    assert.equal((await runtime.models.api.list(signal)).kind, 'ok');
+    const turn = await runtime.start({ text: 'hi', onEvent() {} }); assert.equal(await turn.finished, 'completed');
+    const next = await runtime.start({ text: 'again', agentId: turn.agentId, onEvent() {} }); assert.equal(await next.finished, 'completed');
+    const observed = [], events = [];
+    version = '25.0.0';
+    for (const agentId of [undefined, turn.agentId]) {
+      await assert.rejects(runtime.start({ text: 'refuse', agentId, onEvent: e => events.push(e), onObservation: e => observed.push(e) }), policyError);
+    }
+    assert.deepEqual(events, []); assert.deepEqual(observed, []); assert.equal(fake.roots.length, 2);
+    version = '24.22.3';
+    for (let n = 0; n < 40; n++) {
+      version = '25.0.0'; await assert.rejects(runtime.start({ text: 'no', agentId: turn.agentId, onEvent() {} }), policyError);
+    }
+    version = '24.22.3';
+    const recovered = await runtime.start({ text: 'retry', agentId: turn.agentId, onEvent() {} });
+    assert.equal(await recovered.finished, 'completed');
+  } finally { await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('the production text launch guard refuses each missing, changed and added control', async () => {
+  const place = await workspace(); install([]);
+  try {
+    const opts = options(place.cwd, place.session), policy = cursorTextPolicy();
+    const launch = buildCursorLaunchOptions(opts, policy), tree = policy.tree, store = launch.local.store;
+    const guard = value => assertCursorTextLaunch(value, opts, tree, store);
+    guard(launch);
+    const mutations = {
+      apiKey: 'other', model: { id: 'other' }, tools: ['shell'], mcpServers: { foreign: {} }, agents: { foreign: {} }, local: {},
+      cwd: '/other', store: {}, settingSources: ['project'], sandboxOptions: { enabled: true }, enableAgentRetries: true,
+      fs: emptyFs(), reportedWorkspacePath: '/other', customTools: { foreign: {} }, hostMcpBridgeUrls: ['http://localhost'], dirs: ['/other'], autoReview: true,
+    };
+    for (const [keys, atLocal] of [[textTopKeys, false], [textLocalKeys, true]]) for (const field of keys) {
+      const candidate = { ...launch, local: { ...launch.local } }, target = atLocal ? candidate.local : candidate;
+      delete target[field]; assert.throws(() => guard(candidate), policyError, `missing ${field}`);
+      target[field] = mutations[field]; assert.throws(() => guard(candidate), policyError, `changed ${field}`);
+    }
+    for (const [field, value] of Object.entries({ cloud: {}, disallowedTools: [], systemPrompt: 'override', hooks: {}, policy: 'generic' })) {
+      assert.throws(() => guard({ ...launch, [field]: value }), policyError);
+    }
+    for (const field of ['subagentInherit', 'resourceProviderOptions', 'hooks', 'plugins']) {
+      assert.throws(() => guard({ ...launch, local: { ...launch.local, [field]: {} } }), policyError);
+    }
+    const support = assertCursorTextSupport();
+    assert.throws(() => buildCursorLaunchOptions(opts, { kind: 'text', tree, support: { ...support, contract: 'other' } }), policyError);
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text admission deadline, late ownership and cross-policy writer contention use one lifecycle', async t => {
+  const place = await workspace(), fake = install([[assistant('ok')]]);
+  const held = gate(); fake.state.holdCreate = held.promise;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const pending = runtime.start({ text: 'hi', onEvent() {} }); const rejected = assert.rejects(pending);
+    t.mock.timers.tick(30000); await rejected; held.open();
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+    assert.deepEqual(fake.state.disposals, ['agent-1']);
+    fake.state.holdCreate = undefined;
+    const waiting = gate(); fake.state.holdWait = waiting.promise;
+    const turn = await runtime.start({ text: 'hi', onEvent() {} });
+    const generic = createCursorRuntime(options(place.cwd, place.session));
+    await assert.rejects(generic.start({ text: 'conflict', agentId: turn.agentId, onEvent() {} }));
+    waiting.open(); await turn.finished; await generic.close();
+  } finally { held.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('real SDK persists text-only state and reopens it with no restored subagent definitions', async () => {
+  const place = await workspace();
+  try {
+    restore();
+    const opts = options(place.cwd, place.session);
+    const policy = cursorTextPolicy();
+    const launch = buildCursorLaunchOptions(opts, policy);
+    const { model, apiKey, ...offline } = launch;
+    void model; void apiKey; // Avoid catalog/provider IO. This test never calls send or acquires an executor.
+    const platform = await createAgentPlatform({ localStore: launch.local.store, workspaceRef: place.cwd,
+      scopedWorkspaceRef: place.cwd, eventNotifier: createInMemoryRunEventNotifier() });
+    const agent = await platform.createAgent(offline);
+    const saved = await launch.local.store.agents.get({ agentId: agent.agentId });
+    assert.equal(saved.sdkMetadata.customSubagents, undefined);
+    // Save valid empty protobuf state through the real checkpoint store, then reopen from disk.
+    await platform.checkpointStore.saveCheckpoint(agent.agentId, { toBinary: () => new Uint8Array() });
+    const owned = new Map([[agent.agentId, 'cursor-text-v1']]);
+    for (let n = 0; n < 2; n++) {
+      const again = buildCursorLaunchOptions(opts, policy);
+      const { model: ignoredModel, apiKey: ignoredKey, ...resuming } = again;
+      void ignoredModel; void ignoredKey;
+      const fresh = await createAgentPlatform({ localStore: again.local.store, workspaceRef: place.cwd,
+        scopedWorkspaceRef: place.cwd, eventNotifier: createInMemoryRunEventNotifier() });
+      assert.notEqual(fresh, platform);
+      const row = await again.local.store.agents.get({ agentId: agent.agentId });
+      assert.ok(row.latestCheckpoint);
+      assert.ok(await fresh.checkpointStore.loadLatest(agent.agentId));
+      // Example host admission boundary: the adapter itself cannot prove ownership.
+      const resumeOwned = id => {
+        if (owned.get(id) !== 'cursor-text-v1') throw new Error('unowned session');
+        return fresh.resumeAgent(id, resuming);
+      };
+      for (const foreign of ['generic-session', 'imported-session', 'unknown-session']) {
+        assert.throws(() => resumeOwned(foreign), /unowned session/);
+      }
+      const resumed = await resumeOwned(agent.agentId);
+      assert.equal(resumed.options.customSubagents, undefined);
+      assert.deepEqual(resumed.options.allowedProtoTools, []);
+      assert.deepEqual(resumed.options.mcpServers, {});
+      assert.deepEqual(resumed.options.local.settingSources, []);
+      assert.equal(resumed.options.local.fs, policy.tree);
+      assert.equal(row.sdkMetadata.customSubagents, undefined);
+    }
+  } finally { restore(); await place.remove(); }
+});
+
+serial('malformed native export namespaces import lazily and reach the fixed support refusal', async () => {
+  const place = await workspace();
+  try {
+    const sdkUrl = new URL('sdk.js', import.meta.resolve('@operatorworks/switchboard/cursor'));
+    const configUrl = new URL('config.js', sdkUrl);
+    const boundary = await readFile(sdkUrl, 'utf8');
+    for (const [n, namespace] of [
+      'export const Agent = undefined; export const Cursor = undefined;',
+      'export const Agent = {}; export const Cursor = {models:{}};',
+      'export const Agent = {create:1,resume:null}; export const Cursor = {models:{list:1}};',
+    ].entries()) {
+      const stub = join(place.root, `native-${n}.mjs`), module = join(place.root, `boundary-${n}.mjs`);
+      await writeFile(stub, namespace + ' export const JsonlLocalAgentStore = undefined; export const emptyFs = undefined;');
+      await writeFile(module, boundary.replace("'@cursor/sdk'", JSON.stringify(pathToFileURL(stub).href))
+        .replace("'./config.js'", JSON.stringify(configUrl.href)));
+      const loaded = await import(pathToFileURL(module).href);
+      loaded.sdk.resolveEntry = original.resolveEntry;
+      assert.throws(() => loaded.assertCursorTextSupport(), policyError);
+    }
+  } finally { restore(); await place.remove(); }
+});
+
+serial('text refuses assistant tool-use blocks before publishing mixed-frame text', async () => {
+  const place = await workspace();
+  const frame = { type: 'assistant', message: { content: [
+    { type: 'text', text: 'must not publish' }, { type: 'tool_use', id: 'tool-1', name: 'shell', input: {} },
+  ] } };
+  try {
+    for (const factory of [createCursorRuntime, createCursorTextRuntime]) {
+      const fake = install([[frame]]), events = [];
+      const runtime = factory(options(place.cwd, place.session));
+      const turn = await runtime.start({ text: 'hello', onEvent: e => events.push(e) });
+      if (factory === createCursorTextRuntime) {
+        assert.equal(await turn.finished, 'failed');
+        assert.deepEqual(events, [{ kind: 'ended', outcome: 'failed' }]);
+        assert.deepEqual(fake.cancels, ['cancel']);
+      } else {
+        assert.equal(await turn.finished, 'completed');
+        assert.equal(events[0].text, 'must not publish');
+      }
+      await runtime.close(); restore();
+    }
+  } finally { restore(); await place.remove(); }
+});
+
+for (const factory of [createCursorRuntime, createCursorTextRuntime])
+serial(`timed-out send retains its writer until late cancellation (${factory.name})`, async t => {
+  const place = await workspace(), fake = install([[], [assistant('fresh')]]), sending = gate();
+  fake.state.holdSend = sending.promise;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = factory(options(place.cwd, place.session));
+  try {
+    const pending = runtime.start({ text: 'late', agentId: 'owned-session', onEvent() {} });
+    const refused = assert.rejects(pending);
+    for (let n = 0; n < 15 && fake.sends === 0; n++) await Promise.resolve();
+    assert.equal(fake.sends, 1);
+    t.mock.timers.tick(30000); await refused;
+    const overlap = runtime.start({ text: 'overlap', agentId: 'owned-session', onEvent() {} });
+    const blocked = assert.rejects(overlap);
+    for (let n = 0; n < 15; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await blocked;
+    assert.equal(fake.resumed.length, 1, 'an unresolved native send must keep its writer');
+    sending.open();
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(fake.cancels.length, 1, 'late cancellation must run before runtime.close');
+    fake.state.holdSend = undefined;
+    const recovered = await runtime.start({ text: 'fresh', agentId: 'owned-session', onEvent() {} });
+    assert.equal(await recovered.finished, 'completed');
+  } finally { sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('a failed late cancellation keeps the writer and close retries the drain', async t => {
+  const place = await workspace(), fake = install([[], [assistant('fresh')]]), sending = gate();
+  fake.state.holdSend = sending.promise;
+  fake.state.cancelError = new Error('private cancellation failure');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const pending = runtime.start({ text: 'late', agentId: 'retry-owned', onEvent() {} });
+    const refused = assert.rejects(pending);
+    for (let n = 0; n < 15 && fake.sends === 0; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await refused; sending.open();
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(fake.cancels.length, 1);
+    await assert.rejects(runtime.start({ text: 'overlap', agentId: 'retry-owned', onEvent() {} }));
+    assert.equal(fake.resumed.length, 1);
+    await assert.rejects(runtime.close(), { message: 'Cursor operation failed.' });
+    fake.state.cancelError = undefined;
+    await runtime.close();
+    fake.state.holdSend = undefined;
+    const next = createCursorTextRuntime(options(place.cwd, place.session));
+    try {
+      const turn = await next.start({ text: 'fresh', agentId: 'retry-owned', onEvent() {} });
+      assert.equal(await turn.finished, 'completed');
+    } finally { await next.close(); }
+  } finally { fake.state.cancelError = undefined; sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('pending native sends retain the runtime capacity after admission timeout', async t => {
+  const place = await workspace(), fake = install([]), sending = gate();
+  fake.state.holdSend = sending.promise;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const refused = Array.from({ length: 32 }, (_, n) => assert.rejects(runtime.start({ text: 'held', agentId: `capacity-${n}`, onEvent() {} })));
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(fake.sends, 32);
+    t.mock.timers.tick(30000); await Promise.all(refused);
+    const extra = runtime.start({ text: 'overflow', agentId: 'capacity-extra', onEvent() {} });
+    const rejected = assert.rejects(extra);
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await rejected;
+    assert.equal(fake.sends, 32, 'unresolved sends still occupy capacity');
+  } finally { sending.open(); for (let n = 0; n < 30; n++) await Promise.resolve(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+serial('a timed-out send disposes the executor acquired after timeout', async t => {
+  const place = await workspace(); install([]); const sending = gate(); let lease = false; let disposals = 0;
+  sdk.resume = async id => ({ agentId: id, async send() {
+    await sending.promise; lease = true;
+    return { supports: () => true, cancel: async () => {}, wait: async () => ({ status: 'finished' }), async *stream() {} };
+  }, async [Symbol.asyncDispose]() { disposals++; lease = false; } });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const refused = assert.rejects(runtime.start({ text: 'held', agentId: 'late-executor', onEvent() {} }));
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await refused;
+    await runtime.close(); sending.open();
+    for (let n = 0; n < 40; n++) await Promise.resolve();
+    await runtime.close();
+    assert.equal(lease, false, 'late executor lease must be released'); assert.equal(disposals, 1);
+  } finally { sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+serial('invalid caller getters and Store failures use generic errors', async () => {
+ const place = await workspace(), fake = install([]);
+ try {
+  for (const field of ['cwd', 'sessionDirectory', 'apiKey', 'model']) {
+   const opts = options(place.cwd, place.session); Object.defineProperty(opts, field, { get() { throw new Error('private'); } });
+   assert.throws(() => createCursorTextRuntime(opts), { message: 'Cursor operation failed.' });
+  }
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+   for (const field of ['text', 'agentId', 'onEvent', 'onObservation', 'images']) {
+    const request = { text: 'valid', onEvent() {} }; Object.defineProperty(request, field, { get() { throw new Error('private'); } });
+    let result; assert.doesNotThrow(() => { result = runtime.start(request); }); await assert.rejects(result, { message: 'Cursor operation failed.' });
+   }
+  } finally { await runtime.close(); }
+  sdk.Store = class { constructor() { throw new Error('private disk failure'); } };
+  const failing = createCursorTextRuntime(options(place.cwd, place.session));
+  try { await assert.rejects(failing.start({ text: 'valid', onEvent() {} }), { message: 'Cursor operation failed.' }); }
+  finally { await failing.close(); }
+  assert.equal(fake.created.length, 0);
+ } finally { restore(); await place.remove(); }
+});
+serial('unresolved native opens retain capacity after public admission timeout', async t => {
+  const place = await workspace(), fake = install([]), opening = gate();
+  const resume = sdk.resume; let calls = 0;
+  sdk.resume = async (...args) => { calls++; await opening.promise; return resume(...args); };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const refused = Array.from({ length: 32 }, (_, n) => assert.rejects(runtime.start({ text: 'held', agentId: `opening-${n}`, onEvent() {} })));
+    t.mock.timers.tick(30000); await Promise.all(refused);
+    const extra = assert.rejects(runtime.start({ text: 'overflow', agentId: 'opening-extra', onEvent() {} }));
+    t.mock.timers.tick(30000); await extra;
+    assert.equal(calls, 32); assert.equal(fake.sends, 0);
+  } finally { opening.open(); for (let n = 0; n < 40; n++) await Promise.resolve(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+serial('close drains a late run that arrives during another agent disposal', async () => {
+  const place = await workspace(), fake = install([]), sending = gate(), disposing = gate(), waiting = gate();
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  let closed = false;
+  try {
+    await (await runtime.start({ text: 'first', onEvent() {} })).finished;
+    fake.state.holdSend = sending.promise; fake.state.holdDispose = disposing.promise; fake.state.holdWait = waiting.promise;
+    const rejected = assert.rejects(runtime.start({ text: 'late', agentId: 'closing-late', onEvent() {} }));
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    const closing = runtime.close().then(() => { closed = true; }); await rejected;
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    sending.open(); for (let n = 0; n < 20; n++) await Promise.resolve();
+    disposing.open(); for (let n = 0; n < 40; n++) await Promise.resolve();
+    assert.equal(closed, false, 'a known late run must reach terminal status before close returns');
+    waiting.open(); await closing;
+  } finally { sending.open(); disposing.open(); waiting.open(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('close abandons all pending sends before waiting on cancellation',async()=>{
+ const place=await workspace(),fake=install([]),stream=gate(),sending=gate(),cancel=gate();fake.state.holdStream=stream.promise;
+ const runtime=createCursorTextRuntime(options(place.cwd,place.session));let closing;
+ try{await runtime.start({text:'first',agentId:'close-first',onEvent(){}});fake.state.holdSend=sending.promise;fake.state.holdCancel=cancel.promise;const observed=[];let disposition;
+ const pending=runtime.start({text:'second',agentId:'close-second',onEvent(){},onObservation:o=>observed.push(o)}).then(()=>{disposition='admitted';},()=>{disposition='refused';});for(let n=0;n<20;n++)await Promise.resolve();closing=runtime.close();for(let n=0;n<20;n++)await Promise.resolve();sending.open();for(let n=0;n<40;n++)await Promise.resolve();
+ assert.equal(disposition,'refused');assert.equal(observed.some(o=>o.kind==='run-started'),false);await pending;
+ }finally{cancel.open();sending.open();stream.open();await closing;await runtime.close();restore();await place.remove();}
+});
+serial('close joins cancellation already started by turn abort before releasing the writer',async()=>{
+ const place=await workspace(),fake=install([]),stream=gate(),cancel=gate();fake.state.holdStream=stream.promise;const runtime=createCursorTextRuntime(options(place.cwd,place.session));let stopping,closing;let closed=false;
+ try{const turn=await runtime.start({text:'first',agentId:'cancel-joined',onEvent(){}});fake.state.holdCancel=cancel.promise;fake.state.waitStatus='cancelled';stopping=turn.abort();for(let n=0;n<20;n++)await Promise.resolve();closing=runtime.close().then(()=>{closed=true;});stream.open();for(let n=0;n<60;n++)await Promise.resolve();assert.equal(closed,false);const other=createCursorTextRuntime(options(place.cwd,place.session));try{await assert.rejects(other.start({text:'overlap',agentId:'cancel-joined',onEvent(){}}));}finally{await other.close();}
+ }finally{cancel.open();stream.open();await stopping;await closing;await runtime.close();restore();await place.remove();}
+});
+
+serial('a later close joins a run handle acquired after a previous close',async t=>{
+ const place=await workspace(),fake=install([]),sending=gate(),waiting=gate();fake.state.holdSend=sending.promise;fake.state.holdWait=waiting.promise;t.mock.timers.enable({apis:['setTimeout']});const runtime=createCursorTextRuntime(options(place.cwd,place.session));let closing;
+ try{const refused=assert.rejects(runtime.start({text:'held',agentId:'cached-close-owned',onEvent(){}}));for(let n=0;n<20;n++)await Promise.resolve();t.mock.timers.tick(30000);await refused;await runtime.close();sending.open();for(let n=0;n<30;n++)await Promise.resolve();assert.equal(fake.cancels.length,1);let closed=false;closing=runtime.close().then(()=>{closed=true;});for(let n=0;n<40;n++)await Promise.resolve();assert.equal(closed,false,'known late cleanup must be joined');waiting.open();await closing;}finally{sending.open();waiting.open();for(let n=0;n<50;n++)await Promise.resolve();t.mock.timers.reset();await closing;await runtime.close();restore();await place.remove();}
+});
+serial('Cursor path validation refuses embedded NUL before SDK setup',async()=>{
+ const place=await workspace(),fake=install([]);try{for(const factory of [createCursorRuntime,createCursorTextRuntime])for(const field of ['cwd','sessionDirectory'])assert.throws(()=>factory({...options(place.cwd,place.session),[field]:place.cwd+'\0invalid'}),{message:'Cursor operation failed.'});assert.equal(fake.roots.length,0);assert.equal(fake.created.length,0);}finally{restore();await place.remove();}
+});
+for(const stage of ['Store','create','send'])for(const kind of ['spoof','revoked'])serial(`native ${stage} ${kind} failures cannot become policy refusals or strand admission`,async()=>{
+ const place=await workspace(),fake=install([]);let thrown;if(kind==='spoof'){thrown=Object.create(CursorTextPolicyUnsupportedError.prototype);thrown.message='fixture-canary-native-error';}else{const proxy=Proxy.revocable({},{});proxy.revoke();thrown=proxy.proxy;}
+ if(stage==='Store')sdk.Store=class{constructor(){throw thrown;}};else if(stage==='create')sdk.create=()=>{throw thrown;};else fake.state.sendError=thrown;const runtime=createCursorTextRuntime(options(place.cwd,place.session));
+ try{let result;void runtime.start({text:'fail',onEvent(){}}).then(()=>{result={message:'unexpected admission'};},error=>{result=error;});for(let n=0;n<50;n++)await Promise.resolve();assert.equal(result?.message,'Cursor operation failed.');}finally{await runtime.close();restore();await place.remove();}
+});
+
+
+for(const phase of ['open','send'])serial(`admission checks elapsed deadline before accepting delayed ${phase}`,async t=>{
+ const place=await workspace(),fake=install([]),held=gate();let now=0;t.mock.method(performance,'now',()=>now);if(phase==='open')fake.state.holdCreate=held.promise;else fake.state.holdSend=held.promise;const runtime=createCursorTextRuntime(options(place.cwd,place.session));
+ try{const starting=runtime.start({text:'late',onEvent(){}});if(phase==='send')while(fake.sends===0)await Promise.resolve();now=30001;held.open();await assert.rejects(starting,/Cursor operation failed/);if(phase==='open')assert.equal(fake.sends,0);for(let n=0;n<50;n++)await Promise.resolve();}finally{held.open();await runtime.close();restore();await place.remove();}
+});
+
+
+for(const factory of [createCursorRuntime,createCursorTextRuntime])serial(`readiness getter failures stay generic promises (${factory.name})`,async()=>{
+ const place=await workspace();install([]);const runtime=factory(options(place.cwd,place.session));try{let result;assert.doesNotThrow(()=>{result=runtime.readinessReport({get signal(){throw new Error('synthetic canary');}});});assert(result instanceof Promise);await assert.rejects(result,error=>error.message==='Cursor operation failed.');}finally{await runtime.close();restore();await place.remove();}
+});
+
+
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) {
+  serial(`external cancel cannot hide a finished stream failure (${factory.name})`, async () => {
+    const place = await workspace(); const release = Promise.withResolvers();
+    const fake = install([[assistant('partial'), new Error('incomplete stream')]]);
+    fake.state.holdStream = release.promise;
+    const events = []; const runtime = factory(options(place.cwd, place.session));
+    try {
+      const turn = await runtime.start({ text: 'fail', onEvent: event => events.push(event) });
+      const aborted = turn.abort(); release.resolve(); await aborted;
+      assert.equal(await turn.finished, 'failed');
+      assert.equal(events.findLast(event => event.kind === 'ended').outcome, 'failed');
+    } finally { release.resolve(); await runtime.close(); restore(); await place.remove(); }
+  });
+  serial(`readiness signal accessor stays behind the generic boundary (${factory.name})`, async () => {
+    const place = await workspace(); install([]); const runtime = factory(options(place.cwd, place.session));
+    const controller = new AbortController(); const signal = controller.signal; let traps = 0;
+    Object.defineProperty(signal, 'aborted', { get() { traps++; throw new Error('readiness canary'); } });
+    try {
+      assert.equal((await runtime.readinessReport({ signal })).facts.workspace.state, 'accessible');
+      controller.abort();
+      assert.equal((await runtime.readinessReport({ signal })).facts.workspace.state, 'cancelled');
+      assert.equal(traps, 0);
+    }
+    finally { await runtime.close(); restore(); await place.remove(); }
+  });
+}

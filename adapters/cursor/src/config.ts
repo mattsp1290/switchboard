@@ -1,3 +1,4 @@
+import { callerModelId } from '#switchboard';
 import { isAbsolute, resolve } from 'node:path';
 
 export interface CursorRuntimeOptions {
@@ -5,6 +6,17 @@ export interface CursorRuntimeOptions {
   readonly sessionDirectory: string;
   readonly apiKey: string;
   readonly model: string;
+}
+
+/** Fixed refusal details, including the stack, never include native or caller data. */
+export class CursorTextPolicyUnsupportedError extends Error {
+  readonly code = 'cursor_policy_unsupported';
+  constructor() {
+    super('Cursor text policy is unsupported.');
+    this.name = 'CursorTextPolicyUnsupportedError';
+    this.stack = 'CursorTextPolicyUnsupportedError: Cursor text policy is unsupported.';
+    Object.freeze(this);
+  }
 }
 
 export interface CursorLocalOptions {
@@ -27,15 +39,6 @@ export function textWithoutControls(value: string): boolean {
   return true;
 }
 
-// Same caller-id rule as the text adapters. Not exported: index.ts reaches it through readCursorOptions.
-function callerModelId(value: unknown): value is string {
-  if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 256 || /\p{Cs}/u.test(value)) return false;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || (code >= 127 && code <= 159)) return false;
-  }
-  return true;
-}
 
 function apiKeyText(value: unknown): value is string {
   if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > 512) return false;
@@ -44,15 +47,17 @@ function apiKeyText(value: unknown): value is string {
 }
 
 function absolutePath(value: unknown): value is string {
-  return typeof value === 'string' && isAbsolute(value);
+  return typeof value === 'string' && !value.includes('\0') && isAbsolute(value);
 }
 
 /** Copies a validated options object. Later edits to the caller's object are not observed. */
 export function readCursorOptions(value: unknown): CursorRuntimeOptions | undefined {
   if (value === null || typeof value !== 'object') return undefined;
-  const { cwd, sessionDirectory, apiKey, model } = value as Record<string, unknown>;
-  if (!callerModelId(model) || !apiKeyText(apiKey) || !absolutePath(cwd) || !absolutePath(sessionDirectory)) return undefined;
-  return { cwd: resolve(cwd), sessionDirectory: resolve(sessionDirectory), apiKey, model };
+  try {
+    const { cwd, sessionDirectory, apiKey, model } = value as Record<string, unknown>;
+    if (!callerModelId(model) || !apiKeyText(apiKey) || !absolutePath(cwd) || !absolutePath(sessionDirectory)) return undefined;
+    return { cwd: resolve(cwd), sessionDirectory: resolve(sessionDirectory), apiKey, model };
+  } catch { return undefined; }
 }
 
 /** Local-agent fields shared by create and resume. `storeDirectory` is the store root, not a field on `local`. */

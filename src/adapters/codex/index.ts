@@ -1,3 +1,5 @@
+import { addAbortListener } from 'node:events';
+import { freezeJson } from './wire.js';
 import { createHash } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { createAuthContext } from '../../core/auth.js';
@@ -8,18 +10,27 @@ import { createEventStream } from '../../core/events.js';
 import { answeredToolObservations, declaredToolObservations, emitObservation, emitRunStarted, isOptionalObservationListener, normalizeUsage, segmentTerminal } from '../../core/run-observation.js';
 import type { RunObservation, RunObservationListener, RunObservationUsage } from '../../core/run-observation.js';
 import type { HostAdapter, HostAdapterError, HostAdapterEvent, HostAdapterRegistration, HostContinueInput,
-  HostLaunch, HostOpenOptions, HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
+  HostPendingSet, HostModel, HostNativeError, HostLaunch, HostOpenOptions, HostRunInput, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration, HostUsage,
   HostWriteStatus,
 } from '../../core/host-adapter.js';
 import type { InteractionContinuation } from '../../core/interaction.js';
-import { parseInteractionContinuation } from '../../core/interaction.js';
+import { hostImagesRequested, parseHostImages } from '../../core/image-input.js';
+import { parseCheckpointReference } from '../../core/sessions.js';
 import type { SessionBinding } from '../../core/sessions.js';
+import { codexActivityItem } from './activity.js';
+import { listCodexModels } from './models.js';
+import { boundedCodexMessage, codexNativeError, createCodexErrorIntake } from './native-errors.js';
+import { codexSettlement } from './settlement.js';
+import { codexImages, codexImageLimits, codexImageFrameBytes, codexOrdinaryFrameBytes, codexTurnInput } from './images.js';
+import type { CodexImage } from './images.js';
 import { createCodexWriters, openCodexExecution } from './execution.js';
-import type { CleanupStep, CodexSession, CodexTokenUsage, CodexTurnCompletion } from './execution.js';
+import type { CodexInterruptResult, CodexSession, CodexTokenUsage, CodexTurnCompletion } from './execution.js';
+import { monitorCodexTurn } from './turn-monitor.js';
+import type { CodexTurnMonitor } from './turn-monitor.js';
 import { codexCheckpoint, readCodexHistoryFingerprint } from './fingerprint.js';
-import type { CodexDynamicTool, CodexSandboxMode } from './features.js';
-import { codexNativeToolReply, createCodexInteraction } from './interaction.js';
-import type { CodexHostCall, CodexInteraction } from './interaction.js';
+import type { CodexApprovalsReviewer, CodexDynamicTool, CodexSandboxMode } from './features.js';
+import { createCodexInteraction } from './interaction.js';
+import type { CodexHostCall, CodexInteraction, CodexPreparedBatch } from './interaction.js';
 import { codexProxyConfig } from './proxy.js';
 import { checkCodexHostRoute, checkCodexRoute, codexHostRouteConfig } from './route.js';
 import type { CodexHostRoute, CodexProxyRoute } from './route.js';
@@ -27,6 +38,7 @@ import { bindCodexRequester } from './sessions.js';
 import { openCodexTransport } from './transport.js';
 import type { BorrowedChannel, CodexTransport, TransportBounds } from './transport.js';
 
+export type CodexHostModel = HostModel;
 /** Pinned app-server this adapter was proved against. */
 export const CODEX_HOST_NATIVE_VERSION = '0.169.0';
 
@@ -46,6 +58,11 @@ export interface CodexHostNativeConfig {
   readonly envKey?: string;
   readonly headerEnv?: Readonly<Record<string, string>>;
   readonly sandbox?: CodexSandboxMode;
+  readonly approvalPolicy?: 'never' | 'untrusted' | 'on-request';
+  readonly approvalsReviewer?: CodexApprovalsReviewer;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly activity?: 'items';
   /** Bounds a held server request for the whole transport. Default 180000, above a 171s hold. */
   readonly handlerTimeoutMs?: number;
 }
@@ -57,6 +74,7 @@ export interface CodexHostSpawnRequest {
 }
 export interface CodexHostSpawned {
   readonly channel: BorrowedChannel;
+  /** Resolve after owned stdout is drained/closed (Node ChildProcess 'close', not 'exit'). */
   readonly processExit: PromiseLike<unknown>;
 }
 export type CodexHostLaunch = HostLaunch<
@@ -99,14 +117,9 @@ const featurePins = [
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const fail = (error: HostAdapterError) => ({ kind: 'error' as const, error: Object.freeze(error) });
-function failed(error: HostAdapterError, write: HostWriteStatus): HostSegmentResult {
-  if (error.code === 'pending-limit') {
-    if (write.kind !== 'accepted') {
-      return { kind: 'failed', error: { code: 'native-failure', message: 'a pending limit was not an accepted write' }, write: { kind: 'not-attempted' } };
-    }
-    return { kind: 'failed', error, write };
-  }
-  return { kind: 'failed', error, write };
+type SegmentError = Exclude<HostAdapterError, { readonly code: 'pending-limit' }>;
+function failed(error: SegmentError, write: HostWriteStatus, nativeError?: HostNativeError): HostSegmentResult {
+  return { kind: 'failed', error, write, ...(nativeError === undefined ? {} : { nativeError }) };
 }
 /** Native `total` as one observation row. `reasoningOutputTokens` is the AG-UI `reasoningTokens`. */
 function usageRow(total: CodexTokenUsage): RunObservationUsage {
@@ -116,7 +129,7 @@ function usageRow(total: CodexTokenUsage): RunObservationUsage {
 }
 /**
  * Pinned 0.169.0 `ServerNotification` reasoning methods, checked against `codex app-server generate-ts`:
- * `item/reasoning/textDelta` carries `{ itemId, delta }` and `item/reasoning/summaryTextDelta` adds a numeric
+ * `item/reasoning/textDelta` carries `{ threadId, turnId, itemId, delta, contentIndex }` and `item/reasoning/summaryTextDelta` adds a numeric
  * `summaryIndex`, which keeps each summary part in its own message. `execution.ts` leaves them
  * as opaque `native` events, so `watch` projects only these two methods as `reasoning` deltas.
  */
@@ -173,31 +186,48 @@ function helperOf(value: unknown): CodexHostNativeConfig['helper'] | false {
   return { command: value.command, args: Object.freeze([...value.args]) };
 }
 function nativeOf(value: unknown): CodexHostNativeConfig | undefined {
-  if (!record(value) || typeof value.home !== 'string' || typeof value.cwd !== 'string') return undefined;
-  if (!isAbsolute(value.home) || !isAbsolute(value.cwd) || value.home !== resolve(value.home) || value.cwd !== resolve(value.cwd)) return undefined;
-  const executable = optionalString(value.executable);
-  const sqliteHome = optionalString(value.sqliteHome);
-  const logDir = optionalString(value.logDir);
-  const providerId = optionalString(value.providerId);
-  const envKey = optionalString(value.envKey);
+  if (!record(value)) return undefined;
+  const fields = ['home', 'cwd', 'executable', 'sqliteHome', 'logDir', 'providerId', 'loopbackRelay', 'helper', 'envKey',
+    'headerEnv', 'sandbox', 'approvalPolicy', 'approvalsReviewer', 'model', 'effort', 'activity', 'handlerTimeoutMs'] as const;
+  const native: Record<string, unknown> = Object.fromEntries(fields.map((field) => [field, value[field]]));
+  if (typeof native.home !== 'string' || typeof native.cwd !== 'string') return undefined;
+  if (!isAbsolute(native.home) || !isAbsolute(native.cwd) || native.home !== resolve(native.home) || native.cwd !== resolve(native.cwd)) return undefined;
+  const executable = optionalString(native.executable);
+  const sqliteHome = optionalString(native.sqliteHome);
+  const logDir = optionalString(native.logDir);
+  const providerId = optionalString(native.providerId);
+  const envKey = optionalString(native.envKey);
   if (executable === false || sqliteHome === false || logDir === false || providerId === false || envKey === false) return undefined;
   if (executable !== undefined && !isAbsolute(executable)) return undefined;
-  const handlerTimeoutMs = value.handlerTimeoutMs;
+  const approvalPolicy = native.approvalPolicy === 'never' || native.approvalPolicy === 'untrusted' || native.approvalPolicy === 'on-request' ? native.approvalPolicy : undefined;
+  if (native.approvalPolicy !== undefined && approvalPolicy === undefined) return undefined;
+  if (native.approvalsReviewer !== undefined && native.approvalsReviewer !== 'user'
+    && native.approvalsReviewer !== 'auto_review' && native.approvalsReviewer !== 'guardian_subagent') return undefined;
+  for (const field of ['model', 'effort'] as const) {
+    if (native[field] !== undefined && (typeof native[field] !== 'string' || native[field].trim().length === 0)) return undefined;
+  }
+  if (native.activity !== undefined && native.activity !== 'items') return undefined;
+  const handlerTimeoutMs = native.handlerTimeoutMs;
   if (handlerTimeoutMs !== undefined && (typeof handlerTimeoutMs !== 'number' || !timerBound(handlerTimeoutMs))) return undefined;
-  const sandbox = sandboxes.find((mode) => mode === value.sandbox);
-  if (value.sandbox !== undefined && sandbox === undefined) return undefined;
-  if (value.loopbackRelay !== undefined && typeof value.loopbackRelay !== 'boolean') return undefined;
-  const helper = helperOf(value.helper);
+  const sandbox = sandboxes.find((mode) => mode === native.sandbox);
+  if (native.sandbox !== undefined && sandbox === undefined) return undefined;
+  if (native.loopbackRelay !== undefined && typeof native.loopbackRelay !== 'boolean') return undefined;
+  const helper = helperOf(native.helper);
   if (helper === false) return undefined;
   let headerEnv: Readonly<Record<string, string>> | undefined;
-  if (value.headerEnv !== undefined) {
-    if (!record(value.headerEnv)) return undefined;
-    const entries = Object.entries(value.headerEnv);
+  if (native.headerEnv !== undefined) {
+    if (!record(native.headerEnv)) return undefined;
+    const entries = Object.entries(native.headerEnv);
     if (!entries.every((entry): entry is [string, string] => typeof entry[1] === 'string')) return undefined;
     headerEnv = Object.freeze(Object.fromEntries(entries));
   }
   return {
-    home: value.home, cwd: value.cwd,
+    home: native.home, cwd: native.cwd,
+    ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+    ...(native.approvalsReviewer === undefined ? {} : { approvalsReviewer: native.approvalsReviewer }),
+    ...(typeof native.model === 'string' ? { model: native.model } : {}),
+    ...(typeof native.effort === 'string' ? { effort: native.effort } : {}),
+    ...(native.activity === 'items' ? { activity: native.activity } : {}),
     ...(executable === undefined ? {} : { executable }),
     ...(sqliteHome === undefined ? {} : { sqliteHome }),
     ...(logDir === undefined ? {} : { logDir }),
@@ -205,7 +235,7 @@ function nativeOf(value: unknown): CodexHostNativeConfig | undefined {
     ...(envKey === undefined ? {} : { envKey }),
     ...(handlerTimeoutMs === undefined ? {} : { handlerTimeoutMs }),
     ...(sandbox === undefined ? {} : { sandbox }),
-    ...(value.loopbackRelay === undefined ? {} : { loopbackRelay: value.loopbackRelay }),
+    ...(native.loopbackRelay === undefined ? {} : { loopbackRelay: native.loopbackRelay }),
     ...(helper === undefined ? {} : { helper }),
     ...(headerEnv === undefined ? {} : { headerEnv }),
   };
@@ -224,11 +254,12 @@ function withFeatureArgs(prepared: PreparedRoute, extra: readonly string[]): Pre
 function threadFeatures(prepared: PreparedRoute, config: CodexHostNativeConfig,
   openOptions: HostOpenOptions<CodexHostLaunch, CodexHostNativeConfig>) {
   const declared = openOptions.resume ? undefined : dynamicTools(openOptions.tools ?? []);
-  const base = { approvalPolicy: 'never' as const, cwd: config.cwd, ...(declared ? { dynamicTools: declared } : {}) };
+  const base = { approvalPolicy: config.approvalPolicy ?? 'never', cwd: config.cwd, ...(declared ? { dynamicTools: declared } : {}) };
   const chosen = config.sandbox ? { sandbox: config.sandbox } : {};
   switch (prepared.kind) {
     case 'direct':
-      return { ...base, ...chosen };
+      return { ...base, ...chosen, ...(config.model === undefined ? {} : { model: config.model }),
+        ...(config.approvalsReviewer === undefined ? {} : { approvalsReviewer: config.approvalsReviewer }) };
     case 'litellm-proxy':
       return { ...base, ...chosen, model: prepared.route.model };
     case 'host-route':
@@ -289,6 +320,16 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
     let execution: { close: () => Promise<unknown> } | undefined;
     let transportBounds: TransportBounds | undefined;
     try {
+      const { tools: suppliedTools, resume, launch: suppliedLaunch, environment, route, instructions, subagents, builtInTools } = options;
+      const declarations = structuredClone(suppliedTools ?? []);
+      options = { tools: declarations, ...(suppliedLaunch === undefined ? {} : { launch: suppliedLaunch }),
+        ...(environment === undefined ? {} : { environment }), ...(route === undefined ? {} : { route }),
+        ...(instructions === undefined ? {} : { instructions }), ...(subagents === undefined ? {} : { subagents }),
+        ...(builtInTools === undefined ? {} : { builtInTools }),
+        ...(resume === undefined ? {} : { resume: structuredClone(resume) }) };
+      signal = AbortSignal.any([signal]);
+    } catch { return fail({ code: 'invalid-input', message: 'The open options could not be captured.' }); }
+    try {
       if (!(signal instanceof AbortSignal)) return fail({ code: 'invalid-input', message: 'open requires an AbortSignal' });
       if (signal.aborted) return fail({ code: 'closed', message: 'open was aborted' });
       const launch = options.launch;
@@ -300,6 +341,10 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       const enabled = new Set<string>(options.builtInTools ?? []);
       let prepared: PreparedRoute = { kind: 'direct', args: [] };
       if (options.route) {
+        if ((native.approvalPolicy !== undefined && native.approvalPolicy !== 'never')
+          || native.approvalsReviewer !== undefined || native.model !== undefined) {
+          return fail({ code: 'invalid-input', message: 'routes refuse direct approval and model overrides' });
+        }
         if (native.sandbox === 'danger-full-access') {
           return fail({ code: 'invalid-input', message: 'a routed session refuses danger-full-access' });
         }
@@ -313,14 +358,15 @@ export const codexHostAdapter: HostAdapterRegistration<HostOpenOptions<CodexHost
       prepared = withFeatureArgs(prepared, featureArgs(enabled, emitMultiAgentArgs(prepared.kind, subagentsOff)));
       const handlerTimeoutMs = native.handlerTimeoutMs ?? 180000;
       if (!timerBound(handlerTimeoutMs)) return fail({ code: 'invalid-input', message: 'handlerTimeoutMs is outside 1..2147483647' });
+      transportBounds = { maxFrameBytes: codexOrdinaryFrameBytes,
+        ...(prepared.kind === 'direct' ? { maxInboundFrameBytes: codexImageFrameBytes, maxOutboundFrameBytes: codexImageFrameBytes, maxChunkBytes: 16777215 } : { maxChunkBytes: 2097151 }), maxDiagnosticBytes: 65536,
+        maxPending: 8, maxHandlers: 16, maxWrites: 8, observationCapacity: 256, handlerTimeoutMs,
+        observationTimeoutMs: 5000, writeTimeoutMs: 20000 };
       const bridgeResult = createCodexInteraction({ maxObservers: 4, eventCapacity: 64, maxSettled: 32, maxPending: maxPendingPerMessage,
-        transport: { maxHandlers: 16, handlerTimeoutMs }, userInput: enabled.has('request_user_input'),
+        transport: transportBounds, approvals: prepared.kind === 'direct' && (native.approvalPolicy === 'on-request' || native.approvalPolicy === 'untrusted'), userInput: enabled.has('request_user_input'),
         declaredTools: (options.tools ?? []).map((tool) => ({ name: tool.name, namespace: 'application' as const })) });
       if (bridgeResult.kind === 'error') return fail({ code: 'invalid-input', message: 'interaction bounds were rejected' });
       const bridge = bridgeResult.value;
-      transportBounds = { maxFrameBytes: 1048576, maxChunkBytes: 2097151, maxDiagnosticBytes: 65536,
-        maxPending: 8, maxHandlers: 16, maxWrites: 8, observationCapacity: 256, handlerTimeoutMs,
-        observationTimeoutMs: 5000, writeTimeoutMs: 20000 };
       const executable = native.executable;
       let processExit: PromiseLike<unknown> | undefined;
       if (launch.kind === 'spawn') {
@@ -403,51 +449,104 @@ async function openAdapter(ready: {
   const { options, signal, native, bridge, execution, binding, variables } = ready;
   const tools = options.tools ?? [];
   const canonical = canonicalTools(tools);
+  let listing = false;
   const stream = createEventStream<HostAdapterEvent>({ maxObservers: 4, capacity: 64 });
+  const lifetime = new AbortController();
+  const errors = createCodexErrorIntake();
   let session: CodexSession | undefined;
-  let segment: { phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
+  let detachSessionIntake: (() => void) | undefined;
+  let segment: { turn: CodexTurnMonitor | undefined; phase: 'intent' | 'native'; text: string; usage: HostUsage; observer: RunObservationListener | undefined } | undefined;
   /** Whether `run-started` went out for this segment. */
   type SegmentState = { started: boolean };
   /** A segment result plus the native terminal a failed result hides. */
   type Settled = { readonly result: HostSegmentResult; readonly failedAs?: 'cancelled' | 'outcome-unknown' };
-  let turnCompletion: Promise<CodexTurnCompletion> | undefined;
-  let turnResult: CodexTurnCompletion | undefined;
-  let capacityRefused = false;
+  let turn: CodexTurnMonitor | undefined;
+  let settleChanged: (() => void) | undefined;
+  let settleScheduled = false;
+  const requestSettle = () => {
+    if (settleScheduled) return;
+    settleScheduled = true;
+    queueMicrotask(() => { settleScheduled = false; settleChanged?.(); });
+  };
+  let nativeAccepted: DispatchEvidence | undefined;
+  let activeTurnId: string | undefined;
+  let nativeDiscarded = 0;
   let closing: ReturnType<HostAdapter['close']> | undefined;
-  const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') stream.publish(Object.freeze(event)); };
+  const facts: HostAdapterEvent[] = [];
+  let publishing = false;
+  function publishNext(): void {
+    const fact = facts.shift();
+    if (fact) stream.publish(fact);
+    if (facts.length) queueMicrotask(publishNext);
+    else publishing = false;
+  }
+  const publishFact = (event: HostAdapterEvent) => {
+    const fact = freezeJson(event);
+    // Pace ordinary bursts so healthy observers can drain. Bound admission independently of consumer windows.
+    if (facts.length === 512) {
+      for (const queued of facts.splice(0)) stream.publish(queued);
+      stream.publish(fact);
+      return;
+    }
+    facts.push(fact);
+    if (!publishing) { publishing = true; queueMicrotask(publishNext); }
+  };
+  const publish = (event: HostAdapterEvent) => { if (segment && segment.phase !== 'intent') publishFact(event); };
   const observe = (observation: RunObservation) => { if (segment && segment.phase !== 'intent') emitObservation(segment.observer, observation); };
-  const calls = () => bridge.hostCalls().map(toCall);
-  bridge.events.subscribe((event) => {
-    if (event.kind === 'refused' && event.reason === 'capacity') { capacityRefused = true; return; }
+  const observeTurn = (observation: RunObservation) => {
+    if (!segment || segment.phase === 'intent') return;
+    const listener = segment.observer; queueMicrotask(() => { emitObservation(listener, observation); });
+  };
+  const pendingSet = () => Object.freeze({ calls: Object.freeze(bridge.hostCalls().map(toCall)), approvals: bridge.pending() });
+  const detachProjection = bridge.project((event) => {
+    if (event.kind === 'pending' || event.kind === 'host-call' || event.kind === 'settled' || event.kind === 'host-settled'
+      || (event.kind === 'refused' && event.reason === 'capacity')) requestSettle();
+    const settlement = codexSettlement(event);
+    if (settlement) publishFact(settlement);
     if (event.kind === 'host-delivery') {
-      publish({ kind: 'tool-delivery', target: event.target, delivery: event.delivery });
+      publishFact({ kind: 'tool-delivery', target: event.target, delivery: event.delivery });
       return;
     }
     if (event.kind !== 'host-call') return;
     const target = event.call.pending.target;
-    publish({ kind: 'tool-call-start', target, name: event.call.name });
-    publish({ kind: 'tool-call-arguments-delta', target, delta: JSON.stringify(event.call.arguments ?? null) });
-    publish({ kind: 'tool-call-end', target, arguments: event.call.arguments });
+    publishFact({ kind: 'tool-call-start', target, name: event.call.name });
+    publishFact({ kind: 'tool-call-arguments-delta', target, delta: event.argumentsJson });
+    publishFact({ kind: 'tool-call-end', target, arguments: event.call.arguments });
     if (segment?.observer) {
-      for (const o of declaredToolObservations(target.nativeToolCallId, event.call.name, event.call.arguments ?? null)) observe(o);
+      for (const o of declaredToolObservations(target.nativeToolCallId, event.call.name, event.call.arguments ?? null)) observeTurn(o);
     }
   });
+  const nativeIntake = (method: string, params: unknown) => {
+    if (!session || !record(params) || params.threadId !== session.threadId) return;
+    if (native.activity === 'items') {
+      const item = codexActivityItem(method, params);
+      if (item) publishFact({ kind: 'native-item', item });
+    }
+    if (method === 'error' && session) errors.notification(params, session.threadId);
+  };
   const resume = options.resume;
   const resumedKey = resume ? declarationKey(native.home, resume.session.opaque) : undefined;
   if (resumedKey && remembered.has(resumedKey) && remembered.get(resumedKey) !== canonical) {
     await execution.close();
     return fail({ code: 'invalid-input', message: 'tool declarations are fixed at session creation' });
   }
-  if (resume?.expectedHistory) {
-    const actual = await readCodexHistoryFingerprint(native.home, resume.session.opaque);
+  if (resume && resume.expectedHistory !== undefined) {
+    const expected = parseCheckpointReference({ value: resume.expectedHistory, session: resume.session });
+    if (expected.kind === 'error') {
+      await execution.close();
+      return fail({ code: 'invalid-input', message: 'The expected history checkpoint does not match the requested session.' });
+    }
+    const actual = await readCodexHistoryFingerprint(native.home, resume.session.opaque, 'stable', signal);
+    if (signal.aborted) { await execution.close(); return fail({ code: 'closed', message: 'History verification was cancelled.' }); }
     const checkpoint = actual && codexCheckpoint(resume.session, actual);
-    if (!checkpoint || checkpoint.opaque !== resume.expectedHistory.opaque) {
+    if (!checkpoint || checkpoint.opaque !== expected.value.opaque) {
       await execution.close();
       return fail({ code: 'history-mismatch', message: 'native history does not match the expected fingerprint' });
     }
   }
   if (resume) {
     const resumed = await execution.resume({ binding: resume.session.binding, reference: resume.session, signal, bounds: discovery,
+      ...(ready.prepared.kind === 'direct' ? { params: { excludeTurns: true } } : {}),
       ...(options.instructions === undefined ? {} : { instructions: options.instructions }), features: threadFeatures(ready.prepared, native, options) });
     if (resumed.kind === 'error') { await execution.close(); return fail({ code: 'native-failure', message: resumed.error.message ?? resumed.error.code }); }
     if (resumed.value.kind !== 'resumed') { await execution.close(); return fail({ code: 'busy', message: `resume is ${resumed.value.kind}` }); }
@@ -457,29 +556,35 @@ async function openAdapter(ready: {
     rememberDeclaration(native.home, session.threadId, canonical);
   }
   function watch(current: CodexSession): void {
-    current.events.subscribe((event) => {
+    const intake = current.intake({ notification: nativeIntake, turnEvent: (event) => {
+      if (event.kind === 'turn-accepted') { activeTurnId = event.turnId; errors.accepted(event.turnId); }
+      if ('turnId' in event && event.turnId !== activeTurnId) return;
+      if (event.kind === 'early-overflow') { nativeDiscarded += event.discarded; return; }
       if (!segment || segment.phase === 'intent') return;
       if (event.kind === 'text-delta') {
         segment.text += event.delta;
         publish({ kind: 'text-delta', nativeItemId: event.itemId, text: event.delta });
-        observe({ kind: 'text', messageId: event.itemId, mode: 'delta', text: event.delta });
+        observeTurn({ kind: 'text', messageId: event.itemId, mode: 'delta', text: event.delta });
       } else if (event.kind === 'native') {
-        if (segment.observer && reasoningMethods.some((method) => method === event.method) && record(event.params)
+        if (record(event.params) && event.params.threadId === current.threadId && activeTurnId !== undefined
+          && event.params.turnId === activeTurnId && segment.observer && reasoningMethods.some((method) => method === event.method) && record(event.params)
           && typeof event.params.itemId === 'string' && typeof event.params.delta === 'string') {
           const index = event.params.summaryIndex;
           const part = event.method === 'item/reasoning/textDelta' ? 'text'
             : typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? `summary:${index}` : 'summary';
-          observe({ kind: 'reasoning', messageId: `${event.params.itemId}:${part}`, mode: 'delta', text: event.params.delta });
+          observeTurn({ kind: 'reasoning', messageId: `${event.params.itemId}:${part}`, mode: 'delta', text: event.params.delta });
         }
       } else if (event.kind === 'usage') {
         segment.usage = Object.freeze({ scope: 'cumulative', native: Object.freeze({ namespace: 'codex-app-server/token-usage',
           schemaVersion: 1, data: { total: event.total, last: event.last, modelContextWindow: event.modelContextWindow } }) });
         publish({ kind: 'usage', usage: segment.usage });
-        observe({ kind: 'usage', rows: [normalizeUsage(usageRow(event.total))] });
+        observeTurn({ kind: 'usage', rows: [normalizeUsage(usageRow(event.total))] });
       }
-    });
+    } });
+    if (intake.kind === 'error') throw new Error('native intake unavailable');
+    detachSessionIntake = intake.value;
   }
-  async function credentialOk(hostSignal: AbortSignal): Promise<HostAdapterError | undefined> {
+  async function credentialOk(hostSignal: AbortSignal): Promise<Extract<HostAdapterError, { readonly code: 'unavailable' }> | undefined> {
     const route = options.route;
     const host = ready.prepared.kind === 'host-route' ? ready.prepared.route : undefined;
     if (!route || !host || host.credentialForm !== 'bearer') return undefined;
@@ -500,48 +605,63 @@ async function openAdapter(ready: {
     }
     return undefined;
   }
-  function pendingSegment(active: CodexSession, current: NonNullable<typeof segment>, pending: readonly CodexHostCall[]): HostSegmentResult {
-    return { kind: 'pending', session: active.reference, calls: Object.freeze(pending.map(toCall)), usage: current.usage };
+  function pendingSegment(active: CodexSession, current: NonNullable<typeof segment>, pending: HostPendingSet): HostSegmentResult {
+    return { kind: 'pending', session: active.reference, ...pending, usage: current.usage };
   }
-  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence): Promise<Settled> {
+  async function settle(hostSignal: AbortSignal, accepted: DispatchEvidence | undefined): Promise<Settled> {
     const current = segment;
     const active = session;
     if (!current || !active) return { result: failed({ code: 'native-failure', message: 'no segment' }, { kind: 'not-attempted' }) };
-    const choice = await collectSettleChoice({ signal: hostSignal, bridge, turnDone: turnCompletion,
-      turnFinished: () => turnResult !== undefined, capacityRefused: () => capacityRefused });
-    const pending = bridge.hostCalls();
+    const observed = turn;
+    if (nativeDiscarded > 0) {
+      const completion = observed?.result();
+      if (completion) return completionResult(active, current, completion, accepted, pendingSet());
+      return discardedFailure(accepted, errors.current());
+    }
+    const { choice, pending } = await collectSettleChoice({ signal: hostSignal, pending: pendingSet,
+      subscribe(listener) {
+        settleChanged = listener;
+        const detachTurn = observed?.segment(listener);
+        return () => { detachTurn?.(); if (settleChanged === listener) settleChanged = undefined; };
+      }, turnFinished: () => observed?.result() !== undefined, capacityRefused: bridge.capacityRefused });
+    const turnResult = observed?.result();
+    const nativeError = turnResult?.kind === 'terminal' ? codexNativeError('turn.error', turnResult.terminal.error) ?? errors.current() : errors.current();
+    if (bridge.capacityRefused()) return pendingLimit(accepted, nativeError);
     switch (choice) {
       case 'limit':
-        return { result: failed({ code: 'pending-limit', message: 'one assistant message produced more host calls than the pending limit' },
-          { kind: 'accepted', evidence: accepted }) };
+        return pendingLimit(accepted, nativeError);
       case 'pending':
         return { result: pendingSegment(active, current, pending) };
       case 'completion':
         return turnResult ? completionResult(active, current, turnResult, accepted, pending)
-          : { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+          : { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       case 'aborted':
-        return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, { kind: 'accepted', evidence: accepted }),
+        if (turnResult?.kind === 'terminal') return completionResult(active, current, turnResult, accepted, pending);
+        return { result: failed({ code: 'native-failure', message: 'the segment aborted' }, accepted ? { kind: 'accepted', evidence: accepted } : { kind: 'outcome-unknown' }, errors.current()),
           failedAs: 'outcome-unknown' };
-      case 'wait':
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
       default: {
         const leftover: never = choice;
         void leftover;
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       }
     }
   }
+  function discardedFailure(accepted: DispatchEvidence | undefined, cause: HostNativeError | undefined): Settled {
+    return { result: failed({ code: 'native-failure', message: `${nativeDiscarded} pre-acknowledgement notifications were discarded` },
+      accepted ? { kind: 'accepted', evidence: accepted } : { kind: 'outcome-unknown' }, cause), failedAs: 'outcome-unknown' };
+  }
   function completionResult(active: CodexSession, current: NonNullable<typeof segment>, completion: CodexTurnCompletion,
-    accepted: DispatchEvidence, pending: readonly CodexHostCall[]): Settled {
-    const acceptedWrite = { kind: 'accepted' as const, evidence: accepted };
+    accepted: DispatchEvidence | undefined, pending: HostPendingSet): Settled {
+    if (nativeDiscarded > 0) return discardedFailure(accepted, completion.kind === 'terminal' ? codexNativeError('turn.error', completion.terminal.error) ?? errors.current() : errors.current());
+    const acceptedWrite: HostWriteStatus = accepted ? { kind: 'accepted', evidence: accepted } : { kind: 'outcome-unknown' };
     switch (completion.kind) {
       case 'terminal':
         switch (completion.terminal.status) {
           case 'completed':
-            return { result: pending.length > 0 ? pendingSegment(active, current, pending)
+            return { result: (pending.calls.length > 0 || pending.approvals.length > 0) ? pendingSegment(active, current, pending)
               : { kind: 'complete', session: active.reference, text: current.text, usage: current.usage } };
           case 'failed':
-            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite) };
+            return { result: failed({ code: 'native-failure', message: 'the native turn failed' }, acceptedWrite, codexNativeError('turn.error', completion.terminal.error) ?? errors.current()) };
           case 'interrupted':
             return { result: failed({ code: 'native-failure', message: 'the native turn was interrupted' }, acceptedWrite),
               failedAs: 'cancelled' };
@@ -551,30 +671,34 @@ async function openAdapter(ready: {
           }
         }
       case 'rejected':
-        return { result: failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn was rejected' }, acceptedWrite, codexNativeError('turn/start-reply', completion.error)) };
       case 'unconcluded':
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, acceptedWrite, errors.current()), failedAs: 'outcome-unknown' };
       case 'not-sent':
       case 'not-dispatched':
-        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }) };
+        return { result: failed({ code: 'native-failure', message: 'the native turn outcome is unknown' }, { kind: 'outcome-unknown' }, errors.current()) };
       default: {
         const leftover: never = completion;
         return { result: failed({ code: 'native-failure', message: `the native turn outcome is ${String(leftover)}` }, { kind: 'outcome-unknown' }) };
       }
     }
   }
-  function evidence(active: CodexSession, completion: CodexTurnCompletion) {
-    return { identity: { hostOperationId: 'turn', target: { kind: 'session' as const, reference: active.reference } },
-      source: 'native-acknowledgement' as const, nativeOperation: null,
-      observation: { namespace: 'codex-app-server/turn', schemaVersion: 1, data: { kind: completion.kind } } };
+  function pendingLimit(accepted: DispatchEvidence | undefined, nativeError?: HostNativeError): Settled {
+    return accepted ? { result: { kind: 'failed', error: { code: 'pending-limit', message: 'one assistant message exceeded the pending limit' }, write: { kind: 'accepted', evidence: accepted }, ...(nativeError === undefined ? {} : { nativeError }) } }
+      : { result: failed({ code: 'native-failure', message: 'the pending limit was exceeded without acceptance evidence for this segment' }, { kind: 'outcome-unknown' }, nativeError) };
   }
-  async function dispatchTurn(prompt: string | undefined, answers: readonly InteractionContinuation[] | undefined, hostSignal: AbortSignal) {
+  async function dispatchTurn(prompt: string | undefined, batch: CodexPreparedBatch | undefined, hostSignal: AbortSignal, images: readonly CodexImage[] = []) {
     const current = session;
     if (!current && prompt === undefined) return { kind: 'outcome-unknown' as const };
     if (!current) {
       const created = await execution.create({ signal: hostSignal, bounds: discovery,
         ...(options.instructions === undefined ? {} : { instructions: options.instructions }),
         features: threadFeatures(ready.prepared, native, options) });
-      if (created.kind === 'error') return { kind: 'outcome-unknown' as const };
+      if (created.kind === 'error') return created.error.code === 'cancelled'
+        ? { kind: 'not-dispatched' as const, reason: 'aborted' as const }
+        : created.error.code === 'native-refused' ? { kind: 'native-refused' as const, reason: created.error.reason }
+          : created.error.beforeEntry === true ? { kind: 'native-refused' as const, reason: created.error.code }
+            : { kind: 'outcome-unknown' as const };
       if (bridge.attach(created.value).kind === 'error') {
         await created.value.close();
         return { kind: 'outcome-unknown' as const };
@@ -585,55 +709,60 @@ async function openAdapter(ready: {
     }
     const active = session;
     if (!active) return { kind: 'outcome-unknown' as const };
-    if (answers) {
-      const observer = segment?.observer;
-      const known = observer ? bridge.hostCalls() : [];
-      for (const answer of answers) {
-        const replied = await bridge.reply({ value: answer, signal: hostSignal, recordIntent: () => {} });
-        if (replied.kind === 'error') return { kind: 'outcome-unknown' as const };
-        if (observer && answer.kind === 'tool') {
-          const callId = answer.outcome.target.nativeToolCallId;
-          const call = known.find((candidate) => candidate.pending.target.nativeToolCallId === callId);
-          if (call) {
-            for (const o of answeredToolObservations(callId, call.name, call.arguments ?? null, answer.outcome.result)) observe(o);
-          }
+    if (batch) {
+      // Parsed requests and lifecycle facts are applied in wire order before the synchronous full-set commit.
+      execution.flushIntake();
+      if (bridge.capacityRefused()) return { kind: 'pending-limit' as const };
+      const replied = batch.commit(hostSignal, (answer, call) => {
+        if (segment?.observer && answer.kind === 'tool' && call) {
+          for (const observation of answeredToolObservations(answer.outcome.target.nativeToolCallId, call.name, call.arguments ?? null, answer.outcome.result)) observe(observation);
         }
+      }, execution.flushIntake);
+      const entry = await batch.entry;
+      if (entry.kind === 'error') {
+        if (!execution.acceptingRequests() && entry.error.code !== 'aborted') return { kind: 'native-refused' as const, reason: 'closed' as const };
+        if (bridge.capacityRefused()) return { kind: 'pending-limit' as const };
+        return { kind: 'not-dispatched' as const, reason: entry.error.code === 'aborted' ? 'aborted' as const : 'intent-failed' as const };
       }
+      nativeAccepted = undefined;
+      const written = await batch.written;
+      if (written.kind === 'error' || replied.kind === 'error') return { kind: 'outcome-unknown' as const };
+      return { kind: 'locally-replied' as const };
     }
-    if (prompt === undefined) return { kind: 'accepted' as const, evidence: evidence(active, { kind: 'not-dispatched' }) };
-    const started = active.turn({ hostOperationId: 'turn', input: [{ type: 'text', text: prompt, text_elements: [] }],
+    if (prompt === undefined) return { kind: 'outcome-unknown' as const };
+    const started = active.turn({ hostOperationId: 'turn', input: codexTurnInput(prompt, images),
+      ...(images.length ? { maxFrameBytes: codexImageFrameBytes } : {}),
+      ...(native.effort === undefined ? {} : { features: { effort: native.effort } }),
       signal: hostSignal, recordIntent: () => {} });
-    if (started.kind === 'error') return { kind: 'outcome-unknown' as const };
-    turnResult = undefined;
-    let observed: Promise<CodexTurnCompletion>;
-    observed = started.value.completion.then((value) => { if (turnCompletion === observed) turnResult = value; return value; });
-    turnCompletion = observed;
+    if (started.kind === 'error') return { kind: 'native-refused' as const, reason: started.error.code };
+    turn = monitorCodexTurn(started.value.completion);
+    if (segment) segment.turn = turn;
     const snapshot = await started.value.run();
-    return snapshot.observation.kind === 'outcome-unknown' || snapshot.observation.kind === 'not-dispatched'
-      ? { kind: 'outcome-unknown' as const } : snapshot.observation;
-  }
-  function answersMatch(answers: readonly InteractionContinuation[]): boolean {
-    const pending = bridge.hostCalls();
-    if (answers.length === 0 || answers.length !== pending.length) return false;
-    const ids = new Set(pending.map((call) => call.pending.target.nativeToolCallId));
-    return answers.every((answer) => {
-      if (answer.kind !== 'tool') return false;
-      const id = answer.outcome.target.nativeToolCallId;
-      const expected = pending.find((call) => call.pending.target.nativeToolCallId === id);
-      if (!expected || !ids.delete(id)) return false;
-      return parseInteractionContinuation({ value: answer, expected: expected.pending }).kind === 'ok'
-        && codexNativeToolReply(expected, answer) !== undefined;
-    }) && ids.size === 0;
+    const observation = snapshot.observation;
+    if (observation.kind === 'accepted' || observation.kind === 'conclusive') {
+      const rejection = observation.kind === 'conclusive' && observation.result.kind === 'rejected'
+        ? codexNativeError('turn/start-reply', observation.result.error) : undefined;
+      const evidence: DispatchEvidence = { ...observation.evidence, observation: {
+        ...observation.evidence.observation, data: Object.freeze(rejection
+          ? { code: rejection.code, message: rejection.message, truncated: rejection.truncated }
+          : { nativeTurnId: observation.evidence.nativeOperation?.id ?? null }) } };
+      return { kind: 'accepted' as const, evidence };
+    }
+    const completion = turn.result();
+    if (completion?.kind === 'not-sent') return completion.reason === 'aborted'
+      ? { kind: 'not-dispatched' as const, reason: 'aborted' as const }
+      : { kind: 'native-refused' as const, reason: completion.reason };
+    return snapshot.observation;
   }
   async function segmentOf(input: HostSegmentRequest, prompt: string | undefined,
-  answers: readonly InteractionContinuation[] | undefined): Promise<HostSegmentResult> {
+  answers: readonly InteractionContinuation[] | undefined, images: readonly CodexImage[] = []): Promise<HostSegmentResult> {
     if (!isOptionalObservationListener(input.onObservation)) {
       return failed({ code: 'invalid-input', message: 'onObservation must be a function' }, { kind: 'not-attempted' });
     }
     const state: SegmentState = { started: false };
     let settled: Settled | undefined;
     try {
-      settled = await segmentInner(input, prompt, answers, state);
+      settled = await segmentInner(input, prompt, answers, state, images);
       return settled.result;
     } finally {
       // A throw after the run started still gives the baseline its one terminal.
@@ -643,66 +772,175 @@ async function openAdapter(ready: {
     }
   }
   async function segmentInner(input: HostSegmentRequest, prompt: string | undefined,
-  answers: readonly InteractionContinuation[] | undefined, state: SegmentState): Promise<Settled> {
+  answers: readonly InteractionContinuation[] | undefined, state: SegmentState, images: readonly CodexImage[]): Promise<Settled> {
     const refuse = (...args: Parameters<typeof failed>): Settled => ({ result: failed(...args) });
-    if (closing) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
+    if (closing || !execution.acceptingRequests()) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
     if (segment) return refuse({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
-    if (answers && !answersMatch(answers)) return refuse({ code: 'invalid-input', message: 'continuations must cover the pending set exactly' }, { kind: 'not-attempted' });
-    if (prompt !== undefined && (bridge.hostCalls().length > 0 || (turnCompletion !== undefined && turnResult === undefined))) {
+    if (!(input.signal instanceof AbortSignal)) return refuse({ code: 'invalid-input', message: 'a segment requires an AbortSignal' }, { kind: 'not-attempted' });
+    const hostSignal = AbortSignal.any([input.signal, lifetime.signal]);
+    let batch: CodexPreparedBatch | undefined;
+    if (answers !== undefined) {
+      const prepared = bridge.prepareBatch(answers);
+      if (prepared.kind === 'error') return refuse({ code: 'invalid-input', message: 'continuations must cover the encodable pending set exactly' }, { kind: 'not-attempted' });
+      if (bridge.capacityRefused()) return pendingLimit(nativeAccepted);
+      batch = prepared.value;
+    }
+    if (prompt !== undefined && (bridge.hostCalls().length > 0 || bridge.pending().length > 0 || (turn !== undefined && turn.result() === undefined))) {
       return refuse({ code: 'busy', message: 'a turn is already in progress' }, { kind: 'not-attempted' });
     }
-    capacityRefused = false;
-    segment = { phase: 'intent', text: '', usage: emptyUsage(), observer: input.onObservation };
+    if (closing || !execution.acceptingRequests()) return refuse({ code: 'closed', message: 'the adapter is closed' }, { kind: 'not-attempted' });
+    if (segment) return refuse({ code: 'busy', message: 'a segment is already running' }, { kind: 'not-attempted' });
+    // prepareBatch executes caller getters, so the preceding guards recheck ownership before claiming it.
+    segment = { turn: answers !== undefined ? turn : undefined, phase: 'intent', text: '', usage: emptyUsage(), observer: input.onObservation };
     const target: DispatchIdentity['target'] = session
       ? { kind: 'session', reference: session.reference } : { kind: 'new-session', binding };
     try {
-      const denied = await credentialOk(input.signal);
+      const denied = await credentialOk(hostSignal);
       if (denied) return refuse(denied, { kind: 'not-attempted' });
-      const handle = createDispatchOperation({ mode: 'fresh', signal: input.signal, recordIntent: input.recordIntent,
+      const continuation: { result?: Extract<Awaited<ReturnType<typeof dispatchTurn>>, { readonly kind: 'not-dispatched' | 'native-refused' | 'locally-replied' | 'pending-limit' }> } = {};
+      const handle = createDispatchOperation({ mode: 'fresh', signal: hostSignal, recordIntent: input.recordIntent,
         identity: { hostOperationId: input.hostOperationId, target },
         dispatchNative: async (recorded) => {
+          if (prompt !== undefined) {
+            bridge.beginTurn(); activeTurnId = undefined; nativeDiscarded = 0; nativeAccepted = undefined; errors.begin();
+          }
           if (segment) {
             segment.phase = 'native';
             state.started = true;
             emitRunStarted(segment.observer);
           }
-          const observation = await dispatchTurn(prompt, answers, input.signal);
+          if (hostSignal.aborted && !batch) {
+            continuation.result = { kind: 'not-dispatched', reason: 'aborted' };
+            return { kind: 'outcome-unknown' };
+          }
+          const observation = await dispatchTurn(prompt, batch, hostSignal, images);
+          if (observation.kind === 'locally-replied' || observation.kind === 'pending-limit' || observation.kind === 'not-dispatched' || observation.kind === 'native-refused') {
+            continuation.result = observation; return { kind: 'outcome-unknown' };
+          }
           if (observation.kind !== 'accepted' && observation.kind !== 'conclusive') return { kind: 'outcome-unknown' };
           return { kind: 'accepted', evidence: { ...observation.evidence, identity: recorded } };
         } });
       const snapshot = await handle.run();
+      if (batch && hostSignal.aborted && !batch.entered()) return refuse({ code: 'native-failure', message: 'the segment was aborted before native dispatch' }, { kind: 'not-dispatched', reason: 'aborted' });
+      switch (continuation.result?.kind) {
+        case 'not-dispatched': {
+          const result = continuation.result;
+          return refuse({ code: result.reason === 'aborted' ? 'native-failure' : 'invalid-input', message: result.reason === 'aborted' ? 'the segment was aborted before native dispatch' : 'the pending set changed before its first reply' }, result);
+        }
+        case 'native-refused': return refuse({ code: continuation.result.reason === 'closed' ? 'closed' : 'native-failure', message: `Native turn request was refused before writer entry: ${continuation.result.reason}.` }, { kind: 'not-dispatched', reason: 'native-refused' });
+        case 'pending-limit': return pendingLimit(nativeAccepted);
+        case 'locally-replied': return await settle(hostSignal, undefined);
+        case undefined: break;
+        default: { const missing: never = continuation.result; return missing; }
+      }
       if (snapshot.observation.kind === 'not-dispatched') {
         return refuse({ code: 'native-failure', message: snapshot.observation.reason }, { kind: 'not-dispatched', reason: snapshot.observation.reason });
       }
       if (snapshot.observation.kind !== 'accepted' && snapshot.observation.kind !== 'conclusive') {
-        return refuse({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' });
+        const completion = segment?.turn?.result();
+        const cause = completion?.kind === 'terminal' ? codexNativeError('turn.error', completion.terminal.error) ?? errors.current() : errors.current();
+        return refuse({ code: 'native-failure', message: 'the native outcome is unknown' }, { kind: 'outcome-unknown' }, cause);
       }
-      return await settle(input.signal, snapshot.observation.evidence);
+      nativeAccepted = snapshot.observation.evidence;
+      return await settle(hostSignal, snapshot.observation.evidence);
     } finally { segment = undefined; }
   }
   const adapter: HostAdapter<'codex'> = { identity, capabilities: Object.freeze({
+    imageInput: ready.prepared.kind === 'direct'
+      ? { kind: 'supported' as const, api: codexImageLimits }
+      : { kind: 'unavailable' as const, reason: 'image input is qualified on direct sessions only' },
+    models: ready.prepared.kind === 'direct' ? { kind: 'supported' as const, api: {
+      list: (signal: AbortSignal) => {
+        try {
+          const wait = AbortSignal.any([signal, lifetime.signal]);
+          if (wait.aborted) return Promise.resolve(fail({ code: 'closed', message: 'Model listing was closed.' }));
+          if (listing) return Promise.resolve(fail({ code: 'busy', message: 'A model listing is already running.' }));
+          listing = true;
+          return listCodexModels(execution.scope.request, wait).finally(() => { listing = false; });
+        }
+        catch { return Promise.resolve(fail({ code: 'invalid-input', message: 'Model listing requires an AbortSignal.' })); }
+      },
+    } } : { kind: 'unavailable' as const, reason: 'the route fixes the model' },
     maxPendingPerMessage, continuation: 'same-process', usage: 'cumulative', toolDeclarations: 'fixed-at-creation',
-    inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: Object.freeze(calls()) }) } },
-    fingerprint: { kind: 'supported' as const, api: { validity: 'segment-end' as const, read: async () => {
+    inspect: { kind: 'supported' as const, api: { pending: async () => ({ kind: 'ok' as const, value: pendingSet() }) } },
+    fingerprint: { kind: 'supported' as const, api: { validity: 'segment-end' as const, read: async (callerSignal: AbortSignal) => {
+      let wait: AbortSignal;
+      try { wait = AbortSignal.any([callerSignal, lifetime.signal]); }
+      catch { return fail({ code: 'invalid-input', message: 'Fingerprint reading requires an AbortSignal.' }); }
+      if (wait.aborted) return fail({ code: 'closed', message: 'Fingerprint reading was cancelled.' });
       if (!session) return fail({ code: 'unavailable', feature: 'fingerprint', message: 'no session is open' });
-      const actual = await readCodexHistoryFingerprint(native.home, session.threadId);
+      const actual = await readCodexHistoryFingerprint(native.home, session.threadId, 'prefix', wait);
+      if (wait.aborted) return fail({ code: 'closed', message: 'Fingerprint reading was cancelled.' });
       return actual ? { kind: 'ok' as const, value: codexCheckpoint(session.reference, actual) }
         : fail({ code: 'unavailable', feature: 'fingerprint', message: 'no rollout fingerprint is available' });
     } } },
   }), events: Object.freeze({ subscribe: stream.subscribe }),
-    run: (input: HostRunInput) => segmentOf(input, input.prompt, undefined),
-    continue: (input: HostContinueInput) => segmentOf(input, undefined, input.answers),
+    run: (input: HostRunInput) => {
+      try {
+        const { prompt, images } = input;
+        const request = segmentRequest(input);
+        if (typeof prompt !== 'string') return Promise.resolve(failed({ code: 'invalid-input', message: 'The prompt must be text.' }, { kind: 'not-attempted' }));
+
+        if (ready.prepared.kind !== 'direct' && hostImagesRequested(images)) return Promise.resolve(failed({ code: 'unsupported', feature: 'image-input', message: 'image input requires a direct session' }, { kind: 'not-attempted' }));
+        const validated = parseHostImages(images === undefined ? [] : images);
+        if (validated.kind === 'error') return Promise.resolve(failed(validated.error, { kind: 'not-attempted' }));
+
+        const parsed = codexImages(validated.value, prompt, native.effort, ready.prepared.kind === 'litellm-proxy');
+        if (parsed.kind === 'error') return Promise.resolve(failed(parsed.error, { kind: 'not-attempted' }));
+        return segmentOf(request, prompt, undefined, parsed.value);
+      } catch { return Promise.resolve(failed({ code: 'invalid-input', message: 'The run request is malformed.' }, { kind: 'not-attempted' })); }
+    },
+    continue: (input: HostContinueInput) => {
+      try {
+        const answers = input.answers;
+        if (!Array.isArray(answers)) return Promise.resolve(failed({ code: 'invalid-input', message: 'A continuation requires an answer array.' }, { kind: 'not-attempted' }));
+        return segmentOf(segmentRequest(input), undefined, answers);
+      } catch { return Promise.resolve(failed({ code: 'invalid-input', message: 'The continuation request is malformed.' }, { kind: 'not-attempted' })); }
+    },
     interrupt: async ({ timeoutMs }) => {
-      if (!segment) return { kind: 'terminal-observed' as const };
-      if (segment.phase === 'intent') return { kind: 'unconfirmed-within-bound' as const };
+      if (execution.processExited()) return { kind: 'terminal-observed' as const };
+      if (!timerBound(timeoutMs)) return { kind: 'unconfirmed-within-bound' as const };
+      const observed = turn;
+      const result = observed?.result();
+      if (result?.kind === 'unconcluded') return { kind: 'unconfirmed-within-bound' as const };
+      if (!observed || result !== undefined) {
+        return segment && !(result?.kind === 'terminal' && segment.turn === observed)
+          ? { kind: 'unconfirmed-within-bound' as const } : { kind: 'terminal-observed' as const };
+      }
       const active = session;
-      if (!active) return { kind: 'unconfirmed-within-bound' as const };
-      const step = await Promise.race([active.interrupt(), delay(timeoutMs).then(() => 'timeout' as const)]);
-      return interruptResult(step, turnResult);
+      if (!active || closing) return { kind: 'unconfirmed-within-bound' as const };
+      const attempt = observed.interrupt(() => active.interrupt({ signal: lifetime.signal }));
+      const deadline = performance.now() + timeoutMs;
+      return new Promise((resolve) => {
+        let done = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let detach: (() => void) | undefined;
+        const finish = (value: ReturnType<typeof interruptResult>) => {
+          if (done) return;
+          done = true; clearTimeout(timer); detach?.(); resolve(value);
+        };
+        const changed = () => {
+          if (performance.now() >= deadline) { finish({ kind: 'unconfirmed-within-bound' }); return; }
+          const completion = observed.result();
+          if (completion?.kind === 'terminal' || execution.processExited()) finish({ kind: 'terminal-observed' });
+          else {
+            const acknowledged = attempt.result();
+            if (acknowledged) finish(interruptResult(acknowledged, completion));
+          }
+        };
+        detach = observed.interruptWaiter(changed);
+        if (!detach) { finish({ kind: 'unconfirmed-within-bound' }); return; }
+        timer = setTimeout(() => finish({ kind: 'unconfirmed-within-bound' }), timeoutMs);
+        changed();
+      });
     },
     close: () => closing ??= (async () => {
+      lifetime.abort();
       await execution.close();
+      detachSessionIntake?.();
+      detachProjection();
       stream.close();
+      facts.length = 0;
       return { kind: 'ok' as const, value: undefined };
     })() };
   return { kind: 'ok' as const, value: adapter };
@@ -710,67 +948,69 @@ async function openAdapter(ready: {
 type SettleChoice = 'limit' | 'completion' | 'pending' | 'wait' | 'aborted';
 async function collectSettleChoice(input: {
   readonly signal: AbortSignal;
-  readonly bridge: CodexInteraction;
-  readonly turnDone: Promise<unknown> | undefined;
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly pending: () => HostPendingSet;
   readonly turnFinished: () => boolean;
   readonly capacityRefused: () => boolean;
-}): Promise<SettleChoice> {
+}): Promise<{ readonly choice: Exclude<SettleChoice, 'wait'>; readonly pending: HostPendingSet }> {
   return new Promise((resolve) => {
     let quietTimer: ReturnType<typeof setTimeout> | undefined;
+    let abort: ReturnType<typeof addAbortListener> | undefined;
     let done = false;
     let dispose = () => {};
     const finish = (quiet: boolean) => {
       if (done) return;
+      const pending = input.pending();
+      const choice = decideSettle({ aborted: input.signal.aborted, pending: pending.calls.length, approvals: pending.approvals.length,
+        completion: input.turnFinished(), quiet, capacityRefused: input.capacityRefused() });
+      // Notifications are delivered asynchronously: a request may already have been withdrawn
+      // when its pending event reaches us. Keep waiting for an actual pause or completion.
+      if (choice === 'wait') { if (pending.calls.length) arm(); return; }
       done = true;
       clearTimeout(quietTimer);
-      input.signal.removeEventListener('abort', onAbort);
+      abort?.[Symbol.dispose]();
       dispose();
-      resolve(decideSettle({ aborted: input.signal.aborted, pending: input.bridge.hostCalls().length,
-        completion: input.turnFinished(), quiet, capacityRefused: input.capacityRefused() }));
+      resolve({ choice, pending });
     };
-    const onAbort = () => finish(false);
+    const onAbort = () => queueMicrotask(() => finish(false));
     const arm = () => {
       clearTimeout(quietTimer);
       quietTimer = setTimeout(() => finish(true), hostCallQuietMs);
     };
-    const subscribed = input.bridge.events.subscribe((event) => {
-      if (event.kind === 'host-call') arm();
-      else if (event.kind === 'refused' && event.reason === 'capacity') finish(false);
-    });
-    if (subscribed.kind === 'ok') dispose = () => subscribed.value.dispose();
-    if (input.turnFinished() || input.capacityRefused() || input.signal.aborted || subscribed.kind === 'error') finish(false);
-    else {
-      if (input.turnDone) void input.turnDone.then(() => finish(false));
-      if (input.bridge.hostCalls().length > 0) arm();
-      input.signal.addEventListener('abort', onAbort, { once: true });
-    }
+    dispose = input.subscribe(() => finish(false));
+    abort = addAbortListener(input.signal, onAbort);
+    finish(false);
+
   });
 }
-function decideSettle(facts: { readonly aborted: boolean; readonly pending: number; readonly completion: boolean; readonly quiet: boolean; readonly capacityRefused: boolean }): SettleChoice {
+function decideSettle(facts: { readonly aborted: boolean; readonly pending: number; readonly approvals: number; readonly completion: boolean; readonly quiet: boolean; readonly capacityRefused: boolean }): SettleChoice {
+  if ((facts.pending + facts.approvals) > maxPendingPerMessage || facts.capacityRefused) return 'limit';
   if (facts.aborted) return facts.completion ? 'completion' : 'aborted';
-  if (facts.pending > maxPendingPerMessage || facts.capacityRefused) return 'limit';
   if (facts.completion) return 'completion';
+  if (facts.approvals > 0 && facts.pending === 0) return 'pending';
   if (facts.pending > 0 && facts.quiet) return 'pending';
   return 'wait';
 }
-function interruptResult(step: CleanupStep | 'timeout', completion: CodexTurnCompletion | undefined) {
-  switch (step) {
-    case 'replied':
-      return { kind: 'interrupted' as const, evidence: Object.freeze({ namespace: 'codex-app-server/turn-interrupt', schemaVersion: 1, data: { step } }) };
-    case 'not-needed':
-      return completion?.kind === 'terminal' ? { kind: 'terminal-observed' as const } : { kind: 'unconfirmed-within-bound' as const };
-    case 'rejected':
-    case 'not-sent':
-    case 'uncertain':
-    case 'timeout':
-      return { kind: 'unconfirmed-within-bound' as const };
-    default: {
-      const leftover: never = step;
-      void leftover;
-      return { kind: 'unconfirmed-within-bound' as const };
-    }
+function interruptResult(result: CodexInterruptResult, completion: CodexTurnCompletion | undefined) {
+  if (result.step === 'replied') {
+    return completion?.kind === 'terminal' ? { kind: 'terminal-observed' as const }
+      : { kind: 'interrupted' as const, evidence: Object.freeze({ namespace: 'codex-app-server/turn-interrupt', schemaVersion: 1, data: { step: result.step } }) };
   }
+  if (result.step === 'not-needed' && completion?.kind === 'terminal') return { kind: 'terminal-observed' as const };
+  if (result.step === 'rejected' && result.rejection) {
+    return { kind: 'unconfirmed-within-bound' as const, evidence: Object.freeze({ namespace: 'codex-app-server/turn-interrupt', schemaVersion: 1,
+      data: Object.freeze({ step: result.step, code: result.rejection.code, ...boundedCodexMessage(result.rejection.message) }) }) };
+  }
+  return { kind: 'unconfirmed-within-bound' as const };
 }
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, ms); });
+
+function segmentRequest(input: HostSegmentRequest): HostSegmentRequest {
+  const { hostOperationId, recordIntent, signal, onObservation } = input;
+  if (typeof hostOperationId !== 'string' || hostOperationId.trim().length === 0 || hostOperationId.length > 1024
+    || typeof recordIntent !== 'function') throw new TypeError('Invalid segment identity');
+  for (const character of hostOperationId) {
+    const code = character.charCodeAt(0);
+    if (code <= 31 || (code >= 127 && code <= 159)) throw new TypeError('Invalid segment identity');
+  }
+  return { hostOperationId, recordIntent, signal: AbortSignal.any([signal]), ...(onObservation === undefined ? {} : { onObservation }) };
 }

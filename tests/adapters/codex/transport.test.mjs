@@ -50,12 +50,16 @@ function fixture(t, options = {}) {
       } catch (error) { f.activeWrites--; throw error; }
     },
   };
+  f.channel = channel;
   f.transport = openCodexTransport({ channel, bounds: { ...bounds, ...options.bounds },
-    onRequest(request, deliverySignal) {
+    onRequest(request, deliverySignal, intake) {
       assert.equal(f.depth, 0, 'handler-outside-reader');
       f.requests.push(request);
-      return options.request ? options.request(request, deliverySignal, f) : { kind: 'result', value: null };
+      return options.request ? options.request(request, deliverySignal, f, intake) : { kind: 'result', value: null };
     },
+    ...(options.notification ? { onNotification(notification) {
+      assert.equal(f.depth, 0, 'intake-outside-reader'); options.notification(notification, f);
+    } } : {}),
     onObservation(observation, deliverySignal) {
       assert.equal(f.depth, 0, 'observer-outside-reader');
       f.observations.push(observation);
@@ -430,6 +434,7 @@ for (const operation of ['observer', 'write']) for (const failure of ['throw', '
     if (operation === 'observer') f.input({ method: 'bad' });
     else result = track(f.transport.notify({ method: 'bad' }, signal()));
     await checkpoint();
+    await f.transport.ended;
     assert.equal(f.reports[0]?.reason, operation === 'observer' ? 'observation-error' : 'write-error');
     assert.deepEqual(f.reports[0].unsettled, { handlers: 0, observer: false, write: false });
     if (result) assert.deepEqual(result, [{ kind: 'uncertain', reason: 'closed' }]);
@@ -487,8 +492,9 @@ test('diagnostic tail remains bounded while client replies progress', async (t) 
 test('every bound and product is validated before listener acquisition', () => {
   let acquired = 0;
   const channel = { listen: () => { acquired++; return () => {}; }, write: () => Promise.resolve() };
-  const bad = Object.keys(bounds).flatMap((key) => [0, -1, 1.5, NaN, Infinity].map((value) => ({ [key]: value })));
-  bad.push({ maxFrameBytes: constants.MAX_LENGTH }, { maxChunkBytes: constants.MAX_LENGTH + 1 },
+  const bad = [...Object.keys(bounds), 'maxInboundFrameBytes', 'maxOutboundFrameBytes'].flatMap((key) => [0, -1, 1.5, NaN, Infinity].map((value) => ({ [key]: value })));
+  bad.push(...['maxInboundFrameBytes', 'maxOutboundFrameBytes'].flatMap((key) => [null, bounds.maxFrameBytes - 1, constants.MAX_LENGTH].map((value) => ({ [key]: value }))),
+    { maxInboundFrameBytes: constants.MAX_LENGTH - 1, observationCapacity: Number.MAX_SAFE_INTEGER }, { maxFrameBytes: constants.MAX_LENGTH }, { maxChunkBytes: constants.MAX_LENGTH + 1 },
     { maxDiagnosticBytes: constants.MAX_LENGTH + 1 }, { maxWrites: Number.MAX_SAFE_INTEGER },
     { observationCapacity: Number.MAX_SAFE_INTEGER }, ...['handlerTimeoutMs', 'observationTimeoutMs', 'writeTimeoutMs'].map((key) => ({ [key]: 2147483648 })));
   for (const invalid of bad) assert.throws(() => openCodexTransport({ channel, bounds: { ...bounds, ...invalid },
@@ -528,4 +534,225 @@ for (const send of ['request', 'notify']) for (const action of ['close', 'abort'
   await checkpoint();
   assert.deepEqual(result[0], { kind: 'not-sent', reason: action === 'close' ? 'closed' : action === 'abort' ? 'aborted' : 'capacity' });
   assert.equal(f.writes.filter((value) => value.method === 'outer').length, 0);
+});
+
+test('inbound and per-request outbound bounds are independent', async (t) => {
+  const f = fixture(t, { bounds: { maxInboundFrameBytes: 1024, maxOutboundFrameBytes: 1024 } });
+  const call = { method: 'large', params: { data: 'x'.repeat(600) } };
+  assert.deepEqual(await f.transport.request(call, signal()), { kind: 'not-sent', reason: 'invalid-outgoing' });
+  const accepted = f.transport.request(call, signal(), { maxFrameBytes: 1024 });
+  await checkpoint();
+  f.input({ id: f.writes[0].id, result: 'x'.repeat(600) });
+  assert.equal((await accepted).kind, 'reply');
+  assert.deepEqual(await f.transport.request(call, signal(), { maxFrameBytes: 1025 }), { kind: 'not-sent', reason: 'invalid-outgoing' });
+  f.bytes(Buffer.alloc(1025, 32));
+  assert.equal((await f.transport.ended).reason, 'oversized-frame');
+});
+
+test('the direct paired-echo callback bound remains independent of line size', async (t) => {
+  const config = { maxFrameBytes: 1048576, maxInboundFrameBytes: 8388608,
+    maxOutboundFrameBytes: 8388608, maxChunkBytes: 16777215 };
+  const f = fixture(t, { bounds: config });
+  const echo = line({ method: 'item/started', params: { item: { type: 'userMessage', data: 'x'.repeat(5592408) } } });
+  f.bytes(Buffer.concat([echo, echo]));
+  await checkpoint();
+  assert.equal(f.observations.length, 2);
+  assert.equal(f.reports.length, 0);
+  f.bytes(Buffer.alloc(16777216));
+  assert.equal((await f.transport.ended).reason, 'input-overflow');
+});
+
+for (const extra of [0, 1]) test(`direct inbound frame at 8 MiB plus ${extra} bytes`, async (t) => {
+  const f = fixture(t, { bounds: { maxFrameBytes: 1048576, maxInboundFrameBytes: 8388608, maxOutboundFrameBytes: 8388608, maxChunkBytes: 16777215 } });
+  const envelope = { method: 'boundary', params: '' };
+  const overhead = Buffer.byteLength(JSON.stringify(envelope));
+  envelope.params = 'x'.repeat(8388608 + extra - overhead);
+  f.bytes(line(envelope)); await checkpoint();
+  if (extra) assert.equal((await f.transport.ended).reason, 'oversized-frame');
+  else { assert.equal(f.observations.length, 1); assert.equal(f.reports.length, 0); }
+});
+
+test('flushing parsed server requests admits each handler once outside the reader', async (t) => {
+  const f = fixture(t); f.input({ id: 'flush', method: 'approval' });
+  assert.equal(f.requests.length, 0);
+  f.transport.flushIntake(); assert.equal(f.requests.length, 1);
+  f.transport.flushIntake(); await checkpoint(); assert.equal(f.requests.length, 1);
+  assert.equal(f.writes.length, 1);
+});
+
+test('ordered intake hands requests and following notifications to the same lease before process exit', async (t) => {
+ const order=[];const held=gate();
+ const f=fixture(t,{request(_,__,___,intake){order.push('request');intake.watchNotification(n=>order.push('watch:'+n.method));return held.promise;},notification(n){order.push('notification:'+n.method);}});
+ f.bytes(Buffer.concat([line({id:'R',method:'request'}),line({method:'N1'}),line({method:'N2'})]));
+ f.transport.processExited();
+ assert.deepEqual(order,['request','watch:N1','notification:N1','watch:N2','notification:N2']);
+ assert.equal((await f.transport.ended).reason,'process-exit');held.resolve({kind:'result',value:null});
+});
+test('matched reply hooks precede following notifications and run only once', async (t) => {
+ const order=[];
+ const f=fixture(t,{notification(n){order.push(n.method);},write(current){const id=current.writes.at(-1).id;current.bytes(Buffer.concat([line({id,result:{}}),line({method:'following'}),line({id,result:{}})]));}});
+ const reply=await f.transport.request({method:'query'},signal(),{onReply(){assert.equal(f.depth,0);order.push('reply');}});
+ assert.equal(reply.kind,'reply');assert.deepEqual(order,['reply','following']);
+});
+test('trusted notification intake has a bounded queue even without diagnostic publication', async (t) => {
+ const f=fixture(t,{notification(){}});
+ f.bytes(Buffer.concat(Array.from({length:13},()=>line({method:'n'}))));
+ const report=await f.transport.ended;assert.equal(report.reason,'observation-overflow');assert.equal(report.discarded.observations,1);
+});
+
+for(const ending of ['oversized','truncated','intake'])test(`parsed reply evidence survives a subsequent ${ending} fault`,async(t)=>{
+ const order=[];const f=fixture(t,{notification(n){order.push(n.method);}});
+ const requested=f.transport.request({method:'query'},signal(),{onReply(){assert.equal(f.depth,0);order.push('reply');}});await checkpoint();
+ const id=f.writes[0].id;const reply=line({id,error:{code:-1,message:'rejected'}});
+ if(ending==='oversized')f.bytes(Buffer.concat([reply,Buffer.alloc(513,32)]));
+ else if(ending==='truncated'){f.bytes(Buffer.concat([reply,Buffer.from('{')]));f.sink.ended('eof');}
+ else f.bytes(Buffer.concat([reply,...Array.from({length:5},(_,i)=>line({method:'notice-'+i}))]));
+ assert.equal((await requested).kind,'reply');assert.equal(order[0],'reply');
+ assert.equal((await f.transport.ended).reason,ending==='oversized'?'oversized-frame':ending==='truncated'?'malformed-frame':'observation-overflow');
+});
+
+test('a parsed reply survives a channel that throws synchronously after delivering it',async(t)=>{
+ const f=fixture(t,{write(f){const sent=f.writes.at(-1);f.input({id:sent.id,result:{accepted:true}});throw new Error('after reply');}});
+ const result=await f.transport.request({method:'probed'},signal());assert.equal(result.kind,'reply');assert.deepEqual(result.envelope.reply.value,{accepted:true});assert.equal((await f.transport.ended).reason,'write-error');
+});
+
+test('an unanswered reply queued behind a writer retains its handler deadline',async(t)=>{
+ const held=gate();const f=fixture(t,{bounds:{handlerTimeoutMs:10,writeTimeoutMs:1000},write:()=>held.promise});const outstanding=f.transport.notify({method:'block'},signal());await checkpoint();
+ f.input({id:'held-request',method:'question'});await checkpoint();assert.equal(f.writes.length,1);assert.equal((await f.transport.ended).reason,'handler-timeout');held.resolve();await outstanding;assert.equal(f.writes.length,1);
+});
+
+for (const stop of ['abort', 'close']) test(`parsed reply survives same-stack ${stop}`, async t => {
+  const f = fixture(t), controller = new AbortController();
+  let acknowledged = false;
+  const pending = f.transport.request({ method: 'turn/start' }, controller.signal, { onReply() { acknowledged = true; } });
+  await checkpoint();
+  f.input({ id: f.writes[0].id, result: { accepted: true } });
+  if (stop === 'abort') controller.abort(); else f.transport.close();
+  const outcome = await pending;
+  assert.equal(outcome.kind, 'reply', JSON.stringify(outcome));
+  assert.equal(acknowledged, true);
+  assert.deepEqual(outcome.envelope.raw.result, { accepted: true });
+});
+
+test('close preserves a parsed reply without starting queued server callbacks', async t => {
+  const f = fixture(t);
+  const pending = f.transport.request({ method: 'read' }, signal());
+  await checkpoint();
+  f.input({ id: 'queued-server-call', method: 'approval' });
+  f.input({ id: f.writes[0].id, result: 'known reply' });
+  const report = await f.transport.close();
+  assert.equal((await pending).envelope.raw.result, 'known reply');
+  assert.equal(f.requests.length, 0);
+  assert.equal(report.discarded.requests, 1);
+});
+
+for (const throws of [false, true]) for (const ending of ['close', 'eof', 'process-exit', 'malformed']) for (const hook of ['reply', 'notification']) test(`parsed replies survive ${ending} from a closing ${hook} hook (throws: ${throws})`, async t => {
+  const close = current => {
+    void current.transport.close();
+    if (ending === 'eof') current.sink.ended('eof');
+    if (ending === 'process-exit') current.transport.processExited();
+    if (throws) throw new Error('closing hook failed');
+  };
+  const f = fixture(t, hook === 'notification' ? { notification(_, current) { close(current); } } : {});
+  const first = f.transport.request({ method: 'first' }, signal(), hook === 'reply'
+    ? { onReply() { close(f); } } : undefined);
+  const second = f.transport.request({ method: 'second' }, signal());
+  await checkpoint();
+  f.bytes(Buffer.concat([
+    ...(hook === 'notification' ? [line({ method: 'closing' })] : []),
+    ...f.writes.map(sent => line({ id: sent.id, result: sent.method })),
+    line({ id: 'queued-server-call', method: 'approval' }),
+    ...(ending === 'malformed' ? [Buffer.from('invalid\n')] : []),
+  ]));
+  assert.equal((await first).kind, 'reply');
+  assert.equal((await second).kind, 'reply');
+  assert.equal((await f.transport.ended).reason, ending === 'malformed' ? 'malformed-frame' : 'caller-close');
+  assert.equal(f.requests.length, 0);
+});
+
+for(const stop of ['process-exit','eof'])test(`natural ${stop} precedes a reentrant caller close`,async t=>{
+ const f=fixture(t);const one=f.transport.request({method:'one'},signal(),{onReply(){void f.transport.close();}});await checkpoint();f.input({id:f.writes[0].id,result:{}});f.sink.ended(stop);assert.equal((await one).kind,'reply');assert.equal((await f.transport.ended).reason,stop);
+});
+test('a throwing closing hook preserves later parsed replies',async t=>{
+ const f=fixture(t,{notification(_,current){void current.transport.close();throw new Error('hook failed');}});const pending=f.transport.request({method:'one'},signal());await checkpoint();f.bytes(Buffer.concat([line({method:'notice'}),line({id:f.writes[0].id,result:{}})]));assert.equal((await pending).kind,'reply');assert.equal((await f.transport.ended).reason,'caller-close');
+});
+
+test('a synchronous handler fault during natural EOF refuses later server callbacks', async t => {
+ const f=fixture(t,{request(){throw new Error('handler failed');}});const reply=f.transport.request({method:'caller'},signal());await checkpoint();f.bytes(Buffer.concat([line({id:'first',method:'approval'}),line({id:'second',method:'approval'}),line({id:f.writes[0].id,result:{accepted:true}})]));f.sink.ended('eof');assert.equal((await reply).kind,'reply');assert.equal((await f.transport.ended).reason,'eof');assert.equal(f.requests.length,1);assert.equal((await f.transport.ended).discarded.requests,1);
+});
+
+for (const trigger of ['handler-error', 'invalid-handler-reply', 'observation-error']) test(`parsed replies survive queued ${trigger} teardown`, async t => {
+ const held = gate();
+ const order = [];
+ const f = fixture(t, trigger === 'observation-error' ? { observation: () => held.promise } : { request: () => held.promise });
+ const requested = f.transport.request({ method: 'query' }, signal(), { onReply() { order.push('reply'); } });
+ await checkpoint();
+ f.input(trigger === 'observation-error' ? { method: 'notice' } : { id: 'held-server-call', method: 'approval' });
+ await checkpoint();
+ if (trigger === 'invalid-handler-reply') held.resolve({ kind: 'invalid' });
+ else held.reject(new Error('callback failed'));
+ f.bytes(Buffer.concat([line({ id: f.writes[0].id, result: { accepted: true } }), line({ id: 'never-called', method: 'approval' })]));
+ const outcome = await requested;
+ assert.equal(outcome.kind, 'reply');
+ assert.deepEqual(outcome.envelope.raw.result, { accepted: true });
+ assert.deepEqual(order, ['reply']);
+ assert.equal((await f.transport.ended).reason, trigger);
+ assert.equal(f.requests.length, trigger === 'observation-error' ? 0 : 1);
+});
+
+test('a server reply gate cannot enter the writer after closing the transport', async t => {
+ const f=fixture(t,{request(_request,_signal,current,intake){intake.replyAllowed(()=>{void current.transport.close();return true;},{code:-1,message:'refused',data:null});return {kind:'result',value:{accepted:true}};}});
+ f.input({id:'gated',method:'approval'});await f.transport.ended;await checkpoint();assert.equal(f.writes.length,0);assert.equal((await f.transport.ended).unsettled.write,false);
+});
+
+test('EOF cannot attest process exit and a later explicit attestation remains observable', async t => {
+ const f=fixture(t);let exited=false;void f.transport.processExit.then(()=>{exited=true;});
+ f.sink.ended('eof');assert.equal((await f.transport.ended).reason,'eof');await checkpoint();assert.equal(exited,false);
+ f.transport.processExited();await f.transport.processExit;assert.equal(exited,true);assert.equal((await f.transport.ended).reason,'eof');
+});
+
+test('a throwing reply gate drains parsed receipts and refuses later callbacks', async t => {
+ const f=fixture(t,{bounds:{handlerTimeoutMs:20},request(request,_signal,current,intake){if(request.id==='gated')intake.replyAllowed(()=>{current.bytes(Buffer.concat([line({id:current.writes[0].id,result:{accepted:true}}),line({id:'never-called',method:'approval'})]));throw new Error('gate failed');},{code:-1,message:'refused',data:null});return {kind:'result',value:{}};}});
+ const requested=f.transport.request({method:'query'},signal());await checkpoint();f.input({id:'gated',method:'approval'});assert.equal((await requested).kind,'reply');assert.equal((await f.transport.ended).reason,'handler-error');assert.equal(f.requests.length,1);
+});
+
+test('a synchronous writer failure revokes request admission before queued intake',async t=>{
+ const f=fixture(t,{write(current){current.bytes(Buffer.concat([line({id:current.writes.at(-1).id,result:{accepted:true}}),line({id:'never-called',method:'approval'})]));throw new Error('write failed');},request(_r,_s,current){void current.transport.close();return {kind:'result',value:{}};}});
+ const outcome=await f.transport.request({method:'query'},signal());assert.equal(outcome.kind,'reply');assert.deepEqual(outcome.envelope.raw.result,{accepted:true});assert.equal((await f.transport.ended).reason,'write-error');assert.equal(f.requests.length,0);
+});
+
+for(const kind of ['eof','throw'])for(const operation of ['reply','notify'])test(`${kind} writer lookup never invokes or attests ${operation}`,async t=>{
+ let entered=0;const f=fixture(t,{request(_r,_s,_f,intake){intake.replyAllowed(()=>true,{code:-1,message:'refused',data:null},()=>{entered++;});return {kind:'result',value:{}};}});const original=f.channel.write;
+ Object.defineProperty(f.channel,'write',{configurable:true,get(){if(kind==='eof')f.sink.ended('eof');else throw new Error('lookup failed');return original;}});
+ let result;if(operation==='reply')f.input({id:'lookup',method:'approval'});else result=await f.transport.notify({method:'query'},signal());
+ assert.equal((await f.transport.ended).reason,kind==='eof'?'eof':'write-error');await checkpoint();assert.equal(f.writes.length,0);assert.equal(entered,0);if(result)assert.equal(result.kind,'not-sent');
+});
+
+for (const kind of ['close', 'eof', 'abort', 'throw']) test(`request hook getter ${kind} cannot strand admission`, async t => {
+ const f=fixture(t);const control=new AbortController();const requestBounds={get onReply(){if(kind==='close')void f.transport.close();else if(kind==='eof')f.sink.ended('eof');else if(kind==='abort')control.abort();else throw new Error('hook getter');return undefined;}};
+ let request;assert.doesNotThrow(()=>{request=f.transport.request({method:'never-write'},control.signal,requestBounds);});const values=track(request);await checkpoint();assert.deepEqual(values,[{kind:'not-sent',reason:kind==='throw'?'invalid-outgoing':kind==='abort'?'aborted':'closed'}]);assert.equal(f.writes.length,0);control.abort();
+});
+
+test('queued entry cancellation settles without waiting for the active writer', async t => {
+ const held=gate();const f=fixture(t,{write:()=>held.promise});
+ const head=f.transport.notify({method:'held'},signal());await checkpoint();
+ const control=new AbortController();const queued=track(f.transport.request({method:'queued'},signal(),{entrySignal:control.signal}));
+ control.abort();await checkpoint();assert.deepEqual(queued,[{kind:'not-sent',reason:'aborted'}]);held.resolve();await head;
+});
+
+test('parsed notification reaches execution intake after a server watcher throws', async t => {
+ const held=gate();const seen=[];const f=fixture(t,{request:(_r,_s,_f,intake)=>{intake.watchNotification(()=>{throw new Error('watcher');});return held.promise;},notification:n=>seen.push(n.method)});
+ f.input({id:'approval',method:'held',params:{}});await checkpoint();
+ f.input({method:'turn/completed',params:{}});await checkpoint();assert.deepEqual(seen,['turn/completed']);assert.equal((await f.transport.ended).reason,'observation-error');held.resolve({kind:'result',value:null});
+});
+
+test('request watcher cannot rewrite the notification seen by ordered intake', async t => {
+  const held = gate(); const seen = []; const changed = [];
+  const f = fixture(t, { request(_request, _signal, _fixture, intake) {
+    intake.watchNotification(notification => changed.push(Reflect.set(notification, 'method', 'hidden'))); return held.promise;
+  }, notification(notification) { seen.push(notification.method); } });
+  f.input({ id: 'request', method: 'fixture/approval', params: {} }); await checkpoint();
+  f.input({ method: 'turn/completed', params: {} }); await checkpoint();
+  held.resolve({ kind: 'result', value: null });
+  assert.deepEqual(changed, [false]); assert.deepEqual(seen, ['turn/completed']);
 });

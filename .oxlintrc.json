@@ -15,5 +15,9 @@
   "env": {
     "node": true
   },
-  "ignorePatterns": ["dist/**", "node_modules/**"]
+  "ignorePatterns": ["dist/**", "node_modules/**"],
+  "overrides": [{
+    "files": ["scripts/qualify-codex-host-direct.mjs"],
+    "rules": { "no-undef": "error" }
+  }]
 }
