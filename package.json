@@ -66,6 +66,7 @@
   "files": [
     "dist",
     "docs/architecture/boundaries.md",
+    "docs/qualification/cursor-text-runtime.md",
     "licenses/codex-APACHE-2.0.txt",
     "licenses/codex-NOTICE.txt",
     "THIRD_PARTY_NOTICES.md"

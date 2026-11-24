@@ -245,6 +245,7 @@ function sessionHandle(native: AgentSession, release: () => void): PiSession {
   };
 }
 
+/** Image limits are per turn; hosts must bound retained attachment history across the session and resume. */
 export async function createPiRuntime(options: PiRuntimeOptions): Promise<PiRuntime> {
   try {
     if (options.provider !== 'opencode-go' || !callerModelId(options.model)

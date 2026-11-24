@@ -97,6 +97,7 @@ function install(scripted) {
           },
           async cancel() {
             cancels.push('cancel');
+            if (state.holdCancel) await state.holdCancel;
             if (state.cancelError) throw state.cancelError;
           },
         };
@@ -1125,3 +1126,157 @@ serial('a failed late cancellation keeps the writer and close retries the drain'
     } finally { await next.close(); }
   } finally { fake.state.cancelError = undefined; sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
 });
+
+serial('pending native sends retain the runtime capacity after admission timeout', async t => {
+  const place = await workspace(), fake = install([]), sending = gate();
+  fake.state.holdSend = sending.promise;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const refused = Array.from({ length: 32 }, (_, n) => assert.rejects(runtime.start({ text: 'held', agentId: `capacity-${n}`, onEvent() {} })));
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    assert.equal(fake.sends, 32);
+    t.mock.timers.tick(30000); await Promise.all(refused);
+    const extra = runtime.start({ text: 'overflow', agentId: 'capacity-extra', onEvent() {} });
+    const rejected = assert.rejects(extra);
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await rejected;
+    assert.equal(fake.sends, 32, 'unresolved sends still occupy capacity');
+  } finally { sending.open(); for (let n = 0; n < 30; n++) await Promise.resolve(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+serial('a timed-out send disposes the executor acquired after timeout', async t => {
+  const place = await workspace(); install([]); const sending = gate(); let lease = false; let disposals = 0;
+  sdk.resume = async id => ({ agentId: id, async send() {
+    await sending.promise; lease = true;
+    return { supports: () => true, cancel: async () => {}, wait: async () => ({ status: 'finished' }), async *stream() {} };
+  }, async [Symbol.asyncDispose]() { disposals++; lease = false; } });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const refused = assert.rejects(runtime.start({ text: 'held', agentId: 'late-executor', onEvent() {} }));
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    t.mock.timers.tick(30000); await refused;
+    await runtime.close(); sending.open();
+    for (let n = 0; n < 40; n++) await Promise.resolve();
+    await runtime.close();
+    assert.equal(lease, false, 'late executor lease must be released'); assert.equal(disposals, 1);
+  } finally { sending.open(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+serial('invalid caller getters and Store failures use generic errors', async () => {
+ const place = await workspace(), fake = install([]);
+ try {
+  for (const field of ['cwd', 'sessionDirectory', 'apiKey', 'model']) {
+   const opts = options(place.cwd, place.session); Object.defineProperty(opts, field, { get() { throw new Error('private'); } });
+   assert.throws(() => createCursorTextRuntime(opts), { message: 'Cursor operation failed.' });
+  }
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+   for (const field of ['text', 'agentId', 'onEvent', 'onObservation', 'images']) {
+    const request = { text: 'valid', onEvent() {} }; Object.defineProperty(request, field, { get() { throw new Error('private'); } });
+    let result; assert.doesNotThrow(() => { result = runtime.start(request); }); await assert.rejects(result, { message: 'Cursor operation failed.' });
+   }
+  } finally { await runtime.close(); }
+  sdk.Store = class { constructor() { throw new Error('private disk failure'); } };
+  const failing = createCursorTextRuntime(options(place.cwd, place.session));
+  try { await assert.rejects(failing.start({ text: 'valid', onEvent() {} }), { message: 'Cursor operation failed.' }); }
+  finally { await failing.close(); }
+  assert.equal(fake.created.length, 0);
+ } finally { restore(); await place.remove(); }
+});
+serial('unresolved native opens retain capacity after public admission timeout', async t => {
+  const place = await workspace(), fake = install([]), opening = gate();
+  const resume = sdk.resume; let calls = 0;
+  sdk.resume = async (...args) => { calls++; await opening.promise; return resume(...args); };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  try {
+    const refused = Array.from({ length: 32 }, (_, n) => assert.rejects(runtime.start({ text: 'held', agentId: `opening-${n}`, onEvent() {} })));
+    t.mock.timers.tick(30000); await Promise.all(refused);
+    const extra = assert.rejects(runtime.start({ text: 'overflow', agentId: 'opening-extra', onEvent() {} }));
+    t.mock.timers.tick(30000); await extra;
+    assert.equal(calls, 32); assert.equal(fake.sends, 0);
+  } finally { opening.open(); for (let n = 0; n < 40; n++) await Promise.resolve(); t.mock.timers.reset(); await runtime.close(); restore(); await place.remove(); }
+});
+serial('close drains a late run that arrives during another agent disposal', async () => {
+  const place = await workspace(), fake = install([]), sending = gate(), disposing = gate(), waiting = gate();
+  const runtime = createCursorTextRuntime(options(place.cwd, place.session));
+  let closed = false;
+  try {
+    await (await runtime.start({ text: 'first', onEvent() {} })).finished;
+    fake.state.holdSend = sending.promise; fake.state.holdDispose = disposing.promise; fake.state.holdWait = waiting.promise;
+    const rejected = assert.rejects(runtime.start({ text: 'late', agentId: 'closing-late', onEvent() {} }));
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    const closing = runtime.close().then(() => { closed = true; }); await rejected;
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    sending.open(); for (let n = 0; n < 20; n++) await Promise.resolve();
+    disposing.open(); for (let n = 0; n < 40; n++) await Promise.resolve();
+    assert.equal(closed, false, 'a known late run must reach terminal status before close returns');
+    waiting.open(); await closing;
+  } finally { sending.open(); disposing.open(); waiting.open(); await runtime.close(); restore(); await place.remove(); }
+});
+
+serial('close abandons all pending sends before waiting on cancellation',async()=>{
+ const place=await workspace(),fake=install([]),stream=gate(),sending=gate(),cancel=gate();fake.state.holdStream=stream.promise;
+ const runtime=createCursorTextRuntime(options(place.cwd,place.session));let closing;
+ try{await runtime.start({text:'first',agentId:'close-first',onEvent(){}});fake.state.holdSend=sending.promise;fake.state.holdCancel=cancel.promise;const observed=[];let disposition;
+ const pending=runtime.start({text:'second',agentId:'close-second',onEvent(){},onObservation:o=>observed.push(o)}).then(()=>{disposition='admitted';},()=>{disposition='refused';});for(let n=0;n<20;n++)await Promise.resolve();closing=runtime.close();for(let n=0;n<20;n++)await Promise.resolve();sending.open();for(let n=0;n<40;n++)await Promise.resolve();
+ assert.equal(disposition,'refused');assert.equal(observed.some(o=>o.kind==='run-started'),false);await pending;
+ }finally{cancel.open();sending.open();stream.open();await closing;await runtime.close();restore();await place.remove();}
+});
+serial('close joins cancellation already started by turn abort before releasing the writer',async()=>{
+ const place=await workspace(),fake=install([]),stream=gate(),cancel=gate();fake.state.holdStream=stream.promise;const runtime=createCursorTextRuntime(options(place.cwd,place.session));let stopping,closing;let closed=false;
+ try{const turn=await runtime.start({text:'first',agentId:'cancel-joined',onEvent(){}});fake.state.holdCancel=cancel.promise;fake.state.waitStatus='cancelled';stopping=turn.abort();for(let n=0;n<20;n++)await Promise.resolve();closing=runtime.close().then(()=>{closed=true;});stream.open();for(let n=0;n<60;n++)await Promise.resolve();assert.equal(closed,false);const other=createCursorTextRuntime(options(place.cwd,place.session));try{await assert.rejects(other.start({text:'overlap',agentId:'cancel-joined',onEvent(){}}));}finally{await other.close();}
+ }finally{cancel.open();stream.open();await stopping;await closing;await runtime.close();restore();await place.remove();}
+});
+
+serial('a later close joins a run handle acquired after a previous close',async t=>{
+ const place=await workspace(),fake=install([]),sending=gate(),waiting=gate();fake.state.holdSend=sending.promise;fake.state.holdWait=waiting.promise;t.mock.timers.enable({apis:['setTimeout']});const runtime=createCursorTextRuntime(options(place.cwd,place.session));let closing;
+ try{const refused=assert.rejects(runtime.start({text:'held',agentId:'cached-close-owned',onEvent(){}}));for(let n=0;n<20;n++)await Promise.resolve();t.mock.timers.tick(30000);await refused;await runtime.close();sending.open();for(let n=0;n<30;n++)await Promise.resolve();assert.equal(fake.cancels.length,1);let closed=false;closing=runtime.close().then(()=>{closed=true;});for(let n=0;n<40;n++)await Promise.resolve();assert.equal(closed,false,'known late cleanup must be joined');waiting.open();await closing;}finally{sending.open();waiting.open();for(let n=0;n<50;n++)await Promise.resolve();t.mock.timers.reset();await closing;await runtime.close();restore();await place.remove();}
+});
+serial('Cursor path validation refuses embedded NUL before SDK setup',async()=>{
+ const place=await workspace(),fake=install([]);try{for(const factory of [createCursorRuntime,createCursorTextRuntime])for(const field of ['cwd','sessionDirectory'])assert.throws(()=>factory({...options(place.cwd,place.session),[field]:place.cwd+'\0invalid'}),{message:'Cursor operation failed.'});assert.equal(fake.roots.length,0);assert.equal(fake.created.length,0);}finally{restore();await place.remove();}
+});
+for(const stage of ['Store','create','send'])for(const kind of ['spoof','revoked'])serial(`native ${stage} ${kind} failures cannot become policy refusals or strand admission`,async()=>{
+ const place=await workspace(),fake=install([]);let thrown;if(kind==='spoof'){thrown=Object.create(CursorTextPolicyUnsupportedError.prototype);thrown.message='fixture-canary-native-error';}else{const proxy=Proxy.revocable({},{});proxy.revoke();thrown=proxy.proxy;}
+ if(stage==='Store')sdk.Store=class{constructor(){throw thrown;}};else if(stage==='create')sdk.create=()=>{throw thrown;};else fake.state.sendError=thrown;const runtime=createCursorTextRuntime(options(place.cwd,place.session));
+ try{let result;void runtime.start({text:'fail',onEvent(){}}).then(()=>{result={message:'unexpected admission'};},error=>{result=error;});for(let n=0;n<50;n++)await Promise.resolve();assert.equal(result?.message,'Cursor operation failed.');}finally{await runtime.close();restore();await place.remove();}
+});
+
+
+for(const phase of ['open','send'])serial(`admission checks elapsed deadline before accepting delayed ${phase}`,async t=>{
+ const place=await workspace(),fake=install([]),held=gate();let now=0;t.mock.method(performance,'now',()=>now);if(phase==='open')fake.state.holdCreate=held.promise;else fake.state.holdSend=held.promise;const runtime=createCursorTextRuntime(options(place.cwd,place.session));
+ try{const starting=runtime.start({text:'late',onEvent(){}});if(phase==='send')while(fake.sends===0)await Promise.resolve();now=30001;held.open();await assert.rejects(starting,/Cursor operation failed/);if(phase==='open')assert.equal(fake.sends,0);for(let n=0;n<50;n++)await Promise.resolve();}finally{held.open();await runtime.close();restore();await place.remove();}
+});
+
+
+for(const factory of [createCursorRuntime,createCursorTextRuntime])serial(`readiness getter failures stay generic promises (${factory.name})`,async()=>{
+ const place=await workspace();install([]);const runtime=factory(options(place.cwd,place.session));try{let result;assert.doesNotThrow(()=>{result=runtime.readinessReport({get signal(){throw new Error('synthetic canary');}});});assert(result instanceof Promise);await assert.rejects(result,error=>error.message==='Cursor operation failed.');}finally{await runtime.close();restore();await place.remove();}
+});
+
+
+for (const factory of [createCursorRuntime, createCursorTextRuntime]) {
+  serial(`external cancel cannot hide a finished stream failure (${factory.name})`, async () => {
+    const place = await workspace(); const release = Promise.withResolvers();
+    const fake = install([[assistant('partial'), new Error('incomplete stream')]]);
+    fake.state.holdStream = release.promise;
+    const events = []; const runtime = factory(options(place.cwd, place.session));
+    try {
+      const turn = await runtime.start({ text: 'fail', onEvent: event => events.push(event) });
+      const aborted = turn.abort(); release.resolve(); await aborted;
+      assert.equal(await turn.finished, 'failed');
+      assert.equal(events.findLast(event => event.kind === 'ended').outcome, 'failed');
+    } finally { release.resolve(); await runtime.close(); restore(); await place.remove(); }
+  });
+  serial(`readiness signal accessor stays behind the generic boundary (${factory.name})`, async () => {
+    const place = await workspace(); install([]); const runtime = factory(options(place.cwd, place.session));
+    const controller = new AbortController(); const signal = controller.signal; let traps = 0;
+    Object.defineProperty(signal, 'aborted', { get() { traps++; throw new Error('readiness canary'); } });
+    try {
+      assert.equal((await runtime.readinessReport({ signal })).facts.workspace.state, 'accessible');
+      controller.abort();
+      assert.equal((await runtime.readinessReport({ signal })).facts.workspace.state, 'cancelled');
+      assert.equal(traps, 0);
+    }
+    finally { await runtime.close(); restore(); await place.remove(); }
+  });
+}

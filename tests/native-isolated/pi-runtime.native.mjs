@@ -676,3 +676,8 @@ test('Pi reserves a writer after caller image getters finish', { timeout: 10000 
     await assert.rejects(outer, /busy/); await (await inner).finished;
   });
 });
+
+
+test('text-only Pi resume never sends historical images to its provider', {timeout:10000}, async t=>{
+ imageModel(t);await fixture(async({runtime,requests})=>{const first=await runtime({model:'fixture-image'});const session=await first.open();await prompt(session,{text:'Image',images:[{mediaType:'image/png',dataUrl:'data:image/png;base64,YQ=='}]});const file=session.sessionFile;await first.close();const second=await runtime();const resumed=await second.open({sessionFile:file});assert.equal(resumed.imageInput.kind,'unavailable');await prompt(resumed,'Text only');assert.equal(JSON.stringify(requests.at(-1).messages).includes('image_url'),false);});
+});

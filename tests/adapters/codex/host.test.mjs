@@ -1393,14 +1393,8 @@ test('old terminal candidates cannot displace the acknowledged turn terminal', a
  await tick();ctx.f.send({id:start.id,result:{turn:{id:start.turnId,status:'inProgress'}}});
  const result=await running;assert.equal(result.kind,'complete');assert.equal(result.text,'x'.repeat(32));
 });
-test('an unwritten interrupt can be attempted after transport capacity is released', async (t) => {
- const ctx=await openHost(t);approvalTurns(ctx.f);await ctx.run();
- ctx.f.handlers['model/list']=()=>({deferred:true});const controls=Array.from({length:8},()=>new AbortController());
- const lists=controls.map(c=>ctx.adapter.capabilities.models.api.list(c.signal));await tick();
- assert.equal((await ctx.adapter.interrupt({timeoutMs:100})).kind,'unconfirmed-within-bound');
- controls.forEach(c=>c.abort());await Promise.all(lists);await tick();
- assert(['interrupted','terminal-observed'].includes((await ctx.adapter.interrupt({timeoutMs:1000})).kind));
- assert.equal(ctx.f.sent.filter(m=>m==='turn/interrupt').length,1);
+test('overlapping catalog refreshes preserve capacity for native interrupt', async t=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f);await ctx.run();ctx.f.handlers['model/list']=()=>({deferred:true});const controls=Array.from({length:8},()=>new AbortController());const lists=controls.map(c=>ctx.adapter.capabilities.models.api.list(c.signal));await tick();assert.equal(ctx.f.sent.filter(m=>m==='model/list').length,1);assert(['interrupted','terminal-observed'].includes((await ctx.adapter.interrupt({timeoutMs:1000})).kind));controls.forEach(c=>c.abort());const results=await Promise.all(lists);assert.equal(results.filter(r=>r.kind==='error'&&r.error.code==='busy').length,7);assert.equal(ctx.f.sent.filter(m=>m==='turn/interrupt').length,1);
 });
 test('a terminal stays definitive while a continuation is still recording intent', async (t) => {
  const ctx=await openHost(t);approvalTurns(ctx.f);const pending=await ctx.run();let release;
@@ -1528,7 +1522,7 @@ test('the entire queued mixed batch is refused if another member withdraws befor
 test('public approval redaction cannot change native withdrawal correlation',async(t)=>{
  const ctx=await openHost(t);approvalTurns(ctx.f);const pending=await ctx.run();ctx.f.autoFinish=false;
  const release=await blockWriterBehindList(ctx);const continuing=ctx.answer([approvalAnswer(pending.approvals[0])]);await tick();
- pending.approvals[0].request.data.params.threadId='[redacted]';ctx.f.send({method:'serverRequest/resolved',params:{...ctx.f.turnIdentity,requestId:'approval-call'}});await tick();release();const result=await continuing;await tick();
+ assert.equal(Reflect.set(pending.approvals[0].request.data.params,'threadId','[redacted]'),false);ctx.f.send({method:'serverRequest/resolved',params:{...ctx.f.turnIdentity,requestId:'approval-call'}});await tick();release();const result=await continuing;await tick();
  assert.equal(result.write.kind,'not-dispatched');assert.equal(ctx.f.replies.filter(r=>r.result).length,0);ctx.f.finishTurn(ctx.f.turnIdentity.threadId,ctx.f.turnIdentity.turnId);
 });
 test('failure after a selected reply actually enters the writer stays outcome-unknown',async(t)=>{
@@ -1598,4 +1592,156 @@ test('ordinary pre-ack data overflow refuses later approval admission for the fa
  for(let i=0;i<33;i++)ctx.f.send({method:'item/agentMessage/delta',params:{threadId:start.threadId,turnId:start.turnId,itemId:'text',delta:'x'}});
  ctx.f.send({id:start.id,result:{turn:{id:start.turnId,status:'inProgress'}}});ctx.f.send({id:'late-after-overflow',method:'item/commandExecution/requestApproval',params:{threadId:start.threadId,turnId:start.turnId,itemId:'late',availableDecisions:['accept']}});
  assert.equal((await running).kind,'failed');await tick();assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length,0);assert.ok(ctx.f.replies.find(r=>r.id==='late-after-overflow')?.error);ctx.f.finishTurn(start.threadId,start.turnId);
+});
+
+test('parsed completion wins an abort in the same channel callback',async(t)=>{
+ const ctx=await openHost(t),control=new AbortController();let native;
+ ctx.f.handlers['turn/start']=(params)=>{native={...params,turnId:randomUUID()};ctx.f.turnIdentity={threadId:params.threadId,turnId:native.turnId};return{turn:{id:native.turnId,status:'inProgress'}};};
+ const running=ctx.adapter.run({prompt:'held',hostOperationId:'parsed-before-abort',signal:control.signal,recordIntent(){}});while(!native)await tick();await tick();
+ ctx.f.sink.data(Buffer.from(JSON.stringify({method:'item/agentMessage/delta',params:{threadId:native.threadId,turnId:native.turnId,itemId:'last-text',delta:'final'}})+'\n'+JSON.stringify({method:'turn/completed',params:{threadId:native.threadId,turn:{id:native.turnId,status:'completed',error:null}}})+'\n'));control.abort();
+ const result=await running;assert.equal(result.kind,'complete');assert.equal(result.text,'final');
+});
+test('fresh run aborted at run-started retains the absence of a native write',async(t)=>{
+ const ctx=await openHost(t);assert.equal((await ctx.run('text')).kind,'complete');const control=new AbortController();const count=ctx.f.sent.filter(x=>x==='turn/start').length;
+ const result=await ctx.adapter.run({prompt:'next',hostOperationId:'abort-before-native',signal:control.signal,recordIntent(){},onObservation(o){if(o.kind==='run-started')control.abort();}});
+ assert.equal(result.write.kind,'not-dispatched');assert.equal(result.write.reason,'aborted');assert.equal(ctx.f.sent.filter(x=>x==='turn/start').length,count);
+});
+test('empty operation identity is a fulfilled invalid input result',async(t)=>{
+ const ctx=await openHost(t);const result=await ctx.adapter.run({prompt:'hello',hostOperationId:'',signal:ctx.signal,recordIntent(){assert.fail('invalid identity');}});
+ assert.equal(result.error.code,'invalid-input');assert.equal(result.write.kind,'not-attempted');assert.equal(ctx.f.sent.includes('thread/start'),false);
+});
+test('mixed approvals retain the host-call quiet window',async(t)=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f,{mixed:true});const running=ctx.run();while(!ctx.f.turnIdentity)await tick();await new Promise(r=>setTimeout(r,5));
+ ctx.f.request('second-host-call','item/tool/call',{...ctx.f.turnIdentity,callId:'second-tool',namespace:'application',tool:toolName,arguments:{city:'Berlin'}});
+ const result=await running;assert.equal(result.kind,'pending');assert.equal(result.calls.length,2);assert.equal(result.approvals.length,1);await ctx.adapter.interrupt({timeoutMs:1000});
+});
+test('partial mixed reply failure keeps the retained native terminal error',async(t)=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f,{mixed:true});const pending=await ctx.run();ctx.f.autoFinish=false;
+ const original=ctx.f.channel.write.bind(ctx.f.channel),entered=Promise.withResolvers(),gate=Promise.withResolvers();let positive=0;
+ ctx.f.channel.write=(bytes)=>{const frame=JSON.parse(Buffer.from(bytes));const written=original(bytes);if(frame.result&&++positive===1){entered.resolve();return gate.promise;}return written;};
+ const continuing=ctx.answer([callAnswer(pending.calls[0]),approvalAnswer(pending.approvals[0])]);await entered.promise;
+ ctx.f.send({method:'turn/completed',params:{threadId:ctx.f.turnIdentity.threadId,turn:{id:ctx.f.turnIdentity.turnId,status:'failed',error:{message:'retained terminal cause'}}}});gate.resolve();const result=await continuing;
+ assert.equal(result.write.kind,'outcome-unknown');assert.equal(result.nativeError?.source,'turn.error');assert.equal(result.nativeError.message,'retained terminal cause');
+});
+test('tool call facts and delivery remain visible between segments',async(t)=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f);await ctx.run();const facts=[];ctx.adapter.events.subscribe(event=>facts.push(event));
+ ctx.f.request('between-segments','item/tool/call',{...ctx.f.turnIdentity,callId:'between-item',namespace:'application',tool:toolName,arguments:{city:'Oslo'}});await tick(6);
+ assert.deepEqual(facts.filter(e=>e.kind.startsWith('tool-call-')).map(e=>e.kind),['tool-call-start','tool-call-arguments-delta','tool-call-end']);
+ await ctx.adapter.interrupt({timeoutMs:1000});
+});
+test('late interrupt acknowledgement cannot beat an elapsed monotonic wait bound',async(t)=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f);await ctx.run();let now=0;t.mock.method(performance,'now',()=>now);ctx.f.handlers['turn/interrupt']=()=>{now=50;return{};};
+ const result=await ctx.adapter.interrupt({timeoutMs:10});assert.equal(result.kind,'unconfirmed-within-bound');await tick();assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals.length,0);
+});
+
+test('fresh run queued behind a writer honors caller abort before entry',async t=>{
+ const ctx=await openHost(t);await ctx.run('text');const release=await blockWriterBehindList(ctx),control=new AbortController(),before=ctx.f.sent.filter(m=>m==='turn/start').length;const running=ctx.adapter.run({prompt:'queued',hostOperationId:'queued-abort',signal:control.signal,recordIntent(){}});await tick();control.abort();release();const result=await running;assert.equal(result.write.kind,'not-dispatched');assert.equal(result.write.reason,'aborted');assert.equal(ctx.f.sent.filter(m=>m==='turn/start').length,before);
+});
+test('first run aborted at run-started reports the absence of native dispatch',async t=>{
+ const ctx=await openHost(t),control=new AbortController();const result=await ctx.adapter.run({prompt:'first',hostOperationId:'first-abort',signal:control.signal,recordIntent(){},onObservation(o){if(o.kind==='run-started')control.abort();}});assert.equal(result.write.kind,'not-dispatched');assert.equal(ctx.f.sent.includes('thread/start'),false);assert.equal(ctx.f.sent.includes('turn/start'),false);
+});
+test('a fresh refused run cannot inherit the previous terminal error',async t=>{
+ const ctx=await openHost(t);failTurn(ctx.f,{terminal:{message:'old turn error'}});assert.equal((await ctx.run('fail')).nativeError.message,'old turn error');ctx.f.sink.ended('eof');await tick();const next=await ctx.run('new');assert.equal(next.kind,'failed');assert.equal(next.nativeError,undefined);
+});
+test('expected checkpoint envelope must name the requested session and binding',async t=>{
+ const ctx=await openHost(t),done=await ctx.run('text'),checkpoint=await ctx.adapter.capabilities.fingerprint.api.read(ctx.signal);assert.equal(checkpoint.kind,'ok');await ctx.adapter.close();
+ for(const expectedHistory of [{...checkpoint.value,sessionOpaque:'another-session'},{...checkpoint.value,binding:{...checkpoint.value.binding,authorizedScope:'another-scope'}}]){const opened=await ctx.made.registration.open({launch:ctx.made.launch('allow'),tools:[ctx.made.tool],resume:{session:done.session,expectedHistory}},ctx.signal);if(opened.kind==='ok')await opened.value.close();assert.equal(opened.kind,'error');assert.equal(ctx.made.state.servers.at(-1).sent.includes('thread/resume'),false);}
+});
+test('pending limit dominates caller abort and a completed native terminal',async t=>{
+ const ctx=await openHost(t),control=new AbortController();let active;ctx.f.handlers['turn/start']=params=>{active={threadId:params.threadId,turnId:randomUUID()};ctx.f.turnIdentity=active;return{turn:{id:active.turnId,status:'inProgress'}};};const running=ctx.adapter.run({prompt:'held',hostOperationId:'capacity-abort',signal:control.signal,recordIntent(){}});while(!active)await tick();await tick();const frames=Array.from({length:9},(_,n)=>({id:`overflow-${n}`,method:'item/tool/call',params:{...active,callId:`call-${n}`,namespace:'application',tool:toolName,arguments:{}}}));frames.push({method:'turn/completed',params:{threadId:active.threadId,turn:{id:active.turnId,status:'completed',error:null}}});ctx.f.sink.data(Buffer.from(frames.map(frame=>JSON.stringify(frame)).join('\n')+'\n'));control.abort();const result=await running;assert.equal(result.kind,'failed');assert.equal(result.error.code,'pending-limit');assert.equal(result.write.kind,'accepted');
+});
+test('deep native JSON arguments are refused before partial publication',async t=>{
+ const ctx=await openHost(t),events=[];ctx.adapter.events.subscribe(event=>events.push(event));let active;const startHandler=ctx.f.handlers['turn/start'];ctx.f.handlers['turn/start']=params=>{active={threadId:params.threadId,turnId:randomUUID()};ctx.f.turnIdentity=active;return{turn:{id:active.turnId,status:'inProgress'}};};const running=ctx.run('held');while(!active)await tick();await tick();const prefix=JSON.stringify({id:'deep',method:'item/tool/call',params:{...active,callId:'deep-call',namespace:'application',tool:toolName}});const frame=prefix.slice(0,-2)+',"arguments":'+'{"x":'.repeat(12000)+'0'+'}'.repeat(12000)+'}}\n';ctx.f.sink.data(Buffer.from(frame));await tick(6);assert.equal(ctx.f.replies.find(reply=>reply.id==='deep')?.error?.code,-32602);assert.equal(events.some(event=>event.kind==='tool-call-start'),false);ctx.f.finishTurn(active.threadId,active.turnId);assert.equal((await running).kind,'complete');ctx.f.handlers['turn/start']=startHandler;assert.equal((await ctx.run('text')).kind,'complete');
+});
+test('interrupt conformance accepts withdrawal after the public deadline',async t=>{
+ let now=0;t.mock.method(performance,'now',()=>now);
+ const factory=()=>{const made=subject(),open=made.registration.open;return{...made,registration:{...made.registration,async open(options,signal){const opened=await open(options,signal);if(opened.kind==='ok'){const native=made.state.servers.at(-1),interrupt=native.handlers['turn/interrupt'];native.handlers['turn/interrupt']=(params,id)=>{now+=101;return interrupt(params,id);};}return opened;}}};};
+ await hostAdapterContracts.interrupt(factory,t.signal);
+});
+
+test('text frame refusal happens before durable intent',async t=>{
+ const ctx=await openHost(t);let intents=0;const result=await ctx.adapter.run({prompt:'x'.repeat(1048577),signal:ctx.signal,hostOperationId:'large-text',recordIntent(){intents++;}});assert.equal(result.write.kind,'not-attempted');assert.equal(intents,0);assert.equal(ctx.f.sent.includes('turn/start'),false);
+});
+test('declarations captured at open survive caller mutation before first run',async t=>{
+ const tools=[{name:'lookup',description:'original',inputSchema:{type:'object'}}];const ctx=await openHost(t,{}, {tools});tools[0].inputSchema.type='array';tools.push({name:'added',description:'later',inputSchema:{type:'object'}});await ctx.run('say hello');const params=ctx.f.params.find(p=>p?.dynamicTools);assert.equal(params.dynamicTools[0].tools.length,1);assert.equal(params.dynamicTools[0].tools[0].inputSchema.type,'object');
+});
+test('first-run requester abort retains definite not-dispatched evidence',async t=>{
+ const ctx=await openHost(t);const original=ctx.f.handlers['config/read'];const entered=Promise.withResolvers();ctx.f.handlers['config/read']=()=>{entered.resolve();return undefined;};const control=new AbortController();const running=ctx.adapter.run({prompt:'hello',signal:control.signal,hostOperationId:'requester-abort',recordIntent(){}});await entered.promise;control.abort();const result=await running;assert.equal(ctx.f.sent.includes('thread/start'),false);assert.equal(ctx.f.sent.includes('turn/start'),false);assert.deepEqual(result.write,{kind:'not-dispatched',reason:'aborted'});ctx.f.handlers['config/read']=original;
+});
+test('resume captures its session reference once before checkpoint IO',async t=>{
+ const ctx=await openHost(t);const done=await ctx.run('text');const checkpoint=await ctx.adapter.capabilities.fingerprint.api.read(ctx.signal);assert.equal(checkpoint.kind,'ok');await ctx.adapter.close();let reads=0;const opened=await ctx.made.registration.open({launch:ctx.made.launch('allow'),tools:[ctx.made.tool],resume:{get session(){if(++reads>1)throw new Error('reference changed');return done.session;},expectedHistory:checkpoint.value}},ctx.signal);assert.equal(opened.kind,'ok');assert.equal(reads,1);await opened.value.close();
+});
+
+
+test('enumerable resume input is captured once even when initially absent',async t=>{
+ const made=subject();t.after(()=>made.dispose());let reads=0;const signal=AbortSignal.timeout(5000);const opened=await made.registration.open({launch:made.launch('allow'),get resume(){if(++reads===1)return undefined;throw new Error('second read');}},signal);assert.equal(opened.kind,'ok');assert.equal(reads,1);await opened.value.close();
+});
+test('explicit null checkpoint cannot silently disable expected-history verification',async t=>{
+ const ctx=await openHost(t);const done=await ctx.run('text');await ctx.adapter.close();const opened=await ctx.made.registration.open({launch:ctx.made.launch('allow'),tools:[ctx.made.tool],resume:{session:done.session,expectedHistory:null}},ctx.signal);assert.equal(opened.kind,'error');assert.equal(ctx.made.state.servers.at(-1).sent.includes('thread/resume'),false);
+});
+test('intent abort listeners cannot suppress accepted-segment cancellation',async t=>{
+ const ctx=await openHost(t);let identity;ctx.f.handlers['turn/start']=params=>{identity={threadId:params.threadId,turnId:randomUUID()};ctx.f.turnIdentity=identity;return{turn:{id:identity.turnId,status:'inProgress'}};};const control=new AbortController();const running=ctx.adapter.run({prompt:'silent',hostOperationId:'unstoppable-abort',signal:control.signal,recordIntent(_id,signal){signal.addEventListener('abort',event=>event.stopImmediatePropagation());}});while(!identity)await tick();await tick();control.abort();const result=await Promise.race([running,new Promise(resolve=>setTimeout(()=>resolve('blocked'),100))]);assert.notEqual(result,'blocked');assert.equal(result.write.kind,'accepted');ctx.f.finishTurn(identity.threadId,identity.turnId);
+});
+test('immutable event arguments cannot rewrite pending native facts',async t=>{
+ const ctx=await openHost(t);ctx.adapter.events.subscribe(event=>{if(event.kind==='tool-call-end')assert.equal(Reflect.set(event.arguments,'city','changed'),false);});const pending=await ctx.run(prompts.toolCall);assert.equal(pending.kind,'pending');await tick();assert.equal(pending.calls[0].arguments.city,'Paris');assert.equal((await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.calls[0].arguments.city,'Paris');
+});
+test('native tool withdrawal without a host reply never implies tool delivery',async t=>{
+ const ctx=await openHost(t);const events=[];ctx.adapter.events.subscribe(event=>events.push(event));const pending=await ctx.run(prompts.toolCall);const target=pending.calls[0].pending.target;const native=[...ctx.f.pending.values()][0];ctx.f.send({method:'item/completed',params:{threadId:native.threadId,turnId:native.turnId,item:{id:native.itemId,type:'dynamicToolCall',status:'completed'}}});await tick();assert.equal(events.filter(event=>event.kind==='tool-delivery'&&event.target.nativeToolCallId===target.nativeToolCallId).length,0);assert.equal(events.filter(event=>event.kind==='interaction-settled'&&event.target.nativeToolCallId===target.nativeToolCallId).length,1);
+});
+
+
+test('transport refusal before batch entry retains definite native-refused evidence',async t=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f);const pending=await ctx.run();const descriptor=Object.getOwnPropertyDescriptor(ctx.f.channel,'write');let intents=0;
+ try{const result=await ctx.answer([approvalAnswer(pending.approvals[0])],()=>{intents++;Object.defineProperty(ctx.f.channel,'write',{configurable:true,get(){throw new Error('writer unavailable');}});});assert.equal(intents,1);assert.equal(ctx.f.replies.some(frame=>frame.result),false);assert.deepEqual(result.write,{kind:'not-dispatched',reason:'native-refused'});}finally{Object.defineProperty(ctx.f.channel,'write',descriptor);}
+});
+test('ended transport refuses a fresh turn before native entry',async t=>{
+ const ctx=await openHost(t);await ctx.run('text');const before=ctx.f.sent.filter(method=>method==='turn/start').length;ctx.f.sink.ended('eof');await tick();const result=await ctx.run('new after eof');assert.equal(ctx.f.sent.filter(method=>method==='turn/start').length,before);assert.equal(result.error.code,'closed');assert(['not-attempted','not-dispatched'].includes(result.write.kind));
+});
+test('pending approval data wrapper cannot replace its retained native params',async t=>{
+ const ctx=await openHost(t);approvalTurns(ctx.f);await ctx.run();const first=(await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals[0];assert.equal(Reflect.set(first.request.data,'params',{threadId:'changed'}),false);const second=(await ctx.adapter.capabilities.inspect.api.pending(ctx.signal)).value.approvals[0];assert.equal(second.request.data.params.threadId,ctx.f.turnIdentity.threadId);
+});
+
+
+test('first thread frame refusal never describes a stale pending set', async t => {
+  const ctx = await openHost(t, {}, { instructions: 'x'.repeat(2 * 1048576) }); let intents = 0;
+  const result = await ctx.adapter.run({ prompt: 'hello', hostOperationId: 'large-instructions', signal: ctx.signal, recordIntent() { intents++; } });
+  assert.equal(intents, 1); assert.equal(result.error.code, 'native-failure'); assert.deepEqual(result.write, { kind: 'not-dispatched', reason: 'native-refused' });
+  assert.doesNotMatch(result.error.message, /pending set/); assert.equal(ctx.f.sent.includes('thread/start'), false);
+});
+test('requester loss retains proof that no segment writer entered', async t => {
+  const ctx = await openHost(t); ctx.f.handlers['config/read'] = () => { ctx.f.sink.ended('eof'); return { deferred: true }; };
+  const result = await ctx.run('hello');
+  assert.equal(result.error.code, 'closed'); assert.deepEqual(result.write, { kind: 'not-dispatched', reason: 'native-refused' });
+  assert.equal(ctx.f.sent.includes('thread/start'), false); assert.equal(ctx.f.sent.includes('turn/start'), false);
+});
+test('run-started EOF cannot attribute prior text or usage to the new segment', async t => {
+  const ctx = await openHost(t); await ctx.run('hello'); const previous = ctx.f.turnIdentity; const seen = [];
+  const result = await ctx.adapter.run({ prompt: 'new', hostOperationId: 'new-baseline', signal: ctx.signal, recordIntent() {}, onObservation(event) {
+    seen.push(event);
+    if (event.kind === 'run-started') {
+      ctx.f.send({ method: 'item/agentMessage/delta', params: { ...previous, itemId: 'trailing', delta: 'old trailing text' } });
+      ctx.f.send({ method: 'thread/tokenUsage/updated', params: { ...previous, tokenUsage: { total: usage, last: usage, modelContextWindow: 1000 } } });
+      ctx.f.sink.ended('eof');
+    }
+  } });
+  assert.equal(result.kind, 'failed'); assert.equal(seen.some(event => event.kind === 'text' || event.kind === 'usage'), false);
+});
+test('pending limit preserves the parsed matching terminal cause', async t => {
+  const ctx = await openHost(t); let active;
+  ctx.f.handlers['turn/start'] = params => { active = { threadId: params.threadId, turnId: randomUUID() }; ctx.f.turnIdentity = active; return { turn: { id: active.turnId, status: 'inProgress' } }; };
+  const running = ctx.run('held'); while (!active) await tick(); await tick();
+  const frames = Array.from({ length: 9 }, (_, n) => ({ id: `cause-${n}`, method: 'item/tool/call', params: { ...active, callId: `call-${n}`, namespace: 'application', tool: toolName, arguments: {} } }));
+  frames.push({ method: 'turn/completed', params: { threadId: active.threadId, turn: { id: active.turnId, status: 'failed', error: { message: 'retained limit cause' } } } });
+  ctx.f.sink.data(Buffer.from(frames.map(frame => JSON.stringify(frame)).join('\n') + '\n'));
+  const result = await running; assert.equal(result.error.code, 'pending-limit'); assert.equal(result.write.kind, 'accepted');
+  assert.equal(result.nativeError.source, 'turn.error'); assert.equal(result.nativeError.message, 'retained limit cause');
+});
+test('uncloneable open input is invalid before any launch', async t => {
+  const made = subject(); t.after(() => made.dispose());
+  const result = await made.registration.open({ launch: made.launch('allow'), tools: [{ name: 'bad', description: 'Bad', inputSchema: { type: 'object', bad() {} } }] }, new AbortController().signal);
+  assert.equal(result.kind, 'error'); assert.equal(result.error.code, 'invalid-input'); assert.equal(made.state.servers.length, 0);
+});
+test('fingerprint normalizes a forged signal to typed invalid input', async t => {
+  const ctx = await openHost(t); const result = await ctx.adapter.capabilities.fingerprint.api.read(Object.create(AbortSignal.prototype));
+  assert.equal(result.kind, 'error'); assert.equal(result.error.code, 'invalid-input');
 });

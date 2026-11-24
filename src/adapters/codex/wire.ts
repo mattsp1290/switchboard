@@ -126,7 +126,10 @@ export function createWireReader(options: {
         offset = end + 1;
         if (newline < 0) return;
         let envelope: Envelope | undefined;
-        try { envelope = parseEnvelope(JSON.parse(decoder.decode(frame.subarray(0, length)))); }
+        try {
+          envelope = parseEnvelope(JSON.parse(decoder.decode(frame.subarray(0, length))));
+          if (envelope) freezeJson(envelope);
+        }
         catch { fault('malformed-frame'); return; }
         length = 0;
         if (!envelope) { fault('invalid-envelope'); return; }
@@ -137,4 +140,18 @@ export function createWireReader(options: {
       }
     },
   };
+}
+
+/** Native JSON facts are shared between retained state and observers; none may rewrite them. */
+export function freezeJson<T>(value: T): T {
+  const pending: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  while (pending.length) {
+    const node = pending.pop();
+    if (typeof node !== 'object' || node === null || seen.has(node)) continue;
+    seen.add(node);
+    for (const child of Object.values(node)) pending.push(child);
+    Object.freeze(node);
+  }
+  return value;
 }

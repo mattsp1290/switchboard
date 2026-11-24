@@ -18,6 +18,7 @@ import type { CodexResumePreparation, CodexSessionScope } from './sessions.js';
 import { openCodexTransport } from './transport.js';
 import type { BorrowedChannel, CloseReport, CodexTransport, EndReason, Observation, SendFailure, TransportBounds,
   TransportOptions } from './transport.js';
+import { freezeJson } from './wire.js';
 import type { RpcError, RpcReply } from './wire.js';
 
 /**
@@ -38,7 +39,8 @@ export interface CodexExecutionBounds {
   readonly cleanupTimeoutMs: number;
   /**
    * The only bound on a written `turn/start`: the caller's signal never cancels it after entry. Expiry is `uncertain`,
-   * so core records `outcome-unknown`, the writer is retained and nothing is resent.
+   * so core records `outcome-unknown`, the writer is retained and nothing is resent. The clock includes writer queueing;
+   * expiry before entry is a definite `acknowledgement-timeout` refusal, independently of caller cancellation.
    */
   readonly acknowledgementTimeoutMs: number;
 }
@@ -82,9 +84,11 @@ export interface CodexExecutionOptions {
  * `message` is present only on a typed-feature, proxy-route override or invalid-route `invalid-input` (features.ts,
  * routeOverride, admitCodexRoute), naming the rejected setting or rule; on a `litellm-proxy` off-model `native-failure`;
  * and on an `unconfined` `native-failure` for either route kind. A host route has no off-model failure.
+ * beforeEntry is set only when no thread/start or thread/resume writer was invoked; omission makes no entry claim.
  */
-export type CodexOpenError = { readonly code: SessionOperationError['code'] | SessionReferenceError['code']
-  | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string };
+export type CodexOpenError = ({ readonly code: SessionOperationError['code'] | SessionReferenceError['code']
+  | 'closed' | 'capacity' | 'outcome-unknown' | 'identity-mismatch'; readonly message?: string }
+  | { readonly code: 'native-refused'; readonly reason: Extract<SendFailure, { kind: 'not-sent' }>['reason']; readonly message?: string }) & { readonly beforeEntry?: true };
 export type CodexEvidence = 'qualified' | 'unqualified';
 /**
  * Per-method label carried on every decoded event. `qualified`: the pinned 0.169.0 binary emitted the method with this
@@ -115,7 +119,7 @@ export type CodexTurnCompletion =
   | { readonly kind: 'terminal'; readonly terminal: CodexTurnTerminal }
   | { readonly kind: 'rejected'; readonly error: RpcError }
   | { readonly kind: 'not-dispatched' }
-  | { readonly kind: 'not-sent'; readonly reason: Extract<SendFailure, { kind: 'not-sent' }>['reason'] }
+  | { readonly kind: 'not-sent'; readonly reason: Extract<SendFailure, { kind: 'not-sent' }>['reason'] | 'acknowledgement-timeout' }
   | { readonly kind: 'unconcluded'; readonly accepted: boolean; readonly reason: EndReason };
 export type CodexSessionEvent =
   | { readonly kind: 'turn-accepted'; readonly turnId: string; readonly evidence: 'qualified' }
@@ -194,6 +198,7 @@ type Access<Features = CodexThreadFeatures> = { readonly bounds: SessionDiscover
   /** Placed as native `developerInstructions` on thread/start and thread/resume. */
   readonly instructions?: string };
 export interface CodexExecution {
+  readonly acceptingRequests: () => boolean;
   readonly flushIntake: () => void;
   readonly processExited: () => boolean;
   /** pg51 scope over this connection, for `codexSessions` reads. Writer methods go only through this module. */
@@ -244,9 +249,9 @@ function release(lease: Lease): void {
   if (lease.state.held.get(lease.key) === lease) lease.state.held.delete(lease.key);
 }
 
-type Deferred<T> = { readonly promise: Promise<T>; readonly resolve: (value: T) => void };
+type Deferred<T> = { readonly promise: Promise<T>; readonly resolve: (value: T | PromiseLike<T>) => void };
 function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((settle) => { resolve = settle; });
   return { promise, resolve };
 }
@@ -265,7 +270,7 @@ type Turn = {
   readonly done: Promise<CodexTurnCompletion>;
   /** Settles when the native turn id is known or the turn settled without one. */
   readonly identified: Deferred<void>;
-  interrupting: { readonly signal: AbortSignal; readonly result: Promise<CodexInterruptResult> } | undefined;
+  interrupting: { readonly signal: AbortSignal; readonly result: Promise<CodexInterruptResult>; parsed: CodexInterruptResult | undefined; entered: boolean } | undefined;
   readonly interruptAbort: AbortController;
   interruptAcknowledged: boolean;
   interactionUncertain: boolean;
@@ -290,7 +295,12 @@ function notificationThread(owner: Record<string, unknown> | undefined): unknown
   return typeof owner?.threadId === 'string' ? owner.threadId : owner && record(owner.thread) ? owner.thread.id : undefined;
 }
 function text(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= sessionLimits.identifierLength;
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > sessionLimits.identifierLength) return false;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || (code >= 127 && code <= 159)) return false;
+  }
+  return true;
 }
 function usage(value: unknown): CodexTokenUsage | undefined {
   if (!record(value)) return undefined;
@@ -393,8 +403,8 @@ function placeInstructions(target: string, params: Record<string, unknown>, inst
   if (instructions.length > 0) params.developerInstructions = instructions;
   return undefined;
 }
-const fail = (code: CodexOpenError['code'], message?: string) =>
-  ({ kind: 'error', error: Object.freeze(message === undefined ? { code } : { code, message }) }) as const;
+const fail = (code: Exclude<CodexOpenError['code'], 'native-refused'>, message?: string, beforeEntry?: true) =>
+  ({ kind: 'error', error: Object.freeze({ code, ...(message === undefined ? {} : { message }), ...(beforeEntry === undefined ? {} : { beforeEntry }) }) }) as const;
 
 export async function openCodexExecution(options: CodexExecutionOptions):
 Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'native-failure'; readonly message?: string }>> {
@@ -493,7 +503,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const turn = [session.active, session.previous]
       .find((candidate) => candidate?.phase.kind === 'identified' && candidate.phase.id === turnId);
     if (turn) { deliver(session, turn, turnId, method, owner); return; }
-    if (codexActivityMethods.includes(method) || method === 'error') { publishNative(method, params); return; }
+    if (codexActivityMethods.includes(method) || method === 'error') { publishSession(session, Object.freeze({ kind: 'native', method, params, evidence: 'unqualified' })); return; }
     const active = session.active;
     const pending = active && !active.settled && active.phase.kind === 'pending' ? active.phase : undefined;
     // Bound ordinary events and distinct terminal candidates independently: an old terminal cannot take
@@ -501,7 +511,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     const terminal = method === 'turn/completed' && record(owner.turn) && turnStatuses.has(owner.turn.status as string);
     const terminals = pending?.early.filter((event) => event.method === 'turn/completed'
       && record(event.params.turn) && turnStatuses.has(event.params.turn.status as string)) ?? [];
-    if (terminal && terminals.some((event) => event.turnId === turnId)) return;
+    if (terminal && terminals.some((event) => event.turnId === turnId)) { publishNative(method, params); return; }
     const buffered = terminal ? terminals.length : (pending?.early.length ?? 0) - terminals.length;
     if (pending && buffered < bounds.maxEarlyNotifications) pending.early.push({ method, params: owner, turnId });
     else {
@@ -510,16 +520,24 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       publishNative(method, params);
     }
   }
+  let intakeFailed = false;
+  function checkIntake(): void {
+    if (!intakeFailed) return;
+    intakeFailed = false;
+    throw new Error('Codex intake projection failed');
+  }
   function publishSession(session: Session, event: CodexSessionEvent): void {
-    for (const intake of session.intakes) intake.turnEvent?.(event);
+    for (const intake of session.intakes) {
+      try { intake.turnEvent?.(event); } catch { intakeFailed = true; }
+    }
     session.stream.publish(event);
   }
   function deliver(session: Session, turn: Turn, turnId: string, method: string, params: Record<string, unknown>): void {
     if (method === 'turn/completed' && !turn.settled && record(params.turn) && turnStatuses.has(params.turn.status as string)) {
       const terminal: CodexTurnTerminal = Object.freeze({ turnId, status: params.turn.status as CodexTurnTerminal['status'],
         error: params.turn.error ?? null, turn: params.turn });
-      publishSession(session, Object.freeze({ kind: 'turn-completed', evidence: evidenceOf(method), ...terminal }));
       conclude(session, turn, { kind: 'terminal', terminal });
+      publishSession(session, Object.freeze({ kind: 'turn-completed', evidence: evidenceOf(method), ...terminal }));
       return;
     }
     if (method === 'item/agentMessage/delta' && text(params.itemId) && typeof params.delta === 'string') {
@@ -576,8 +594,11 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       const owner = record(params) ? params : undefined;
       const threadId = notificationThread(owner);
       const session = typeof threadId === 'string' ? byThread.get(threadId) : undefined;
-      if (session) for (const intake of session.intakes) intake.notification?.(method, params);
+      if (session) for (const intake of session.intakes) {
+        try { intake.notification?.(method, params); } catch { intakeFailed = true; }
+      }
       observe(notification);
+      checkIntake();
     }, onObservation: (observation) => { if (observation.kind !== 'notification') observe(observation); } });
   const stopped = () => closed || !transport.acceptingRequests();
   void transport.ended.then((report) => {
@@ -601,10 +622,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   void Promise.resolve(captured.processExit).then(exit, () => {});
 
   async function request(method: string, params: unknown, wait: AbortSignal, maxFrameBytes?: number,
-    onReply?: (reply: RpcReply) => void): Promise<
+    onReply?: (reply: RpcReply) => void, entrySignal?: AbortSignal, onEntry?: () => void): Promise<
     { readonly kind: 'result'; readonly value: unknown } | { readonly kind: 'error'; readonly error: RpcError } | SendFailure> {
     const exchange = await transport.request({ method, params }, wait, { ...(maxFrameBytes === undefined ? {} : { maxFrameBytes }),
-      ...(onReply === undefined ? {} : { onReply: (envelope) => onReply(envelope.reply) }) });
+      ...(onReply === undefined ? {} : { onReply: (envelope) => onReply(envelope.reply) }),
+      ...(onEntry === undefined ? {} : { onEntry }),
+      ...(entrySignal === undefined ? {} : { entrySignal }) });
     return exchange.kind === 'reply' ? exchange.envelope.reply : exchange;
   }
   const step = (reply: Awaited<ReturnType<typeof request>>): CleanupStep =>
@@ -630,7 +653,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   const scope: CodexSessionScope = Object.freeze({ home, request: transport.request, initialize: Object.freeze({ codexHome: home }),
     ...(route ? { route } : {}) });
 
-  function admit(signalled: AbortSignal): CodexOpenError['code'] | undefined {
+  function admit(signalled: AbortSignal): Exclude<CodexOpenError['code'], 'native-refused'> | undefined {
     if (stopped()) return 'closed';
     if (signalled.aborted) return 'cancelled';
     return sessions.size + pendingOpens >= bounds.maxSessions ? 'capacity' : undefined;
@@ -651,13 +674,13 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       },
       matchesTurn: (turnId: string, signal: AbortSignal) => {
         const turn = session.active;
-        if (!turn || turn.settled) return false;
-        const matches = () => !signal.aborted && !turn.settled && !turn.interruptAcknowledged && !turn.interactionUncertain && turn.phase.kind === 'identified' && turn.phase.id === turnId;
+        if (!turn || turn.settled || turn.phase.kind === 'prepared') return false;
+        const matches = () => session.state === 'open' && !session.abort.signal.aborted && !signal.aborted && !turn.settled && !turn.interruptAcknowledged && !turn.interactionUncertain && turn.phase.kind === 'identified' && turn.phase.id === turnId;
         if (turn.phase.kind === 'identified' || turn.phase.kind === 'orphaned') return matches();
         return until(turn.identified.promise, AbortSignal.any([signal, session.abort.signal])).then(matches);
       }, events: Object.freeze({ subscribe: session.stream.subscribe }),
       turn: (turnOptions: CodexTurnOptions) => startTurn(session, reference, turnOptions),
-      close: () => (session.closing ??= shutdown(session)),
+      close: () => closeSession(session),
       interrupt: async (options?: { readonly signal?: AbortSignal }) => {
         const turn = session.active;
         return turn ? interrupt(session, turn, options?.signal ?? AbortSignal.timeout(bounds.cleanupTimeoutMs)) : { step: 'not-needed' as const, turnId: null, rejection: null };
@@ -679,14 +702,15 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       wait = AbortSignal.any([access.signal, opening.signal]);
     } catch { return invalid; }
     const refused = admit(wait);
-    if (refused) return fail(refused);
+    if (refused) return fail(refused, undefined, true);
     pendingOpens++;
     try {
       // The pg51 gate: private index precondition and the live native requester become the binding.
       const bound = await bindCodexRequester({ scope, bounds: access.bounds, signal: wait, nativeFormat: 'codex-thread/paginated' });
-      if (bound.kind === 'error') return stopped() ? fail('closed') : bound;
+      if (bound.kind === 'error') return { kind: 'error', error: { ...(stopped() ? { code: 'closed' as const } : bound.error), beforeEntry: true } };
       const reply = await request('thread/start', params, wait);
-      if (reply.kind === 'not-sent') return fail(stopped() ? 'closed' : 'cancelled');
+      if (reply.kind === 'not-sent') return stopped() ? fail('closed', undefined, true) : reply.reason === 'aborted' ? fail('cancelled', undefined, true)
+        : { kind: 'error', error: { code: 'native-refused', reason: reply.reason } };
       if (reply.kind === 'uncertain') return fail('outcome-unknown');
       const thread = reply.kind === 'result' && record(reply.value) && record(reply.value.thread) ? reply.value.thread : undefined;
       // A thread on another provider than the bound requester's (routed or direct) runs off it: never a session.
@@ -731,7 +755,7 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
     if (parsed.kind === 'error') return parsed;
     const reference = parsed.value;
     const refused = admit(wait);
-    if (refused) return fail(refused);
+    if (refused) return fail(refused, undefined, true);
     // Reserve first, keyed by the complete validated reference: preparation and resume run under the lease.
     const lease = acquire(writers, reference);
     if (lease === 'busy') return { kind: 'ok', value: Object.freeze({ kind: 'busy' }) };
@@ -745,7 +769,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
       if (prepared.value.kind !== 'ready') return { kind: 'ok', value: prepared.value };
       const { threadId, provider } = prepared.value;
       const reply = await request('thread/resume', { ...params, threadId }, wait);
-      if (reply.kind === 'not-sent') return fail(stopped() ? 'closed' : 'cancelled');
+      if (reply.kind === 'not-sent') return stopped() ? fail('closed', undefined, true) : reply.reason === 'aborted' ? fail('cancelled', undefined, true)
+        : { kind: 'error', error: { code: 'native-refused', reason: reply.reason } };
       if (reply.kind === 'error') return fail('native-failure');
       // Unrejected entry: this app-server may now hold the thread loaded, so the reservation follows its exit.
       held = true;
@@ -789,8 +814,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         signal: AbortSignal.any([hostSignal, session.abort.signal]), ...(lifecycle ? { events: lifecycle } : {}),
         // Host or session abort prevents entry (core checks it just before this call). Once entered, only the
         // acknowledgement deadline bounds the wait: the caller's signal never turns a written turn/start uncertain.
-        dispatchNative: (canonical) => dispatch(session, turn, canonical,
-          { ...params, threadId: session.threadId, input: capturedInput }, maxFrameBytes) });
+        dispatchNative: (canonical, entrySignal) => dispatch(session, turn, canonical,
+          { ...params, threadId: session.threadId, input: capturedInput }, maxFrameBytes, entrySignal) });
     } catch { return invalid; }
     if (session.state !== 'open' || stopped()) return { kind: 'error', error: Object.freeze({ code: 'closed' }) };
     if (session.active) return { kind: 'error', error: Object.freeze({ code: 'busy' }) };
@@ -802,11 +827,12 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   }
   /** One native `turn/start`, never resent. `not-sent` is adapter evidence; core still records `outcome-unknown`. */
   async function dispatch(session: Session, turn: Turn, identity: DispatchIdentity,
-    params: Record<string, unknown>, maxFrameBytes?: number): Promise<NativeDispatchObservation<CodexTurnResult>> {
+    params: Record<string, unknown>, maxFrameBytes?: number, entrySignal?: AbortSignal): Promise<NativeDispatchObservation<CodexTurnResult>> {
     const pending: Extract<TurnPhase, { kind: 'pending' }> = { kind: 'pending', early: [], dropped: 0, terminalOverflow: false };
-    turn.phase = pending;
     let identified: string | undefined;
-    const reply = await request('turn/start', params, AbortSignal.timeout(bounds.acknowledgementTimeoutMs), maxFrameBytes, (reply) => {
+    const acknowledgement = AbortSignal.timeout(bounds.acknowledgementTimeoutMs);
+    const admission = entrySignal === undefined ? acknowledgement : AbortSignal.any([entrySignal, acknowledgement]);
+    const reply = await request('turn/start', params, acknowledgement, maxFrameBytes, (reply) => {
       if (reply.kind === 'error') { conclude(session, turn, { kind: 'rejected', error: reply.error }); return; }
       const turnId = record(reply.value) && record(reply.value.turn) ? reply.value.turn.id : undefined;
       if (!text(turnId)) return;
@@ -823,9 +849,10 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         if (early.turnId === turnId) deliver(session, turn, turnId, early.method, early.params);
         else publishNative(early.method, early.params);
       }
-    });
+      checkIntake();
+    }, entrySignal, () => { turn.phase = pending; });
     if (reply.kind === 'not-sent') {
-      conclude(session, turn, { kind: 'not-sent', reason: reply.reason });
+      conclude(session, turn, { kind: 'not-sent', reason: reply.reason === 'aborted' && acknowledgement.aborted && admission.reason === acknowledgement.reason ? 'acknowledgement-timeout' : reply.reason });
       return { kind: 'outcome-unknown' };
     }
     if (reply.kind === 'uncertain') return orphan(turn);
@@ -861,7 +888,8 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
   });
   /** `turn/interrupt` then its `turn/completed{interrupted}` is the qualified native terminal (probe.mjs cancel). */
   async function interrupt(session: Session, turn: Turn, deadline: AbortSignal): Promise<CodexInterruptResult> {
-    const attempt = turn.interrupting ??= { signal: deadline, result: until(turn.identified.promise, deadline).then(async () => {
+    if (deadline.aborted && !turn.interrupting) return { step: 'not-needed', turnId: turn.phase.kind === 'identified' ? turn.phase.id : null, rejection: null };
+    const attempt = turn.interrupting ??= { signal: deadline, parsed: undefined, entered: false, result: until(turn.identified.promise, deadline).then(async () => {
       const { phase } = turn;
       if (phase.kind !== 'identified' || turn.settled || deadline.aborted) {
         // Nothing was written: a still-pending turn may yet be identified, so a later interrupt or close tries again.
@@ -869,19 +897,35 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
         return { step: 'not-needed' as const, turnId: phase.kind === 'identified' ? phase.id : null, rejection: null };
       }
       const reply = await request('turn/interrupt', { threadId: session.threadId, turnId: phase.id }, AbortSignal.any([deadline, turn.interruptAbort.signal]), undefined, (reply) => {
+        attempt.parsed = freezeJson({ step: reply.kind === 'result' ? 'replied' : 'rejected', turnId: phase.id,
+          rejection: reply.kind === 'error' ? { code: reply.error.code, message: reply.error.message } : null });
         if (reply.kind !== 'result') return;
         turn.interruptAcknowledged = true;
-        for (const intake of session.intakes) intake.interrupted?.(phase.id);
-      });
+        for (const intake of session.intakes) {
+          try { intake.interrupted?.(phase.id); } catch { intakeFailed = true; }
+        }
+        checkIntake();
+      }, undefined, () => { attempt.entered = true; });
       const outcome = step(reply);
       if (outcome === 'not-sent') turn.interrupting = undefined;
-      return { step: outcome, turnId: phase.id,
-        rejection: reply.kind === 'error' ? { code: reply.error.code, message: reply.error.message } : null };
+      return freezeJson({ step: outcome, turnId: phase.id,
+        rejection: reply.kind === 'error' ? { code: reply.error.code, message: reply.error.message } : null });
     }) };
+    await until(attempt.result, deadline);
+    if (attempt.parsed) return attempt.parsed;
+    if (deadline.aborted) return { step: attempt.entered ? 'uncertain' : 'not-needed', turnId: turn.phase.kind === 'identified' ? turn.phase.id : null, rejection: null };
     const result = await attempt.result;
     // A joined attempt ran on its starter's deadline; if that expired unwritten, retry within this caller's own.
     const retry = (result.step === 'not-needed' || (result.step === 'not-sent' && attempt.signal !== deadline && attempt.signal.aborted)) && !deadline.aborted && !turn.settled && turn.phase.kind !== 'orphaned';
     return retry ? interrupt(session, turn, deadline) : result;
+  }
+  function closeSession(session: Session): Promise<CodexSessionCloseReport> {
+    if (!session.closing) {
+      const completion = deferred<CodexSessionCloseReport>();
+      session.closing = completion.promise;
+      completion.resolve(shutdown(session));
+    }
+    return session.closing;
   }
   async function shutdown(session: Session): Promise<CodexSessionCloseReport> {
     if (session.state === 'open') session.state = 'closing';
@@ -901,11 +945,18 @@ Promise<Outcome<CodexExecution, { readonly code: 'invalid-input' | 'closed' | 'n
 
   async function closeAll(): ReturnType<CodexExecution['close']> {
     stopAdmission();
-    await Promise.all([...sessions].map((session) => (session.closing ??= shutdown(session))));
+    await Promise.all([...sessions].map((session) => closeSession(session)));
     const report = await transport.close();
     executionEvents.close();
     return Object.freeze({ transport: report, retained: leases.size });
   }
-  return { kind: 'ok', value: Object.freeze({ scope, flushIntake: transport.flushIntake, processExited: () => exited, events: Object.freeze({ subscribe: executionEvents.subscribe }),
-    create, resume, close: () => (closing ??= closeAll()), counts: () => Object.freeze({ ...counts }) }) };
+  return { kind: 'ok', value: Object.freeze({ scope, acceptingRequests: () => !stopped(), flushIntake: transport.flushIntake, processExited: () => exited, events: Object.freeze({ subscribe: executionEvents.subscribe }),
+    create, resume, close: () => {
+      if (!closing) {
+        const completion = deferred<Awaited<ReturnType<CodexExecution['close']>>>();
+        closing = completion.promise;
+        completion.resolve(closeAll());
+      }
+      return closing;
+    }, counts: () => Object.freeze({ ...counts }) }) };
 }

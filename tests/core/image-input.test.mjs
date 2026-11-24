@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseHostImages, hostImageLimits } from '../../src/core/image-input.ts';
+import { hostImagesRequested, parseHostImages, hostImageLimits } from '../../src/core/image-input.ts';
 const image = (bytes, mediaType = 'image/png') => ({ mediaType, dataUrl: `data:${mediaType};base64,${bytes.toString('base64')}` });
 test('image parser accepts exact aggregate boundary, copies and freezes output', () => {
   const input = [image(Buffer.alloc(2097152)), image(Buffer.alloc(2097152), 'image/jpeg')];
@@ -50,4 +50,11 @@ test('custom limits narrow the shared policy without admitting other media types
 test('a proxied array cannot hide media by reporting zero length', () => {
  const hidden=new Proxy([{mediaType:'image/png',dataUrl:'data:image/png;base64,YQ=='}],{get(target,key){return key==='length'?0:Reflect.get(target,key);}});
  assert.equal(parseHostImages(hidden).kind,'error');
+});
+
+
+test('image presence handles throwing and revoked proxies without inspection', () => {
+  const proxy = new Proxy([], { get() { throw new Error('media canary'); } });
+  const revoked = Proxy.revocable([], {}); revoked.revoke();
+  assert.equal(hostImagesRequested(proxy), true); assert.equal(hostImagesRequested(revoked.proxy), true);
 });

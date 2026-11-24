@@ -702,3 +702,63 @@ test('caller abort after durable intent cannot retract a queued single reply',as
  const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const release=await holdReplyWriter(ctx);const control=new AbortController();let records=0;
  const result=ctx.bridge.reply({value:choose(pending,'decline'),signal:control.signal,recordIntent(){records++;}});await settle();assert.equal(records,1);control.abort();release();assert.equal((await result).kind,'ok');await settle();assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,1);assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'error')).length,0);ctx.f.complete(session.threadId);
 });
+
+test('caller abort after batch entry cannot retract remaining recorded decisions',async t=>{
+ const ctx=await setup(t);const session=ctx.sessions[0];await turnOn(session);const first=await approval(ctx,session,'first');const second=await approval(ctx,session,'second');
+ const original=ctx.f.channel.write.bind(ctx.f.channel);const held=Promise.withResolvers();ctx.f.channel.write=bytes=>{const frame=JSON.parse(Buffer.from(bytes));const writing=original(bytes);return frame.id==='first'&&frame.result?held.promise:writing;};
+ const control=new AbortController();const prepared=ctx.bridge.prepareBatch([choose(first,'decline'),choose(second,'decline')]);assert.equal(prepared.kind,'ok');prepared.value.commit(control.signal,()=>{},ctx.execution.flushIntake);assert.equal((await prepared.value.entry).kind,'ok');control.abort();held.resolve();assert.equal((await prepared.value.written).kind,'ok');await settle();assert.equal(ctx.f.replies.filter(frame=>Object.hasOwn(frame,'result')).length,2);ctx.f.complete(session.threadId);
+});
+test('approval expiry includes the wait for turn acknowledgement',async t=>{
+ const ctx=await setup(t);const matched=Promise.withResolvers();const made=createCodexInteraction({...options,expiry:{afterMs:20}});assert.equal(made.kind,'ok');const bridge=made.value;const session=ctx.sessions[0];assert.equal(bridge.attach({...session,matchesTurn:()=>matched.promise}).kind,'ok');const response=await bridge.onServerRequest({id:'early',method:'item/commandExecution/requestApproval',params:{threadId:session.threadId,turnId:'early-turn',itemId:'early-item',availableDecisions}},access.signal,{watchNotification(){return()=>{};},replyAllowed(){},fault(){}});assert.equal(response.kind,'error');assert.equal(response.error.code,-32000);assert.equal(bridge.pending().length,0);matched.resolve(true);
+});
+test('a recorded queued reply is no longer an unanswered approval',async t=>{
+ const ctx=await setup(t,{expiry:{afterMs:20}});const session=ctx.sessions[0];await turnOn(session);const pending=await approval(ctx,session);const release=await holdReplyWriter(ctx);const answering=ctx.bridge.reply({value:choose(pending,'decline'),signal:access.signal,recordIntent(){}});await new Promise(resolve=>setTimeout(resolve,40));release();assert.equal((await answering).kind,'ok');await settle();assert.equal(ctx.f.replies.filter(f=>f.result?.decision==='decline').length,1);ctx.f.complete(session.threadId);
+});
+
+test('withdrawal releases pre-ack admission before identification arrives',async t=>{
+ const ctx=await setup(t);const matched=Promise.withResolvers();const made=createCodexInteraction(options);assert.equal(made.kind,'ok');const session=ctx.sessions[0];const bridge=made.value;bridge.attach({...session,matchesTurn:()=>matched.promise});let watch;const result=bridge.onServerRequest({id:'early-withdrawn',method:'item/commandExecution/requestApproval',params:{threadId:session.threadId,turnId:'early-turn',itemId:'item',availableDecisions}},access.signal,{watchNotification(fn){watch=fn;return()=>{};},replyAllowed(){},fault(){}});watch({method:'serverRequest/resolved',params:{threadId:session.threadId,requestId:'early-withdrawn'}});const value=await Promise.race([result,new Promise(resolve=>setTimeout(()=>resolve('blocked'),50))]);assert.notEqual(value,'blocked');assert.equal(value.kind,'error');assert.equal(bridge.pending().length,0);matched.resolve(true);
+});
+test('synchronous batch reservation clears an already armed expiry timer',async t=>{
+ const ctx=await setup(t,{expiry:{afterMs:20}});const session=ctx.sessions[0];await turnOn(session);const release=await holdReplyWriter(ctx);let prepared;ctx.bridge.project(event=>{if(event.kind==='pending'){prepared=ctx.bridge.prepareBatch([choose(event.pending,'decline')]);assert.equal(prepared.kind,'ok');prepared.value.commit(access.signal,()=>{},ctx.execution.flushIntake);}});await approval(ctx,session);await new Promise(resolve=>setTimeout(resolve,40));release();assert.equal((await prepared.value.written).kind,'ok');ctx.f.complete(session.threadId);
+});
+
+
+test('preack admission rechecks live turn after its acknowledgement snapshot',async t=>{
+ const ctx=await setup(t);const identified=Promise.withResolvers();let reads=0;const control=new AbortController();const made=createCodexInteraction(options);const bridge=made.value;const session=ctx.sessions[0];bridge.attach({...session,matchesTurn:()=>++reads===1?identified.promise:false});const held=bridge.onServerRequest({id:'interrupted-before-offer',method:'item/commandExecution/requestApproval',params:{threadId:session.threadId,turnId:'held',itemId:'item',availableDecisions}},control.signal,{watchNotification(){return()=>{};},replyAllowed(){},fault(){}});try{identified.resolve(true);await settle();assert.equal(bridge.pending().length,0);}finally{control.abort();await held;}
+});
+test('approval expiry keeps one elapsed deadline across a wall-clock reversal',async t=>{
+ const ctx=await setup(t);const identified=Promise.withResolvers();let reads=0;const control=new AbortController();const bridge=createCodexInteraction({...options,expiry:{afterMs:20}}).value;const session=ctx.sessions[0];bridge.attach({...session,matchesTurn:()=>++reads===1?identified.promise:true});let wall=100000;t.mock.method(Date,'now',()=>wall);const held=bridge.onServerRequest({id:'clock-reversal',method:'item/commandExecution/requestApproval',params:{threadId:session.threadId,turnId:'held',itemId:'item',availableDecisions}},control.signal,{watchNotification(){return()=>{};},replyAllowed(){},fault(){}});try{wall=0;identified.resolve(true);const result=await Promise.race([held,new Promise(resolve=>setTimeout(()=>resolve('blocked'),100))]);assert.notEqual(result,'blocked');assert.equal(result.kind,'error');}finally{control.abort();await held;}
+});
+
+
+test('prepared turn refuses an older request without awaiting intent', async t => {
+  const ctx = await setup(t, { handlerTimeoutMs: 1000 }); const session = ctx.sessions[0];
+  const first = await turnOn(session); const old = ctx.f.turns.get(session.threadId); ctx.f.complete(session.threadId); await first.completion;
+  const hold = Promise.withResolvers(); let intent = false;
+  const next = session.turn({ hostOperationId: 'held-intent', input, signal: access.signal, recordIntent() { intent = true; return hold.promise; } });
+  const running = next.value.run(); while (!intent) await Promise.resolve();
+  try {
+    ctx.f.request('late-older', 'item/commandExecution/requestApproval', { threadId: session.threadId, turnId: old, itemId: 'older', availableDecisions });
+    await settle(); assert.equal(ctx.f.replies.some(frame => frame.id === 'late-older' && frame.error), true);
+  } finally { hold.resolve(); await running; ctx.f.complete(session.threadId); await next.value.completion; }
+});
+test('elapsed approval cannot publish when acknowledgement beats its overdue timer', async t => {
+  const ctx = await setup(t); const session = ctx.sessions[0]; const identified = Promise.withResolvers(); let clock = 0;
+  t.mock.method(performance, 'now', () => clock);
+  const bridge = createCodexInteraction({ ...options, expiry: { afterMs: 20 } }).value;
+  bridge.attach({ ...session, matchesTurn: () => identified.promise }); const published = [];
+  bridge.project(event => { if (event.kind === 'pending') published.push(event); });
+  const response = bridge.onServerRequest({ id: 'late-ack', method: 'item/commandExecution/requestApproval', params: { threadId: session.threadId, turnId: 'held', itemId: 'item', availableDecisions } }, access.signal, { watchNotification() { return () => {}; }, replyAllowed() {}, fault() {} });
+  clock = 30; identified.resolve(true); const reply = await response;
+  assert.equal(reply.kind, 'error'); assert.equal(published.length, 0);
+});
+test('elapsed approval cannot be reserved before its overdue timer runs', async t => {
+  const ctx = await setup(t, { expiry: { afterMs: 20 } }); const session = ctx.sessions[0]; await turnOn(session);
+  let clock = 0; t.mock.method(performance, 'now', () => clock);
+  const pending = await approval(ctx, session); clock = 30;
+  const prepared = ctx.bridge.prepareBatch([choose(pending, 'accept')]);
+  assert.equal(prepared.kind, 'ok');
+  const committed = prepared.value.commit(access.signal, () => assert.fail('expired reply entered'), ctx.execution.flushIntake);
+  assert.equal(committed.kind, 'error'); assert.equal(committed.error.code, 'stale-interaction');
+  ctx.f.complete(session.threadId);
+});

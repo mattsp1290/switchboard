@@ -17,6 +17,7 @@ const root = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const IMAGE = 'node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54';
 const NODE = '/usr/local/bin/node';
+const BOOTSTRAP = 'tests/native-isolated/bootstrap.mjs';
 const STAGE = '/stage';
 const DECOY = 'switchboard-decoy';
 const HOME = `/home/${DECOY}`;
@@ -162,7 +163,7 @@ async function stageTree(stage, machine) {
   }
   const lockPackages = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8')).packages;
   const fetched = await stageLockedPackages(tree, containerPlatformPackages(lockPackages, closure.optional, machine), lockPackages);
-  for (const file of [...SUITES, ...CONTROLS.map((control) => control.entry), ...FIXTURES, 'scripts/support/qualification-image.mjs']) {
+  for (const file of [...SUITES, ...CONTROLS.map((control) => control.entry), ...FIXTURES, BOOTSTRAP, 'scripts/support/qualification-image.mjs']) {
     mkdirSync(dirname(join(tree, file)), { recursive: true });
     copyFileSync(join(root, file), join(tree, file));
   }
@@ -194,15 +195,15 @@ function confinedRun(stage, entry, machine) {
     '--tmpfs', '/dev/shm:ro,noexec,nosuid,nodev,size=65536k',
     '--mount', `type=bind,src=${stage.tree},dst=${STAGE},readonly`,
     '--mount', `type=bind,src=${stage.home},dst=${HOME},readonly`,
-    '--mount', `type=bind,src=${join(stage.dir, 'strace')},dst=/opt/strace,readonly`,
+    '--mount', `type=volume,src=${stage.tracerVolume},dst=/opt/strace,readonly`,
     '--mount', `type=bind,src=${join(stage.dir, 'passwd')},dst=/etc/passwd,readonly`,
     '--workdir', STAGE, '--entrypoint', '/usr/bin/env', IMAGE,
     ...environment,
     // The trace leaves on fd 3 (container stderr); the program's stdout and stderr both go to container stdout.
     '/bin/sh', '-c', 'unset PWD; exec "$@" 3>&2 2>&1', 'sh',
     ...strace,
-    NODE, '--test-reporter=tap', `${STAGE}/${entry}`];
-  const verdict = createVerdict({ decoy: DECOY, node: NODE, entry: `${STAGE}/${entry}`, scripts: SCRIPTS,
+    NODE, '--test-reporter=tap', `${STAGE}/${BOOTSTRAP}`, `${STAGE}/${entry}`];
+  const verdict = createVerdict({ decoy: DECOY, node: NODE, entry: `${STAGE}/${BOOTSTRAP}`, trustedBootstrap: true, scripts: SCRIPTS,
     executable: (path) => path === `${STAGE}/tests/adapters/codex/sdk-cli.mjs` || CODEX_VENDOR.test(path) });
   const started = Date.now();
   return new Promise((resolve) => {
@@ -246,10 +247,21 @@ async function main() {
   process.stdout.write(runNpm(['run', 'build']));
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'switchboard-isolated-')));
   const failures = [];
+  const tracerVolume = `switchboard-tracer-${randomUUID()}`;
+  let volumeCreated = false;
   try {
+    docker(['volume', 'create', tracerVolume]);
+    volumeCreated = true;
     await stageStrace(dir, machine);
+    // Linux makes an unreadable executable nondumpable. Keep the tracer's fd table inaccessible to the SDK.
+    // A Linux volume is needed because Docker Desktop's shared filesystem refuses execute-only bind files.
+    const copiedHash = docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      '--mount', `type=bind,src=${join(dir, 'strace')},dst=/source,readonly`,
+      '--mount', `type=volume,src=${tracerVolume},dst=/tracer`, '--entrypoint', '/bin/sh', IMAGE,
+      '-c', 'cp -R /source/. /tracer/ && sha256sum /tracer/usr/bin/strace && chmod 111 /tracer/usr/bin/strace']);
+    assert.equal(copiedHash.split(/\s+/)[0], STRACE_PACKAGES[machine].bin, 'copied strace hash');
     stagePasswd(dir);
-    const stage = { dir, ...await stageTree(dir, machine) };
+    const stage = { dir, tracerVolume, ...await stageTree(dir, machine) };
     console.log(`isolated-native: ${machine}, ${stage.packed}, ${stage.packages} SDK closure packages, ${stage.fetched} container platform packages, ${DECOY_FILES.length} decoys, stage ${dir}`);
     for (const control of CONTROLS) {
       const run = await confinedRun(stage, control.entry, machine);
@@ -267,7 +279,8 @@ async function main() {
       }
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    try { if (volumeCreated) docker(['volume', 'rm', tracerVolume]); }
+    finally { rmSync(dir, { recursive: true, force: true }); }
   }
   if (failures.length) {
     console.error(`FAIL isolated-native:\n${failures.join('\n')}`);

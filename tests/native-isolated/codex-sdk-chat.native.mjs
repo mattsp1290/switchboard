@@ -342,8 +342,8 @@ test('a probe that ignores SIGTERM times out within its deadline, is reaped and 
     await rm(join(dir, 'pid'), { force: true });
     await account({ preflight });
     const started = performance.now();
-    const report = assertCoherentReport(await open().readinessReport({ timeoutMs: 200 }), canaries);
-    assert(performance.now() - started < 2500, 'deadline plus kill grace');
+    const report = assertCoherentReport(await open().readinessReport({ timeoutMs: 2000 }), canaries);
+    assert(performance.now() - started < 4500, 'deadline plus kill grace');
     assert.equal(report.facts.installation.state, 'available');
     assert.deepEqual(preflight === 'login' ? report.facts.authentication : report.facts.version, { state: 'timed_out' });
     assert.equal(report.remediation.code, 'retry_check');

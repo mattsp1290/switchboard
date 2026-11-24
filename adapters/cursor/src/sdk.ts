@@ -51,6 +51,11 @@ export const sdk = {
 
 function unsupported(): never { throw new CursorTextPolicyUnsupportedError(); }
 
+function createStore(Store: Bindings['Store'], directory: string): InstanceType<Bindings['Store']> {
+  try { return new Store(directory); }
+  catch { throw new Error('Cursor operation failed.'); }
+}
+
 /** Bounded owning-manifest walk; named intervening packages cannot masquerade as the peer. */
 function owningSdk(): Readonly<{ root: string; version: '1.4.2' }> {
   const entry = sdk.canonicalPath(fileURLToPath(sdk.resolveEntry()));
@@ -121,7 +126,9 @@ const textLocalControls = ['cwd', 'store', 'settingSources', 'sandboxOptions', '
   'fs', 'reportedWorkspacePath', 'customTools', 'hostMcpBridgeUrls', 'dirs', 'autoReview'] as const;
 const textLaunchControls = ['apiKey', 'model', 'tools', 'mcpServers', 'agents', 'local'] as const;
 type TextLocal = Required<Pick<Local, typeof textLocalControls[number]>>;
+type TextResumeLocal = Required<Pick<NonNullable<ResumeOptions['local']>, typeof textLocalControls[number]>>;
 type TextLaunch = Required<Pick<CreateOptions, Exclude<typeof textLaunchControls[number], 'local'>>> & { local: TextLocal };
+type TextResumeLaunch = Required<Pick<ResumeOptions, Exclude<typeof textLaunchControls[number], 'local'>>> & { local: TextResumeLocal };
 
 function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -152,7 +159,7 @@ export function buildCursorLaunchOptions(options: CursorRuntimeOptions, policy: 
     const local = cursorLocalOptions(options.cwd, options.sessionDirectory);
     return { apiKey: options.apiKey, model: { id: options.model }, local: {
       cwd: local.cwd, settingSources: local.settingSources, sandboxOptions: local.sandboxOptions,
-      enableAgentRetries: local.enableAgentRetries, store: new sdk.Store(local.storeDirectory),
+      enableAgentRetries: local.enableAgentRetries, store: createStore(sdk.Store, local.storeDirectory),
     } };
   }
   const { support, tree } = policy;
@@ -161,8 +168,10 @@ export function buildCursorLaunchOptions(options: CursorRuntimeOptions, policy: 
     if (support.contract !== 'cursor-text-v1' || support.identity.version !== '1.4.2'
       || !Object.isFrozen(support) || Object.values({ create: support.create, resume: support.resume,
         Store: support.Store, emptyFs: support.emptyFs, listModels: support.listModels }).some(value => typeof value !== 'function')) return unsupported();
-    const store = new support.Store(options.sessionDirectory);
-    const launch: TextLaunch = { apiKey: options.apiKey, model: { id: options.model }, tools: [], mcpServers: {}, agents: {}, local: {
+  } catch { return unsupported(); }
+  const store = createStore(support.Store, options.sessionDirectory);
+  try {
+    const launch: TextLaunch & TextResumeLaunch = { apiKey: options.apiKey, model: { id: options.model }, tools: [], mcpServers: {}, agents: {}, local: {
       cwd: options.cwd, store, settingSources: [], sandboxOptions: { enabled: false }, enableAgentRetries: false,
       fs: tree, reportedWorkspacePath: '/', customTools: {}, hostMcpBridgeUrls: [], dirs: [], autoReview: false,
     } };

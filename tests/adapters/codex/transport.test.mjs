@@ -597,7 +597,7 @@ test('matched reply hooks precede following notifications and run only once', as
 test('trusted notification intake has a bounded queue even without diagnostic publication', async (t) => {
  const f=fixture(t,{notification(){}});
  f.bytes(Buffer.concat(Array.from({length:13},()=>line({method:'n'}))));
- assert.equal((await f.transport.ended).reason,'observation-overflow');
+ const report=await f.transport.ended;assert.equal(report.reason,'observation-overflow');assert.equal(report.discarded.observations,1);
 });
 
 for(const ending of ['oversized','truncated','intake'])test(`parsed reply evidence survives a subsequent ${ending} fault`,async(t)=>{
@@ -731,4 +731,28 @@ for(const kind of ['eof','throw'])for(const operation of ['reply','notify'])test
 for (const kind of ['close', 'eof', 'abort', 'throw']) test(`request hook getter ${kind} cannot strand admission`, async t => {
  const f=fixture(t);const control=new AbortController();const requestBounds={get onReply(){if(kind==='close')void f.transport.close();else if(kind==='eof')f.sink.ended('eof');else if(kind==='abort')control.abort();else throw new Error('hook getter');return undefined;}};
  let request;assert.doesNotThrow(()=>{request=f.transport.request({method:'never-write'},control.signal,requestBounds);});const values=track(request);await checkpoint();assert.deepEqual(values,[{kind:'not-sent',reason:kind==='throw'?'invalid-outgoing':kind==='abort'?'aborted':'closed'}]);assert.equal(f.writes.length,0);control.abort();
+});
+
+test('queued entry cancellation settles without waiting for the active writer', async t => {
+ const held=gate();const f=fixture(t,{write:()=>held.promise});
+ const head=f.transport.notify({method:'held'},signal());await checkpoint();
+ const control=new AbortController();const queued=track(f.transport.request({method:'queued'},signal(),{entrySignal:control.signal}));
+ control.abort();await checkpoint();assert.deepEqual(queued,[{kind:'not-sent',reason:'aborted'}]);held.resolve();await head;
+});
+
+test('parsed notification reaches execution intake after a server watcher throws', async t => {
+ const held=gate();const seen=[];const f=fixture(t,{request:(_r,_s,_f,intake)=>{intake.watchNotification(()=>{throw new Error('watcher');});return held.promise;},notification:n=>seen.push(n.method)});
+ f.input({id:'approval',method:'held',params:{}});await checkpoint();
+ f.input({method:'turn/completed',params:{}});await checkpoint();assert.deepEqual(seen,['turn/completed']);assert.equal((await f.transport.ended).reason,'observation-error');held.resolve({kind:'result',value:null});
+});
+
+test('request watcher cannot rewrite the notification seen by ordered intake', async t => {
+  const held = gate(); const seen = []; const changed = [];
+  const f = fixture(t, { request(_request, _signal, _fixture, intake) {
+    intake.watchNotification(notification => changed.push(Reflect.set(notification, 'method', 'hidden'))); return held.promise;
+  }, notification(notification) { seen.push(notification.method); } });
+  f.input({ id: 'request', method: 'fixture/approval', params: {} }); await checkpoint();
+  f.input({ method: 'turn/completed', params: {} }); await checkpoint();
+  held.resolve({ kind: 'result', value: null });
+  assert.deepEqual(changed, [false]); assert.deepEqual(seen, ['turn/completed']);
 });

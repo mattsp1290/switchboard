@@ -116,11 +116,13 @@ export interface HostUsage {
 /**
  * `not-attempted`: refused before `createDispatchOperation` ran, so no selected segment request was sent.
  * `not-dispatched`: that helper's not-sent observation. On host continuations, `intent-failed` also
- * covers a stale pending set after intent but before the first positive reply; `invalid-input` identifies that case. `outcome-unknown`: its result after entry is unknown.
+ * covers a stale pending set after intent but before the first positive reply; `native-refused` identifies a definite native admission or transport refusal after successful intent.
+ * For stale continuations, `invalid-input` identifies that case. `outcome-unknown`: its result after entry is unknown.
  * `accepted`: native acceptance was observed and the segment still failed. No failed status authorizes a retry.
  */
 export type HostWriteStatus =
   | { readonly kind: 'not-attempted' }
+  | { readonly kind: 'not-dispatched'; readonly reason: 'native-refused' }
   | Extract<DispatchObservation<never>, { readonly kind: 'not-dispatched' | 'outcome-unknown' | 'accepted' }>;
 
 /**

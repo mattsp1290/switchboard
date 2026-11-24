@@ -6,7 +6,7 @@ Switchboard is a Node-hosted TypeScript library for native agent interfaces and 
 This foundation contains one private ESM package, `@operatorworks/switchboard@0.0.0`.
 Its root module exports adapter contracts, native session envelopes, validation helpers, and bounded event streams.
 The optional `./agui` entry projects observed facts into pinned AG-UI 1.0 output.
-The optional `./pi` entry runs text-only Pi SDK sessions on OpenCode Go. The caller supplies the model id. The provider remains OpenCode Go, and an id missing from the bundled offline catalog is rejected.
+The optional `./pi` entry runs Pi SDK text and image sessions on OpenCode Go. The caller supplies the model id. The provider remains OpenCode Go, and an id missing from the bundled offline catalog is rejected.
 Claude and Codex adapters remain unqualified. The Pi entry has local SDK tests and requires separate live provider qualification.
 The optional `./observability` entry records observed agent, model-request, and tool boundaries as OpenTelemetry GenAI spans.
 
@@ -174,7 +174,7 @@ The child uses the existing ChatGPT login and official OpenAI provider endpoint.
 
 ### Claude text adapter
 
-`@operatorworks/switchboard/claude` provides a text-only Claude Agent SDK runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies the exact model id the engine reports for the turn. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals it. An alias the engine rewrites to a different string is a legal caller string and a failed turn. The id in the example is a placeholder for that exact string, not a claim that the live API echoes it. A mismatch on the init frame, or on the first frame that would admit the turn, rejects `start()` with `Claude operation failed.` before admission. A mismatch on a later assistant frame, after `message_start` has admitted the turn, does not reject: `finished` resolves with outcome `failed`, and text events already delivered for that turn stand. In both cases the provider request was already sent, so the provider may bill it and the native transcript may remain in the session directory.
+`@operatorworks/switchboard/claude` provides a Claude Agent SDK text and image runtime. Install the optional peer `@anthropic-ai/claude-agent-sdk` at the exact version listed in this package's peer dependencies. The caller supplies the exact model id the engine reports for the turn. The runtime passes that id to the SDK, and the turn is admitted only when the native model string equals it. An alias the engine rewrites to a different string is a legal caller string and a failed turn. The id in the example is a placeholder for that exact string, not a claim that the live API echoes it. A mismatch on the init frame, or on the first frame that would admit the turn, rejects `start()` with `Claude operation failed.` before admission. A mismatch on a later assistant frame, after `message_start` has admitted the turn, does not reject: `finished` resolves with outcome `failed`, and text events already delivered for that turn stand. In both cases the provider request was already sent, so the provider may bill it and the native transcript may remain in the session directory.
 
 ```js
 import { createClaudeRuntime } from '@operatorworks/switchboard/claude';
@@ -216,7 +216,7 @@ For `createCursorRuntime`, the sandbox is always on. The runtime loads project s
 
 Call `start({ text, agentId?, onEvent })`. `start` resolves when the SDK accepts the send, and the turn's `agentId` is the SDK agent id. `finished` resolves to `completed`, `failed`, or `interrupted`. The callback receives accumulated assistant text snapshots (`{ kind: 'text', text }`), tool envelopes (`{ kind: 'tool', callId, name, status }` where `status` is `running`, `completed`, or `error`), and one `{ kind: 'ended', outcome }`. Tool arguments and results are not callback fields. `@cursor/sdk@1.4.2` sometimes sends a call id as two tokens separated by one newline; the event reports those tokens joined by `:`. Each runtime allows 32 simultaneous turns.
 
-`start` rejection before send returns is `Cursor operation failed.` and emits no `ended`. After send returns, `start` stays resolved even when the turn later fails, so hosts should treat that failure as uncertain and avoid automatic retries. `close()` disposes the agents this runtime opened. It does not delete the session directory or files the agent wrote. An unresolved native send retains its same-ID writer reservation after the public admission deadline. A late run is cancelled immediately when its handle arrives; the reservation is released only after its terminal status is observed. A failed late drain remains reserved and is retried by `close()`. These facts do not attest helper termination.
+`start` rejection before send returns is `Cursor operation failed.` and emits no `ended`. A generic rejection can occur after native send entry, including an admission timeout or close that abandons the wait. Native receipt is uncertain; hosts must not automatically resubmit. The fixed policy error and known pre-launch input refusals establish non-dispatch; the generic error alone does not. After send returns, `start` stays resolved even when the turn later fails, so hosts should treat that failure as uncertain and avoid automatic retries. `close()` disposes the agents this runtime opened. It does not delete the session directory or files the agent wrote. An unresolved native send retains its same-ID writer reservation after the public admission deadline. A late run is cancelled immediately when its handle arrives; the reservation is released only after its terminal status is observed. A failed late drain remains reserved and is retried by `close()`. A successful close does not wait for native open/send promises that have not returned a handle. Cleanup owns later handles, but if that cleanup fails the host must call close again; until successful cleanup, a session reservation can remain for the process lifetime. These facts do not attest helper termination.
 
 ### Cursor fixed text runtime
 
@@ -234,12 +234,13 @@ const runtime = createCursorTextRuntime({
 });
 ```
 
-Create and resume explicitly disable tools, settings, MCP, custom tools and
+Create and resume request an empty tools allowlist and disable settings, MCP, custom tools and
 subagent configuration, sandbox setup and retries, and supply a retained empty
 virtual filesystem. No caller-selectable control bag exists. Images are
 unsupported and reject before admission. Unexpected tool or task events fail
 without publishing tool payloads. Text uses the existing snapshot and terminal
-callback behavior. Catalog listing retains the explicit key and remains
+callback behavior. The backend meaning of the empty allowed-tools header and actual no-tool execution remain
+[pre-adoption qualification gates](qualification/cursor-text-runtime.md). Catalog listing retains the explicit key and remains
 sessionless. Readiness still reports local paths only and cannot report ready.
 
 The supported control tuple is SDK `1.4.2`, `cursor-text-v1`, Node `>=24.22.3 <25`.

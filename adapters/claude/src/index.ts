@@ -87,6 +87,7 @@ function readClaudeOptions(value: unknown): ClaudeRuntimeOptions | undefined {
   } catch { return undefined; }
 }
 
+/** Image limits are per turn; hosts must bound retained attachment history across the session and resume. */
 export function createClaudeRuntime(input: ClaudeRuntimeOptions): ClaudeRuntime {
   const read = readClaudeOptions(input);
   if (!read) throw failure();

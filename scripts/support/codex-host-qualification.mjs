@@ -1,18 +1,21 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
-import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 
-export async function dedicatedHome(home, defaultHome) {
+export async function dedicatedHome(home, ...defaultHomes) {
   if (!home || !isAbsolute(home)) throw new Error('dedicated-home-required');
   const canonical = await realpath(home);
   const actual = await stat(canonical);
   if (!actual.isDirectory()) throw new Error('dedicated-home-required');
+  for (const defaultHome of defaultHomes) {
   let normal;
   try { normal = await realpath(defaultHome); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (normal) {
     const identity = await stat(normal);
     if (canonical === normal || (actual.dev === identity.dev && actual.ino === identity.ino)) throw new Error('dedicated-home-required');
+  }
   }
   return canonical;
 }
@@ -31,11 +34,12 @@ export function scopedCommand(pending, cwd, marker) {
 export function scopedFileChange(pending, item, file) {
   if (pending.kind !== 'pending' || pending.calls.length || pending.approvals.length !== 1) return false;
   const approval = pending.approvals[0];
-  if (approval.request.data.method !== 'item/fileChange/requestApproval' || item?.id !== approval.target.tool.nativeToolCallId
+  if (approval.request.data.params?.grantRoot != null || approval.request.data.method !== 'item/fileChange/requestApproval' || item?.id !== approval.target.tool.nativeToolCallId
     || item.type !== 'fileChange' || !Array.isArray(item.changes) || item.changes.length !== 1) return false;
   const change = item.changes[0];
+  if (change === null || typeof change !== 'object' || Array.isArray(change)) return false;
   if (change.path !== file || change.kind?.type !== 'update' || change.kind.move_path != null || typeof change.diff !== 'string') return false;
-  const lines = change.diff.trimEnd().split('\n');
+  const lines = change.diff.replace(/\n$/, '').split('\n');
   if (lines[0]?.startsWith('--- ') && lines[1]?.startsWith('+++ ')) lines.splice(0, 2);
   return lines.length === 3 && /^@@ -1(?:,1)? \+1(?:,1)? @@$/.test(lines[0])
     && lines[1] === '-old' && lines[2] === '+new';
@@ -90,7 +94,11 @@ export async function qualificationFingerprint(root, runtimeRoot = root) {
     }
     for (const directory of directories) await walk(directory);
     const digest = createHash('sha256');
-    for (const path of files.sort()) digest.update(`${path}\0${createHash('sha256').update(await readFile(join(base, path))).digest('hex')}\n`);
+    for (const path of files.sort()) {
+      const file = await lstat(join(base, path));
+      if (!file.isFile() || file.isSymbolicLink()) throw new Error('unhashed-symlink');
+      digest.update(`${path}\0${createHash('sha256').update(await readFile(join(base, path))).digest('hex')}\n`);
+    }
     return { sha256: digest.digest('hex'), files: files.length };
   }
   const source = await tree(root, ['src/core', 'src/adapters/codex'], (path) => path.endsWith('.ts'), ['src/index.ts', 'package.json', 'package-lock.json', 'tsconfig.json', 'scripts/qualify-codex-host-direct.mjs', 'scripts/live-baseline-engines.mjs', 'scripts/support/codex-host-qualification.mjs', 'scripts/support/qualification-image.mjs']);
@@ -110,4 +118,24 @@ export function scenarioDeadline(parent, milliseconds = 180000) {
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), milliseconds);
   return { signal: AbortSignal.any([parent, deadline.signal]), dispose: () => clearTimeout(timer) };
+}
+
+export async function waitForTargetTerminals(terminals, approval, signal) {
+  for (;;) {
+    const found = targetTerminals(terminals, approval);
+    if (found.length > 0) return found;
+    await delay(20, undefined, { signal });
+  }
+}
+
+// Inspect final effects only after the scenario's owned process group has stopped.
+export async function verifyFinalFiles(expected) {
+  for (const fact of expected) {
+    let present; let stat;
+    try { stat = await lstat(fact.path); present = true; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; present = false; }
+    if (present && fact.present && !stat.isFile()) return false;
+    if (present !== fact.present || (present && fact.contents !== undefined && await readFile(fact.path, 'utf8') !== fact.contents)) return false;
+  }
+  return true;
 }

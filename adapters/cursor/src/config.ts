@@ -47,15 +47,17 @@ function apiKeyText(value: unknown): value is string {
 }
 
 function absolutePath(value: unknown): value is string {
-  return typeof value === 'string' && isAbsolute(value);
+  return typeof value === 'string' && !value.includes('\0') && isAbsolute(value);
 }
 
 /** Copies a validated options object. Later edits to the caller's object are not observed. */
 export function readCursorOptions(value: unknown): CursorRuntimeOptions | undefined {
   if (value === null || typeof value !== 'object') return undefined;
-  const { cwd, sessionDirectory, apiKey, model } = value as Record<string, unknown>;
-  if (!callerModelId(model) || !apiKeyText(apiKey) || !absolutePath(cwd) || !absolutePath(sessionDirectory)) return undefined;
-  return { cwd: resolve(cwd), sessionDirectory: resolve(sessionDirectory), apiKey, model };
+  try {
+    const { cwd, sessionDirectory, apiKey, model } = value as Record<string, unknown>;
+    if (!callerModelId(model) || !apiKeyText(apiKey) || !absolutePath(cwd) || !absolutePath(sessionDirectory)) return undefined;
+    return { cwd: resolve(cwd), sessionDirectory: resolve(sessionDirectory), apiKey, model };
+  } catch { return undefined; }
 }
 
 /** Local-agent fields shared by create and resume. `storeDirectory` is the store root, not a field on `local`. */

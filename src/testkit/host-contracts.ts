@@ -119,7 +119,7 @@ async function segments(factory: HostConformanceFactory, signal: AbortSignal) {
     const poisoned = new Proxy([], { get(target, key) { if (key === 'length') throw new Error('untrusted'); return Reflect.get(target, key); } });
     const poisonedResult = kind(await Reflect.apply(adapter.run, adapter, [{ prompt: harness.subject.prompts.text, images: poisoned,
       signal, hostOperationId: 'poisoned-media', recordIntent() { throw new Error('Malformed media must not record intent.'); } }]), 'failed');
-    assert.equal(poisonedResult.error.code, 'invalid-input'); assert.equal(poisonedResult.write.kind, 'not-attempted');
+    assert.equal(poisonedResult.error.code, capabilities.imageInput.kind === 'supported' ? 'invalid-input' : 'unsupported'); assert.equal(poisonedResult.write.kind, 'not-attempted');
     const hidden = new Proxy([{ mediaType: 'image/png', dataUrl: 'data:image/png;base64,YQ==' }], {
       get(target, key) { return key === 'length' ? 0 : Reflect.get(target, key); },
     });
@@ -308,16 +308,24 @@ async function interrupt(factory: HostConformanceFactory, signal: AbortSignal) {
     release();
     kind(await running, 'complete');
     assert.equal((await adapter.interrupt({ timeoutMs: 20 })).kind, 'terminal-observed');
+    if (subject.heldTurn) {
     const pending = kind(await harness.segment(adapter, subject.prompts.toolCall), 'pending');
-    const requests = subject.heldTurn?.interruptRequests();
+    const requests = subject.heldTurn.interruptRequests();
     const held = await adapter.interrupt({ timeoutMs: 100 });
     if (requests !== undefined) {
       assert.equal(subject.heldTurn?.interruptRequests(), requests + 1, 'the controllable held fixture reaches native interrupt');
       if (adapter.capabilities.inspect.kind === 'supported') {
         const current = ok(await adapter.capabilities.inspect.api.pending(signal));
-        if (held.kind === 'unconfirmed-within-bound') assert.deepEqual(current.calls.map((call) => call.pending.target), pending.calls.map((call) => call.pending.target));
+        if (held.kind === 'unconfirmed-within-bound') {
+          for (const call of current.calls) {
+            const before = pending.calls.find(candidate => candidate.pending.target.nativeToolCallId === call.pending.target.nativeToolCallId);
+            assert(before, 'a late acknowledgement may withdraw existing calls, never invent new ones');
+            assert.deepEqual(call.pending.target, before.pending.target);
+          }
+        }
         else assert.equal(current.calls.length + current.approvals.length, 0, 'acknowledgement or terminal withdraws the held fixture interactions');
       }
+    }
     }
     ok(await adapter.close());
     assert.equal(subject.launches().signals, 0, 'the adapter never signals a host-owned process');

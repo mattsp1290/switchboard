@@ -37,6 +37,7 @@ try {
     'README.md',
     ...buildFiles,
     'docs/architecture/boundaries.md',
+    'docs/qualification/cursor-text-runtime.md',
     'licenses/codex-APACHE-2.0.txt',
     'licenses/codex-NOTICE.txt',
     'THIRD_PARTY_NOTICES.md',
@@ -256,6 +257,13 @@ void [options, missingModel];
     assert(!nativeSdkDeclarations.test(files), `${name} declarations remain independent of native SDK declarations.`);
     run(process.execPath, [compiler, '-p', `${name}-types.json`], consumer);
   }
+  checkConsumer('pi-host', `
+import type { PiHostOpenOptions, PiHostSessionState } from '${manifest.name}/host/pi';
+const snapshots: PiHostSessionState[] = [];
+const collect: PiHostOpenOptions['onState'] = state => snapshots.push(state);
+const persist: PiHostOpenOptions['onState'] = async state => snapshots.push(state);
+void [collect, persist];
+`);
   checkConsumer('image', `
 import { parseHostImages, hostImageLimits } from '${manifest.name}';
 import type { HostImageInput, HostImageInputApi, HostPendingSet, HostRunInput } from '${manifest.name}';
@@ -395,65 +403,7 @@ wide.verdict = 'ready';
 void [sources, narrowed, label, readyRemedy, readyUnknown, blockedNull, blockedRetry, unverifiedAction, mismatch, raw, claudeSignedIn, claudeReady, cursorReady, cursorBlocked, cursorReport, codexOnly, claudeOptions, codexOptions, cursorOptions, missingClaude, missingCodex, missingCursor];
 `);
 
-  // These two consumers execute the packed adapters, which load the Pi and Codex SDKs.
-  // The ordinary test preloads the tripwire and must not. `npm run verify:package` does not, and runs them.
-  function verifyPackagedNativeRuntimes() {
-    const piConsumer = join(temporary, 'pi');
-    mkdirSync(piConsumer);
-    writeFileSync(join(piConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-    process.stdout.write(runNpm([
-      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-      `@earendil-works/pi-ai@${manifest.peerDependencies['@earendil-works/pi-ai']}`,
-      `@earendil-works/pi-coding-agent@${manifest.peerDependencies['@earendil-works/pi-coding-agent']}`,
-    ], piConsumer));
-    writeFileSync(join(piConsumer, 'runtime.mjs'), `
-import assert from 'node:assert/strict';
-const pi = await import('${manifest.name}/pi');
-assert.equal(typeof pi.createPiRuntime, 'function');
-globalThis.fetch = async () => { throw new Error('Pi startup must stay offline.'); };
-const options = { cwd: process.cwd(), sessionDirectory: './sessions', apiKey: 'fixture', provider: 'opencode-go', model: 'glm-5.3-flash' };
-await assert.rejects(pi.createPiRuntime({ ...options, model: 'unsupported' }), /Pi operation failed/);
-const runtime = await pi.createPiRuntime(options);
-try {
-  const session = await runtime.open();
-  assert.equal(typeof session.id, 'string');
-  assert.match(session.sessionFile, /\\.jsonl$/);
-} finally { await runtime.close(); }
-`);
-    run(process.execPath, ['runtime.mjs'], piConsumer);
-
-    const codexConsumer = join(temporary, 'codex');
-    mkdirSync(codexConsumer);
-    writeFileSync(join(codexConsumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-    process.stdout.write(runNpm([
-      'install', '--ignore-scripts', '--no-audit', '--no-fund', join(artifacts, pack.filename),
-      `@openai/codex-sdk@${manifest.peerDependencies['@openai/codex-sdk']}`,
-    ], codexConsumer));
-    const fixtureId = '36b71fc1-b090-47aa-959e-39c60b6da341';
-    writeFileSync(join(codexConsumer, 'account.json'), JSON.stringify({ id: fixtureId, version: '0.169.0', login: 'Logged in using ChatGPT' }));
-    writeFileSync(join(codexConsumer, 'runtime.mjs'), `
-import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
-import { createCodexRuntime } from '${manifest.name}/codex';
-const runtime = createCodexRuntime({ cwd: process.cwd(), codexHome: process.cwd(), model: 'caller-selected-model',
-  codexPathOverride: ${JSON.stringify(join(root, 'tests/adapters/codex/sdk-cli.mjs'))} });
-try {
-  assert.equal((await runtime.readinessReport()).verdict, 'ready');
-  const turn = await runtime.start({ text: 'packaged', onEvent() {} });
-  assert.equal(turn.threadId, '${fixtureId}');
-  assert.equal((await turn.finished).outcome, 'completed');
-  const { args } = JSON.parse(readFileSync('args.json', 'utf8'));
-  assert.equal(args[args.indexOf('--model') + 1], 'caller-selected-model');
-} finally { await runtime.close(); }
-`);
-    run(process.execPath, ['runtime.mjs'], codexConsumer);
-  }
-
-  if (process.execArgv.some((arg) => arg.includes('native-sdk-tripwire'))) {
-    console.log('Skipping packaged Pi and Codex runtime consumers while the native SDK tripwire is loaded.');
-  } else {
-    verifyPackagedNativeRuntimes();
-  }
+  // Packed native runtime behavior is verified only by test:native-isolated.
 
   verifyTestkit({ consumer, tarball: join(artifacts, pack.filename), compiler,
     compilerOptions: consumerConfig.compilerOptions });
@@ -788,5 +738,17 @@ function verifyCursorControlTypes(temporary, compiler) {
       `A boundary diagnostic must name removed ${field}: ${output}`);
     writeFileSync(optionsPath, original);
   }
-  console.log('PASS Cursor control omission: cloned SDK baseline and all 17 required fields');
+  const stubsPath = join(clone, 'stubs.d.ts');
+  assert(files.includes(stubsPath), 'The cloned resume declaration must participate.');
+  const stubs = readFileSync(stubsPath, 'utf8');
+  const resumeSignature = 'options?: Partial<AgentOptions>';
+  assert(stubs.includes(resumeSignature));
+  writeFileSync(stubsPath, stubs.replace(resumeSignature, "options?: Omit<Partial<AgentOptions>, 'tools'>"));
+  try {
+    const result = compile([]), output = result.stdout + result.stderr;
+    assert.notEqual(result.status, 0, 'A resume-only loss of tools must fail the real boundary.');
+    assert.doesNotMatch(output, /TS(?:2307|2688|6053|5012|5083):/);
+    assert(output.split('\n').some(line => /sdk\.ts\(\d+,\d+\): error TS/.test(line) && (line.includes("'tools'") || line.includes('"tools"'))), output);
+  } finally { writeFileSync(stubsPath, stubs); }
+  console.log('PASS Cursor control omission: cloned SDK baseline, 17 required fields and resume-only tools');
 }

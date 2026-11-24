@@ -1,9 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
-import { InMemoryCredentialStore, InMemoryModelsStore, PI_AI_VERSION } from '@earendil-works/pi-ai';
+import { join } from 'node:path';
+import { InMemoryCredentialStore, InMemoryModelsStore, PI_AI_VERSION, validateToolArguments } from '@earendil-works/pi-ai';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
-import type { AssistantMessage, Message, Model, Provider, Usage } from '@earendil-works/pi-ai';
+import type { AssistantMessage, JsonObject, Message, Model, Provider, Usage } from '@earendil-works/pi-ai';
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import {
@@ -15,9 +15,8 @@ import type {
   DispatchEvidence, DispatchIdentity, HostAdapterError, HostAdapterEvent, HostSegmentRequest, HostSegmentResult, HostToolCall, HostToolDeclaration,
   HostUsage, Outcome, RunObservation, RunObservationListener, SessionBinding, SessionReference,
 } from '#switchboard';
-import { piHostIdentity, piHostLimits, validatePiHostSessionState } from './contract.js';
-import type { PiHostAdapter, PiHostModelEvent, PiHostOpenOptions, PiHostSessionState, PiHostTurn } from './contract.js';
-import { admitPiHostTransport } from './route.js';
+import { isPiHostJsonObject, piHostIdentity, piHostLimits, validatePiHostSessionState } from './contract.js';
+import type { PiHostAdapter, PiHostModelEvent, PiHostModelStream, PiHostAdmission, PiHostSessionState, PiHostTurn } from './contract.js';
 import type { PiHostRouteBody, PiHostTransport } from './route.js';
 
 const providerId = 'switchboard-host';
@@ -52,9 +51,28 @@ function textOf(content: unknown): string {
   }).join('');
 }
 
-function jsonObject(value: unknown): Record<string, never> | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, never>;
+function freezeFact<T>(value: T): T {
+  const pending: unknown[] = [value]; const seen = new WeakSet<object>();
+  while (pending.length) {
+    const node = pending.pop();
+    if (typeof node !== 'object' || node === null || seen.has(node)) continue;
+    seen.add(node);
+    for (const child of Object.values(node)) pending.push(child);
+    Object.freeze(node);
+  }
+  return value;
+}
+
+function jsonObject(value: unknown): JsonObject | undefined {
+  try {
+    const copy: unknown = structuredClone(value);
+    return isPiHostJsonObject(copy) ? freezeFact(copy) : undefined;
+  } catch { return undefined; }
+}
+
+function segmentRequest(input: HostSegmentRequest): HostSegmentRequest {
+  const { hostOperationId, signal, recordIntent, onObservation } = input;
+  return { hostOperationId, signal, recordIntent, ...(onObservation === undefined ? {} : { onObservation }) };
 }
 
 function resources(instructions: string): ResourceLoader {
@@ -93,7 +111,7 @@ function turnsFrom(messages: readonly Message[], segment: number): PiHostTurn[] 
     if (message.role === 'toolResult') {
       const pending = typeof message.details === 'object' && message.details !== null
         && 'pending' in message.details && message.details.pending === true;
-      return { segment, role: 'tool', text: textOf(message.content), toolCallId: message.toolCallId, name: message.toolName,
+      return { segment, role: 'tool', text: textOf(message.content), toolCallId: message.toolCallId, name: message.toolName, isError: message.isError,
         ...(pending ? { pending: true } : {}) };
     }
     if (message.role === 'assistant') {
@@ -111,12 +129,13 @@ function messagesFrom(turns: readonly PiHostTurn[]): Message[] {
     if (turn.role === 'user') return { role: 'user', content: turn.text, timestamp: 1 };
     if (turn.role === 'tool') {
       return { role: 'toolResult', toolCallId: turn.toolCallId ?? '', toolName: turn.name ?? '',
-        content: [{ type: 'text', text: turn.text }], isError: false, timestamp: 1,
+        content: [{ type: 'text', text: turn.text }], isError: turn.isError ?? false, timestamp: 1,
         details: { pending: turn.pending === true } };
     }
-    const toolCalls = (turn.toolCalls ?? []).flatMap((call) => {
+    const toolCalls = (turn.toolCalls ?? []).map((call) => {
       const argumentsValue = jsonObject(call.arguments);
-      return argumentsValue === undefined ? [] : [{ type: 'toolCall' as const, id: call.id, name: call.name, arguments: argumentsValue }];
+      if (argumentsValue === undefined) throw new OpenRefusal({ code: 'invalid-input', message: 'Imported tool arguments must be JSON objects.' });
+      return { type: 'toolCall' as const, id: call.id, name: call.name, arguments: argumentsValue };
     });
     return { role: 'assistant', content: [...(turn.text ? [{ type: 'text' as const, text: turn.text }] : []), ...toolCalls],
       api: providerId, provider: providerId, model: modelId, usage: usageCounters(),
@@ -126,7 +145,7 @@ function messagesFrom(turns: readonly PiHostTurn[]): Message[] {
 
 interface Collected {
   readonly text: string;
-  readonly calls: readonly { readonly id: string; readonly name: string; readonly arguments: Record<string, never> }[];
+  readonly calls: readonly { readonly id: string; readonly name: string; readonly arguments: JsonObject }[];
   /** Absent when no `usage` event arrived for this request. */
   readonly usage?: { readonly input: number; readonly output: number } | undefined;
   readonly failure?: 'mixed' | 'limit' | 'arguments' | 'duplicate';
@@ -199,7 +218,7 @@ function emitAssistant(stream: AssistantMessageEventStream, collected: Collected
   stream.push({ type: 'done', reason: message.stopReason === 'toolUse' ? 'toolUse' : 'stop', message });
 }
 
-function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: (id: string) => boolean, makeSink: () => Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
+function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Promise<readonly PiHostModelEvent[]>, names: ReadonlySet<string>, answered: (id: string) => boolean, makeSink: () => Parameters<typeof emitAssistant>[2], segment: () => number, instructions: string, tools: readonly HostToolDeclaration[], definitions: readonly ToolDefinition[], note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined }): Provider {
   const model: Model<string> = {
     id: modelId, name: 'host', api: providerId, provider: providerId, baseUrl: 'http://127.0.0.1:9', reasoning: false,
     input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
@@ -208,23 +227,33 @@ function hostProvider(load: (body: PiHostRouteBody, signal: AbortSignal) => Prom
     const stream = new AssistantMessageEventStream();
     const sink = makeSink();
     void (async () => {
+      const requestSignal = signal ?? new AbortController().signal;
       try {
         const body: PiHostRouteBody = { model: modelId, protocol: 'switchboard-host', instructions,
-          turns: turnsFrom(messages, segment()), tools };
-        const requestSignal = signal ?? new AbortController().signal;
+          turns: turnsFrom(messages, segment()), tools: structuredClone(tools) };
         const loaded = await load(body, requestSignal);
         if (requestSignal.aborted) {
           const aborted: AssistantMessage = { ...modelMessage(), stopReason: 'aborted', errorMessage: 'aborted' };
           stream.push({ type: 'error', reason: 'aborted', error: aborted });
           return;
         }
-        const collected = collectEvents(loaded, names, answered);
+        let collected = collectEvents(loaded, names, answered);
+        if (collected.failure === undefined) {
+          try {
+            for (const call of collected.calls) {
+              const definition = definitions.find(tool => tool.name === call.name);
+              if (!definition) throw new Error('undeclared tool');
+              validateToolArguments(definition, { type: 'toolCall', ...call });
+            }
+          } catch { collected = { ...collected, calls: [], failure: 'arguments' }; }
+        }
         note.failure = collected.failure;
         emitAssistant(stream, collected, sink);
       } catch (error) {
-        if (error instanceof OpenRefusal) note.refusal = error.failure;
-        const failed: AssistantMessage = { ...modelMessage(), stopReason: 'error', errorMessage: 'The host stream failed.' };
-        stream.push({ type: 'error', reason: 'error', error: failed });
+        if (error instanceof OpenRefusal && !requestSignal.aborted) note.refusal = error.failure;
+        const reason = requestSignal.aborted ? 'aborted' : 'error';
+        const failed: AssistantMessage = { ...modelMessage(), stopReason: reason, errorMessage: 'The host stream failed.' };
+        stream.push({ type: 'error', reason, error: failed });
       }
     })();
     return stream;
@@ -246,7 +275,7 @@ function modelMessage(): AssistantMessage {
     usage: usageCounters(), stopReason: 'error', timestamp: Date.now() };
 }
 
-async function eventsFromStream(stream: NonNullable<PiHostOpenOptions['stream']>, body: PiHostRouteBody, signal: AbortSignal): Promise<readonly PiHostModelEvent[]> {
+async function eventsFromStream(stream: PiHostModelStream, body: PiHostRouteBody, signal: AbortSignal): Promise<readonly PiHostModelEvent[]> {
   const events: PiHostModelEvent[] = [];
   for await (const event of stream({ instructions: body.instructions, turns: body.turns, tools: body.tools, signal })) {
     if (signal.aborted) break;
@@ -270,67 +299,17 @@ async function eventsFromRoute(transport: Extract<PiHostTransport, { kind: 'rout
   return result.events;
 }
 
-function requireOptions(options: PiHostOpenOptions, signal: AbortSignal): {
-  readonly instructions: string;
-  readonly tools: readonly HostToolDeclaration[];
-  readonly state: PiHostSessionState | undefined;
-  readonly tempRoot: string;
-} {
-  if (!(signal instanceof AbortSignal)) throw new OpenRefusal({ code: 'invalid-input', message: 'The open signal is not an AbortSignal.' });
-  if (options.launch?.kind !== 'in-process') throw new OpenRefusal({ code: 'invalid-input', message: 'The Pi host adapter launches in-process.' });
-  if (options.environment === undefined || typeof options.environment.variables !== 'object' || options.environment.variables === null) {
-    throw new OpenRefusal({ code: 'invalid-input', message: 'The Pi host adapter requires a host environment.' });
-  }
-  for (const value of Object.values(options.environment.variables)) {
-    if (typeof value !== 'string') throw new OpenRefusal({ code: 'invalid-input', message: 'Host environment variables must be strings.' });
-  }
-  if (options.subagents !== 'off') throw new OpenRefusal({ code: 'invalid-input', message: 'The Pi host adapter runs with subagents off.' });
-  if (options.builtInTools !== undefined && options.builtInTools.length > 0) {
-    throw new OpenRefusal({ code: 'unavailable', feature: 'built-in-tools', message: 'Built-in tools are off in the host-owned Pi adapter.' });
-  }
-  if (options.resume !== undefined) {
-    throw new OpenRefusal({ code: 'unsupported', feature: 'directory-resume', message: 'Directory resume is not available. Import session state instead.' });
-  }
-  if (options.instructions !== undefined && (typeof options.instructions !== 'string' || options.instructions.length > piHostLimits.maxText)) {
-    throw new OpenRefusal({ code: 'invalid-input', message: 'Instructions must be a string within the published limit.' });
-  }
-  if (options.onState !== undefined && typeof options.onState !== 'function') {
-    throw new OpenRefusal({ code: 'invalid-input', message: 'onState must be a function.' });
-  }
-  const tools = options.tools ?? [];
-  if (tools.length > piHostLimits.maxTools) throw new OpenRefusal({ code: 'invalid-input', message: 'Too many host tools.' });
-  const names = new Set<string>();
-  for (const tool of tools) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(tool.name) || typeof tool.description !== 'string'
-      || typeof tool.inputSchema !== 'object' || tool.inputSchema === null || Array.isArray(tool.inputSchema) || names.has(tool.name)) {
-      throw new OpenRefusal({ code: 'invalid-input', message: 'Host tool declarations are fixed and must be unique JSON-schema tools.' });
-    }
-    names.add(tool.name);
-  }
-  if (options.state !== undefined && !validatePiHostSessionState(options.state)) {
-    throw new OpenRefusal({ code: 'invalid-input', message: 'The imported session state does not match the published schema.' });
-  }
-  const tempRoot = options.environment.variables.TMPDIR ?? options.environment.variables.TMP ?? options.environment.variables.TEMP;
-  if (tempRoot === undefined || !isAbsolute(tempRoot)) {
-    throw new OpenRefusal({ code: 'invalid-input', message: 'The host environment must name an absolute temp directory.' });
-  }
-  return { instructions: options.instructions ?? '', tools, state: options.state, tempRoot };
-}
 
-export async function openPiHostSession(options: PiHostOpenOptions, signal: AbortSignal): Promise<Outcome<PiHostAdapter, HostAdapterError>> {
+export async function openPiHostSession(admitted: PiHostAdmission, signal: AbortSignal): Promise<Outcome<PiHostAdapter, HostAdapterError>> {
   let directory: string | undefined;
+  let openedSession: Awaited<ReturnType<typeof createAgentSession>>['session'] | undefined;
+  const checkOpen = () => { if (signal.aborted) throw new OpenRefusal({ code: 'closed', message: 'The open signal was cancelled.' }); };
   try {
-    const admitted = requireOptions(options, signal);
-    const transportResult = admitPiHostTransport({
-      stream: options.stream !== undefined, route: options.route, invocationId: randomUUID(),
-    });
-    if (transportResult.kind === 'error') return transportResult;
-    const active = options.stream !== undefined
-      ? { kind: 'stream' as const, stream: options.stream }
-      : transportResult.value.kind === 'route' ? transportResult.value
-        : undefined;
-    if (active === undefined) return { kind: 'error', error: { code: 'invalid-input', message: 'The host stream is missing.' } };
+    if (!(signal instanceof AbortSignal) || signal.aborted) return { kind: 'error', error: { code: 'closed', message: 'The open signal was cancelled.' } };
+    const initialState = admitted.state === undefined ? undefined : structuredClone(admitted.state);
+    const active = admitted.active;
     directory = await mkdtemp(join(admitted.tempRoot, 'pi-host-'));
+    checkOpen();
     const names = new Set(admitted.tools.map((tool) => tool.name));
     const answered = new Set<string>();
     let continuation: {
@@ -344,6 +323,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       if (rollback) staged?.undo();
     }
     const executed: string[] = [];
+    const definitions = hostToolDefinitions(admitted.tools, executed);
     const note: { failure?: Collected['failure']; refusal: HostAdapterError | undefined } = { refusal: undefined };
     let segmentNumber = admitted.state === undefined ? 1
       : admitted.state.turns.reduce((max, turn) => Math.max(max, turn.segment), 0) + 1;
@@ -386,11 +366,12 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (row !== undefined) emitObservation(listener, { kind: 'usage', rows: [row] });
       },
     });
-    const provider = hostProvider(load, names, (id) => answered.has(id) || (continuation?.results.has(id) ?? false), () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, note);
+    const provider = hostProvider(load, names, (id) => answered.has(id) || (continuation?.results.has(id) ?? false), () => sinkFor(observer), () => segmentNumber, admitted.instructions, admitted.tools, definitions, note);
     const credentials = new InMemoryCredentialStore();
     const models = await ModelRuntime.create({
       credentials, modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false,
     });
+    checkOpen();
     // A provider refresh looks for Google application-default credentials. The host provider is already
     // in the snapshot, and this no-op stays in place so a later refresh cannot scan the disk.
     const registered = models as ModelRuntime & { refresh(options?: { allowNetwork?: boolean }): Promise<unknown> };
@@ -407,13 +388,15 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     }
     const created = await createAgentSession({
       cwd: directory, agentDir: directory, modelRuntime: models, model, thinkingLevel: 'off',
-      tools: [...names], noTools: 'builtin', customTools: hostToolDefinitions(admitted.tools, executed),
+      tools: [...names], noTools: 'builtin', customTools: definitions,
       resourceLoader: resources(admitted.instructions), sessionManager: manager,
       settingsManager: SettingsManager.inMemory({
         compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
         cacheWarming: 'off', enableAnalytics: false, enableInstallTelemetry: false, transport: 'sse',
       }),
     });
+    openedSession = created.session;
+    checkOpen();
     if (created.extensionsResult.extensions.length > 0 || created.extensionsResult.errors.length > 0) {
       throw new OpenRefusal({ code: 'unavailable', feature: 'extensions', message: 'Extensions are off in the host-owned Pi adapter.' });
     }
@@ -430,7 +413,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     };
     const binding: SessionBinding = {
       engine: 'pi', nativeVersion: PI_AI_VERSION,
-      account: options.route?.scope.account ?? 'host',
+      account: admitted.account,
       authorizedScope: active.kind === 'route' ? active.principal : 'host-stream',
       nativeFormat: 'pi-host-state-v1',
     };
@@ -440,16 +423,18 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
     if (parsed.kind === 'error') throw new OpenRefusal({ code: 'native-failure', message: 'The Pi session id is not a valid session reference.' });
     const sessionReference: SessionReference = parsed.value;
     const events = createEventStream<HostAdapterEvent>({ maxObservers: 8, capacity: 64 });
-    const publish = (event: HostAdapterEvent) => { events.publish(event); };
-    let current: PiHostSessionState = admitted.state === undefined
+    const publish = (event: HostAdapterEvent) => { events.publish(freezeFact(event)); };
+    let current: PiHostSessionState = initialState === undefined
       ? { formatVersion: 1, sessionId: session.sessionId, turns: [] }
-      : structuredClone(admitted.state);
+      : initialState;
     let seen = session.messages.length;
     let pending: readonly HostToolCall[] = pendingCalls(current, sessionReference);
     let requiresReopen = false;
     let running = false;
     let closed = false;
+    const lifetime = new AbortController();
     let stopping: (() => void) | undefined;
+    let nativeStatus: (() => 'intent' | 'running' | 'finished') | undefined;
     let stopped: Promise<void> | undefined;
     let agentRun: Promise<void> | undefined;
     const reference = () => sessionReference;
@@ -458,20 +443,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         message.role === 'system' || message.role === 'user' || message.role === 'assistant' || message.role === 'toolResult'), segmentNumber);
       const next = { formatVersion: 1 as const, sessionId: session.sessionId, turns: [...current.turns.map((turn) => {
         const result = turn.role === 'tool' && turn.toolCallId ? continuation?.results.get(turn.toolCallId) : undefined;
-        return result ? { ...turn, text: result.text, pending: false } : turn;
+        return result ? { ...turn, text: result.text, pending: false, isError: result.isError } : turn;
       }), ...fresh] };
-      if (!validatePiHostSessionState(next)) return undefined;
+      if (!validatePiHostSessionState(next) || (next.turns.length === piHostLimits.maxTurns && next.turns.some(turn => turn.pending === true))) return undefined;
       seen = session.messages.length;
       segmentNumber += 1;
       current = next;
       return next;
-    }
-    function toolCalls(message: AssistantMessage | undefined): HostToolCall[] {
-      if (!message) return [];
-      return message.content.flatMap((part) => part.type === 'toolCall' ? [{
-        pending: { kind: 'tool' as const, target: { kind: 'tool' as const, session: sessionReference, nativeToolCallId: part.id } },
-        name: part.name, arguments: part.arguments,
-      }] : []);
     }
     async function finish(signal: AbortSignal): Promise<WorkResult> {
       if (signal.aborted) throw new OpenRefusal({ code: 'native-failure', message: 'The segment was aborted.' });
@@ -489,27 +467,30 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       if (assistant?.role === 'assistant' && (assistant.stopReason === 'error' || assistant.stopReason === 'aborted')) {
         return { kind: 'model-failed', error: { code: 'native-failure', message: 'The host stream failed.' } };
       }
-      const calls = toolCalls(assistant?.role === 'assistant' ? assistant : undefined);
       const exported = exportState();
       if (exported === undefined) return { kind: 'model-failed', error: { code: 'native-failure', message: 'The exported session state does not match the published schema.' } };
-      pending = calls;
+      const calls = pendingCalls(exported, sessionReference);
+      pending = structuredClone(calls);
       for (const id of continuation?.results.keys() ?? []) answered.add(id);
       for (const target of continuation?.targets ?? []) publish({ kind: 'tool-delivery', target, delivery: { kind: 'unknown' } });
       clearContinuation(false);
-      options.onState?.(exported);
-      if (calls.length > 0) return { kind: 'pending', calls, approvals: [], usage };
+      try { await admitted.onState?.(structuredClone(exported)); }
+      catch { return { kind: 'model-failed', error: { code: 'native-failure', message: 'The exported session state could not be published.' } }; }
+      if (calls.length > 0) return { kind: 'pending', calls: structuredClone(calls), approvals: [], usage };
       return { kind: 'complete', text: assistant?.role === 'assistant' ? textOf(assistant.content) : '', usage };
     }
-    async function dispatch(input: HostSegmentRequest, work: () => Promise<void>): Promise<HostSegmentResult> {
+    async function dispatch(mode: 'run' | 'continue', input: HostSegmentRequest, work: (signal: AbortSignal, entered: () => void) => Promise<void>): Promise<HostSegmentResult> {
       const { hostOperationId, recordIntent, onObservation } = input;
       let hostSignal: AbortSignal;
-      try { hostSignal = AbortSignal.any([input.signal]); }
+      try { hostSignal = AbortSignal.any([input.signal, lifetime.signal]); }
       catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'A segment requires a signal.' }, write: { kind: 'not-attempted' } }; }
       if (!isOptionalObservationListener(onObservation)) {
         return { kind: 'failed', error: { code: 'invalid-input', message: 'onObservation must be a function.' }, write: { kind: 'not-attempted' } };
       }
       if (closed) return { kind: 'failed', error: { code: 'closed', message: 'The Pi host adapter is closed.' }, write: { kind: 'not-attempted' } };
       if (requiresReopen) return { kind: 'failed', error: { code: 'native-failure', message: 'Reopen from the last exported state after an uncertain continuation.' }, write: { kind: 'not-attempted' } };
+      if (mode === 'run' && pending.length > 0) return { kind: 'failed', error: { code: 'busy', message: 'Answer the pending tool set before a new prompt.' }, write: { kind: 'not-attempted' } };
+      if (current.turns.length + (mode === 'run' ? 2 : 1) > piHostLimits.maxTurns) return { kind: 'failed', error: { code: 'native-failure', message: 'The session history limit has been reached.' }, write: { kind: 'not-attempted' } };
       if (running) return { kind: 'failed', error: { code: 'busy', message: 'A segment is already running.' }, write: { kind: 'not-attempted' } };
       running = true;
       observer = onObservation;
@@ -520,7 +501,10 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         observation: { namespace: 'pi-host', schemaVersion: 1, data: { accepted: true } } };
       let settle = () => {};
       stopped = new Promise<void>((resolve) => { settle = resolve; });
-      stopping = () => { session.agent.abort(); };
+      stopping = () => { if (started) session.agent.abort(); };
+      let nativeStarted = false;
+      let nativeFinished = false;
+      nativeStatus = () => nativeFinished ? 'finished' : nativeStarted ? 'running' : 'intent';
       hostSignal.addEventListener('abort', stopping, { once: true });
       // The terminal goes out with the final result, after native work and state export are done. A segment that never reached native dispatch has no baseline.
       const attempt = async (): Promise<HostSegmentResult> => {
@@ -528,9 +512,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           const handle = createDispatchOperation<WorkResult>({
             mode: 'fresh', signal: hostSignal, identity, recordIntent,
             dispatchNative: async () => {
+              note.failure = undefined;
+              note.refusal = undefined;
               started = true;
               emitRunStarted(observer, ['reasoning']);
-              await work();
+              if (hostSignal.aborted) return { kind: 'outcome-unknown' };
+              await work(hostSignal, () => { nativeStarted = true; });
+              nativeFinished = true;
               const assistant = session.messages.findLast((message) => message.role === 'assistant');
               const aborted = hostSignal.aborted || (assistant?.role === 'assistant' && assistant.stopReason === 'aborted');
               if (aborted) {
@@ -542,6 +530,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           });
           const snapshot = await handle.run();
           const observation = snapshot.observation;
+          if (hostSignal.aborted && !nativeStarted) return { kind: 'failed', error: { code: 'native-failure', message: 'The segment was aborted before native entry.' }, write: { kind: 'not-dispatched', reason: 'aborted' } };
           if (observation.kind === 'conclusive') {
             const value = observation.result;
             if (value.kind === 'model-failed') {
@@ -566,11 +555,14 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (started) observe(segmentTerminal(result));
         return result;
       } finally {
-        if (continuation) requiresReopen = true;
+        note.failure = undefined;
+        note.refusal = undefined;
+        if (continuation || session.messages.length > seen) requiresReopen = true;
         clearContinuation(true);
         observer = undefined;
         hostSignal.removeEventListener('abort', stopping);
         stopping = undefined;
+        nativeStatus = undefined;
         running = false;
         settle();
       }
@@ -584,7 +576,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         toolDeclarations: 'fixed-at-creation',
         inspect: { kind: 'supported', api: { pending: async (pendingSignal) => pendingSignal.aborted
           ? { kind: 'error', error: { code: 'native-failure', message: 'The pending read was aborted.' } }
-          : { kind: 'ok', value: { calls: pending, approvals: [] } } } },
+          : { kind: 'ok', value: { calls: structuredClone(pending), approvals: [] } } } },
         fingerprint: { kind: 'supported', api: { validity: 'segment-end', read: async () => {
           const opaque = createHash('sha256').update(JSON.stringify(current)).digest('hex');
           const checkpoint = parseCheckpointReference({
@@ -596,8 +588,10 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         } } },
       },
       events: events,
-      state: () => current,
+      state: () => structuredClone(current),
       async run(input) {
+        try {
+        const request = segmentRequest(input);
         let requestedImages: boolean;
         try { const images = input.images; requestedImages = hostImagesRequested(images); } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'image input is malformed' }, write: { kind: 'not-attempted' } }; }
         if (requestedImages) return { kind: 'failed', error: { code: 'unsupported', feature: 'image-input', message: 'image input is not supported' }, write: { kind: 'not-attempted' } };
@@ -605,19 +599,24 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > piHostLimits.maxText) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The prompt must be a non-empty string.' }, write: { kind: 'not-attempted' } };
         }
-        return dispatch(input, async () => {
+        return dispatch('run', request, async (_signal, entered) => {
+          entered();
           await session.prompt(prompt, { expandPromptTemplates: false });
           await session.waitForIdle();
         });
+        } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'The run request is malformed.' }, write: { kind: 'not-attempted' } }; }
       },
       async continue(input) {
-        if (pending.length === 0 || !Array.isArray(input.answers)) {
+        try {
+          const request = segmentRequest(input);
+          const answers = input.answers;
+        if (pending.length === 0 || !Array.isArray(answers)) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
         }
         const expected = new Map(pending.map((call) => [call.pending.target.nativeToolCallId, call]));
         const replacements = new Map<string, { text: string; isError: boolean }>();
         const observedAnswers: RunObservation[] = [];
-        for (const answer of input.answers) {
+        for (const answer of answers) {
           const id = answerId(answer);
           const call = id === undefined ? undefined : expected.get(id);
           if (id === undefined || call === undefined || replacements.has(id) || answered.has(id)) {
@@ -635,7 +634,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
             text = serialized;
             replacements.set(id, { text, isError: result.kind === 'error' });
           } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'The tool result must be JSON.' }, write: { kind: 'not-attempted' } }; }
-          if (input.onObservation) {
+          if (request.onObservation) {
             observedAnswers.push(...declaredToolObservations(id, call.name, call.arguments),
               { kind: 'tool', callId: id, name: call.name, phase: result.kind === 'ok' ? 'completed' : 'failed', resultJson: text });
           }
@@ -643,7 +642,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         if (replacements.size !== expected.size) {
           return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation must cover the pending set exactly once.' }, write: { kind: 'not-attempted' } };
         }
-        return dispatch(input, async () => {
+        return dispatch('continue', request, async (hostSignal, entered) => {
           const prior: { readonly message: Extract<Message, { role: 'toolResult' }>;
             readonly content: Extract<Message, { role: 'toolResult' }>['content']; readonly isError: boolean; readonly details: Extract<Message, { role: 'toolResult' }>['details'] }[] = [];
           const undo: (() => void)[] = [];
@@ -674,6 +673,8 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
           }
           for (const o of observedAnswers) observe(o);
           try {
+            if (hostSignal.aborted) throw new OpenRefusal({ code: 'native-failure', message: 'The segment was aborted.' });
+            entered();
             agentRun = session.agent.continue();
             await agentRun;
             await session.waitForIdle();
@@ -681,9 +682,12 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
             agentRun = undefined;
           }
         });
+        } catch { return { kind: 'failed', error: { code: 'invalid-input', message: 'The continuation request is malformed.' }, write: { kind: 'not-attempted' } }; }
       },
       async interrupt({ timeoutMs }) {
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return { kind: 'unconfirmed-within-bound' };
+        if (nativeStatus?.() === 'intent') return { kind: 'unconfirmed-within-bound' };
+        if (nativeStatus?.() === 'finished') return { kind: 'terminal-observed' };
         const stop = stopping;
         const done = stopped;
         if (!stop || !done) return { kind: 'terminal-observed' };
@@ -698,6 +702,7 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
       async close() {
         const running = agentRun;
         closed = true;
+        lifetime.abort();
         stopping?.();
         try { await session.abort(); } catch { /* dispose still runs */ }
         try { await running; } catch { /* the segment observes this failure */ }
@@ -714,8 +719,13 @@ export async function openPiHostSession(options: PiHostOpenOptions, signal: Abor
         return { kind: 'ok', value: undefined };
       },
     };
+    checkOpen();
     return { kind: 'ok', value: adapter };
   } catch (error) {
+    if (openedSession) {
+      try { await openedSession.abort(); } catch { /* dispose still runs */ }
+      try { openedSession.dispose(); } catch { /* directory cleanup still runs */ }
+    }
     if (directory !== undefined) await rm(directory, { recursive: true, force: true }).catch(() => {});
     if (error instanceof OpenRefusal) return { kind: 'error', error: error.failure };
     return { kind: 'error', error: { code: 'native-failure', message: 'The Pi host session could not be opened.' } };

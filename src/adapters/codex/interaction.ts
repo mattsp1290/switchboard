@@ -57,12 +57,13 @@ export interface CodexInteractionOptions {
    */
   readonly maxPending: number;
   /** The transport bounds passed to `openCodexExecution`. */
-  readonly transport: Pick<TransportBounds, 'maxHandlers' | 'handlerTimeoutMs'> & Partial<Pick<TransportBounds, 'maxFrameBytes'>>;
+  readonly transport: Pick<TransportBounds, 'maxHandlers' | 'handlerTimeoutMs' | 'maxFrameBytes'>;
   readonly approvals?: boolean;
   /**
    * Host-selected, default `null`: an approval still unanswered `afterMs` after it arrived is answered with a
    * decision-free `-32000` and settles `expired`, before `handlerTimeoutMs` would end the whole transport. With `null`
-   * the bridge never answers on its own clock.
+   * the bridge never answers on its own clock. Expiry stops when a recorded host answer is staged; it does not bound
+   * queued native delivery or establish native receipt.
    */
   readonly expiry?: { readonly afterMs: number } | null;
   /**
@@ -90,8 +91,8 @@ export type CodexSettlement =
     readonly evidence: 'unqualified' }
   /** The host-selected expiry answered a decision-free error; its native fate is unqualified. */
   | { readonly kind: 'expired'; readonly delivery: NativeDelivery }
-  /** The transport ended first (`cause`, e.g. `handler-timeout`): no decision was written, and none ever will be. */
-  | { readonly kind: 'lost'; readonly reply: 'not-sent'; readonly cause: EndReason | 'aborted' };
+  /** Native transport loss or local batch retirement: no positive decision was written for this target. */
+  | { readonly kind: 'lost'; readonly reply: 'not-sent'; readonly cause: EndReason | 'aborted' | 'stale-interaction' };
 export type CodexInteractionEvent =
   | { readonly kind: 'pending'; readonly pending: PendingApproval; readonly evidence: CodexEvidence }
   | { readonly kind: 'refused'; readonly method: string; readonly threadId: string | null;
@@ -103,7 +104,7 @@ export type CodexInteractionEvent =
     readonly effect: ToolEffect; readonly evidence: CodexEvidence }
   | { readonly kind: 'host-settled'; readonly target: ToolTarget;
     readonly settlement: Extract<CodexSettlement, { kind: 'withdrawn' | 'lost' }> }
-  | { readonly kind: 'host-call'; readonly call: CodexHostCall }
+  | { readonly kind: 'host-call'; readonly call: CodexHostCall; readonly argumentsJson: string }
   | { readonly kind: 'host-delivery'; readonly target: ToolTarget; readonly delivery: NativeDelivery };
 export type CodexReplyError = InteractionError
   | { readonly code: 'stale-interaction' | 'duplicate-interaction' | 'intent-failed' | 'aborted' }
@@ -144,7 +145,7 @@ interface PreparedReply {
   readonly commit: () => boolean;
   readonly stage: (expected?: 'live' | 'reserved') => boolean;
   readonly staged: () => boolean;
-  readonly discard: () => void;
+  readonly discard: (cause: 'aborted' | 'stale-interaction') => void;
   readonly release: () => void;
   readonly fault: () => void;
 }
@@ -154,7 +155,7 @@ function preparedState(input: {
   readonly reserve: () => void;
   readonly owns: () => boolean;
   readonly reply: RpcReply;
-  readonly onDiscard: () => void;
+  readonly onDiscard: (cause: 'aborted' | 'stale-interaction') => void;
   readonly onCommit: () => void;
   readonly onRecord: PreparedReply['record'];
 }): Pick<PreparedReply, 'isLive' | 'staged' | 'stage' | 'discard' | 'commit' | 'beforeWrite' | 'release' | 'fault' | 'record'> {
@@ -168,9 +169,9 @@ function preparedState(input: {
       if (reservation !== (expected === 'live' ? 'none' : 'recorded') || entry.state !== expected || !owns()) return false;
       reserve(); reservation = 'staged'; entry.finish(reply); return true;
     },
-    discard: () => {
+    discard: (cause) => {
       if (reservation !== 'none' && entry.state === 'reserved' && owns()) {
-        reservation = 'none'; onDiscard();
+        reservation = 'none'; onDiscard(cause);
       }
     },
     commit: () => {
@@ -181,6 +182,7 @@ function preparedState(input: {
     release() { release(); release = () => {}; },
     fault: admission.fault,
     async record(intent, signal) {
+      if (!owns()) return 'stale-interaction';
       const result = await onRecord(intent, signal);
       if (result === 'ok') {
         if (entry.state !== 'reserved' || !owns()) return 'stale-interaction';
@@ -191,9 +193,9 @@ function preparedState(input: {
   };
 }
 
-function discardPrepared(entries: readonly PreparedReply[]): void {
+function discardPrepared(entries: readonly PreparedReply[], cause: 'aborted' | 'stale-interaction'): void {
   for (const entry of entries) {
-    try { entry.discard(); } catch { /* refusal is already settled; reclaim the remaining peers */ }
+    try { entry.discard(cause); } catch { /* refusal is already settled; reclaim the remaining peers */ }
     finally { entry.release(); }
   }
 }
@@ -229,6 +231,7 @@ type Entry = {
   /** `reserved`: the host is recording intent; the entry is still unanswered. */
   state: 'live' | 'reserved' | CodexSettlement['kind'];
   timer: ReturnType<typeof setTimeout> | undefined;
+  expiresAt: number | null;
   readonly finish: (reply: RpcReply) => void;
   readonly admission: Admission;
   readonly signal: AbortSignal;
@@ -374,6 +377,8 @@ intake: IncomingRequestIntake): Admission {
   const requestId = request.id;
   let callbacks: Parameters<Admission['beforeWrite']>[0] | undefined;
   let withdrawn = false;
+  let endWait = () => {};
+  const withdrawal = new Promise<false>(resolve => { endWait = () => resolve(false); });
   const stop = intake.watchNotification(({ method, params: raw }) => {
     if (!record(raw) || raw.threadId !== threadId) return;
     if (method === 'serverRequest/resolved' && Object.is(raw.requestId, requestId)) withdrawn = true;
@@ -381,10 +386,12 @@ intake: IncomingRequestIntake): Admission {
       && (raw.turn.status === 'completed' || raw.turn.status === 'failed' || raw.turn.status === 'interrupted')) withdrawn = true;
     if (method === 'item/completed' && raw.turnId === turnId && record(raw.item)
       && raw.item.id === (itemId ?? callId)) withdrawn = true;
+    if (withdrawn) endWait();
   });
   const live = () => !withdrawn && attached.session.matchesTurn(turnId, signal) === true;
   intake.replyAllowed(() => callbacks ? callbacks.allowed() : live(), withdrawnReply.error, () => callbacks?.entered());
-  const matched = attached.session.matchesTurn(turnId, signal);
+  const nativeMatch = attached.session.matchesTurn(turnId, signal);
+  const matched = typeof nativeMatch === 'boolean' ? nativeMatch : Promise.race([nativeMatch, withdrawal]);
   return { matched, withdrawn: () => withdrawn, stop, live, beforeWrite: (value) => { callbacks = value; return () => { if (callbacks === value) callbacks = undefined; }; }, retire: () => { withdrawn = true; const lost = callbacks?.withheld; callbacks = undefined; lost?.(); }, fault: intake.fault };
 }
 
@@ -456,7 +463,7 @@ function createHostLedger(deps: {
     if (typeof params.turnId !== 'string' || typeof itemId !== 'string') return;
     const host = hostByItem.get(hostItemKey(params.turnId, itemId));
     if (!host || host.threadId !== threadId) return;
-    deliverHost(host);
+    if (host.state === 'replied') deliverHost(host);
     if (hostLive.has(host.id)) loseHost(host, { kind: 'withdrawn', by: 'item/completed', evidence: 'unqualified' });
   }
   async function take(request: IncomingCall, signal: AbortSignal, intake: IncomingRequestIntake): Promise<RpcReply> {
@@ -471,15 +478,19 @@ function createHostLedger(deps: {
     const namespace = user ? null : params.namespace === null || typeof params.namespace === 'string' ? params.namespace : undefined;
     if (typeof callId !== 'string' || typeof name !== 'string' || namespace === undefined) return refuse(request, 'malformed');
     if (!user && !declared.has(`${namespace ?? ''}\0${name}`)) return refuse(request, 'unsupported');
+    const argumentsValue = user ? params.questions : params.arguments;
+    let argumentsJson: string | undefined;
+    try { argumentsJson = JSON.stringify(argumentsValue ?? null); } catch { return refuse(request, 'malformed'); }
+    if (argumentsJson === undefined) return refuse(request, 'malformed');
     const id = JSON.stringify([request.id, turnId, callId]);
     if (hostLive.has(id) || hostSettled.has(id)) return refuse(request, 'malformed');
     const matches = matchesLiveTurn(attached, request, turnId, signal, intake);
-    if (!(typeof matches.matched === 'boolean' ? matches.matched : await matches.matched) || matches.withdrawn() || signal.aborted) { matches.stop(); return withdrawnReply; }
+    if (!(typeof matches.matched === 'boolean' ? matches.matched : await matches.matched) || matches.withdrawn() || !matches.live() || signal.aborted) { matches.stop(); return withdrawnReply; }
     if (live.size + hostLive.size >= maxPending) { matches.stop(); return refuse(request, 'capacity'); }
     const target: ToolTarget = Object.freeze({ kind: 'tool', session: attached.session.reference, nativeToolCallId: id });
     if (parseInteractionContinuation({ value: { formatVersion: 1, kind: 'tool', outcome: { target, result: { kind: 'ok', value: { namespace: 'codex/target-check', schemaVersion: 1, data: null } }, effect: { kind: 'unknown' }, delivery: { kind: 'unknown' } } }, expected: { kind: 'tool', target } }).kind === 'error') { matches.stop(); return refuse(request, 'malformed'); }
     const call: CodexHostCall = Object.freeze({ method: user ? 'item/tool/requestUserInput' : 'item/tool/call', name,
-      arguments: user ? params.questions : params.arguments, pending: Object.freeze({ kind: 'tool', target }) });
+      arguments: argumentsValue, pending: Object.freeze({ kind: 'tool', target }) });
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
@@ -489,7 +500,7 @@ function createHostLedger(deps: {
     hostLive.set(id, entry);
     hostByRequest.set(request.id, entry);
     hostByItem.set(hostItemKey(turnId, callId), entry);
-    publish({ kind: 'host-call', call });
+    publish({ kind: 'host-call', call, argumentsJson });
     try { return await answered; } finally { if (entry.state !== 'reserved') entry.cleanup(); }
   }
   function prepare(value: unknown): Outcome<PreparedReply, CodexReplyError> {
@@ -511,7 +522,7 @@ function createHostLedger(deps: {
       ...preparedState({ entry, admission: entry.admission, reserve: () => { entry.state = 'reserved'; },
         owns: () => hostLive.get(entry.id) === entry, reply: replyValue,
         onRecord: (intent, signal) => recordChoice(entry, entry.call.pending.target, entry.id, intent, signal),
-        onDiscard: () => loseHost(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }), onCommit: () => {
+        onDiscard: (cause) => loseHost(entry, { kind: 'lost', reply: 'not-sent', cause }), onCommit: () => {
           entry.state = 'replied';
           entry.cleanup();
           hostLive.delete(entry.id);
@@ -541,7 +552,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   try {
     const { maxObservers, eventCapacity, maxSettled, maxPending, transport, expiry = null } = options;
     const { maxHandlers, handlerTimeoutMs } = transport;
-    const maxReplyFrameBytes = transport.maxFrameBytes ?? 1048576;
+    const maxReplyFrameBytes = transport.maxFrameBytes;
     if (![maxObservers, eventCapacity, maxSettled, maxPending, maxHandlers].every((value) => positive(value))
       || !positive(maxReplyFrameBytes) || maxReplyFrameBytes > 2147483647
       || !positive(maxObservers * eventCapacity) || maxPending >= maxHandlers || !positive(handlerTimeoutMs, 2147483647)
@@ -570,9 +581,10 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
   };
   const publish = (event: CodexInteractionEvent, onError?: () => void) => {
     const fact = Object.freeze(event);
+    queueMicrotask(() => { stream.publish(fact); });
     try { projector?.(fact); }
     catch (error) { if (onError) onError(); else throw error; }
-    finally { queueMicrotask(() => { stream.publish(fact); }); }
+
   };
   const threads = new Map<string, Attached>();
   /** Authority-owned pending state, keyed by the native approval identity; at most `maxPending` entries. */
@@ -607,7 +619,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     const threadId = record(request.params) && typeof request.params.threadId === 'string' ? request.params.threadId : null;
     publish({ kind: 'refused', method: request.method, threadId, reason, code,
       request: Object.freeze({ namespace: 'codex-app-server/server-request', schemaVersion: 1,
-        data: { method: request.method, id: request.id, params: request.params } }) });
+        data: Object.freeze({ method: request.method, id: request.id, params: request.params }) }) });
     return refusal(code, message);
   }
   const hostLedger = createHostLedger({ publish, threads, declared, maxSettled, maxPending, live, refuse });
@@ -664,34 +676,42 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     const target: ApprovalTarget = Object.freeze({ kind: 'approval', session: attached.session.reference, nativeApprovalId: id,
       tool: Object.freeze({ nativeToolCallId: itemId }) });
     const pending: PendingApproval = Object.freeze({ kind: 'approval', target, nativePolicy: attached.policy,
-      request: Object.freeze({ namespace: 'codex-app-server/server-request', schemaVersion: 1, data: { method, id: request.id, params } }),
+      request: Object.freeze({ namespace: 'codex-app-server/server-request', schemaVersion: 1, data: Object.freeze({ method, id: request.id, params }) }),
       choices: Object.freeze([...choices.keys()].map((nativeChoiceId) => Object.freeze({ nativeChoiceId, label: nativeChoiceId }))) });
     // Self-check through the core validator: a pending record the host could never answer is refused now, not held.
     const first = pending.choices[0]?.nativeChoiceId;
     const checked = parseInteractionContinuation({ value: { formatVersion: 1, kind: 'approval', target, nativeChoiceId: first },
       expected: pending });
     if (checked.kind === 'error' || live.has(id) || settled.has(id)) return refuse(request, 'malformed');
+    const expiresAt = expiryMs === null ? null : performance.now() + expiryMs;
     const matches = matchesLiveTurn(attached, request, turnId, signal, intake);
-    if (!(typeof matches.matched === 'boolean' ? matches.matched : await matches.matched) || matches.withdrawn() || signal.aborted) { matches.stop(); return withdrawnReply; }
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    let matched: boolean | 'expired';
+    try {
+      matched = typeof matches.matched === 'boolean' ? matches.matched : expiryMs === null ? await matches.matched : await Promise.race([matches.matched,
+        new Promise<'expired'>(resolve => { expiryTimer = setTimeout(() => resolve('expired'), expiryMs); })]);
+    } finally { clearTimeout(expiryTimer); }
+    if (matched === 'expired' || (expiresAt !== null && performance.now() >= expiresAt)) { matches.stop(); return expiredReply; }
+    if (!matched || matches.withdrawn() || !matches.live() || signal.aborted) { matches.stop(); return withdrawnReply; }
     // Refused while a transport handler slot remains (maxPending < maxHandlers), so a burst never reaches overflow.
     if (live.size + hostLedger.size >= maxPending) { matches.stop(); return refuse(request, 'capacity'); }
     if (signal.aborted) return withdrawnReply;
     let finish!: (reply: RpcReply) => void;
     const answered = new Promise<RpcReply>((resolve) => { finish = resolve; });
     const entry: Entry = { id, requestId: request.id, threadId, turnId, itemId, method, decisions: choices,
-      pending, state: 'live', timer: undefined, finish, admission: matches, signal, cleanup: () => signal.removeEventListener('abort', onAbort) };
+      pending, state: 'live', timer: undefined, expiresAt, finish, admission: matches, signal, cleanup: () => signal.removeEventListener('abort', onAbort) };
     const onAbort = () => {
       if (unanswered(entry)) settle(entry, { kind: 'lost', reply: 'not-sent',
         cause: endReason(signal.reason) }, withdrawnReply);
     };
     signal.addEventListener('abort', onAbort, { once: true });
     live.set(id, entry);
-    publish({ kind: 'pending', pending: entry.pending, evidence: codexApprovalEvidence[method] });
     if (expiryMs !== null) {
       entry.timer = setTimeout(() => {
         if (unanswered(entry)) settle(entry, { kind: 'expired', delivery: unknown }, expiredReply);
-      }, expiryMs);
+      }, Math.max(0, (expiresAt ?? performance.now()) - performance.now()));
     }
+    publish({ kind: 'pending', pending: entry.pending, evidence: codexApprovalEvidence[method] });
     try { return await answered; } finally { if (entry.state !== 'reserved') entry.cleanup(); }
   }
 
@@ -734,10 +754,15 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
     return { kind: 'ok', value: {
       key: `approval:${entry.id}`, requestId: entry.requestId, answer: parsed.value, call: undefined,
       nativeChoiceId, reply: replyValue, nativeLive: entry.admission.live, signal: entry.signal,
-      ...preparedState({ entry, admission: entry.admission, reserve: () => { entry.state = 'reserved'; },
-        owns: () => live.get(entry.id) === entry, reply: replyValue,
+      ...preparedState({ entry, admission: entry.admission, reserve: () => { clearTimeout(entry.timer); entry.timer = undefined; entry.expiresAt = null; entry.state = 'reserved'; },
+        owns: () => {
+          if (unanswered(entry) && entry.expiresAt !== null && performance.now() >= entry.expiresAt) {
+            settle(entry, { kind: 'expired', delivery: unknown }, expiredReply);
+          }
+          return live.get(entry.id) === entry;
+        }, reply: replyValue,
         onRecord: (intent, signal) => recordChoice(entry, entry.pending.target, nativeChoiceId, intent, signal),
-        onDiscard: () => settle(entry, { kind: 'lost', reply: 'not-sent', cause: 'aborted' }, withdrawnReply),
+        onDiscard: (cause) => settle(entry, { kind: 'lost', reply: 'not-sent', cause }, withdrawnReply),
         onCommit: () => settle(entry, { kind: 'replied', nativeChoiceId, delivery: unknown }, replyValue) }),
     } };
   }
@@ -776,7 +801,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
         finished = true; blocked = code; abort?.[Symbol.dispose]();
         if (!entered) admit(fail({ code }));
         written(fail({ code }));
-        const release = () => { discardPrepared(entries); entries.length = 0; };
+        const release = () => { discardPrepared(entries, code); entries.length = 0; };
         // Native turn/item retirement must finish classifying all peers before batch-only losses are applied.
         if (afterIntake) queueMicrotask(release); else release();
       };
@@ -788,7 +813,9 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
         if (signal.aborted) return refused('aborted');
         if (entries.length !== live.size + hostLedger.size || entries.some((entry) => !entry.isLive())) return refused('stale-interaction');
         const lifetime = AbortSignal.any([signal, ...entries.map((entry) => entry.signal)]);
-        abort = addAbortListener(lifetime, () => queueMicrotask(() => refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction', !signal.aborted)));
+        abort = addAbortListener(lifetime, () => queueMicrotask(() => {
+          if (!entered || !signal.aborted || entries.some(entry => entry.signal.aborted)) refuseEntry(signal.aborted ? 'aborted' : 'stale-interaction', !signal.aborted);
+        }));
         for (const entry of entries) {
           try { beforeReply(); }
           catch { const result = refused('stale-interaction'); entry.fault(); return result; }
@@ -805,7 +832,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
               queueMicrotask(() => refuseEntry(code)); return false;
             }
           }
-          if (!entry.nativeLive() || lifetime.aborted) { const code = signal.aborted ? 'aborted' : 'stale-interaction';
+          if (!entry.nativeLive() || entry.signal.aborted || (!entered && signal.aborted)) { const code = signal.aborted ? 'aborted' : 'stale-interaction';
               queueMicrotask(() => refuseEntry(code)); return false; }
           return true;
         }, entered: () => {
@@ -842,7 +869,7 @@ Outcome<CodexInteraction, { readonly code: 'invalid-input' }> {
         if (completed) return;
         completed = true; abort?.[Symbol.dispose]();
         resolve(fail({ code }));
-        discardPrepared([entry]);
+        discardPrepared([entry], code);
       };
       entry.beforeWrite({
         allowed: () => {

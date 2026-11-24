@@ -39,7 +39,11 @@ export interface BorrowedChannel {
 export interface RequestBounds {
   /** Trusted state hook, applied outside the reader in wire order before the waiter resolves. */
   readonly onReply?: (envelope: ReplyEnvelope) => void;
+  /** Trusted hook after writer invocation, before its ordered native intake. */
+  readonly onEntry?: () => void;
   readonly maxFrameBytes?: number;
+  /** Cancellation before writer invocation only; it never abandons an entered request. */
+  readonly entrySignal?: AbortSignal;
 }
 export interface TransportBounds {
   readonly maxInboundFrameBytes?: number;
@@ -93,7 +97,7 @@ type Wait<T> = {
   readonly settle: (outcome: T) => void;
 };
 type Caller =
-  | { readonly kind: 'request'; readonly id: string; readonly wait: Wait<Exchange>; readonly onReply: RequestBounds['onReply']; replyQueued: boolean }
+  | { readonly kind: 'request'; readonly id: string; readonly wait: Wait<Exchange>; readonly onReply: RequestBounds['onReply']; readonly onEntry: RequestBounds['onEntry']; readonly entrySignal: AbortSignal | undefined; replyQueued: boolean }
   | { readonly kind: 'notify'; readonly wait: Wait<SendOutcome> };
 type HandlerLease = {
   readonly id: RequestId;
@@ -148,6 +152,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   let pumpScheduled = false;
   let observerActive = false;
   let queuedObservations = 0;
+  let refusedObservations = 0;
   let writeTimer: ReturnType<typeof setTimeout> | undefined;
   let observerTimer: ReturnType<typeof setTimeout> | undefined;
   let diagnostics: Uint8Array = new Uint8Array();
@@ -216,7 +221,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       handlers: [...handlers.values()].filter((handler) => handler.phase === 'callback').length,
       observer: observerActive, write: active !== undefined,
     }), discarded: Object.freeze({
-      observations: queuedObservations,
+      observations: queuedObservations + refusedObservations,
       requests: [...handlers.values()].filter((handler) => handler.phase === 'scheduled').length,
     }) };
     reader.close();
@@ -240,7 +245,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     }
     report();
   }
-  function makeWait<T>(signal: AbortSignal, abort: () => void): { readonly wait: Wait<T>; readonly promise: Promise<T> } {
+  function makeWait<T>(signal: AbortSignal, abort: () => void, cleanup?: () => void): { readonly wait: Wait<T>; readonly promise: Promise<T> } {
     let resolve: (outcome: T) => void;
     const promise = new Promise<T>((settle) => { resolve = settle; });
     let listener: ReturnType<typeof addAbortListener> | undefined;
@@ -248,6 +253,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       if (wait.phase === 'settled') return;
       wait.phase = 'settled';
       listener?.[Symbol.dispose]();
+      cleanup?.();
       resolve(outcome);
     } };
     listener = addAbortListener(signal, abort);
@@ -267,13 +273,19 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
   function request(call: Call, signal: AbortSignal, requestBounds?: RequestBounds): Promise<Exchange> {
     let frameLimit: number;
     let onReply: RequestBounds['onReply'];
+    let onEntry: RequestBounds['onEntry'];
+    let entrySignal: AbortSignal | undefined;
     try {
       frameLimit = requestBounds?.maxFrameBytes ?? maxFrameBytes;
       onReply = requestBounds?.onReply;
+      onEntry = requestBounds?.onEntry;
+      entrySignal = requestBounds?.entrySignal;
+      if (entrySignal !== undefined && !(entrySignal instanceof AbortSignal)) return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
     } catch { return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' }); }
     if (!Number.isSafeInteger(frameLimit) || frameLimit < 1 || frameLimit > maxOutboundFrameBytes) {
       return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
     }
+    if (entrySignal?.aborted) return Promise.resolve({ kind: 'not-sent', reason: 'aborted' });
     const before = refusal(signal, true);
     if (before) return Promise.resolve(before);
     const id = `${prefix}:${++sequence}`;
@@ -281,8 +293,12 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
     const after = refusal(signal, true);
     if (after) return Promise.resolve(after);
     if (!bytes) return Promise.resolve({ kind: 'not-sent', reason: 'invalid-outgoing' });
-    const { wait, promise } = makeWait<Exchange>(signal, () => failWait(owner, 'aborted'));
-    const owner: Extract<Caller, { kind: 'request' }> = { kind: 'request', id, wait, onReply, replyQueued: false };
+    let cancelEntry: ReturnType<typeof addAbortListener> | undefined;
+    const { wait, promise } = makeWait<Exchange>(signal, () => failWait(owner, 'aborted'), () => cancelEntry?.[Symbol.dispose]());
+    const owner: Extract<Caller, { kind: 'request' }> = { kind: 'request', id, wait, onReply, onEntry, entrySignal, replyQueued: false };
+    if (entrySignal) cancelEntry = addAbortListener(entrySignal, () => {
+      if (wait.phase === 'queued') { failWait(owner, 'aborted'); schedulePump(); }
+    });
     pending.set(id, owner);
     queue.push({ bytes, owner });
     schedulePump();
@@ -339,7 +355,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       handler.intake = undefined;
       handler.gate = undefined;
     }
-    if (owner.kind !== 'reply' && owner.wait.signal.aborted) {
+    if (owner.kind !== 'reply' && (owner.wait.signal.aborted || (owner.kind === 'request' && owner.entrySignal?.aborted))) {
       failWait(owner, 'aborted');
       schedulePump();
       return;
@@ -361,6 +377,7 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
           fault('write-error');
           writeFailure = { cause: error };
         }
+        try { if (owner.kind === 'request') owner.onEntry?.(); } catch { finish('observation-error'); }
         try { replyEntered?.(); } catch { finish('handler-error'); }
       } finally {
         enteringWriter = false;
@@ -434,8 +451,8 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
       }
     }
     if (envelope.kind === 'notification' && (onNotification || handlers.size > 0)) {
-      if (intakeQueue.filter((entry) => entry.kind === 'notification').length >= observationCapacity) { fault('observation-overflow'); return; }
-      intakeQueue.push({ kind: 'notification', ...envelope.notification });
+      if (intakeQueue.filter((entry) => entry.kind === 'notification').length >= observationCapacity) { refusedObservations++; fault('observation-overflow'); return; }
+      intakeQueue.push(Object.freeze({ kind: 'notification', ...envelope.notification }));
       scheduleIntake();
       if (onNotification) return;
     }
@@ -470,10 +487,12 @@ export function openCodexTransport(options: TransportOptions): CodexTransport {
           next.owner.wait.settle({ kind: 'reply', envelope: next.envelope });
           continue;
         }
-        try {
-          for (const handler of handlers.values()) handler.intake?.(next);
-          onNotification?.(next);
-        } catch { beginEnd('observation-error'); finish('observation-error'); }
+        let failed = false;
+        for (const handler of [...handlers.values()]) {
+          try { handler.intake?.(next); } catch { failed = true; }
+        }
+        try { onNotification?.(next); } catch { failed = true; }
+        if (failed) { beginEnd('observation-error'); finish('observation-error'); }
       }
     } finally { flushingIntake = false; finishWhenSafe(); }
   }
